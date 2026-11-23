@@ -18,7 +18,8 @@ dispatch names (`$M` below).
 
 You read records; you never act on a session. Never send, steer, interrupt,
 answer, decide, compact or change a model for any session, never write to a
-project log, and write no file but scratch files of your own under `/tmp`.
+log (a project's or a channel's), and write no file but scratch files of your
+own under `/tmp`.
 The commands you need are `$M transcript`, `$M pending` and `$M query`;
 nothing else of sminos.
 

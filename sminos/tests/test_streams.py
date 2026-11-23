@@ -235,6 +235,25 @@ class Streams(tw.Machine):
         link.welcomed_rl10({"t": "welcome", "capabilities": [], "policy": None})
         self.assertFalse(link.visibility or au.capable())
 
+    def test_a_listed_entry_reads_for_a_project_as_before_whoever_wrote_it_and_whatever_its_frame_said(self):
+        """An entry an older writer kept, one from a frame that said nothing of `members`, and one from a frame
+        that said `members: null`: one entry, as the merge base keeps it, and every reader of a project reads it as
+        before (the whole org, its owners, a say to it plain)."""
+        self.capable()
+        said = lambda: (au.audience_of(R), au.owners_of(R), [(w, a) for w, a, _, _ in au.stream_for(  # noqa: E731
+            self.p, None, [{"session": R, "alias": "r"}])])
+        before = (None, [B], [(sminos.writer_id(None), None)])
+        d = json.loads(open(au.audiences_path()).read())
+        d.setdefault("sessions", {})[R] = {"owners": [B], "members": None, "policyRev": 2}   # an older writer's
+        sminos.write_json(au.audiences_path(), d)
+        self.assertEqual(said(), before, "an older writer's entry")
+        self.assertTrue(au.keep_audience({"t": "audience", "session": R, "owners": [B], "policyRev": 2}))
+        self.assertEqual(au.entry_of(R), {"owners": [B], "members": None, "policyRev": 2}, "kept as before")
+        self.assertEqual(said(), before, "a frame that said nothing of members")
+        self.audience(R, [B], None, 2)
+        self.assertEqual(said(), before, "a frame that said members: null")
+        self.assertEqual(au.entry_of(R), {"owners": [B], "members": None, "policyRev": 2}, "the same entry")
+
     def test_the_hello_advertises_audience(self):
         import sminos_rl10 as rl10
         self.assertIn("audience", rl10.hello_frame("t" * 64, "1", None)["capabilities"])

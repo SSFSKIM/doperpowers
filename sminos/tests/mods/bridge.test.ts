@@ -2283,6 +2283,17 @@ describe('deliver', () => {
     ])
   })
 
+  test("a channel's key scopes its project by the thread (`<channel>#<thread>`): one thread's seq is no repeat for another, nor for the channel", async () => {
+    const h = harness()
+    await h.ready()
+    const a = { project: 'c1#t-a', writer: 'far/human', seq: 7 }
+    expect(await h.command({ op: 'deliver', key: a, text: 'to a' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { ...a, project: 'c1#t-b' }, text: 'to b' })).toMatchObject({ result: { submitted: true } })
+    expect(await h.command({ op: 'deliver', key: { ...a, seq: 6 }, text: 'a 6' })).toMatchObject({ result: { duplicate: true } })
+    expect(await h.command({ op: 'deliver', key: { ...a, project: 'c1' }, text: 'channel' })).toMatchObject({ result: { submitted: true } })
+    expect(h.calls.filter((c) => c.op === 'submit').map((c) => (c.args as { text: string }).text)).toEqual(['to a', 'to b', 'channel'])
+  })
+
   test("a hello's kept marks are honored as they come: a bare mark guards only keys naming no project, a scoped one only its project", async () => {
     const h = harness()
     await h.start()

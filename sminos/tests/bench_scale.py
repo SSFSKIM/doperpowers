@@ -63,7 +63,32 @@ kept as history.
   period, WORDS_EVERY, plus one second for the tick loop's poll and the
   tick itself). --import-events N then arrive as RL10 `events` frames, one
   event each. Exits 1 when the gate fails.
-- `verbs`: the wall and CPU time of `list --org` and `projects`.
+- `verbs`: the wall and CPU time of `list --org` and `projects`, each command's
+  exit code checked (a failure is printed FAILED with its code, and not timed).
+
+--channels N (CH2's M7) registers N channels after a tick has joined the live
+sessions, --held H of them (all by default) with members drawn from the live
+threads in hub checkouts, each placed by its own change (channel_plan says
+who), and its stand-in lists `channels` and `reach`. `verbs` then reads the
+senders' memberships from their records and times the matched pairs:
+`channel show` on a machine that knows one channel and N, `list` by a thread
+in the channels and by the same thread in none, a tagged `say` by a thread in
+them and by one in none (with N 0, the last two for a machine that knows no
+channel). `run` says the channel logs open on the stream, how many times a
+channel's log was read for a debt in the --pycalls window, by its own bounds
+(the uplink's from its profile, `daemon run`'s from the hook's trace, begun
+when the hook is installed; "unobserved" where nothing could count, which is
+not 0), and, with channels held, runs the upload scenario: UPLOAD_MESSAGES
+untagged messages into the first channel from one sender, then one from each
+of as many senders, each in a window in which the hook counts that channel's
+turns of the upload pass alone, closed at a turn's boundary, less as many idle
+turns (UPLOAD_IDLE seconds of them, counted first), a message. A window that
+did not take every message up, or counted no turn, gives no cost: it is said
+FAILED, and so is the run. `run --channels 0` is the control: the stand-in
+lists the capabilities, nothing is staged, so beside the gate's run it reads
+the cost of `channels` and `reach` alone. --held without --channels, or
+outside 0..N, is refused before anything is built. Without --channels the
+bench is what the sminos-idle gate runs.
 - `opens` (the desk open-fast spec's A3): G of the live sessions in hub
   checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
   shapes one for bench_open.py) in place of their short one; the uplink
@@ -258,6 +283,20 @@ def patch(name, mod):
     for attr, var, conv in KNOBS.get(name, ()):
         if os.environ.get(var):
             setattr(mod, attr, conv(os.environ[var]))
+    if name == "sminos_channels" and os.environ.get("BENCH_DEBT_READS") and sys.argv[1:3] == ["daemon", "run"] \
+            and hasattr(mod, "addressed_threads") \
+            and not hasattr(mod, "_bench_reads"):
+        # `daemon run`'s own reads of a channel's log for a debt (every one indexes the log it read by thread):
+        # one line each. The uplink's are counted from its profile, so nothing is added to what it runs.
+        real_index, reads = mod.addressed_threads, os.environ["BENCH_DEBT_READS"]
+        with open(reads, "a") as f:
+            f.write("installed %.3f %d\n" % (time.time(), os.getpid()))   # observed from here: a count, not none
+
+        def addressed_threads(events):
+            with open(reads, "a") as f:
+                f.write("%.3f %d\n" % (time.time(), os.getpid()))
+            return real_index(events)
+        mod.addressed_threads, mod._bench_reads = addressed_threads, True
     if name == "sminos_daemon" and os.environ.get("BENCH_TICK_TIMES") and not hasattr(mod, "_bench_timed"):
         real, path = mod.tick_all, os.environ["BENCH_TICK_TIMES"]
 
@@ -311,9 +350,70 @@ def thread_ticks():
 if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
     import signal
     held = {}
+    # The upload window's (`<BENCH_PROFILE>.mode` reads "upload <log id>"): that log's turns of Link.upload_pass,
+    # each under a cProfile of its own, [turns, Python calls, member_project_now's calls]. Installed for the window
+    # alone, so no other window's count holds its frame, and closed at a turn's boundary: an end asked for while a
+    # turn is counted is carried out when that turn's count is in. `<BENCH_PROFILE>.ready` is written as the log's
+    # first counted turn begins: the turns run one after another, so no uncounted one of that log is still running.
+    UPLOAD = {}
+
+    def publish_upload():
+        if "real" not in UPLOAD:
+            return
+        sys.modules["sminos_uplink"].Link.upload_pass = UPLOAD.pop("real")
+        out = os.environ["BENCH_PROFILE"] + ".upload"
+        with open(out + ".tmp", "w") as f:
+            json.dump({"from": UPLOAD.pop("at"), "to": time.time(), "log": UPLOAD.pop("log"),
+                       "counted": UPLOAD.pop("counted")}, f)
+        os.replace(out + ".tmp", out)
+        UPLOAD.clear()
+
+    def counted_upload(real):
+        def upload_pass(self, hl, *args, **kwargs):
+            if hl.project.id != UPLOAD.get("log") or UPLOAD.get("closing"):
+                return real(self, hl, *args, **kwargs)
+            import cProfile
+            import pstats
+            if not UPLOAD.get("ready"):
+                UPLOAD["ready"] = True
+                open(os.environ["BENCH_PROFILE"] + ".ready", "w").close()
+            UPLOAD["inflight"] = True
+            pr = cProfile.Profile()
+            try:
+                return pr.runcall(real, self, hl, *args, **kwargs)
+            finally:
+                row = UPLOAD.get("counted")
+                if row is None:   # the window was published between this turn's check and its start: not counted
+                    UPLOAD.clear()
+                else:
+                    row[0] += 1
+                    for (fn, _, name), (_, nc, _, _, _) in pstats.Stats(pr).stats.items():
+                        if fn != "~":
+                            row[1] += nc
+                        if name == "member_project_now":
+                            row[2] += nc
+                    UPLOAD["inflight"] = False
+                    if UPLOAD.get("closing"):
+                        publish_upload()
+        return upload_pass
+
+    def upload_log():
+        try:
+            with open(os.environ["BENCH_PROFILE"] + ".mode") as f:
+                mode, _, log = f.read().strip().partition(" ")
+        except OSError:
+            return None
+        return log if mode == "upload" and log else None
 
     def begin(*_):
         import cProfile
+        log = upload_log()
+        if log is not None:
+            link = sys.modules["sminos_uplink"].Link
+            if "real" not in UPLOAD:
+                UPLOAD.update(real=link.upload_pass, log=log, counted=[0, 0, 0], at=time.time(), inflight=False)
+                link.upload_pass = counted_upload(UPLOAD["real"])
+            return
         if "pr" not in held:
             held["at"] = time.time()
             held["threads"] = thread_ticks()
@@ -323,6 +423,12 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
             held["pr"].enable()
 
     def end(*_):
+        if "real" in UPLOAD:
+            if UPLOAD.get("inflight"):
+                UPLOAD["closing"] = True   # the turn being counted publishes when its count is in
+            else:
+                publish_upload()
+            return
         pr = held.pop("pr", None)
         if pr is None:
             return
@@ -626,6 +732,8 @@ class Env:
                 self.env["BENCH_PRESENCE_EVERY"] = str(a.presence_every)
             if a.pycalls:
                 self.env["BENCH_PROFILE"] = os.path.join(self.root, "uplink.prof")
+            if a.channels is not None:
+                self.env["BENCH_DEBT_READS"] = os.path.join(self.root, "debt-reads.log")
         if a.age:
             # The history as old as on the Macs: no writer file changed within HOT_FOR (what a hot look
             # skips), no directory just made (what a kept listing waits out).
@@ -792,8 +900,122 @@ def scale(p):
     p.add_argument("--age", type=float, default=0, metavar="DAYS", help="the history's files this old")
     p.add_argument("--working", type=float, default=0, metavar="S",
                    help="one live session's engine record rewritten every S seconds")
+    p.add_argument("--channels", type=int, default=None, metavar="N",
+                   help="N channels registered (CH2's M7), its stand-in listing `channels` and `reach`")
+    p.add_argument("--held", type=int, default=None, metavar="H",
+                   help="of the channels, H with members drawn from the live threads (all by default)")
     p.add_argument("--keep", action="store_true", help="leave the synthetic machine on disk")
     p.add_argument("--joined-by", metavar="SCRIPTS", help="make the first tick with this copy of the scripts")
+
+
+# ------------------------------------------------------------- channels (CH2's M7)
+
+UPLOAD_MESSAGES = 10   # the upload scenario's K: messages from one sender, then one from each of K senders
+UPLOAD_IDLE = 30.0     # seconds of the upload pass counted with nothing said, its idle turn's calls read from them
+
+
+def channel_ids(n):
+    """N channel ids, the same on every run: version 8 UUIDs (MAWS's isChannelId)."""
+    rnd = random.Random(11)
+    out = []
+    for _ in range(n):
+        u = uuid.UUID(int=rnd.getrandbits(128), version=4).int
+        out.append(str(uuid.UUID(int=(u & ~(0xF << 76)) | (0x8 << 76))))
+    return out
+
+
+def channel_plan(ids, held, live):
+    """[(channel id, the sessions placed in it)]: the first `held` channels
+    have members, the rest none. live[0], the sender the verbs time, is in
+    every held channel and live[1], the other sender, in none; the first
+    channel holds every live thread but live[1] (the upload scenario's
+    senders), each other held one two more of them, in turn."""
+    rest = live[2:]
+    out = []
+    for k, cid in enumerate(ids):
+        if k >= held:
+            members = []
+        elif k == 0:
+            members = [live[0]] + rest
+        else:
+            members = [live[0]] + ([rest[(2 * k - 2) % len(rest)], rest[(2 * k - 1) % len(rest)]] if rest else [])
+        out.append((cid, list(dict.fromkeys(members))))
+    return out
+
+
+STAGE_CHANNELS = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+channels, threads = sminos.channels_module(), sminos.threads_module()
+for cid, name, op, sids in json.loads(sys.argv[2]):
+    if op == "add" and sminos.known_project(cid) is None:
+        channels.register(cid, name)
+    for sid in sids:
+        t = threads.current_record(sid, fresh=True)
+        if t is None:
+            sys.exit("%s is no thread of this machine" % sid)
+        out = channels.change(t["thread"], cid, op, sid)
+        if out.state != "applied":
+            sys.exit("%s's own %s of %s: %s %s" % (sid, op, name, out.state, out.why))
+"""
+
+HELD_BY = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+threads = sminos.threads_module()
+print(json.dumps({sid: sorted(threads.held_set(threads.current_record(sid, fresh=True) or {}))
+                  for sid in json.loads(sys.argv[2])}))
+"""
+
+
+def channel_name(k):
+    return "ch%d" % k
+
+
+def named(plan):
+    """[(channel id, its name, the sessions placed in it)] of a channel_plan."""
+    return [(cid, channel_name(k), sids) for k, (cid, sids) in enumerate(plan)]
+
+
+def stage_channels(env, scripts, rows, op="add"):
+    """Each channel of `rows` (named's) registered (op "add") and each of
+    its sessions' threads placed in it, or taken out of it ("remove"), by
+    the thread's own change (sminos_channels.change): the statement `channel
+    add` writes, in the thread's own project. Raises when one is not
+    applied."""
+    rows = [[cid, name, op, sids] for cid, name, sids in rows]
+    r = run_child([sys.executable, "-B", "-c", STAGE_CHANNELS, os.path.abspath(scripts), json.dumps(rows)],
+                  env=env.env, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("placing the channels' members: %s" % (r.stderr.strip() or r.stdout.strip()))
+
+
+def held_by(env, scripts, sids):
+    """{session: the channel ids its thread's record holds}, read from the records."""
+    r = run_child([sys.executable, "-B", "-c", HELD_BY, os.path.abspath(scripts), json.dumps(sids)], env=env.env,
+                  capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("reading the senders' records: %s" % r.stderr.strip())
+    return {k: set(v) for k, v in json.loads(r.stdout).items()}
+
+
+def joined(env, scripts):
+    """One `daemon tick`, which joins every live session as a thread."""
+    r = run_child([sys.executable, os.path.join(os.path.abspath(scripts), "sminos.py"), "daemon", "tick"], env=env.env,
+                  capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("the joining tick: %s" % r.stderr.strip())
+
+
+def senders(env):
+    """The live sessions in hub checkouts, one a project: the threads channels draw their members from."""
+    return [s for s in env.live_sessions if s["project"] in env.rooted_ids]
+
+
+def plural(n, word):
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
 
 
 def in_process(env, scripts):
@@ -901,8 +1123,12 @@ class EndpointStandin:
         # A former name, as an endpoint that renamed the machine says it: the welcome's cut-over keeps the
         # sessions held under it this machine's (sminos_rl10.welcomed).
         identity = {**self.IDENTITY, "former": [env.a.former] if env.a.former else []}
+        config = {"identity": identity}
+        if getattr(env.a, "channels", None) is not None:
+            # CH2's M7: without them the uplink skips the channels' work to be measured (the gate's shape lists none).
+            config["capabilities"] = ["channels", "reach"]
         self.proc = spawn([sys.executable, os.path.join(HERE, "endpoint_standin.py"), "serve", self.dir,
-                           json.dumps({"identity": identity})],
+                           json.dumps(config)],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             deadline = time.time() + 10
@@ -1021,6 +1247,9 @@ def cmd_run(a, env):
         if not cut_over(env):
             print("the endpoint stand-in's welcome did not cut the machine over")
             return 1
+        rows = None
+        if a.channels is not None:
+            rows = channels_staged(a, env) if a.channels else []   # 0: the capabilities alone, the control
         if a.profile_uplink:
             # Joined by a tick, then the uplink alone under cProfile.
             run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
@@ -1096,9 +1325,15 @@ def cmd_run(a, env):
         if a.strace:
             measures["strace"] = strace_window(env, up, a.strace)
             print_strace(measures["strace"])
+        upload_ok = True
         if a.pycalls:
             measures["pycalls"] = pycalls_window(env, up, a.pycalls, a.pycalls_prof)
             print_pycalls(measures["pycalls"])
+            if rows is not None:
+                measures["channels"] = channel_reads(env, ep, rows, measures["pycalls"], run.pid)
+            if rows is not None and any(sids for _, _, sids in rows):
+                measures["upload"] = upload_scenario(a, env, ep, up, rows)
+                upload_ok = measures["upload"] is not None
         if subs:
             measures["subs"]["ended after the windows"] = subscription_states(ep, subs)["ended"]
         if a.nudges:
@@ -1139,6 +1374,11 @@ def cmd_run(a, env):
                       counted("its file calls", files, IDLE_GATE_FILE),
                       ("daemon.log without a failure", not failed,
                        "%d, the first: %s" % (len(failed), failed[0].strip()) if failed else "none")]
+        if "upload" in measures:
+            checks.append(("the upload scenario measured whole", upload_ok,
+                           "exactly its messages accepted inside each window, posted once a turn was counted"
+                           if upload_ok else
+                           "an upload: line says what is missing"))
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
         ok = all(c[1] for c in checks)
@@ -1155,6 +1395,156 @@ def cmd_run(a, env):
             except subprocess.TimeoutExpired:
                 run.kill()
         ep.stop()
+
+
+def channels_staged(a, env):
+    """--channels: the live sessions joined by a tick, then N channels
+    registered, H of them with members (channel_plan), each placed by its
+    own change; said in one line. named's rows."""
+    held = a.channels if a.held is None else a.held
+    joined(env, a.scripts)
+    live = senders(env)
+    rows = named(channel_plan(channel_ids(a.channels), held, [s["sid"] for s in live]))
+    stage_channels(env, a.scripts, rows)
+    placed = {sid for _, _, sids in rows for sid in sids}
+    print("channels: %d registered, %d held, %d threads of this machine placed in them across %d projects; the "
+          "stand-in lists channels and reach" % (a.channels, held, len(placed),
+                                                 len({s["project"] for s in live if s["sid"] in placed})),
+          flush=True)
+    return rows
+
+
+def daemon_debt_reads(path, pid, t0, t1):
+    """`daemon run`'s reads of a channel's log for a debt in [t0, t1], from
+    the hook's trace, or None where the trace does not show the hook
+    installed in that process by t0 (unobserved, which is not none)."""
+    installed, n = False, 0
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = line.split()
+                if parts[:1] == ["installed"]:
+                    installed |= int(parts[2]) == pid and float(parts[1]) <= t0
+                elif len(parts) == 2 and int(parts[1]) == pid and t0 <= float(parts[0]) <= t1:
+                    n += 1
+    except OSError:
+        return None
+    return n if installed else None
+
+
+def channel_reads(env, ep, rows, pc, daemon_pid):
+    """The channels' logs as the stream holds them, and how many times a
+    channel's log was read for a debt in the profile's window (its own
+    bounds): the uplink's from its profile, `daemon run`'s from the hook's
+    trace (sminos_channels' addressed_threads, which indexes every log a
+    debt is read from); either unobserved where nothing could count it."""
+    opened = ep.ctl("opened").get("projects") or {}
+    ids = {cid for cid, _, _ in rows}
+    chans = {pid: o for pid, o in opened.items() if pid in ids}
+    uplink_reads = (pc or {}).get("debt_reads")
+    daemon_reads = None if not pc else daemon_debt_reads(env.env["BENCH_DEBT_READS"], daemon_pid, pc["from"], pc["to"])
+    print("channels on the stream: %d open, %d of them followed; reads of a channel's log for a debt in the profile's "
+          "window: %s in the uplink, %s in daemon run" % (
+              len(chans), sum(1 for o in chans.values() if o.get("follow")),
+              "unobserved (no profile)" if uplink_reads is None else uplink_reads,
+              "unobserved (its hook never installed)" if daemon_reads is None else daemon_reads))
+    return {"open": len(chans), "followed": sum(1 for o in chans.values() if o.get("follow")),
+            "debt_reads": {"uplink": uplink_reads, "daemon run": daemon_reads}}
+
+
+def upload_window(env, pid, log, act, accepted=None, k=0, give_up=180.0, ready_by=60.0):
+    """`log`'s turns of the uplink's upload pass counted (the hook's upload
+    mode, begun and ended by signal, closed at a turn's boundary). `act`
+    runs once the first of them has begun, so every turn that can take what
+    it posts is counted; the window then stays open until `accepted()` (the
+    endpoint's count of what `act` posted) reaches `k`, or `give_up`
+    seconds (all of them, with no `accepted`). {"from", "to", "log",
+    "counted": [turns, Python calls, member_project_now's calls]}, or
+    {"failed": why}: no counted turn began, no count came back, or not
+    exactly `k` accepted when the close was asked for (what goes up after
+    is outside the count)."""
+    out = env.env["BENCH_PROFILE"]
+    for left in (".upload", ".ready"):
+        if os.path.exists(out + left):
+            os.unlink(out + left)
+    with open(out + ".mode", "w") as f:
+        f.write("upload %s" % log)
+    failed = None
+    try:
+        os.kill(pid, signal.SIGUSR1)
+        deadline = time.time() + ready_by
+        while not os.path.exists(out + ".ready") and time.time() < deadline:
+            time.sleep(0.05)
+        if not os.path.exists(out + ".ready"):
+            failed = "no turn of the log's upload pass began in %.0f s" % ready_by
+        else:
+            act()
+            deadline = time.time() + give_up
+            while (accepted is None or accepted() < k) and time.time() < deadline:
+                time.sleep(0.2)
+            if accepted is not None and accepted() != k:
+                failed = "%d of %d accepted when the window closed" % (accepted(), k)
+        os.kill(pid, signal.SIGUSR2)
+        deadline = time.time() + 60
+        while not os.path.exists(out + ".upload"):
+            if time.time() > deadline:
+                return {"failed": failed or "no count came back"}
+            time.sleep(0.2)
+    finally:
+        os.unlink(out + ".mode")
+    if failed:
+        return {"failed": failed}
+    with open(out + ".upload") as f:
+        return json.load(f)
+
+
+def upload_scenario(a, env, ep, up, rows):
+    """K untagged messages said into the first channel, from one sender, then
+    one from each of K senders (its members), each in an upload window: the
+    channel's turns of the upload pass, their Python calls beyond as many
+    idle turns (an idle window's, read first), and member_project_now's
+    calls, a message."""
+    cid, name, sids = rows[0]
+    by_sid = {s["sid"]: s for s in senders(env)}
+    k = min(UPLOAD_MESSAGES, len(sids))
+    said = [0]
+
+    def uploaded():
+        return sum(1 for e in ep.ctl("accepted", {"project": cid})["events"] if e["event"].get("kind") == "say")
+
+    def say_from(who):
+        def act():
+            for n, sid in enumerate(who):
+                said[0] += 1
+                if not timed_verb(env, a.scripts, "say --in %s, message %d" % (name, said[0]),
+                                  ["say", "--in", name, "a message from the bench, %d" % said[0]], by_sid[sid]):
+                    raise RuntimeError("the upload scenario's say failed")
+        return act
+
+    idle = upload_window(env, up, cid, lambda: None, give_up=UPLOAD_IDLE)
+    turns, calls, _ = idle.get("counted") or [0, 0, 0]
+    if not turns:
+        print("upload: FAILED: the idle window: %s" % idle.get("failed", "no turn of %s's upload pass" % name))
+        return None
+    per_turn = calls / turns
+    print("upload: an idle turn of %s's upload pass, %.0f Python calls (%d turns in %.0f s)" % (
+        name, per_turn, turns, UPLOAD_IDLE))
+    out = {"idle turn": per_turn}
+    for label, who in (("from one sender", [sids[0]] * k), ("from %d senders" % k, sids[:k])):
+        before = uploaded()
+        w = upload_window(env, up, cid, say_from(who), accepted=lambda before=before: uploaded() - before, k=k)
+        if "failed" in w:
+            print("upload: %d messages %s: FAILED: %s: no cost is given for a window that did not hold them all" % (
+                k, label, w["failed"]))
+            return None
+        got, (turns, calls, mpn) = k, w["counted"]
+        beyond = calls - turns * per_turn
+        print("upload: %d messages %s, %d of them gone up: %d turns of %s's upload pass, %.0f Python calls beyond "
+              "as many idle turns, %.0f a message; member_project_now %d calls, %.1f a message" % (
+                  k, label, got, turns, name, beyond, beyond / k, mpn, mpn / k))
+        out[label] = {"messages": k, "uploaded": got, "turns": turns, "beyond": beyond, "a message": beyond / k,
+                      "member_project_now": mpn}
+    return out
 
 
 def hold_subscriptions(env, ep, n, by):
@@ -1348,12 +1738,14 @@ def pycalls_window(env, pid, seconds, keep=None):
     with open(out + ".window") as f:
         w = json.load(f)
     dt = w["to"] - w["from"]
-    total = python = 0
+    total = python = debt_reads = 0
     files = {}
     for (fn, _, name), (_, nc, _, _, _) in pstats.Stats(out).stats.items():
         total += nc
         if fn != "~":
             python += nc
+        if name == "addressed_threads" and fn.endswith("sminos_channels.py"):
+            debt_reads += nc
         elif FILE_BUILTIN.search(name):
             files[name] = files.get(name, 0) + nc
     if keep:
@@ -1362,7 +1754,8 @@ def pycalls_window(env, pid, seconds, keep=None):
     ticks = (w.get("passes") or {}).get("Link.tick", {}).get("calls")
     return {"seconds": dt, "calls": total / dt, "python": python / dt,
             "file": {k: n / dt for k, n in sorted(files.items(), key=lambda kv: -kv[1])},
-            "ticks": ticks, "ticks_a_second": None if ticks is None else ticks / dt}
+            "ticks": ticks, "ticks_a_second": None if ticks is None else ticks / dt, "debt_reads": debt_reads,
+            "from": w["from"], "to": w["to"]}
 
 
 def print_pycalls(s):
@@ -1684,15 +2077,74 @@ def stop(p):
         p.wait()
 
 
+def timed_verb(env, scripts, label, verb, session=None):
+    """One verb's wall and CPU time, said on one line; a verb that exits
+    other than 0 is said FAILED with its exit code, and timed not at all.
+    Run as `session` (its id, from its directory) when one is given.
+    Whether it succeeded."""
+    kw = {"env": env.env}
+    if session is not None:
+        kw = {"env": dict(env.env, CLAUDE_CODE_SESSION_ID=session["sid"]), "cwd": session["cwd"]}
+    t = time.perf_counter()
+    before = os.times()
+    r = run_child([sys.executable, os.path.join(os.path.abspath(scripts), "sminos.py")] + verb, capture_output=True,
+                  text=True, **kw)
+    after = os.times()
+    cpu = (after.children_user - before.children_user) + (after.children_system - before.children_system)
+    if r.returncode:
+        print("%-48s FAILED (exit %d): %s" % (label, r.returncode, (r.stderr.strip().splitlines() or [""])[-1]))
+        return False
+    print("%-48s %.2f s wall, %.2f s CPU" % (label, time.perf_counter() - t, cpu))
+    return True
+
+
 def cmd_verbs(a, env):
-    for verb in (["list", "--org"], ["projects"]):
-        t = time.perf_counter()
-        before = os.times()
-        run_child([sys.executable, os.path.join(a.scripts, "sminos.py")] + verb, env=env.env,
-                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        after = os.times()
-        cpu = (after.children_user - before.children_user) + (after.children_system - before.children_system)
-        print("%-10s %.2f s wall, %.2f s CPU" % (" ".join(verb), time.perf_counter() - t, cpu))
+    """`verbs`: `list --org` and `projects`; with --channels, the matched
+    pairs of CH2's M7, each sender's memberships read from its record
+    before it is timed. Exit status 1 when a verb failed."""
+    ok = all([timed_verb(env, a.scripts, " ".join(verb), verb) for verb in (["list", "--org"], ["projects"])])
+    if a.channels is None:
+        return 0 if ok else 1
+    live = senders(env)
+    if len(live) < 2:
+        print("channels: the shape holds fewer than two live sessions in hub checkouts")
+        return 1
+    one, other = live[0], live[1]
+    say = ["say", "@m0 a note from the bench"]   # a member of the other machine in every hub project
+    joined(env, a.scripts)
+    if not a.channels:
+        print("channels: none on this machine")
+        ok &= timed_verb(env, a.scripts, "list, by a thread in none", ["list"], one)
+        ok &= timed_verb(env, a.scripts, "say @<alias>, by a thread in none", say, one)
+        return 0 if ok else 1
+    held = a.channels if a.held is None else a.held
+    plan = channel_plan(channel_ids(a.channels), held, [s["sid"] for s in live])
+    rows = named(plan)
+    stage_channels(env, a.scripts, rows[:1])
+    first = channel_name(0)
+    ok &= timed_verb(env, a.scripts, "channel show, a machine that knows 1 channel", ["channel", "show", first])
+    stage_channels(env, a.scripts, rows[1:])
+    holds = held_by(env, a.scripts, [one["sid"], other["sid"]])
+    want = {cid for cid, sids in plan if one["sid"] in sids}
+    if holds[one["sid"]] != want or holds[other["sid"]]:
+        print("channels: FAILED: the sender's record holds %d of the %d held, the other's %d" % (
+            len(holds[one["sid"]] & want), len(want), len(holds[other["sid"]])))
+        return 1
+    print("channels: %d registered, %d held; the sender's record holds %d of them, the other's none" % (
+        a.channels, held, len(want)))
+    ok &= timed_verb(env, a.scripts, "channel show, a machine that knows %s" % plural(a.channels, "channel"),
+                     ["channel", "show", first])
+    within = "a thread in %s" % plural(len(want), "channel")
+    ok &= timed_verb(env, a.scripts, "list, by %s" % within, ["list"], one)
+    ok &= timed_verb(env, a.scripts, "say @<alias>, by %s" % within, say, one)
+    ok &= timed_verb(env, a.scripts, "say @<alias>, by a thread in none", say, other)
+    stage_channels(env, a.scripts, [(cid, name, [one["sid"]]) for cid, name, _ in rows if cid in want], "remove")
+    if held_by(env, a.scripts, [one["sid"]])[one["sid"]]:
+        print("channels: FAILED: the sender's record still holds a channel")
+        return 1
+    print("channels: the sender's record holds none of them now")
+    ok &= timed_verb(env, a.scripts, "list, by the same thread in none", ["list"], one)
+    return 0 if ok else 1
 
 
 def profiled(scripts, out, argv):
@@ -1831,6 +2283,10 @@ def main():
     for s in sub.choices.values():
         s.set_defaults(**PRESETS.get(preset, {}))
     a = p.parse_args()
+    if a.channels is None and a.held is not None:
+        p.error("--held needs --channels")
+    if a.channels is not None and not 0 <= (a.channels if a.held is None else a.held) <= a.channels:
+        p.error("--channels N and --held H: 0 <= H <= N")
     stop_on_signals()
     root = env = None
     status = 0

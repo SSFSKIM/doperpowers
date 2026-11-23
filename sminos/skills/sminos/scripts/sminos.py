@@ -73,7 +73,12 @@ back by a fill.
                    # no project by its name; a codex thread (its id, or codex:<id|exact name>, through
                    # codex's queue); --wait needs a seat or a thread of this machine.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
-                   @short / @project/alias: delivered; @all: every live member
+                   @short / @project/alias / @channel/alias: delivered; @all: every live member
+    sminos say      --in <channel> <text>                 # said in a channel: its members' tags (@alias, @short,
+                   @alias#short), @all its live members, untagged a record nobody is prompted for (but one sent
+                   with no session and no --notice, a person's at a terminal or a script's, which goes to the
+                   channel's lead when it has one); the same as @channel/alias without --in. A thread that is not in the channel may say into it too: its
+                   replies come to it directly, in its own project
     sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
                    every live session of that scope but you (`list` with the same flags shows them), each woken
                    as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
@@ -82,7 +87,8 @@ back by a fill.
                    take: each event marked, shown from <program>@<machine>, never delivered as a person's words
     sminos say      --exit-held …                         # exit 3 when a tagged recipient's line says it is held
                    and not woken; the message is recorded as without it
-    sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
+    sminos chat     [<project>|<channel>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing
+                   the cursor (in a channel, the thread's)
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of, until its next
                    derived line: the line is derived in the background (derive), so sessions are not taught this
@@ -163,7 +169,8 @@ back by a fill.
     sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
                    [words..] [--channel C]..  # the caller's project (a session's own, else the working directory's;
                    every project from none), then each channel the caller is in (`# <name>`, its members
-                   from every project, stopped ones shown); --channel those of a channel; any filter
+                   from every project, stopped ones shown); --channel those of a channel (`list <channel>`
+                   alike, its other words row filters); any filter
                    widens to every project known here, then narrows: --machine by prefix, words (all of
                    them) in the alias, short, project, repo, branch, in-charge, now line or title; --org
                    every project; --here this machine, plus every running session in no project.
@@ -190,8 +197,8 @@ back by a fill.
                    that makes an open turn stalled when only the disk speaks;
                    --json {self, scope, counts, agents, notes}, every agent whatever its state
     sminos channel  create <name> [<thread>]              # a declared channel, the caller its first member (from
-                   a terminal, <thread>: one of this machine); a channel is no project, and nothing is said in one
-                   in this version
+                   a terminal, <thread>: one of this machine); a channel is no project: it is spoken in by naming
+                   it (say --in <channel>, @channel/alias), never by standing in a directory
     sminos channel  add <channel> [<thread>...]           # threads placed in it without acting (none named: the
                    caller); a thread of another machine once its daemon reads the request
     sminos channel  remove <channel> [<thread>...]        # out of it: nothing is retired
@@ -199,6 +206,9 @@ back by a fill.
                    the last seven days and what became of each; its pool, the machines its members run on
     sminos channel  env add|remove <channel> <machine>    # a machine of the org added to its pool by hand, or no
                    longer (a member's)
+    sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a
+                   message then said into the channel on this machine with no tag, no session and no
+                   --notice (the owner's at a terminal, or a script's) is addressed to that thread; none clears it
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -236,9 +246,11 @@ display names and can collide; `alias#short` (the session's first eight hex
 digits) tells two apart. A seat-less session never takes, from its harness
 name, an alias a seat or another current member of its project holds (a
 `--bg` copy inherits its source's name): it keeps the alias it has, else its
-short. A bare name resolves only in the caller's project (a
-seat's own, for a seat); `@short` and `alias#short` reach a session in any
-project known here, `project/alias` (a stray: `machine/alias`) one in another;
+short. A bare name resolves in the caller's project (a
+seat's own, for a seat) and in the channels the caller is in, a thread
+found there reached in its own project; `@short` and `alias#short` reach a
+session in any project known here, `project/alias` (a stray: `machine/alias`)
+one in another, `channel/alias` a member of a channel;
 on a machine not enrolled, from a directory that is no project, a bare name
 resolves across every project known here. A seat also answers to
 `group/alias`. Scripts may pass a full seat id or session id. A session a
@@ -2692,6 +2704,16 @@ def tag_project(p):
     return p.name if not clash and any(t.id == p.id for t in tiers) else p.id
 
 
+def registered_channel(q):
+    """The channel registered here that `q` names (names_channel), else None:
+    a read that branches to a channel before it asks for a project (`chat
+    <channel>`, `list <channel>`; CH2's M4). An id of a channel's form that
+    is registered nowhere here is left to find_project, which refuses it as
+    a channel."""
+    channel = names_channel(q)
+    return known_project(channel.id) if channel is not None else None
+
+
 def find_project(q, required=True):
     """A project known locally, by id or by name (project_tiers' first);
     with required=False, None when none is, a channel's name or id among
@@ -2933,8 +2955,9 @@ def moving_elsewhere(session):
 
 
 def known_project(pid):
-    """A project registered here (its project.json), by id, or None."""
-    return _registered_as(pid, registration(pid))
+    """A project registered here (its project.json), by id, or None. An id that
+    is no name reads no path built from it."""
+    return _registered_as(pid, registration(pid)) if valid_name(pid) else None
 
 
 def _registered_as(pid, d):
@@ -3379,6 +3402,11 @@ def operator_writer(writer):
     return base.endswith("/human") and base.count("/") == 1
 
 
+class HeadWaits(Exception):
+    """_append(queue=False) to a writer that waits for its head: nothing was
+    written, nothing queued."""
+
+
 def waits_for_head(project, writer):
     """Whether an append to `writer` in `project` waits for the upstream's
     head (the rule above): this machine's operator writer or a stream of it,
@@ -3563,7 +3591,7 @@ def waits_line(project, writer):
 
 
 def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False, released=False,
-            lock_until=None):
+            lock_until=None, queue=True):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
@@ -3575,6 +3603,9 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     (writer_locks). An own writer's `human` events in the log get their
     append receipts under the same lock, first (_write_receipts).
     `lock_until`: LockBusy, nothing appended, for a lock not had by then.
+    A log writer that waits for its head (waits_for_head) gets the events
+    queued, or with `queue=False` HeadWaits, nothing queued: the one reading
+    of the wait, under the writer's lock, decides either way.
     Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
@@ -3602,6 +3633,8 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
             if not events:
                 return []
             if store == "log" and not released and waits_for_head(project, writer):
+                if not queue:
+                    raise HeadWaits()
                 return _queue(project, writer, events)
             seq = _last_seq(f)
             spent = spent_seqs(project, writer) if store == "log" else set()
@@ -3700,11 +3733,15 @@ RECEIPTED_KINDS = ("human", "channel-request")
 
 def _write_receipts(project, writer, events):
     """The receipts of the events of RECEIPTED_KINDS an append stores under
-    this machine's own writer (its name now); the caller holds the writer
-    file's lock. One whose body has no canonical form gets none."""
+    this machine's own writer (its name now), and of a `say` appended to a
+    channel's log (CH2's M3: what "this machine appended it" means there,
+    sminos_channels.appended_here); the caller holds the writer file's
+    lock. One whose body has no canonical form gets none."""
     if writer.rpartition("/")[0] != host_name():
         return
-    lines = [{"seq": e["seq"], "hash": h} for e in events if e["kind"] in RECEIPTED_KINDS and (h := event_hash(e))]
+    lines = [{"seq": e["seq"], "hash": h} for e in events
+             if (e["kind"] in RECEIPTED_KINDS or e["kind"] == "say" and is_channel_id(project.id))
+             and (h := event_hash(e))]
     if not lines:
         return
     path = project_path(project, RECEIPTS, writer.replace("/", ".") + ".jsonl")
@@ -3716,7 +3753,11 @@ def _write_receipts(project, writer, events):
 def receipt_of(project, writer, seq):
     """The hash the append receipt holds for the writer's seq, or None. A
     seq written twice (an append whose event could not be written after its
-    receipt was) is the last line's."""
+    receipt was) is the last line's. In a channel's log the file is indexed
+    (_channel_receipt): its pass asks for every event it decides (CH2's
+    M3)."""
+    if is_channel_id(project.id):
+        return _channel_receipt(receipt_path(project, writer), seq)
     try:
         with open(receipt_path(project, writer)) as f:
             lines = f.read().split("\n")
@@ -3730,6 +3771,56 @@ def receipt_of(project, writer, seq):
         if isinstance(r, dict) and type(r.get("seq")) is int and r["seq"] == seq and isinstance(r.get("hash"), str):
             return r["hash"]
     return None
+
+
+# A channel's receipt file → [the bytes indexed (whole lines), {seq: hash}, its stat when last read (_receipt_stat)].
+_RECEIPT_INDEX = {}
+
+
+def _receipt_stat(st):
+    return st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+def _channel_receipt(path, seq):
+    """receipt_of for a channel's writer: the file opened each time (one that
+    cannot be read now names nothing, as receipt_of answers), its whole
+    lines indexed by seq once and extended by what an append added since:
+    a file that grew is read from where the index ends; one that changed
+    without growing (another inode, a shrink, the same size under a moved
+    mtime or ctime: a rewrite in place) is read again from its start. The
+    last line naming a hash wins: a line not yet ended by its newline is
+    read each time, after the index."""
+    try:
+        with open(path, "rb") as f:
+            now = _receipt_stat(os.fstat(f.fileno()))
+            held = _RECEIPT_INDEX.get(path)
+            if held is None or held[2][0] != now[0] or now[1] < held[2][1] or now[1] == held[2][1] \
+                    and held[2][2:] != now[2:]:
+                held = _RECEIPT_INDEX[path] = [0, {}, now]
+            held[2] = now   # stated before the read: an append in between is read now, and its size next time
+            f.seek(held[0])
+            tail = f.read()
+    except OSError:
+        _RECEIPT_INDEX.pop(path, None)
+        return None
+    whole, ended, rest = tail.rpartition(b"\n")
+    if ended:
+        held[1].update(_receipt_lines(whole.decode("utf-8", "replace")))
+        held[0] += len(whole) + 1
+    return _receipt_lines(rest.decode("utf-8", "replace")).get(seq) or held[1].get(seq)
+
+
+def _receipt_lines(text):
+    """{seq: hash} of receipt lines, the last naming a hash for a seq winning."""
+    index = {}
+    for line in text.split("\n"):
+        try:
+            r = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(r, dict) and type(r.get("seq")) is int and isinstance(r.get("hash"), str):
+            index[r["seq"]] = r["hash"]
+    return index
 
 
 def receipted(project, e):
@@ -3895,6 +3986,14 @@ def cursor_load(project, session_uuid):
     return {str(w): int(s) for w, s in d.items() if type(s) is int} if isinstance(d, dict) else {}
 
 
+def delivery_cursor(project, key, owing=None):
+    """The cursor a delivery's frames count unread by: a project's
+    reader's, under its session `key`, as before; a channel's thread's
+    under the key its chat keeps it by (sminos_channels.THREAD_CURSOR),
+    which no older copy writes."""
+    return cursor_load(project, key if owing is None else channels_module().THREAD_CURSOR % owing.thread)
+
+
 def cursor_save(project, session_uuid, cursor):
     """Advance a reader's cursor to `cursor`, merged per writer with what is
     persisted under the cursor's lock: overlapping reads never move it back."""
@@ -3920,11 +4019,38 @@ def cursor_save(project, session_uuid, cursor):
 # or the thread ends (held_owed).
 
 
+class DeliveryUnreadable(OSError):
+    """A channel's delivery record that is there and cannot be read, met by
+    one of the record's own writers (CH2's M3): it writes nothing over it,
+    and its caller defers."""
+
+
+def _writable(project, key):
+    """The delivery record a writer changes: a project's as delivered_load
+    reads it; a channel's, whose key is a thread's id, read strictly
+    (sminos_channels.delivered), raising DeliveryUnreadable for one that is
+    there and cannot be read, so nothing is written over it."""
+    if not is_channel_id(project.id):
+        return delivered_load(project, key)
+    record = channels_module().delivered(project, key)
+    if record is None:
+        raise DeliveryUnreadable("the delivery record of %s under %s cannot be read: nothing is written over it"
+                                 % (key, project.name))
+    return record
+
+
 def delivered_load(project, session_uuid):
     try:
         d = json_at(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json"))
     except (OSError, ValueError):
         return {}
+    return delivered_entries(d)
+
+
+def delivered_entries(d):
+    """A delivery record's JSON in the form delivered_load gives: what is no
+    writer's entry, and every mark out of shape, passed by. A channel's
+    strict reader (sminos_channels.delivered) reads through it too."""
     out = {}
     for w, v in (d.items() if isinstance(d, dict) else ()):
         if isinstance(v, dict):
@@ -4002,7 +4128,9 @@ def frame_landed(project, session, e):
     its text together, and never when another chat event of the log shows
     the same reference and a text that frame would show as well (event_ref
     drops a stream's suffix, and each stream numbers its own events): such a
-    frame cannot be told from the other's, and claims no push. A frame after
+    frame cannot be told from the other's, and claims no push; nor where a
+    log of the same name, a channel and a project (CH2's M4), holds such an
+    event, since a frame's header names its log by its name. A frame after
     another in one push of several is not told from a quote either, and
     claims none. A machine's notice is always a chat frame (frame_of), a
     `msg_id` on it included."""
@@ -4014,6 +4142,11 @@ def frame_landed(project, session, e):
     if any(x.get("kind") in CHAT_KINDS and (x.get("writer"), x.get("seq")) != (e["writer"], e["seq"])
            and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
            for x in log_read(project) if x.get("writer") is not None and x.get("seq") is not None):
+        return False
+    namesakes = [p for p in known_logs() if p.name == project.name and p.id != project.id
+                 and (is_channel_id(p.id) or is_channel_id(project.id))]
+    if any(x.get("kind") in CHAT_KINDS and event_ref(x) == ref and sender_text(str(x.get("text") or "")).startswith(body)
+           for p in namesakes for x in log_read(p) if x.get("writer") is not None and x.get("seq") is not None):
         return False
     head = re.compile(r"\[sminos chat %s %s from [^\n]*\]\n" % (re.escape(project.name), re.escape(ref)))
 
@@ -4152,8 +4285,9 @@ def _delivered_write(project, session_uuid, record):
 def delivered_settle(project, session_uuid, writer, seq):
     """Settle the writer's next owed event — every event between the settled
     prefix and seq is not owed to this session, so the prefix moves to seq.
-    The caller holds delivered/<session>.lock."""
-    record = delivered_load(project, session_uuid)
+    The caller holds delivered/<session>.lock. In a channel's log the key is
+    the thread's id, and its record is read strictly (_writable)."""
+    record = _writable(project, session_uuid)
     w = _next_check(record, writer, seq)
     record[writer] = _entry(seq, revoked=w.get("revoked", ()), held=w.get("held", ()))
     _delivered_write(project, session_uuid, record)
@@ -4161,7 +4295,7 @@ def delivered_settle(project, session_uuid, writer, seq):
 
 def delivered_fail(project, session_uuid, writer, seq):
     """Note a failed attempt at the writer's next owed event; returns the count."""
-    record = delivered_load(project, session_uuid)
+    record = _writable(project, session_uuid)
     w = _next_check(record, writer, seq)
     attempts = w["attempts"] + 1 if w["pending"] == seq else 1
     record[writer] = _entry(w["settled"], seq, attempts, w.get("revoked", ()), held=w.get("held", ()))
@@ -4175,7 +4309,7 @@ def delivered_pushed(project, session_uuid, writer, seq, outcome):
     without pushing it again. Kept best effort — a note that cannot be
     written leaves the push to be made again, at least once as before."""
     try:
-        record = delivered_load(project, session_uuid)
+        record = _writable(project, session_uuid)
         w = _next_check(record, writer, seq)
         record[writer] = _entry(w["settled"], seq, w["attempts"] if w["pending"] == seq else 0,
                                 w.get("revoked", ()), [seq, outcome], w.get("held", ()))
@@ -4193,7 +4327,7 @@ def delivered_held(project, session_uuid, writer, seq, thread=None):
     event, for the thread it was decided for (`thread`, the session's stamp
     by default): an obligation of that thread alone (stale_hold). The
     caller holds delivered/<session>.lock."""
-    record = delivered_load(project, session_uuid)
+    record = _writable(project, session_uuid)
     w = _delivery(record, writer)
     if seq <= w["settled"] or seq in w.get("held", {}):
         return
@@ -4257,14 +4391,27 @@ def held_record(project, session, alias, sender, via, text, msg_id, thread):
         return e, "held" if threads_module().stamp(session) == thread else "stale"
 
 
-def held_decided(project, session, e, outcome):
+def held_decided(project, session, e, outcome, owing=None):
     """A delivery's outcome for the event `e` as the hold decides it, under
     the session's delivery lock, before it is concluded: a thread's hold
     decided now (`held:<why>` of HOLDS: a reason it is not woken, a wake
     that failed, or one that passes on its own) is kept for the event
     (delivered_held), so that from then on it is owed until it is pushed to
     its thread's process or the thread ends, whatever a later pass finds of
-    that process (held_owed); any other outcome goes through held_owed."""
+    that process (held_owed); any other outcome goes through held_owed.
+    `owing` (sminos_channels.Owing, a channel's log): the mark is the
+    thread's, in its own record, and names it. In a channel an event for
+    the live alone (`wake`) is never kept as a hold: its hold leaves it owed
+    for this pass alone, unmarked, and the next pass settles it once its
+    thread reads stopped (stopped_for_the_live), so it never holds back its
+    writer's next message, which may wake the thread."""
+    if owing is not None:
+        record = _writable(project, owing.thread)
+        if hold_why(outcome):
+            if not e.get("wake"):
+                delivered_held(project, owing.thread, e["writer"], e["seq"], owing.thread)
+            return outcome
+        return held_owed(project, session, record, e, outcome, owing)
     record = delivered_load(project, session)
     if hold_why(outcome):
         delivered_held(project, session, e["writer"], e["seq"], getattr(outcome, "thread", None))
@@ -4272,7 +4419,7 @@ def held_decided(project, session, e, outcome):
     return held_owed(project, session, record, e, outcome)
 
 
-def held_owed(project, session, record, e, outcome):
+def held_owed(project, session, record, e, outcome, owing=None):
     """What a pass's outcome for an event decided held for the session
     (delivered_held) becomes: anything short of a push — `recorded` (no
     inbox yet, or one that does not answer) or a failure before the text
@@ -4280,7 +4427,19 @@ def held_owed(project, session, record, e, outcome):
     handed) — is `held:`, owed with no attempt counted, while the session is
     the current one of a thread that has not ended, of either kind
     (thread_owed), and still a member here. Every other outcome, and any
-    outcome for an event never decided held, stands."""
+    outcome for an event never decided held, stands. With `owing` (a
+    channel's log) the mark is the thread's own, so no stale or unreadable
+    binding is asked of it, and membership is read in the thread's own
+    project, and an event for the live alone is never held (held_decided),
+    whatever mark an earlier build left on it."""
+    if owing is not None:
+        if e.get("wake") or e["seq"] not in _delivery(record, e["writer"]).get("held", {}):
+            return outcome
+        if outcome != "recorded" and not outcome.startswith("failed"):
+            return outcome
+        if not thread_owed(session) or latest_membership(_own_events(owing.project, session)) != "joined":
+            return outcome
+        return "held:not pushed to its process yet (%s)" % outcome
     if e["seq"] not in _delivery(record, e["writer"]).get("held", {}) or stale_hold(record, session, e):
         return outcome
     if outcome != "recorded" and not outcome.startswith("failed"):
@@ -4304,7 +4463,7 @@ def delivered_revoke(project, session_uuid, writer, seq):
     Revoking the pending event clears it and its attempts. Whether it was
     marked: one whose outcome cannot be kept stays owed, for a later pass to
     record and mark. The caller holds delivered/<session>.lock."""
-    record = delivered_load(project, session_uuid)
+    record = _writable(project, session_uuid)
     w = _delivery(record, writer)
     if seq <= w["settled"]:
         raise ValueError("revoking %s:%d, which is settled (settled %d)" % (writer, seq, w["settled"]))
@@ -6816,19 +6975,7 @@ def _projection(events):
                 r["latest"], r["joined"] = fold.effect[sid], fold.joined.get(sid)
                 r["stated"] = None   # a membership event in effect ends the statement (Fold.add)
                 if kind == "joined":
-                    stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
-                    mark, eps = stamp or str(e.get("seat") or ""), r["episodes"]
-                    if not eps or (stamp and eps[-1][1] and stamp != eps[-1][1]) or (
-                            before is not None and before["kind"] == "retired"
-                            and before.get("reason") in ("continued", "replaced")):
-                        eps.append([str(e.get("ts") or ""), mark, e, str(e.get("by") or "")])
-                    else:
-                        ep = eps[-1]
-                        if stamp or (mark and not ep[1]):
-                            ep[1] = mark
-                        ep[2] = e
-                        if not ep[3] and e.get("by"):
-                            ep[3] = str(e["by"])
+                    episode_step(r["episodes"], e, before)
                     r["to"] = ""
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
@@ -6852,6 +6999,29 @@ def _projection(events):
             r["statuses"] = r["status"]   # read per episode (_member)
         r["status"] = latest_across_writers(r["status"])
     return info
+
+
+def episode_step(eps, e, before):
+    """A session's own `joined`, in effect, folded into its episodes `eps`
+    (_projection's `episodes`, X2, Interfaces §4; `before`, its membership
+    in effect before it): a new episode `[start ts, mark, latest joined,
+    first by]` at a `joined` stamped otherwise than the episode before, or
+    after its own retirement `continued` or `replaced`; else it is that
+    episode's, whose mark it sets when stamped (or, unstamped, naming a seat
+    where the episode has no mark). Every reader that splits a session into
+    episodes folds them by this step (_projection; sminos_channels._stated)."""
+    stamp = e["thread"] if isinstance(e.get("thread"), str) else ""
+    mark = stamp or str(e.get("seat") or "")
+    if not eps or (stamp and eps[-1][1] and stamp != eps[-1][1]) or (
+            before is not None and before["kind"] == "retired" and before.get("reason") in ("continued", "replaced")):
+        eps.append([str(e.get("ts") or ""), mark, e, str(e.get("by") or "")])
+        return
+    ep = eps[-1]
+    if stamp or (mark and not ep[1]):
+        ep[1] = mark
+    ep[2] = e
+    if not ep[3] and e.get("by"):
+        ep[3] = str(e["by"])
 
 
 def episode_mark(r, e):
@@ -7316,6 +7486,40 @@ def view_of(project, all_seats=None, titles=True):
     return view
 
 
+def member_row(project, session):
+    """The session's row in the project as view_of builds a member's, read
+    without reconciling: the project's log as it is (its shared merged
+    list, and the projection view_of keeps of it while no file moved), this
+    machine's seats and processes; None when the log's latest membership of
+    the session is not a `joined` listed here. For a reader that leaves the
+    project's reconciliation to the daemon's tick of it (a channel's
+    delivery pass, CH2's M3): a reconciliation finishes every open journal
+    entry of the project's threads."""
+    sig, events = _store_whole(project, "log", shared=True)
+    held = _PROJECTED.get(project.id)
+    if held is not None and held[0] == sig:
+        info = held[1]
+    else:
+        info = _projection(events)
+        _PROJECTED[project.id] = (sig, info)
+    r = info.get(session)
+    if not r or not r["latest"] or r["latest"]["kind"] != "joined" or unlisted_here(session, r):
+        return None
+    all_seats = seats()
+    local = _local_sessions(project, all_seats)
+    return _member(session, r, seats_by_session(project, all_seats).get(session), local.get(session, {}).get("peer"),
+                   session in local, False, info, shadowing(project, session, info, all_seats))
+
+
+def logged_members(project):
+    """The members the project's log holds now, each read as member_row
+    reads it: no session of this machine reconciled in, nothing appended (a
+    refusal's read of where a name answers, CH2's M4)."""
+    _, events = _store_whole(project, "log", shared=True)
+    sessions = sorted({e["session"] for e in events if e["kind"] == "joined" and isinstance(e.get("session"), str)})
+    return [m for m in (member_row(project, sid) for sid in sessions) if m is not None]
+
+
 def members(project):
     """The project's members (see project_view)."""
     return project_view(project)[0]
@@ -7413,11 +7617,12 @@ def daemon_log(line):
         f.write("%s %s\n" % (now(ms=True), line))
 
 
-def push_words(project, session, e, gate, owed):
+def push_words(project, session, e, gate, owed, thread=None):
     """The verdict a push of `e` is made under: a held receipt's for its
-    retry (the verdict taken with it), else the words gate's (WordsGate.words)."""
+    retry (the verdict taken with it), else the words gate's (WordsGate.words).
+    `thread`: a channel's receipt is found by it beside its session."""
     if owed == HOLDER_RETRY:
-        return holder_module().words_of(project.id, session, e)
+        return holder_module().words_of(project.id, session, e, **({} if thread is None else {"thread": thread}))
     return gate.words(e)
 
 
@@ -7674,7 +7879,47 @@ def held_now(session, due=False):
     return "" if due and hold == "failed" else hold
 
 
-def deliver_next(project, member, due=False):
+class PassLost(Exception):
+    """A channel's delivery pass whose last check failed (sminos_channels.
+    still_owed, CH2's M3): the thread's session, its open entry, its
+    membership, its own project or its lane changed after the pass chose.
+    Nothing is pushed, woken or settled, no attempt is counted, and the pass
+    stops for that thread; its entry point catches it. Never raised for a
+    project's log."""
+
+
+def _channel_choice(owing):
+    """Under the thread's delivery lock, in §3's order, what a channel's pass
+    chooses from: the last check (still_owed), the delivery record read
+    strictly, the record made consistent with the boundary (normalize), then
+    (the shared merged log, the record as normalize left it). None stops the
+    pass: the check failed, or the record cannot be read."""
+    channels = channels_module()
+    if not channels.still_owed(owing):
+        return None
+    if channels.delivered(owing.channel, owing.thread) is None:
+        return None
+    channels.normalize(owing)
+    record = channels.delivered(owing.channel, owing.thread)
+    if record is None:
+        return None
+    return _store_whole(owing.channel, "log", shared=True)[1], record
+
+
+def _kw(owing):
+    """The `owing` argument a channel's pass passes on, and nothing for a
+    project's: a project's calls are made as they always were, argument for
+    argument."""
+    return {} if owing is None else {"owing": owing}
+
+
+def _th(owing):
+    """A receipt lookup's `thread`, beside its session: a channel's alone
+    (_kw's rule); without it a receipt's key is as it always was."""
+    return {} if owing is None else {"thread": owing.thread}
+
+
+def deliver_next(project, member, due=False, owing=None):
     """The one delivery operation, for the sender's fast path and the daemon
     alike. Under delivered/<session>.lock, from choosing through the push to
     the settlement: per writer, push the owed events in seq order, settling
@@ -7733,84 +7978,142 @@ def deliver_next(project, member, due=False):
     `due`: a sender's own call for the event it wrote (`say` with a tag,
     `send`), which a failed wake's schedule does not hold back (only
     `failed` is passed over); the daemon's passes and the uplink's
-    deliveries follow the schedule."""
-    session = member.session
+    deliveries follow the schedule.
+
+    `owing` (sminos_channels.Owing; CH2's M3, its Interfaces §3) is given
+    for a channel's log, and only then, and a channel's log is refused
+    without it. The operation is the same and reads three things where it
+    reads one for a project: the thread for the debt (its delivery lock and
+    record, `delivered/<thread id>`, and the selection, sminos_channels.
+    owed), the session for the process (every hold, peer, reach, receipt,
+    push and wake), and the thread's own project for membership. Under the
+    thread's lock, first: the last check (still_owed), the record read
+    strictly (one that cannot be read stops the pass), the record made
+    consistent with the boundary (normalize); then the choice. A stale or
+    unreadable hold binding is not asked (the mark is the thread's own), an
+    event is from outside this machine when this machine did not append it
+    (sminos_channels.appended_here), and no outcome is kept for the uplink.
+    The last check is made again for each event before anything is decided
+    of it, an earlier pass's admitted receipt or noted push accepted
+    included (an Owing taken before a removal and an add chose by a
+    boundary since passed, and a thread may end between two writers), and
+    never between this pass's own hand-over and its settlement. One that
+    fails, there or later (before a push, around a wake's launch, before a
+    failure is counted), stops the pass for the thread, nothing pushed or
+    settled (PassLost), and no outcome of the event is reported."""
+    o = owing
+    if o is None and is_channel_id(project.id):
+        raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
+    session = member.session if o is None else o.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
         return result
+    key = session if o is None else o.thread   # the delivery record's and its lock's
+    channels = channels_module() if o is not None else None
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
     gate = WordsGate(project) if sibling_module("sminos_rl10").cut_over() else None
     reach = ReachGate(project) if gate is not None else None
     if gate is not None:
         result["gated"] = []
-    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+    with flocked(project_path(project, "delivered", reader_key(key) + ".lock")):
         hold = None   # asked at the first push, afresh (hold_for)
-        events = log_read(project)
-        record = delivered_load(project, session)
+        if o is None:
+            events = log_read(project)
+            record = delivered_load(project, session)
+            chosen = _owed(events, session, record)
+        else:
+            got = _channel_choice(o)
+            if got is None:
+                return result
+            events, record = got
+            chosen = channels.owed(o, events, record)
         streams = {}
-        for e in _owed(events, session, record):
+        for e in chosen:
             streams.setdefault(e["writer"], []).append(e)
-        cursor = cursor_load(project, session)
-        for writer, queue in streams.items():
-            outside = policy.outside_origin({"writer": writer})
-            noted = _delivery(record, writer).get("pushed")
-            for i, e in enumerate(queue):
-                if noted and noted[0] == e["seq"]:
-                    outcome = noted[1]
-                elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
-                    outcome = owed
-                else:
-                    held = gate.held(e, session) if gate is not None else None
-                    if held == "revoked":
-                        result["outcomes"].append((e, outcomes.REFUSED_REVOKED))
-                        holder_module().settled(project.id, session, e)
-                        continue
-                    if held is not None:
-                        result["pending"] += len(queue) - i
-                        break
-                    if outside and policy.read_only():
-                        outcome = outcomes.READ_ONLY
-                    elif stale_hold(record, session, e):
-                        outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
-                    elif (unknown := held_unreadable(record, e)):
-                        outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
-                    elif hold or hold is None and (hold := held_now(session, due)):
-                        # Held (T2's §4): pushed nothing and asked nothing. An event for the live alone (an @all,
-                        # a broadcast) settles as for a stopped member; an addressed one stays owed.
-                        outcome = "recorded" if e.get("wake") else hold_outcome(hold)
-                    elif gate is not None and owed is None and gate.gated(e) or reach is not None \
-                            and reach.needs(e, session, push_words(project, session, e, gate, owed)):
-                        result["gated"].append(e)
-                        result["pending"] += len(queue) - i
-                        break
+        cursor = delivery_cursor(project, key, o)
+        try:
+            for writer, queue in streams.items():
+                outside = policy.outside_origin({"writer": writer}) if o is None else False
+                noted = _delivery(record, writer).get("pushed")
+                for i, e in enumerate(queue):
+                    if o is not None:
+                        if not channels.still_owed(o, e):
+                            # Before anything is decided of the event, an earlier pass's admitted receipt or noted
+                            # push accepted included: a mark, a refusal, `recorded` are the thread's alone.
+                            raise PassLost()
+                        outside = not channels.appended_here(project, e)
+                    if noted and noted[0] == e["seq"]:
+                        outcome = noted[1]
+                    elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
+                            not in (None, HOLDER_RETRY):
+                        outcome = owed
                     else:
-                        outcome = holder_push(project, member, session, e, events, cursor,
-                                              words=gate.words(e) if gate is not None else None,
-                                              retry=owed is not None, due=due)
-                        if gate is not None:
-                            gate.said(e, outcome)
-                        if hold_why(outcome):
-                            # A wake that left it held: one attempt a call, the rest held for the same thread.
-                            hold = threads_module().Hold(hold_why(outcome), getattr(outcome, "thread", None))
-                outcome = held_decided(project, session, e, outcome)
-                if hold_why(outcome):
-                    # The same hold for the rest of the writer's queue, which this pass stops before: each
-                    # addressed event of it decided held now, as the first is.
-                    for later in queue[i + 1:]:
-                        if not later.get("wake"):
-                            delivered_held(project, session, writer, later["seq"], getattr(outcome, "thread", None))
-                result["outcomes"].append((e, outcome))
-                if not _conclude(project, member, session, e, outcome, outside):
-                    result["pending"] += len(queue) - i
-                    break
-                holder_module().settled(project.id, session, e)
-                if outcome in PUSHED:
-                    result["delivered"] += 1
+                        held = gate.held(e, session, **({} if o is None else {"key": key})) if gate is not None \
+                            else None
+                        if held == "revoked":
+                            result["outcomes"].append((e, outcomes.REFUSED_REVOKED))
+                            holder_module().settled(project.id, session, e, **_th(o))
+                            continue
+                        if held is not None:
+                            result["pending"] += len(queue) - i
+                            break
+                        if outside and policy.read_only():
+                            outcome = outcomes.READ_ONLY
+                        elif o is None and stale_hold(record, session, e):
+                            outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+                        elif o is None and (unknown := held_unreadable(record, e)):
+                            outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
+                        elif (held_now(session, due) if o is not None and e.get("wake")
+                              else hold or hold is None and (hold := held_now(session, due))):
+                            # Held (T2's §4): pushed nothing and asked nothing. An event for the live alone (an
+                            # @all, a broadcast) settles as for a stopped member; an addressed one stays owed. In a
+                            # channel the hold that settles an event for the live alone is its own, asked afresh,
+                            # never one an earlier event of the call left (an addressed one's still holds the rest).
+                            outcome = "recorded" if e.get("wake") else hold_outcome(hold)
+                        elif gate is not None and owed is None and gate.gated(e) or reach is not None \
+                                and reach.needs(e, session, push_words(project, session, e, gate, owed, **_th(o))):
+                            result["gated"].append(e)
+                            result["pending"] += len(queue) - i
+                            break
+                        else:
+                            outcome = holder_push(project, member, session, e, events, cursor,
+                                                  words=gate.words(e) if gate is not None else None,
+                                                  retry=owed is not None, due=due, **_kw(o))
+                            if o is not None and outcome == outcomes.REFUSED_REVOKED:
+                                # Its signer found revoked after a wake's launch (wake_member): marked, as the
+                                # check before a push marks it, and nothing handed over.
+                                result["outcomes"].append((e, outcome))
+                                holder_module().settled(project.id, session, e, **_th(o))
+                                continue
+                            if gate is not None:
+                                gate.said(e, outcome)
+                            if hold_why(outcome):
+                                # A wake that left it held: one attempt a call, the rest held for the same thread.
+                                hold = threads_module().Hold(hold_why(outcome), getattr(outcome, "thread", None))
+                    outcome = held_decided(project, session, e, outcome, **_kw(o))
+                    if hold_why(outcome):
+                        # The same hold for the rest of the writer's queue, which this pass stops before: each
+                        # addressed event of it decided held now, as the first is.
+                        for later in queue[i + 1:]:
+                            if not later.get("wake"):
+                                delivered_held(project, key, writer, later["seq"],
+                                               getattr(outcome, "thread", None) if o is None else o.thread)
+                    concluded = _conclude(project, member, session, e, outcome, outside, **_kw(o))
+                    result["outcomes"].append((e, outcome))   # once concluded: a stopped pass (PassLost) reports none
+                    if not concluded:
+                        result["pending"] += len(queue) - i
+                        break
+                    holder_module().settled(project.id, session, e, **_th(o))
+                    if outcome in PUSHED:
+                        result["delivered"] += 1
+        except PassLost:
+            # The last check failed past the choice: the rest is the thread's still, for a later pass.
+            result["pending"] += 1
     return result
 
 
-def _conclude(project, member, session, e, outcome, outside):
+def _conclude(project, member, session, e, outcome, outside, owing=None):
     """A push's outcome, settled as deliver_next settles it; whether it
     settled. A failure under DELIVERY_ATTEMPTS stays pending; one past it is
     given up with a daemon.log line and settled. An outside-origin event is
@@ -7820,20 +8123,31 @@ def _conclude(project, member, session, e, outcome, outside):
     awaits its admission (O12 M4b), or whose process's mode cannot be read,
     stays owed with no attempt counted, as does one the reach gate holds
     (`held:reach`). A `refused-reach` is settled here alone: no outcome goes
-    back (P5 O18 D3: a refusal here stays here)."""
+    back (P5 O18 D3: a refusal here stays here). With `owing` (a channel's
+    log) the record is the thread's, and no outcome is kept for the uplink:
+    under a channel's id that would be a publication (CH2's §4), and a
+    failure is counted only while the last check still holds for the event
+    (else PassLost: a failure across a hand-off is no attempt of the
+    thread's)."""
     outcomes = sibling_module("sminos_outcomes")
+    key = session if owing is None else owing.thread
     if holder_waiting(outcome):
         return False
     if outcome.startswith("failed"):
-        if delivered_fail(project, session, e["writer"], e["seq"]) < DELIVERY_ATTEMPTS:
+        if owing is not None and not channels_module().still_owed(owing, e):
+            # A push that failed before its text reached a session (an inbox write, a receipt's push) across a
+            # hand-off, a removal or an end: the thread's no more, so no attempt of its is counted.
+            raise PassLost()
+        if delivered_fail(project, key, e["writer"], e["seq"]) < DELIVERY_ATTEMPTS:
             return False
         daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
             event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
-    if outside and outcome != outcomes.REFUSED_REACH and not outcomes.record(project, e, session, outcome, member):
+    if owing is None and outside and outcome != outcomes.REFUSED_REACH \
+            and not outcomes.record(project, e, session, outcome, member):
         if outcome in PUSHED:
             delivered_pushed(project, session, e["writer"], e["seq"], outcome)
         return False
-    delivered_settle(project, session, e["writer"], e["seq"])
+    delivered_settle(project, key, e["writer"], e["seq"])
     return True
 
 
@@ -7864,7 +8178,7 @@ def holder_waiting(outcome):
 HOLDER_RETRY = "holder-retry"
 
 
-def holder_owed(project, member, session, e, events, cursor):
+def holder_owed(project, member, session, e, events, cursor, owing=None):
     """An event a receipt is held for, as far as it goes without a push:
     `sent` once admitted (admission alone settles it, whatever the policy
     says since: it reached the model); HOLDER_AWAITING while it waits (a
@@ -7873,28 +8187,57 @@ def holder_owed(project, member, session, e, events, cursor):
     pushes (nothing written or chosen yet: the caller checks the revocation
     and read-only policy first, then holder_push(retry=True)). None when no
     receipt is held for it. Checked before any other rule. The caller holds
-    the session's delivery lock."""
+    the session's delivery lock (with `owing`, a channel's, the thread's: its
+    receipt found by the thread beside the session)."""
     hd = holder_module()
-    if not hd.exists(project.id, session, e):
+    if not hd.exists(project.id, session, e, **_th(owing)):
         return None
     peer = peer_for_session(session)
     plan = hd.plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None, existing_only=True,
-                   prepare=False)
+                   prepare=False, **_th(owing))
     if plan is None:
         return None
+    if holder_due(session, plan, peer, e if owing is not None else None):
+        return HOLDER_RETRY
+    if owing is not None and e.get("wake") and _receipt_orphaned(session, plan, peer):
+        # A channel's event for the live alone, its receipt's process gone and its thread stopped: settled
+        # `recorded`, as it is for any stopped member (holder_due), never left first owed ahead of its writer's next
+        # message; the stop read afresh past the receipt's read (stopped_for_the_live), else a fresh pass decides.
+        if not stopped_for_the_live(owing, e, session):
+            raise PassLost()
+        return "recorded"
+    return holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
+
+
+def _receipt_orphaned(session, plan, peer):
+    """holder_due's last case: a receipt `awaiting` while no process runs
+    and the session is the current one of a lane A thread."""
+    return plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
+        and threads_module().current_record(session, fresh=True) is not None
+
+
+def holder_due(session, plan, peer, e=None):
+    """Whether an event whose held receipt `plan` describes (hd.plan(...,
+    existing_only=True, prepare=False)) is next pushed: the plan says `push`
+    or `legacy`, or it says `awaiting` while no process runs (`peer` None)
+    and the session is the current one of a lane A thread. That last is a
+    receipt handed to a process that is gone, never admitted (a lane B
+    process's, the session since reopened as lane A and closed): its next
+    step is a push to the process a wake starts, as for any event owed to a
+    stopped thread (T1's limit: at most one copy more), never a wait that
+    keeps the thread from being woken. A channel's event for the live alone
+    (`e`, given for a channel's log alone, and its `wake`) is never pushed
+    there: no wake is made for it, and holder_owed settles it `recorded`
+    while the thread reads stopped afresh. Reads only. holder_owed's
+    HOLDER_RETRY is this, for every log; a channel's reach_due chooses by it
+    (CH2's M6), so its ask goes where the push would retry. A project's
+    reach_due keeps its own test (push or legacy): its asks are today's."""
     if plan.kind in ("push", "legacy"):
-        return HOLDER_RETRY
-    if plan.kind == "awaiting" and peer is None and threads_module().lane_a(session) \
-            and threads_module().current_record(session, fresh=True) is not None:
-        # Handed to a process that is gone, never admitted, and its session now the current one of a lane A thread
-        # (a lane B process's receipt, the session since reopened as lane A and closed): its next step is a push
-        # to the process a wake starts, as for any event owed to a stopped thread (T1's limit: at most one copy
-        # more), never a wait that keeps the thread from being woken.
-        return HOLDER_RETRY
-    return holder_carry(plan, project, member, session, e, events, cursor, peer)
+        return True
+    return not (e is not None and e.get("wake")) and _receipt_orphaned(session, plan, peer)
 
 
-def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False):
+def holder_push(project, member, session, e, events, cursor, words=None, retry=False, due=False, owing=None):
     """push_event behind the receipt boundary: to a live process recorded
     `gate`, the event goes to its inbox with a receipt prepared first, and
     is HOLDER_AWAITING; a live process with no record is recorded `legacy`
@@ -7907,34 +8250,76 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     `status` written for the push; a wake that does not make it live is
     the wake's outcome. `words` as push_event. `retry`: a held receipt
     holder_owed found due, its policy checked — carried on under its id.
-    `due` as deliver_next's. The caller holds the session's delivery lock."""
+    `due` as deliver_next's. The caller holds the session's delivery lock.
+    With `owing` (a channel's log) the last check (sminos_channels.
+    still_owed) is made first, for this event, again by the wake around
+    its launch, and again under the receipts' lock, reading what the check
+    after a launch reads (_planned_check: the session's reach, the signer's
+    revocation, the read-only policy), once the planner has chosen the
+    process's mode (every wait its planning holds behind it) and before it
+    returns a legacy push or writes a gate receipt (a kept word's binding,
+    CH2's M6), so a push stopped there leaves no receipt carrying its stale
+    verdict: one that fails raises PassLost, nothing handed over, and a
+    refusal found there is its outcome (_after_launch's); the
+    session's membership is read in the thread's own project. A push that
+    comes back `recorded` is that stop too, unless it is an event for the
+    live alone whose thread is stopped (stopped_for_the_live) or it follows
+    a wake (woken_unpushed: `held:starting` while the thread is still owed
+    it). A wake that took no hold (a busy lock, the session live) is
+    followed by a live push to the peer read afresh."""
+    if owing is not None and not channels_module().still_owed(owing, e):
+        raise PassLost()
+    home = project if owing is None else owing.project
     peer = peer_for_session(session)
     locks = None
     if peer is None and not e.get("wake"):
         # A retry wakes too: a receipt whose process is gone is pushed to the one the wake starts (holder_owed).
-        got, locks = wake_member(project, member, session, e, words, due)
-        if got and got != "woken":
+        got, locks = wake_member(project, member, session, e, words, due, **_kw(owing))
+        if got and got not in ("woken", UNHELD_LIVE):
             return got
+        if got == UNHELD_LIVE:
+            # Woken by no one (a wake lock busy while the session reads live), the last check made again: pushed as
+            # a live push is, to the process read afresh, by its receipt mode.
+            peer = peer_for_session(session)
     try:
         if locks is not None:
             peer = peer_for_session(session)   # under the locks the wake kept, let go below whatever comes
         if locks is not None and peer is None:
-            return woken_unpushed(session)   # its inbox went between the wake's look and this one
-        if not retry and (peer is None or peer.get("pid") is None
-                          or (member.seat is None and latest_membership(_own_events(project, session)) == "retired")):
-            outcome = push_event(project, member, session, e, events, cursor, words=words)
+            # Its inbox went between the wake's look and this one.
+            return woken_unpushed(session, **_kw(owing), **({} if owing is None else {"e": e}))
+        if owing is not None and not retry and locks is None and peer is None:
+            # In a channel no peer at the decision is no push in this pass (an event for the live alone, which wakes
+            # nothing; a live fallback whose look found none): push_member's look of its own would hand it to a
+            # process found after it, which no planned check was made for. `recorded`, which stands only for a
+            # thread stopped now (stopped_for_the_live, below).
+            outcome = "recorded"
+        elif not retry and (peer is None or peer.get("pid") is None
+                            or (member.seat is None and latest_membership(_own_events(home, session)) == "retired")):
+            outcome = push_event(project, member, session, e, events, cursor, words=words, **_kw(owing))
         else:
             # A retry's process may have ended since holder_owed saw it: no pid,
             # and plan() leaves the receipt owed for a later launch.
-            plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
-                                        words=words)
-            outcome = holder_carry(plan, project, member, session, e, events, cursor, peer)
+            try:
+                plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
+                                            words=words, **_th(owing),
+                                            **({} if owing is None else {"check": lambda: _planned_check(owing, e)}))
+            except _PlannedRefusal:
+                # A refusal of the operation's own the planner's check found: decided here, outside the receipts'
+                # lock, as after a launch (its mark written then); one gone again since is the pass lost.
+                refused = _after_launch(owing, e, session)
+                if refused is None:
+                    raise PassLost()
+                return refused
+            outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
+        if locks is None and owing is not None and outcome == "recorded" \
+                and not stopped_for_the_live(owing, e, session):
+            raise PassLost()   # a push that reached no one the thread is (stopped_for_the_live)
         if locks is not None:
             outcome = {"sent": "woken", "sent?": "woken?"}.get(outcome, outcome)
             if outcome == "recorded":
                 # A push after a wake that handed nothing over (no process answered by then) settles nothing:
                 # `recorded` is an end's or a stale hold's alone.
-                outcome = woken_unpushed(session, outcome)
+                outcome = woken_unpushed(session, outcome, **_kw(owing), **({} if owing is None else {"e": e}))
             t = threads_module().current_record(session, fresh=True)
             if t is not None and t["opened"] == "spawned" and (outcome in PUSHED or outcome == HOLDER_AWAITING):
                 seat = reload_seat(t["thread"])
@@ -7945,12 +8330,47 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         unlock(locks or [])
 
 
-def woken_unpushed(session, outcome="recorded"):
+class _PlannedRefusal(Exception):
+    """What the receipts' planner's check (_planned_check) raises for a
+    refusal of the operation's own: nothing planned or written."""
+
+
+def _planned_check(owing, e):
+    """The receipts' planner's check for a channel's push (holder_push),
+    made under the receipts' lock past every wait the planning holds: what
+    the check after a launch reads (_after_launch), read only. The last
+    check with the session's reach, raising PassLost when it fails; then,
+    on a cut-over machine, the event's signer revoked or the revocation set
+    unreadable, and, for an event this machine did not append, the
+    read-only policy, either raising _PlannedRefusal for holder_push to
+    decide outside the lock."""
+    channels = channels_module()
+    if not channels.still_owed(owing, e, reach=True):
+        raise PassLost()
+    if sibling_module("sminos_rl10").cut_over() and isinstance(e.get("verified"), dict):
+        gate = WordsGate(owing.channel)
+        revoked = gate.revoked()
+        if revoked is None or gate.rl10.event_revoked(e, revoked):
+            raise _PlannedRefusal()
+    if not channels.appended_here(owing.channel, e) and sibling_module("sminos_policy").read_only():
+        raise _PlannedRefusal()
+
+
+def woken_unpushed(session, outcome="recorded", owing=None, e=None):
     """What a push made after a wake (holder_push) that handed nothing over
     comes to: owed, `held:starting` for its thread, while the session is
     still the current one of a thread that has not ended (thread_owed's
-    rule); else `outcome`, which an end or a stale hold settles."""
+    rule); else `outcome`, which an end or a stale hold settles. With
+    `owing` (a channel's log, its event `e`) the thread must still be owed
+    the event (still_owed: the thread woken, eligible, its process stopped
+    before the text went), and is then `held:starting` for it, marked, with
+    no attempt counted; else the last check fails (PassLost): nothing
+    settled."""
     t = threads_module().current_record(session, fresh=True)
+    if owing is not None:
+        if t is None or not channels_module().still_owed(owing, e):
+            raise PassLost()
+        return hold_outcome("starting", owing.thread)
     if t is None:
         return outcome
     return hold_outcome("starting", t["thread"])
@@ -7968,9 +8388,9 @@ class HandedOff(str):
         return super().__new__(cls, HOLDER_AWAITING)
 
 
-def holder_carry(plan, project, member, session, e, events, cursor, peer):
+def holder_carry(plan, project, member, session, e, events, cursor, peer, owing=None):
     """A receipt plan (sminos_holder_deliveries.plan) carried out; the
-    delivery's outcome."""
+    delivery's outcome. `owing` as holder_push's."""
     if plan.kind != "held":
         _HOLDER_SAID.pop(session, None)
     if plan.kind == "settle":
@@ -7983,8 +8403,12 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
             daemon_log("delivery: what is owed to %s waits: %s" % (session, plan.why))
         return "held:%s" % plan.why
     if plan.kind == "legacy":
-        return push_event(project, member, session, e, events, cursor, words=plan.words)
-    text = frame_of(project, e, events, session, cursor) if plan.body == "full" else holder_wake(project, e)
+        # In a channel, to the process the plan chose its mode for (and the last check was made for), never one
+        # found afresh; a project's push is as it was.
+        return push_event(project, member, session, e, events, cursor, words=plan.words,
+                          **({} if owing is None else {"looked": peer}), **_kw(owing))
+    text = frame_of(project, e, events, session, cursor, **_th(owing)) if plan.body == "full" \
+        else holder_wake(project, e)
     try:
         # The receipt's verdict rides along: the reach gate tells a peer's push from a person's words by it.
         control_module().push_live(peer, session, text, e, project.id, words=plan.words,
@@ -8079,14 +8503,15 @@ class WordsGate:
         _UNREADABLE["said"] = None
         return got
 
-    def held(self, e, session):
+    def held(self, e, session, key=None):
         """What the revocation set says of an event: None when nothing holds
         it; "revoked" when its stored signer is (marked: delivered_revoke),
         "unmarked" when it is and its outcome could not be kept (it stays
         owed), "unchecked" when it carries a signer and the set cannot be
         read (it waits: fail-closed). An event with no `verified` (this
         machine's own, a git mirror's) names no signer to check. The caller
-        holds the session's delivery lock."""
+        holds the session's delivery lock. `key`: the delivery record marked,
+        the session's by default (a channel's thread's, CH2's M3)."""
         if not isinstance(e.get("verified"), dict):
             return None
         revoked = self.revoked()
@@ -8094,7 +8519,7 @@ class WordsGate:
             return "unchecked"
         if not self.rl10.event_revoked(e, revoked):
             return None
-        if not delivered_revoke(self.project, session, e["writer"], e["seq"]):
+        if not delivered_revoke(self.project, key or session, e["writer"], e["seq"]):
             return "unmarked"
         daemon_log("%s (%s) is signed by a revoked key: marked refused-revoked for %s, never delivered"
                    % (event_ref(e), self.project.name, session))
@@ -8218,8 +8643,15 @@ class ReachGate:
     def needs(self, e, session, words=None):
         """Whether the push needs the endpoint's `deliver`: the gate's, and
         not between one owner's sessions of this machine (same_owner_local).
-        What every deliverer but the uplink leaves owed."""
-        return self.applies(e, words) and not same_owner_local(e, session, self.home)
+        What every deliverer but the uplink leaves owed. In a channel's log
+        the shortcut holds only for an event this machine appended
+        (sminos_channels.appended_here), never by its writer's name (CH2's
+        M3)."""
+        if not self.applies(e, words):
+            return False
+        if is_channel_id(self.project) and not channels_module().appended_here(self.home, e):
+            return True
+        return not same_owner_local(e, session, self.home)
 
     def held(self, e, session, words=None, keep=False):
         """None when the push may go; "owed" when it may not now — no permit
@@ -8298,7 +8730,29 @@ def _first_owed(session, writer, events, record):
     return next((x for x in _owed(events, session, record) if x["writer"] == writer), None)
 
 
-def deliver_verdict(project, member, event, verdict):
+def _verdict_choice(project, session, event, owing):
+    """What deliver_verdict and deliver_reach carry a word out on, under the
+    delivery lock they hold: (the log, the record, the event as stored) while
+    `event` is still its writer's first owed with the same body, else None.
+    With `owing` (a channel's log): the last check, the strict read and
+    normalize first (_channel_choice), and the thread's selection
+    (sminos_channels.first_owed)."""
+    if owing is None:
+        events = log_read(project)
+        record = delivered_load(project, session)
+        e = _first_owed(session, event["writer"], events, record)
+    else:
+        got = _channel_choice(owing)
+        if got is None:
+            return None
+        events, record = got
+        e = channels_module().first_owed(owing, event["writer"], events)
+    if e is None or e["seq"] != event["seq"] or event_hash(e) != event_hash(event):
+        return None
+    return events, record, e
+
+
+def deliver_verdict(project, member, event, verdict, owing=None, word=None):
     """The endpoint's verdict on a words-gated event (`words`, `peer` or
     `refuse`, O12 M6) carried out, as deliver_next carries out a push: under
     the session's delivery lock, and only while the event is still its
@@ -8312,51 +8766,79 @@ def deliver_verdict(project, member, event, verdict):
     receipt first and the outcome is HOLDER_AWAITING (holder_push); an
     event whose receipt is held already is carried on under its id
     (holder_owed), its retry checked against the revocation set and the
-    read-only policy as a fresh push is. The outcome, or None."""
-    session = member.session
+    read-only policy as a fresh push is. The outcome, or None.
+
+    `owing` (a channel's log, CH2's M3) as deliver_next's: the thread's lock
+    and record, the last check before anything, the thread's selection, and
+    a last check that fails later (PassLost) doing nothing: None.
+
+    `word` (with `owing` alone, CH2's M6): the path of a kept word the
+    uplink wrote (sminos_channels.keep_word), which the daemon's channel
+    pass carries out (carry_words) taking no lock itself: here, under the
+    thread's lock and after the last check made with the reach, the file is
+    read again and removed (sminos_channels.take_word), and the verdict is
+    carried out only when it was still there, is younger than WORD_KEPT,
+    names this thread, its session and its reach, and names this event and
+    this verdict; else nothing is done on it (None)."""
+    o = owing
+    if o is None and is_channel_id(project.id):
+        raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
+    session = member.session if o is None else o.session
     if not session or verdict not in WORDS_VERDICTS:
         return None
+    key = session if o is None else o.thread
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
-    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
-        events = log_read(project)
-        record = delivered_load(project, session)
-        e = _first_owed(session, event["writer"], events, record)
-        if e is None or e["seq"] != event["seq"] or event_hash(e) != event_hash(event):
+    with flocked(project_path(project, "delivered", reader_key(key) + ".lock")):
+        got = _verdict_choice(project, session, event, o)
+        if got is None:
             return None
-        outside = policy.outside_origin(e)
+        events, record, e = got
+        outside = policy.outside_origin(e) if o is None else not channels_module().appended_here(project, e)
         noted = _delivery(record, e["writer"]).get("pushed")
-        cursor = cursor_load(project, session)
-        if noted and noted[0] == e["seq"]:
-            outcome = noted[1]
-        elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
-            outcome = owed
-        else:
-            held = WordsGate(project).held(e, session)
-            if held == "revoked":
-                holder_module().settled(project.id, session, e)
-                return outcomes.REFUSED_REVOKED
-            if held is not None:
-                return None
-            if outside and policy.read_only():
-                outcome = outcomes.READ_ONLY
-            elif verdict == "refuse":
-                outcome = outcomes.REFUSED_WORDS
-                daemon_log(WORDS_REFUSED_SAID % (event_ref(e), project.name, session, refused_key(project, session, e)))
-            elif stale_hold(delivered_load(project, session), session, e):
-                outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
-            elif (unknown := held_unreadable(delivered_load(project, session), e)):
-                outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
-            elif (hold := hold_now(session)):
-                # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
-                # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
-                outcome = "recorded" if e.get("wake") else hold_outcome(hold)
+        cursor = delivery_cursor(project, key, o)
+        try:
+            if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
+                raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included
+            if word is not None and channels_module().take_word(o, e, word, verdict) is None:
+                return None   # the kept word gone (another carrier took it), stale or not this event's: nothing
+            if noted and noted[0] == e["seq"]:
+                outcome = noted[1]
+            elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
+                    not in (None, HOLDER_RETRY):
+                outcome = owed
             else:
-                outcome = holder_push(project, member, session, e, events, cursor, words=verdict == "words",
-                                      retry=owed is not None)
-        outcome = held_decided(project, session, e, outcome)
-        if _conclude(project, member, session, e, outcome, outside):
-            holder_module().settled(project.id, session, e)
+                held = WordsGate(project).held(e, session, **({} if o is None else {"key": key}))
+                if held == "revoked":
+                    holder_module().settled(project.id, session, e, **_th(o))
+                    return outcomes.REFUSED_REVOKED
+                if held is not None:
+                    return None
+                if outside and policy.read_only():
+                    outcome = outcomes.READ_ONLY
+                elif verdict == "refuse":
+                    outcome = outcomes.REFUSED_WORDS
+                    daemon_log(WORDS_REFUSED_SAID % (event_ref(e), project.name, session,
+                                                     refused_key(project, session, e)))
+                elif o is None and stale_hold(delivered_load(project, session), session, e):
+                    outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+                elif o is None and (unknown := held_unreadable(delivered_load(project, session), e)):
+                    outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
+                elif (hold := hold_now(session)):
+                    # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
+                    # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
+                    outcome = "recorded" if e.get("wake") else hold_outcome(hold)
+                else:
+                    outcome = holder_push(project, member, session, e, events, cursor, words=verdict == "words",
+                                          retry=owed is not None, **_kw(o))
+                    if o is not None and outcome == outcomes.REFUSED_REVOKED:
+                        holder_module().settled(project.id, session, e, **_th(o))
+                        return outcome
+            outcome = held_decided(project, session, e, outcome, **_kw(o))
+            if _conclude(project, member, session, e, outcome, outside, **_kw(o)):
+                holder_module().settled(project.id, session, e, **_th(o))
+        except PassLost:
+            return None
         return outcome
 
 
@@ -8413,7 +8895,31 @@ def words_unanswered(project, member, event, why):
         return _delivery(delivered_load(project, session), e["writer"]).get("attempts")
 
 
-def words_due(project, members):
+def _owed_by_thread(owing, events, check):
+    """{session: [event]} of a channel's choice (words_due's and reach_due's
+    with `owing`, {session: Owing}): for each Owing, the first owed event of
+    each writer by the thread's selection (sminos_channels.owed), its
+    delivery record read strictly (one that cannot be read is asked about
+    nothing), passed through `check(o, record, writer, e)`; nothing for a
+    session this machine holds. The two passes' skips by session (a member
+    whose current session no entry names; their share kept by session and
+    record) are not on this path."""
+    channels = channels_module()
+    out = {}
+    for session, o in owing.items():
+        record = channels.delivered(o.channel, o.thread)
+        if record is None:
+            continue
+        firsts = {}
+        for e in channels.owed(o, events, record) or ():
+            firsts.setdefault(e["writer"], e)
+        due = [e for w, e in sorted(firsts.items()) if check(o, record, w, e)]
+        if due and not hold_for(session):   # a held session is asked about nothing (M3)
+            out[session] = due
+    return out
+
+
+def words_due(project, members, owing=None):
     """{session: [event]}: for each of the members, the first owed event of
     each words-gated writer (words_route "ask") that no deliverer holds —
     none noted as pushed or holding a receipt (O12 M4b: handed to a `gate`
@@ -8427,11 +8933,21 @@ def words_due(project, members):
     shared merged list (_store_whole), so the split is kept while no file
     of it moves: what is handed out is read, never changed (the uplink's
     asks keep the events, its frames copy them, and deliver_verdict reads
-    the log again)."""
+    the log again).
+
+    `owing` ({session: Owing}, a channel's choice, CH2's M3): the members
+    are those Owings, chosen by the thread's selection (_owed_by_thread),
+    an outside event being one this machine did not append."""
     policy = sibling_module("sminos_policy")
     holder = holder_module()
     read_only = policy.read_only()
     events = _store_whole(project, "log", shared=True)[1]
+    if owing is not None:
+        channels = channels_module()
+        return _owed_by_thread(owing, events, lambda o, record, w, e: (
+            words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
+            and not (read_only and not channels.appended_here(project, e))
+            and not holder.exists(project.id, o.session, e, o.thread)))
     to = addressees(events)
     out = {}
     for m in members:
@@ -8453,7 +8969,7 @@ def words_due(project, members):
 REACH_VERDICTS = ("deliver", "refuse")
 
 
-def reach_due(project, members):
+def reach_due(project, members, owing=None):
     """{session: [event]}: for each of the members, the first owed event of
     each writer that a push would hand over as a peer frame the endpoint
     must admit (ReachGate.needs) — the uplink's to ask `reach?` about. None
@@ -8462,7 +8978,8 @@ def reach_due(project, members):
     or settles it (one whose next step is a push, HOLDER_RETRY, is due:
     each push asks again), none to a session whose record cannot be read
     (D10: owed, never asked), none an outside event on a read-only machine
-    (deliver_next settles it unasked). Read as words_due reads the log."""
+    (deliver_next settles it unasked). Read as words_due reads the log.
+    `owing` as words_due's."""
     policy = sibling_module("sminos_policy")
     holder = holder_module()
     records = records_module()
@@ -8472,6 +8989,31 @@ def reach_due(project, members):
     words = WordsGate(project)
     read_only = policy.read_only()
     events = _store_whole(project, "log", shared=True)[1]
+    if owing is not None:
+        channels = channels_module()
+
+        def due(o, record, w, e):
+            if (_delivery(record, w).get("pushed") or [None])[0] == e["seq"] \
+                    or (read_only and not channels.appended_here(project, e)) or records.unreadable(o.session):
+                return False
+            if holder.exists(project.id, o.session, e, o.thread):
+                peer = peer_for_session(o.session)
+                try:
+                    # On the uplink's consumer thread (M6): the receipts' lock only tried, a busy one leaving the
+                    # event for a later pass.
+                    plan = holder.plan(project.id, o.session, e, event_hash(e), peer.get("pid") if peer else None,
+                                       existing_only=True, prepare=False, thread=o.thread, lock_until=time.time())
+                except LockBusy:
+                    return False
+                if plan is None or not holder_due(o.session, plan, peer, e):
+                    return False
+                verdict = holder.words_of(project.id, o.session, e, o.thread)
+            elif words_route(project, e) == "ask":
+                return False
+            else:
+                verdict = words.words(e)
+            return gate.needs(e, o.session, verdict)
+        return _owed_by_thread(owing, events, due)
     to = addressees(events)
     out = {}
     for m in members:
@@ -8504,7 +9046,7 @@ def reach_due(project, members):
     return out
 
 
-def deliver_reach(project, member, event, verdict, reason=None):
+def deliver_reach(project, member, event, verdict, reason=None, owing=None, word=None):
     """The endpoint's `reach` answer on an owed event (`deliver` or
     `refuse`, P5 O18 D3) carried out, as deliver_verdict carries out a words
     verdict: under the session's delivery lock, and only while the event is
@@ -8517,59 +9059,74 @@ def deliver_reach(project, member, event, verdict, reason=None):
     been `peer`. `refuse` pushes nothing: it settles `refused-reach` on this
     machine alone, said in one daemon.log line that names the position, the
     recipient and the reason, never the text, and no outcome goes back. The
-    outcome, or None."""
-    session = member.session
+    outcome, or None. `owing` (a channel's log) and `word` (a kept word,
+    CH2's M6) as deliver_verdict's."""
+    o = owing
+    if o is None and is_channel_id(project.id):
+        raise AssertionError("a channel's log is delivered only with its Owing (sminos_channels.deliver)")
+    session = member.session if o is None else o.session
     if not session or verdict not in REACH_VERDICTS:
         return None
+    key = session if o is None else o.thread
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
-    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
-        events = log_read(project)
-        record = delivered_load(project, session)
-        e = _first_owed(session, event["writer"], events, record)
-        if e is None or e["seq"] != event["seq"] or event_hash(e) != event_hash(event):
+    with flocked(project_path(project, "delivered", reader_key(key) + ".lock")):
+        got = _verdict_choice(project, session, event, o)
+        if got is None:
             return None
-        outside = policy.outside_origin(e)
+        events, record, e = got
+        outside = policy.outside_origin(e) if o is None else not channels_module().appended_here(project, e)
         noted = _delivery(record, e["writer"]).get("pushed")
-        cursor = cursor_load(project, session)
-        if noted and noted[0] == e["seq"]:
-            outcome = noted[1]
-        elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
-            outcome = owed
-        else:
-            gate = WordsGate(project)
-            held = gate.held(e, session)
-            if held == "revoked":
-                holder_module().settled(project.id, session, e)
-                return outcomes.REFUSED_REVOKED
-            if held is not None:
-                return None
-            if outside and policy.read_only():
-                outcome = outcomes.READ_ONLY
-            elif verdict == "refuse":
-                outcome = outcomes.REFUSED_REACH
-                daemon_log(REACH_REFUSED_SAID % (event_ref(e), project.name, session[:8], reason or "no reason given",
-                                                 refused_key(project, session, e)))
-            elif stale_hold(delivered_load(project, session), session, e):
-                outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
-            elif (unknown := held_unreadable(delivered_load(project, session), e)):
-                outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
-            elif (hold := hold_now(session)):
-                # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
-                # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
-                outcome = "recorded" if e.get("wake") else hold_outcome(hold)
+        cursor = delivery_cursor(project, key, o)
+        try:
+            if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
+                raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included
+            if word is not None and channels_module().take_word(o, e, word, verdict) is None:
+                return None   # the kept word gone (another carrier took it), stale or not this event's: nothing
+            if noted and noted[0] == e["seq"]:
+                outcome = noted[1]
+            elif (owed := holder_owed(project, member, session, e, events, cursor, **_kw(o))) \
+                    not in (None, HOLDER_RETRY):
+                outcome = owed
             else:
-                with reach_permit(project, session, e):
-                    outcome = holder_push(project, member, session, e, events, cursor, words=gate.words(e),
-                                          retry=owed is not None)
-                gate.said(e, outcome)
-        outcome = held_decided(project, session, e, outcome)
-        if _conclude(project, member, session, e, outcome, outside):
-            holder_module().settled(project.id, session, e)
+                gate = WordsGate(project)
+                held = gate.held(e, session, **({} if o is None else {"key": key}))
+                if held == "revoked":
+                    holder_module().settled(project.id, session, e, **_th(o))
+                    return outcomes.REFUSED_REVOKED
+                if held is not None:
+                    return None
+                if outside and policy.read_only():
+                    outcome = outcomes.READ_ONLY
+                elif verdict == "refuse":
+                    outcome = outcomes.REFUSED_REACH
+                    daemon_log(REACH_REFUSED_SAID % (event_ref(e), project.name, session[:8],
+                                                     reason or "no reason given", refused_key(project, session, e)))
+                elif o is None and stale_hold(delivered_load(project, session), session, e):
+                    outcome = "recorded"   # held for a thread this session no longer fills: pushed to none
+                elif o is None and (unknown := held_unreadable(delivered_load(project, session), e)):
+                    outcome = hold_outcome("unknown", unknown)   # no binding known: deferred, pushed nothing
+                elif (hold := hold_now(session)):
+                    # Held since it was asked about: pushed nothing (T2's §4); an event for the live alone settles
+                    # `recorded` as the pass settles it, never debt; an addressed one stays owed for its thread.
+                    outcome = "recorded" if e.get("wake") else hold_outcome(hold)
+                else:
+                    with reach_permit(project, session, e):
+                        outcome = holder_push(project, member, session, e, events, cursor, words=gate.words(e),
+                                              retry=owed is not None, **_kw(o))
+                    if o is not None and outcome == outcomes.REFUSED_REVOKED:
+                        holder_module().settled(project.id, session, e, **_th(o))
+                        return outcome
+                    gate.said(e, outcome)
+            outcome = held_decided(project, session, e, outcome, **_kw(o))
+            if _conclude(project, member, session, e, outcome, outside, **_kw(o)):
+                holder_module().settled(project.id, session, e, **_th(o))
+        except PassLost:
+            return None
         return outcome
 
 
-def frame_of(project, e, events, session, cursor):
+def frame_of(project, e, events, session, cursor, thread=None):
     """The frame an event is pushed as. A `send` keeps its own frame (its id
     is what `send --wait` looks for), its sender shown as the `--from`
     override when it had one, then the label; anything else is a chat frame,
@@ -8578,31 +9135,62 @@ def frame_of(project, e, events, session, cursor):
     Its unread count leaves out copies: each is a record of a message
     another log carries, not one spoken here. A machine's notice is always
     a chat frame, from its notice_sender, `<program>@<machine>`, whatever
-    else it carries (X8; a `msg_id` too)."""
+    else it carries (X8; a `msg_id` too).
+    In a channel's log (CH2's M3) the reader is the thread (`thread`): its
+    own messages (its `thread`) are not unread, whatever session wrote
+    them, and what its session wrote as another thread is; `cursor` is the
+    thread's; an event that carries `from_project` (its sender is no
+    member) says so first after the sender's alias, ` (not in <the
+    channel's name>)`, before the label."""
     if e.get("msg_id") and not notice_of(e):
         return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
                              sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
-                 writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
+                 (writer_session(x["writer"]) != session if thread is None else x.get("thread") != thread)
+                 and x["seq"] > cursor.get(x["writer"], 0))
     sender = notice_sender(e) if notice_of(e) else str(e.get("from") or "")
+    label = sender_labels(project)(e)
+    if e.get("from_project") and is_channel_id(project.id):
+        label = " (not in %s)%s" % (project.name, label)
     return compose_chat_frame(project.name, event_ref(e), sender,
-                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""),
-                              sender_labels(project)(e))
+                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""), label)
 
 
-def push_event(project, member, session, e, events, cursor, words=None):
+def push_event(project, member, session, e, events, cursor, words=None, owing=None, looked=None):
     """Push one event to one member. An addressed event resumes a stopped
     member; an @all (`wake`) reaches only the live. A seat-less member's
     membership is read again from its own file first: `member` may be a
     snapshot taken before a `retire`, which leaves an interactive session's
     process running (§2), and a retired member is pushed nothing — the event
     settles as recorded, as it does for a retired seat. `words`: the
-    endpoint's verdict on a person's words (push_live)."""
-    if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
+    endpoint's verdict on a person's words (push_live). With `owing` (a
+    channel's log) the membership is read in the thread's own project, and
+    a session retired there (a move among the reasons) is the last check
+    failing (PassLost), never `recorded` (what a push that comes back
+    `recorded` is in a channel is holder_push's to decide). The bridge's
+    key names the thread (push_member's `thread`). `looked` as
+    push_member's."""
+    if owing is not None:
+        if member.seat is None and latest_membership(_own_events(owing.project, session)) == "retired":
+            raise PassLost()
+    elif member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
-    return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session,
-                       event=e, project=project.id, **verdict)
+    return push_member(member, frame_of(project, e, events, session, cursor, **_th(owing)), not e.get("wake"),
+                       session=session, event=e, project=project.id, **verdict, **_th(owing),
+                       **({} if looked is None else {"looked": looked}))
+
+
+def stopped_for_the_live(owing, e, session):
+    """Whether a channel's `recorded` push stands (CH2's M3): an event for
+    the live alone whose thread is stopped, read now (still_owed, and no
+    process running the session, by the engine's records read afresh,
+    running_now: a process whose inbox does not answer yet is not
+    stopped). Any other `recorded` is a push that
+    reached no one the thread is (a seat vacated or holding another
+    session, a hand-off between the last check and the push's own read):
+    the last check failing, nothing settled."""
+    return bool(e.get("wake")) and channels_module().still_owed(owing, e) and running_now(session) is None
 
 
 # What the line after a wake opens with at a line's start (sminos_wake.LINE_HEAD, T2's §2): sminos's alone, so a
@@ -8753,16 +9341,19 @@ STOPPED_TAG_RE = re.compile(r'@(\S+)')
 
 
 def shortened_channel_qualifier(text):
-    """The qualifier of the unquoted `@<qualifier>/<alias>` where the
-    message's leading run of tags stops (_leading_run), when the name
-    resolver reads it whole as a channel's (names_channel: `name#short`,
-    `name#<whole id>`, an id), else "": cmd_say refuses it as a
-    channel-qualified tag, before anything is recorded or a selector read
-    (the frontier's second review, C7; the holder's reading, D3). Any other
-    text there is the message's, as before."""
+    """(the word, its qualifier) of the unquoted `@<qualifier>/<alias>`
+    where the message's leading run of tags stops (_leading_run), when the
+    name resolver reads the qualifier whole as a channel's (names_channel:
+    `name#short`, `name#<whole id>`, an id), else None: it opens no tag (a
+    tag's qualifier takes no `#`: TAG_RE, which the audience split reads
+    too), and cmd_say refuses it before anything is recorded or a selector
+    read (the frontier's second review, C7; the holder's reading, D3), naming
+    the two forms that work (CH2's M4). Any other text there is the
+    message's, as before."""
     m = STOPPED_TAG_RE.match(text, _leading_run(text)[1])
-    q, sep, _ = m.group(1).rstrip(",:;").rpartition("/") if m else ("", "", "")
-    return q if sep and q and names_channel(q) is not None else ""
+    word = m.group(1).rstrip(",:;") if m else ""
+    q, sep, _ = word.rpartition("/")
+    return ("@" + word, q) if sep and q and names_channel(q) is not None else None
 
 
 def project_seats(project):
@@ -8979,14 +9570,17 @@ def ended_refusal(raw, m):
 
 
 BARE_NAME = "a bare name reaches only your project; %s reaches anyone"
+BARE_NAME_SHARED = "a bare name reaches your project and the channels you are in; %s reaches anyone"
 
 
-def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
+def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=(), shared=False):
     """Exit 4 for a name no member of `scope` answers to: what the scope still
     knows of it (unreachable_hint), then what the projects a bare name is
     read in as an id (`ids`: the org, the tier its live lookup read) know of
     it as one; else the members of other projects with that alias
-    (`elsewhere`), each as the name that reaches it; else plainly none."""
+    (`elsewhere`), each as the name that reaches it, and what a bare name
+    reaches (`shared`: a sender in channels, whose bare name reads them
+    too); else plainly none."""
     hint = unreachable_hint(raw, name, short, scope, at) or unreachable_hint(raw, name, short, ids, at, ids_only=True)
     if hint:
         die(hint, EXIT_UNKNOWN)
@@ -8998,7 +9592,8 @@ def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
         where += ", nor a session of that id in any project known here"
     if elsewhere:
         die("no member %s in %s; elsewhere: %s\n%s" % (raw, where, candidate_labels(elsewhere, True, at),
-                                                        BARE_NAME % ("@short" if at else "a session's short")),
+                                                        (BARE_NAME_SHARED if shared else BARE_NAME)
+                                                        % ("@short" if at else "a session's short")),
             EXIT_UNKNOWN)
     die("no member %s in %s" % (raw, where), EXIT_UNKNOWN)
 
@@ -9028,16 +9623,20 @@ def _resolve_tag(project, t):
       read only when the one before has no such member — so a project named
       after a machine is read before that machine's project;
     - `@alias#short`: in every project known here (org_scope);
-    - `@alias`: the sender's project; a name no alias there answers to is
+    - `@alias`: the sender's project, and for a sender in channels the
+      rosters of those channels (_with_shared, CH2's M1: one answer is its
+      destination, several are refused); a name no alias there answers to is
       read as a short or a session id, across every project known here. A
-      bare name never reaches another project's alias: the board spawns the
-      same seat names in every repository, so `@executor` would otherwise
-      wake another repository's executor. The refusal names those members.
-    - From no project (a machine not enrolled), every project known here."""
+      bare name never reaches another project's alias but through a channel
+      the sender is in: the board spawns the same seat names in every
+      repository, so `@executor` would otherwise wake another repository's
+      executor. The refusal names those members.
+    - From no project (a machine not enrolled), every project known here.
+
+    A qualifier that names a channel is sminos_channels.speak's, which
+    cmd_say enters before any tag reaches here; project_tiers refuses one."""
     raw, name, short = t["raw"], t["name"], t["short"]
     if t["project"]:
-        if names_channel(t["project"]) is not None:
-            die(channel_say_refusal(t["project"]), 1)   # nothing is said into a channel yet (CH1, §8)
         tiers = project_tiers(t["project"])
         if not tiers:
             die("no project '%s' is known on this machine" % t["project"], EXIT_UNKNOWN)
@@ -9058,7 +9657,8 @@ def _resolve_tag(project, t):
     if short:
         found = one_per_session(match_members(name, short, org_scope()))
         return one_member(raw, found, True) if found else no_member(raw, name, short, org_scope())
-    found = match_members(name, "", [project], ids=False)
+    rows = channels_module().shared_rows(os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
+    found = _with_shared(name, project, rows) if rows else match_members(name, "", [project], ids=False)
     if found:
         return one_member(raw, found, False)
     found = one_per_session(match_members(name, "", org_scope(), alias=False))
@@ -9066,7 +9666,34 @@ def _resolve_tag(project, t):
         return one_member(raw, found, True)
     no_member(raw, name, short, [project],
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id],
-              ids=org_scope())
+              ids=org_scope(), shared=bool(rows))
+
+
+def _with_shared(name, project, rows):
+    """A bare alias's candidates for a sender in channels (CH2's M1): the
+    project's members, and the rows of the rosters of the channels it is in
+    (`rows`, sminos_channels.shared_rows) in a project a tag may write into
+    (org_scope), each thread once before any name is matched: two rows of
+    one thread (sminos_channels.row_thread; a refill or a move whose halves
+    are read in two logs) are its roster's row, where the thread is now, and
+    only that row's names reach it. Then matched as match_members matches an
+    alias (a current alias before one held before)."""
+    chans = channels_module()
+    open_ = {p.id for p in org_scope()}
+    pairs, seen = [], set()
+    # A roster's row that is addressed as no thread (its stamp and statement disagree) is not in the channel (M1):
+    # no channel-mate's name reaches it, and its own project's members still do.
+    shared = [(p, m) for p, m in rows if p.id in open_ and chans.thread_of_row(p, m) is not None]
+    for p, m in shared + [(project, m) for m in members(project)]:
+        # Typed: a thread's id is compared with threads' alone, a session's with sessions' (a refilled seat's thread
+        # id is its first session's, which can be another row's session now).
+        thread = chans.row_thread(p, m)
+        key = ("thread", thread) if thread else ("session", m.session)
+        if key not in seen:
+            seen.add(key)
+            pairs.append((p, m))
+    return current_first([(p, m, how) for p, m in pairs
+                          if m.state != "retired" and not has_ended(m) and (how := alias_reach(m, name))], name)
 
 
 def resolve_tags(project, text, raws=None):
@@ -9093,9 +9720,6 @@ def resolve_tags(project, text, raws=None):
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
-    for t in tags:
-        if t["project"] and names_channel(t["project"]) is not None:
-            die(channel_say_refusal(t["project"]), 1)   # before any member is looked up, which reconciles (CH1, §8)
     destinations, recipients, held = {}, [], []
     run = audience_module().leading_run(text)[0]
     for i, t in enumerate(tags):
@@ -9605,7 +10229,7 @@ def remote_held_wait(project, m, text, sender, via):
         m.alias, m.machine, "refuses" if why_of(m) == "read-only" else "holds"), EXIT_UNKNOWN)
 
 
-def push_member(member, text, tagged, session=None, event=None, project=None, words=None):
+def push_member(member, text, tagged, session=None, event=None, project=None, words=None, thread=None, looked=None):
     """Push one frame to a member that runs: to the live session (push_live:
     an owner's event through its bridge, keyed by `event`, the log event the
     frame carries, and `project`, the id of the project whose log holds it,
@@ -9620,9 +10244,14 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     misroute it. `words`: the endpoint's verdict on a person's words, which
     push_live takes in place of the writer on a cut-over machine. A push the
     reach gate holds (ReachHeld, inside push_live) is `held:reach …`, owed
-    with no attempt counted."""
+    with no attempt counted. `thread`: a channel's event's thread (CH2's
+    M3), which the bridge's key names. `looked` (a channel's push alone):
+    the process a receipt's plan chose the mode for (holder_carry), the one
+    pushed to: another holding the session now is the pass lost
+    (PassLost)."""
     session = session or member.session
     verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
+    keyed = {} if thread is None else {"thread": thread}   # a project's push as it always was
     t = threads_module().current_record(session) if member.seat is not None else None
     # A session its human opened is reached by its session alone, whatever seat an older copy made over it.
     member_seat = None if t is not None and t["opened"] == "human" else member.seat
@@ -9642,8 +10271,12 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
     peer = None if hold else peer_for_session(session)
     if not peer:
         return hold_outcome(hold) if hold and tagged else "recorded"
+    if looked is not None:
+        if not one_peer(peer, looked):
+            raise PassLost()   # the check and the mode's choice were made for a process that holds it no more
+        peer = looked
     try:
-        control_module().push_live(peer, session, text, event, project, **verdict)
+        control_module().push_live(peer, session, text, event, project, **verdict, **keyed)
         return "sent"
     except PushHeld as e:
         return e.outcome()
@@ -9651,7 +10284,33 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         return "sent?" if e.phase == "after" else "failed:%s" % e
 
 
-def wake_member(project, member, session, e, words=None, due=False):
+def _after_launch(owing, e, session):
+    """A channel's last check once a wake's launch has returned and before its
+    text is handed over (CH2's M3), under the wake's hold, and the decision on
+    a refusal the receipts' planner's check found (_planned_check): still_owed with
+    the session's reach, then the two refusals the operation makes on its own
+    evidence read again, as before a push: the event's signer's revocation
+    (REFUSED_REVOKED, marked as the check before a push marks it) and, for an
+    event this machine did not append, the read-only policy (READ_ONLY).
+    None when the push may go on; a check that fails raises PassLost: the
+    process runs, nothing is handed to it, the event is still owed, and the
+    next pass pushes it or asks about it again with no second launch."""
+    channels = channels_module()
+    outcomes = sibling_module("sminos_outcomes")
+    if not channels.still_owed(owing, e, reach=True):
+        raise PassLost()
+    if sibling_module("sminos_rl10").cut_over():
+        held = WordsGate(owing.channel).held(e, session, owing.thread)
+        if held == "revoked":
+            return outcomes.REFUSED_REVOKED
+        if held is not None:
+            raise PassLost()   # the revocation set unreadable, or its mark unkept: nothing handed over
+    if not channels.appended_here(owing.channel, e) and sibling_module("sminos_policy").read_only():
+        return outcomes.READ_ONLY
+    return None
+
+
+def wake_member(project, member, session, e, words=None, due=False, owing=None):
     """The wake an addressed event's push makes of a stopped thread (T2's
     §4, step 2), under the session's delivery lock: ("", None) when there is
     no thread to wake (a session that is no thread, an ended or a
@@ -9665,19 +10324,60 @@ def wake_member(project, member, session, e, words=None, due=False):
     tried under the delivery lock: busy is `held:busy`; the reach check
     that consumes nothing) are resume_session's; a thread its human opened
     is woken from its own record, whatever seat an older copy made over
-    it. `due` as deliver_next's."""
+    it. `due` as deliver_next's.
+    With `owing` (a channel's log, CH2's M3) membership and the end are read
+    in the thread's own project, the mark in the thread's record, and the
+    last check is made, with the reach, once the wake's hold is taken, again
+    at the launch boundary past the wake's last wait (wake's `check`), and
+    again after the launch returns (_after_launch): one that
+    fails raises PassLost; a refusal found after the launch is its outcome,
+    nothing handed over. In a channel no current thread, or a session
+    retired in the thread's own project, is that stop too (never the
+    project's ("", None)), and a wake lock busy while the session reads
+    live is (UNHELD_LIVE, None) once the last check holds again past that
+    wait, the push to follow as a live push (holder_push reads the peer
+    afresh): with no hold of its own a channel's pass never goes on to a
+    launch, which would take the lock afresh past the last check."""
     threads = threads_module()
-    if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
+    home = project if owing is None else owing.project
+    if member.seat is None and latest_membership(_own_events(home, session)) == "retired":
+        if owing is not None:
+            raise PassLost()   # in a channel a recipient retired in its project is no thread to push to
         return "", None
     t = threads.current_record(session, fresh=True)
+    if t is None and owing is not None:
+        raise PassLost()   # no current thread (an end, a hand-off) at the wake's look: nothing pushed to its session
     if t is None:
         # No record to wake: a session that is no thread, unless the thread its membership is stamped with has a
         # record there that cannot be read (W2's `unknown`): owed, marked for that thread, nothing started.
-        tid = str((threads.in_effect(_own_events(project, session)) or {}).get("thread") or "")
+        tid = str((threads.in_effect(_own_events(home, session)) or {}).get("thread") or "")
         if tid and threads.unreadable(tid):
             return hold_outcome("unknown", tid), None
         return "", None
     locks, hold = [], []
+
+    def checked():
+        # A channel's last check, the wake's hold taken and no process started yet: with the reach, so an access
+        # change while the wake waited for its lock launches nothing on the answer it made stale.
+        if owing is not None and not channels_module().still_owed(owing, e, reach=True):
+            raise PassLost()
+
+    def launch_checked():
+        # A channel's last check made again at the launch boundary itself, past the line's write (wake's `check`),
+        # reading what the planner's does (_planned_check): a refusal found there launches nothing, and the next
+        # pass refuses the event as it refuses one before a push.
+        try:
+            _planned_check(owing, e)
+        except _PlannedRefusal:
+            raise PassLost()
+    launch_check = {} if owing is None else {"check": launch_checked}
+
+    def gone(outcome="recorded"):
+        # What would settle `recorded` here (a stale mark, a seat vacated, the session another thread's or ended,
+        # a wake's `gone`, `lane` or `ended`) is, in a channel, the last check failing: nothing settled.
+        if owing is not None and outcome == "recorded":
+            raise PassLost()
+        return outcome, None
 
     def held():
         # W1, taken here (under the seat's lifecycle lock for a seat) and kept through the push that follows
@@ -9689,7 +10389,13 @@ def wake_member(project, member, session, e, words=None, due=False):
             return ""
         got, why = launch_hold(t["thread"])
         if got is None:
-            return "" if live_now(session) else why
+            if not live_now(session):
+                return why
+            if owing is not None:
+                # A channel's pass with no hold of its own never goes on to a launch (the launch's lock is taken
+                # afresh past the last check): pushed to as a live one, as any live push.
+                raise _Unheld()
+            return ""
         hold.append(got)
         return ""
     try:
@@ -9697,14 +10403,15 @@ def wake_member(project, member, session, e, words=None, due=False):
         # another thread than the one chosen (the session went to it after the pass passed the mark) is the stale
         # hold, settled `recorded` as stale_hold settles one, nothing woken or pushed, whether or not the lock is
         # free. The mark is fixed under the delivery lock held here, and the wake's W2 reads the session still
-        # this thread's under the wake lock.
-        mark = _delivery(delivered_load(project, session), e["writer"]).get("held", {}).get(e["seq"])
+        # this thread's under the wake lock. In a channel the mark is in the thread's own record.
+        mark = _delivery(delivered_load(project, session) if owing is None else _writable(project, owing.thread),
+                         e["writer"]).get("held", {}).get(e["seq"])
         if mark is not None and mark != t["thread"]:
-            return "recorded", None
+            return gone()
         if t["opened"] == "spawned":
             s = reload_seat(t["thread"])
             if s is None or s["status"] == "retired" or s["current"] != session:
-                return "recorded", None
+                return gone()
             if s["engine"] == "codex":
                 return "failed:legacy codex record", None
             try:
@@ -9713,46 +10420,87 @@ def wake_member(project, member, session, e, words=None, due=False):
                 return hold_outcome("busy", t["thread"]), None   # a verb holds the seat: owed, no attempt counted
             s = reload_seat(t["thread"])
             if s is None or s["status"] == "retired" or s["current"] != session:
-                return "recorded", None
+                return gone()
             busy = held()
             if busy:
-                return wake_outcome(busy, t["thread"]), None
+                return gone(wake_outcome(busy, t["thread"]))
+            checked()
             try:
-                woke = resume_session(s, locks, quiet=True, event=e, project=project.id, words=words, due=due)
+                woke = resume_session(s, locks, quiet=True, event=e, project=project.id, words=words, due=due,
+                                      **launch_check)
             except ResumeRefused:
-                return "recorded", None   # vacant or vanished since it was read
+                return gone()   # vacant or vanished since it was read
         else:
             reach_hold(project, session, [e], words, keep=True)   # ahead of the wake, consuming nothing
             busy = held()
             if busy:
-                return wake_outcome(busy, t["thread"]), None
-            woke = wake(t, session, due=due)
+                return gone(wake_outcome(busy, t["thread"]))
+            checked()
+            woke = wake(t, session, due=due, **launch_check)
         if not woke.live:
-            return wake_outcome(woke.why, t["thread"]), None
+            return gone(wake_outcome(woke.why, t["thread"]))
+        if owing is not None and (refused := _after_launch(owing, e, session)):
+            return refused, None
         # The member read again, as a live delivery reads it at its start: the thread still the session's, not
         # ended and with no entry open (an end, a hand-off, an absorption that began before the wake's hold, or
-        # an older copy's, which takes none).
+        # an older copy's, which takes none). In a channel each is the last check failing: nothing settled.
         now = threads.current_record(session, fresh=True)
-        if now is None or now["thread"] != t["thread"] or canonical_end(session, project):
-            return "recorded", None
+        if now is None or now["thread"] != t["thread"] or canonical_end(session, home):
+            return gone()
         if now.get("pending"):
+            if owing is not None:
+                raise PassLost()
             return hold_outcome("pending", t["thread"]), None
         if t["opened"] == "spawned":
             again = reload_seat(t["thread"])
             if again is None or again["status"] == "retired" or again["current"] != session:
-                return "recorded", None
+                return gone()
         forget_caches()
         if peer_for_session(session) is None:
             return hold_outcome("starting", t["thread"]), None   # its process runs, its inbox not answering yet
         kept, locks, hold = locks + hold, [], []
         return "woken", kept   # its lifecycle lock and its wake lock kept for the push that follows
+    except _Unheld:
+        checked()   # the last check again, past the wait for the busy lock: a removal or a reopening meanwhile
+        return UNHELD_LIVE, None
     except ReachHeld as err:
         return err.outcome(), None
     finally:
         unlock(locks + hold)
 
 
+class _Unheld(Exception):
+    """wake_member's own: a channel's wake whose hold is busy while its
+    session reads live, which goes no further than the push to a live one."""
+
+
+# wake_member's answer for a channel's wake that took no hold (the lock busy, the session live) once the last check
+# held again past that wait: the push follows as a live push. A project's wake never answers it.
+UNHELD_LIVE = "live"
+
+
 # ------------------------------------------------------------------ say / chat
+
+
+def _not_known_listed_now(delivered):
+    """Whether a delivering event names a recipient that cannot be known,
+    here and now, to be listed: one that is not this machine's
+    (sminos_audience.is_local), whose audience is the endpoint's to know and
+    nothing kept of it here is; or a local one whose own record, read now,
+    is private or cannot be told (audience_of)."""
+    au = audience_module()
+    for _, e in delivered:
+        for r in e["to"] if isinstance(e.get("to"), list) else []:
+            if not isinstance(r, dict):
+                continue
+            if not au.is_local(r.get("session")):
+                return True
+            try:
+                if au.audience_of(r["session"]) is not None:
+                    return True
+            except au.StreamUnknown:
+                return True
+    return False
 
 
 def record_copy(home, delivered):
@@ -9768,7 +10516,10 @@ def record_copy(home, delivered):
     written is a warning, since the message was delivered. A copy under an
     audience stream has the stream's audience kept in `home` first, and goes
     into a hub project's home alone (streams_here): elsewhere the log is
-    published whole, so none is written, and a warning says so."""
+    published whole, so none is written, and a warning says so; nor is a
+    channel's there that names a recipient of another machine, whatever is
+    kept of its audience (CH2's ruling: it may be stale), or a local one
+    whose own record, read at the copy, is private or cannot be read."""
     groups = {}
     for dest, e in delivered:
         groups.setdefault(e["writer"], []).append((dest, e))
@@ -9776,13 +10527,15 @@ def record_copy(home, delivered):
         # One copy per audience among the delivering events (P5 O18 D4): each under its own stream, as theirs.
         return [c for group in groups.values() for c in [record_copy(home, group)] if c is not None]
     first = delivered[0][1]
-    if is_stream(first["writer"]):
-        if not streams_here(home):
-            # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
-            # stream's body goes nowhere the hub does not filter it.
-            warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
-                 "and %s's log is not filtered by audience" % (home.name, home.name))
-            return None
+    if not streams_here(home) and (is_stream(first["writer"]) or (
+            any(is_channel_id(dest.id) for dest, _ in delivered) and _not_known_listed_now(delivered))):
+        # A git-mirrored or local home publishes its whole log (the mirror stages everything): an audience
+        # stream's body goes nowhere the hub does not filter it, nor, from a channel, one that names a remote
+        # recipient, whose audience this machine cannot know is still listed, or a local one its own record
+        # says is private now (CH2).
+        warn("delivered; its copy is not kept in %s: the message is for a private session's audience alone, "
+             "and %s's log is not filtered by audience" % (home.name, home.name))
+        return None
     fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
     fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
     refs = ["%s:%s:%d" % (dest.id, e["writer"], e["seq"]) for dest, e in delivered]
@@ -9802,7 +10555,7 @@ def record_copy(home, delivered):
     return c
 
 
-def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
+def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"], rows=None):
     """Deliver a recorded say (`e`, in `dest`'s log) to its recipients, a
     line each, the recipient as `name` gives it: one of this machine's now
     (deliver_next); another machine's by that machine's daemon, which this
@@ -9811,11 +10564,24 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
     are said so, and the daemon nudged: its uplink asks. The recipients
     whose line was a held one (`--exit-held`'s, Interfaces §2 of EN.G1's
     plan): a thread of this machine held for a reason it is not woken
-    (HOLD_WORDS), or one another machine published `held` for."""
-    by_session = {m.session: m for m in members(dest)}
+    (HOLD_WORDS), or one another machine published `held` for.
+
+    In a channel's log (CH2's M4) a recipient is the thread its entry names
+    (`thread`), its row the roster's (`rows`: {thread: (Project, Member)});
+    one of this machine is delivered through sminos_channels.owing and
+    deliver_next given it, the daemon's own operation, and what is read to
+    word its line (a held mark, a settlement another deliverer made) is the
+    thread's delivery record. One whose record here does not hold the
+    channel is told so, and nothing is delivered to it."""
+    chans = channels_module() if is_channel_id(dest.id) else None
+    by_session = {m.session: m for m in members(dest)} if chans is None else {}
     held_for = []
     for r in recipients:
-        member = by_session.get(r["session"])
+        o = None
+        if chans is None:
+            member = by_session.get(r["session"])
+        else:
+            member = (rows or {}).get(r.get("thread"), (None, None))[1]
         if member is not None and not member.local:
             # Owed to it in the log; its own machine's daemon delivers it,
             # once this machine's daemon has pushed it: ask for that now. A
@@ -9825,14 +10591,27 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
                 held_for.append(r)
             nudge_daemon()
             continue
-        result = deliver_next(dest, member, due=True) if member else {"outcomes": []}
-        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
-        first = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
-        if member and e["seq"] in _delivery(delivered_load(dest, member.session), writer).get("held", {}) \
+        if chans is not None:
+            o, why = chans.owing_for(dest, r.get("thread"))
+            if why:
+                print("%s: %s" % (name(r), why))
+                continue
+            member = o.member if o is not None else None
+        try:
+            result = deliver_next(dest, member, due=True, owing=o) if member else {"outcomes": []}
+        except DeliveryUnreadable:
+            result = {"outcomes": []}   # the thread's delivery record cannot be read: the daemon's pass defers too
+        session = o.session if o is not None else member.session if member else ""
+
+        def record():
+            return (chans.delivered(dest, o.thread) or {}) if o is not None else delivered_load(dest, session)
+        mine = [o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
+        first = next((o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer), "")
+        if member and e["seq"] in _delivery(record(), writer).get("held", {}) \
                 and (not mine or mine[0].startswith("held:")):
             # This very event decided held, and still owed: why, as its writer's pass found it (T2's §5).
-            why = hold_why(mine[0] if mine else first) or hold_now(member.session) or "starting"
-            print("%s: %s" % (name(r), held_line(why, session=member.session)))
+            why = hold_why(mine[0] if mine else first) or hold_now(session) or "starting"
+            print("%s: %s" % (name(r), held_line(why, session=session)))
             if why in HOLD_WORDS:
                 held_for.append(r)
             continue
@@ -9840,15 +10619,16 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
             woken = {"woken": "sent (woken)", "woken?": "sent? (woken)"}   # §5: a live push's words, woken
             print("%s: %s" % (name(r), woken.get(mine[0], mine[0])))
             continue
-        if member and settled_already(dest, member.session, writer, e["seq"]):
-            pushed, said = settled_words(dest, member.session, e, name(r))
+        if member and (settled_already(dest, session, writer, e["seq"]) if o is None
+                       else e["seq"] <= _delivery(record(), writer)["settled"]):
+            pushed, said = settled_words(dest, session, e, name(r))
             print("%s: %s" % (name(r), "sent (%s)" % said if pushed else said))
             continue
         if any(ev["writer"] == writer for ev in result.get("gated", ())):
             print("%s: %s" % (name(r), WORDS_RECORDED))
             nudge_daemon()
             continue
-        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
+        held = next((o_ for ev, o_ in result["outcomes"] if ev["writer"] == writer), "")
         print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
     return held_for
 
@@ -9972,14 +10752,6 @@ def say_scoped(a, home, sender, writer, kind, sid):
         sys.exit(1)
 
 
-def channel_say_refusal(q):
-    """What a say that names a channel is told (CH1, §8): speaking in one
-    comes in a later version, and the plain tag works today."""
-    return ("%s is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was "
-            "recorded. Tag the thread itself (@<alias>#<short> or @<short>), which reaches it in its own project as "
-            "today" % q)
-
-
 def notice_field(a):
     """The field `say --notice` puts on every event the call appends (X8)."""
     return {"notice": a.notice} if a.notice is not None else {}
@@ -9992,10 +10764,11 @@ def cmd_say(a):
     program's notice (X8), refused inside a session and, with exit 1, on a
     machine whose name notice_of would not mark; `--exit-held` exits
     EXIT_HELD when a tagged recipient's line was a held one (deliver_say),
-    and changes nothing else. Nothing is said into a channel yet: `--in
-    <channel>`, a selector naming one and a tag qualified by one (_resolve_tag)
-    are refused before anything is appended, from a session and from a
-    terminal."""
+    and changes nothing else. A say that names a channel (`--in <channel>`,
+    or a tag qualified by one) is said into the channel's log
+    (sminos_channels.speak, CH2's M4), entered before a selector is read; a
+    selector that names a channel, and the unquoted `@<name#short>/<alias>`
+    that opens no tag, are refused before anything is appended."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if a.notice is not None and not NOTICE_PROGRAM_RE.fullmatch(a.notice):
         die("--notice names the program that speaks, as a lower-case word of letters, digits and hyphens (32 at "
@@ -10009,13 +10782,21 @@ def cmd_say(a):
         die("--notice: this machine's name, %s, is not one a machine's notice is read under (letters, digits, '.', "
             "'_' and '-', 63 at most, opening with a letter or a digit, and neither hub nor legacy), so the notice "
             "would be read as a person's words: nothing was recorded" % host_name(), 1)
-    for q in ([a.in_] if a.in_ else []) + list(a.projects):
+    chans = channels_module()
+    spoken = names_channel(a.in_) if a.in_ else None
+    for q in a.projects:
         if names_channel(q) is not None:
-            die(channel_say_refusal(q), 1)
+            die(chans.SELECTOR_NAMES_CHANNEL % (q, q), 1)
     if (q := shortened_channel_qualifier(a.text)):
-        die(channel_say_refusal(q), 1)   # however the say is addressed, a selector's included (C7)
+        die(chans.OPENS_NO_TAG % (q[0], q[1]), 1)   # however the say is addressed, a selector's included (C7)
+    tags = leading_tags(a.text)
+    if spoken is None:
+        spoken = next((c for t in tags if t["project"] for c in [names_channel(t["project"])] if c is not None), None)
+    if spoken is not None:
+        chans.speak(spoken, a, sid, tags)
+        return
     scoped = selector_given(a)
-    if scoped and leading_tags(a.text):
+    if scoped and tags:
         die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "
             "sessions, a selector names a scope, and one message takes one")
     if sid:
@@ -10038,7 +10819,27 @@ def cmd_say(a):
     if dest is None:
         die("say outside a project: run it in a project's directory, or name one with --in <project>")
     if is_channel_id(dest.id):
-        die(channel_say_refusal(dest.name), 1)   # however it was reached: an older copy's rooted registration
+        # However it was reached (an older copy's rooted registration a caller stands in): a channel is spoken in
+        # only by naming it.
+        die(chans.NO_DIRECTORYS % (dest.name, dest.name), 1)
+    say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws)
+
+
+def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None, told=()):
+    """A tagged or untagged say's appends and deliveries, its destination
+    and recipients resolved: one event per audience its recipients give
+    (streams_for), a copy in the sender's own project where the message
+    went to another (record_copy: before the deliveries for a project's
+    say, as before; after them for a channel's), and each recipient's line
+    (deliver_say).
+    `said` (a sminos_channels.Said) is given for a channel's log, and only
+    then: the fields its events add (the sender's `thread`, an outsider's
+    `from_project`), whether a copy is kept, the line said after the
+    `recorded` lines, and the roster's rows deliver_say reads.
+    `told`: [(a recipient's session, a line)], each line said once the
+    event that carries its recipient is appended, before that event's
+    `recorded` line (a channel's reply rerouted to a thread that left it):
+    a refusal, or an append that fails, says none of its lines."""
     if sid:
         if wake:
             recipients = [r for r in recipients if r["session"] != sid]
@@ -10053,29 +10854,41 @@ def cmd_say(a):
         die(str(err), EXIT_UNKNOWN)
     except au.StreamUnknown as err:
         die("say could not be recorded: %s" % err, 1)
+    copied = said.copied if said is not None else bool(sid and home is not None and home.id != dest.id)
     recorded = []
     note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
     for split_writer, aud, rs, text in splits:
         fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
         if wake:
             fields["wake"] = True
-        if sid and home is not None and home.id != dest.id:
+        if said is not None:
+            fields.update(said.fields)
+        elif copied:
             fields["from_project"] = home.id  # the sender's own project, where a reply finds it
         try:
             keep_stream(dest, split_writer, aud)
             e = log_append(dest, split_writer, kind, **fields)
         except OSError as err:
             die("say could not be recorded: %s" % err, 1)
+        here = {r["session"] for r in rs}
+        for line in [line for who, line in told if who in here]:
+            print(line)
         if e["seq"] is None:
             print(waits_line(dest, split_writer))
             continue
         print("recorded %s in %s" % (event_ref(e), dest.name))
         recorded.append((e, rs))
-    if recorded and sid and home is not None and home.id != dest.id:
+    if said is not None and said.after:
+        print(said.after)
+    if recorded and copied and said is None:
         record_copy(home, [(dest, e) for e, _ in recorded])
     held_for = []
     for e, rs in recorded:
-        held_for += deliver_say(dest, e, e["writer"], rs)
+        held_for += deliver_say(dest, e, e["writer"], rs, rows=said.rows if said is not None else None)
+    if recorded and copied and said is not None:
+        # A channel's copy after the delivery pass (CH2's M4): its warning, when it cannot be written, follows
+        # what was delivered, and changes none of it.
+        record_copy(home, [(dest, e) for e, _ in recorded])
     if a.exit_held and held_for:
         sys.exit(EXIT_HELD)
 
@@ -10139,12 +10952,17 @@ def cmd_chat(a):
     """Read a project's chat. With no flags: what is above the reader's
     cursor (at most 30, then +N earlier), advancing it; -n tails and --since
     reads from a time, neither moving it. --host reads what the members sent
-    their human instead (chat_host)."""
+    their human instead (chat_host). A channel registered here is read by a
+    read of its own (sminos_channels.chat, CH2's M4), before any project is
+    asked for."""
     if a.n is not None and a.n < 1:
         die("chat -n must be positive")
     if a.host and a.kind:
         die("chat --host reads the host kinds (%s); it takes no --kind" % ", ".join(HOST_KINDS))
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if a.project and (channel := registered_channel(a.project)) is not None:
+        channels_module().chat(channel, a, sid)
+        return
     project = find_project(a.project) if a.project else caller_project(caller_seat() if sid else None)
     if project is None:
         die("chat outside a project: run it in a project's directory, or name one: sminos chat <project>")
@@ -10156,6 +10974,19 @@ def cmd_chat(a):
     events = log_read(project)
     # A member that moved to another project is part of the conversation it left.
     pool = [e for e in events if e["kind"] in kinds or (not a.kind and is_moved(e))]
+    mine = writer_id(sid or None)
+    chat_read(project, a, events, pool, sid, lambda e: writer_base(e["writer"]) != mine,
+              lambda e, label: moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
+
+
+def chat_read(log, a, events, pool, key, unread, line):
+    """A chat read's window, its cursor's advance and what it prints, over
+    a project's log (cmd_chat) and a channel's (sminos_channels.chat) alike:
+    -n tails `pool` and --since reads it from a time, neither moving the
+    cursor; else what is above the cursor kept under `key` and not the
+    reader's own (`unread`), at most 30, then +N earlier, the cursor moved
+    past every event of `events`. `line(e, label)` is an event's line,
+    `label` sender_labels(log)."""
     earlier = 0
     if a.since is not None:
         since = normalize_ts(a.since)
@@ -10163,9 +10994,8 @@ def cmd_chat(a):
     elif a.n is not None:
         window, head = pool[-a.n:], "last %d of %d" % (min(a.n, len(pool)), len(pool))
     else:
-        cursor = cursor_load(project, sid)
-        mine = writer_id(sid or None)
-        above = [e for e in pool if writer_base(e["writer"]) != mine and e["seq"] > cursor.get(e["writer"], 0)]
+        cursor = cursor_load(log, key)
+        above = [e for e in pool if unread(e) and e["seq"] > cursor.get(e["writer"], 0)]
         window = above[-30:]
         earlier = len(above) - len(window)
         head = "%d new" % len(above)
@@ -10173,19 +11003,19 @@ def cmd_chat(a):
         for e in events:
             advanced[e["writer"]] = max(advanced.get(e["writer"], 0), e["seq"])
         if advanced != cursor:
-            cursor_save(project, sid, advanced)
+            cursor_save(log, key, advanced)
     if a.json:
         for e in window:
             print(json.dumps(e, ensure_ascii=False))
         if earlier:
-            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, project.name, len(window) + earlier))
+            sys.stderr.write("+%d earlier — sminos chat %s -n %d\n" % (earlier, log.name, len(window) + earlier))
         return
-    print("chat %s · %s" % (project.name, head))
+    print("chat %s · %s" % (log.name, head))
     if earlier:
-        print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
-    label = sender_labels(project)
+        print("+%d earlier — sminos chat %s -n %d" % (earlier, log.name, len(window) + earlier))
+    label = sender_labels(log)
     for e in window:
-        print(moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
+        print(line(e, label))
     if not window:
         print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
 
@@ -12382,7 +13212,10 @@ def find_target(q):
     no member stands for (vacant, retired), so a seat and a seat-less session
     sharing an alias are refused as ambiguous rather than the seat being
     taken. A qualifier that is both a project and a group falls back to the
-    group when the project has no match."""
+    group when the project has no match. A qualifier that names a channel
+    (and no exact seat group of a name no project has) is looked up in the
+    channel's roster, and the thread found answers as in its own project
+    (_through_channel, CH2's M1)."""
     scope = caller_scope()
 
     def exact(kind, res):
@@ -12427,11 +13260,10 @@ def find_target(q):
         hit = group_seat(proj, name)
         if hit:
             return hit
-    if proj and names_channel(proj) is not None:
-        # No thread is found through a channel in this version (CH1, §8): a verb's fact goes to the thread's own
-        # project, which a lookup through a channel's roster would not name.
-        die("'%s' names a thread through a channel, which is not available in this version of sminos yet: name it "
-            "by its own name (<alias>#<short> or <short>)" % q, EXIT_UNKNOWN)
+    if proj and (channel := names_channel(proj)) is not None:
+        # A thread named through a channel (CH2's M1, §1) is answered as that thread found in its own project, so
+        # every verb writes where it wrote; the roster's sweep read (and reconciled) every project's view.
+        return _through_channel(q, channel, name, short, scope)
     tiers = project_tiers(proj) if proj else []
     if proj and not short and not tiers:
         return group_seat(proj, name) or ("none",)
@@ -12495,6 +13327,59 @@ def find_target(q):
     bound = short or any(name in (x, x[:8]) for x in (m.session,) + m.former + m.thread_sessions if x) \
         or alias_reach(m, name) == "former"
     return ("seat", m.seat, m.session if bound else "") if m.seat else ("member", project, m)
+
+
+class ThreadTarget(Member):
+    """A member find_target answers for a name through a channel
+    (_through_channel): its `thread` is the thread the name resolved, which
+    a verb that acts on a thread's record (retire, remove, and _target's
+    readers: channel add, remove, lead) acts on, never the thread its
+    session is read to be in again."""
+
+
+class ThreadSeat(dict):
+    """A seat find_target answers for a name through a channel
+    (_through_channel): the seat's record, with `thread` (an attribute,
+    never a key, so nothing of it is written back) the thread the name
+    resolved, which _target's readers act on as ThreadTarget's."""
+
+    def __init__(self, seat, thread):
+        super().__init__(seat)
+        self.thread = thread
+
+
+def resolved_thread(m):
+    """The thread a verb's target is bound to: a name through a channel's (ThreadTarget, ThreadSeat), else None
+    (a project's name: its session's thread, read where the verb acts)."""
+    return m.thread if isinstance(m, (ThreadTarget, ThreadSeat)) else None
+
+
+def _through_channel(q, channel, name, short, scope):
+    """find_target's answer for `<channel>/<name>` (CH2's M1): the thread
+    the channel's roster reaches (sminos_channels.reach_in), ("seat", seat,
+    session) for a seat of this machine, else ("member", its own project,
+    member), the member's `thread` the one its row is addressed as
+    (sminos_channels.thread_of_row); exit 4, saying how to name it, for a
+    thread that was in the channel and is not now, and exit 4, offering no
+    one, for a row whose stamp and statement disagree."""
+    where, project, m, how = channels_module().reach_in(channel, name, short, how=True)
+    if where == "out":
+        own = "%s#%s or %s" % (m.alias, m.short, m.short) if m is not None else "<alias>#<short> or <short>"
+        die("'%s' names a thread through %s, which it is not in now: name it by its own name (%s)"
+            % (q, channel.name, own), EXIT_UNKNOWN)
+    # A row whose stamp and statement name two threads is neither in the channel nor out of it (M1): no verb's
+    # target, and no recipient offered. Any other is the thread its row is addressed as, an older copy's unstamped
+    # row its statement's thread.
+    got = channels_module().thread_of_row(project, m)
+    if got is None:
+        die("'%s' is not reached through %s: its row's membership names two threads (its stamp and its statement "
+            "disagree)" % (q, channel.name), EXIT_UNKNOWN)
+    note_former(name, short, project, m, scope)
+    # A name that matched the session, not the seat (its short, a session's id, an alias the session held before),
+    # binds that session, as the lookup below binds one; a thread's id (a seat's is its own) does not.
+    bound = how in ("short", "session", "former")
+    return ("seat", ThreadSeat(m.seat, got[0]), m.session if bound else "") if m.seat else \
+        ("member", project, ThreadTarget(*m._replace(thread=got[0])))
 
 
 def ambiguous_seat(q, hits):
@@ -13158,11 +14043,15 @@ def bound_peer(peer, session):
         if hold:
             raise PushHeld("session %s is held: %s" % (session[:8], hold), hold=hold)
         raise SendFailed("before", "session %s runs in no process that answers now" % session[:8])
-    if peer is not None and (str(now.get("pid")), socket_path_of(now)) != (str(peer.get("pid")),
-                                                                        socket_path_of(peer)):
+    if peer is not None and not one_peer(now, peer):
         raise PushHeld("session %s runs in another process than the one looked at: pushed at its next pass"
                        % session[:8])
     return now
+
+
+def one_peer(a, b):
+    """Whether two peer records name one process: its pid and its socket."""
+    return (str(a.get("pid")), socket_path_of(a)) == (str(b.get("pid")), socket_path_of(b))
 
 
 def peer_for_session(session_id):
@@ -15588,7 +16477,7 @@ def own_failed_row(session):
         and str(row.get("detail") or "").startswith("exit 1 before init")
 
 
-def wake(record, session, due=False, returns=False, on_live=None):
+def wake(record, session, due=False, returns=False, on_live=None, check=None):
     """The wake (D2, the plan's §3): the one function that starts a process
     for a stopped thread, either kind of record, and hands it nothing. Its
     steps W1 to W8 under the thread's wake lock; what it found, as §3's
@@ -15600,14 +16489,16 @@ def wake(record, session, due=False, returns=False, on_live=None):
     for which an ended record is woken, a spawned thread's alone;
     `on_live(short)`: called at W8, under the lock and with its hold, for
     what the caller writes once the process is live (a seat's fields, a
-    retired seat's return)."""
+    retired seat's return). `check()`: called at the launch boundary, past
+    the wait of the line's write and right before the launch, raising to
+    stop it (a channel's last check, wake_member's), the line taken back."""
     tid = record["thread"]
     mine = wake_held(tid) is None   # a hold this thread has already (its caller's) is its caller's to end
     hold, why = launch_hold(tid)
     if hold is None:
         return WakeResult(True) if live_now(session) else WakeResult(False, why)   # rows 1 and 2
     try:
-        return _wake_held(tid, session, due, returns, on_live)
+        return _wake_held(tid, session, due, returns, on_live, check)
     finally:
         if mine:
             hold.release()
@@ -15682,7 +16573,7 @@ def _wake_found(tid, session, due, returns, flagless):
     return t, ""
 
 
-def _wake_held(tid, session, due, returns, on_live):
+def _wake_held(tid, session, due, returns, on_live, check=None):
     threads, wm = threads_module(), wake_module()
     flagless = saved = False
     while True:
@@ -15735,6 +16626,15 @@ def _wake_held(tid, session, due, returns, on_live):
             return WakeResult(why == "live", "" if why == "live" else why or "unknown")
         seat = reload_seat(tid) if t["opened"] == "spawned" else None
         settings = seat["settings"] if seat is not None else wm.option(flags, "--settings")
+        if check is not None:
+            # The launch boundary, past the last wait (the record's lock the line was written under): the caller's
+            # check (a channel's whole last check, its reach in it), so what changed while it waited launches
+            # nothing, the line this wake wrote taken back.
+            try:
+                check()
+            except BaseException:
+                wake_line_dropped(tid, session, note["id"])
+                raise
         short, banner = run_claude_bg(wm.wake_argv(session, flags), wm.thread_cwd(t), settings)   # W5, W6
         if isinstance(banner, NoLaunchDir):
             # Gone since W2 read it, as the launch boundary found it: the hold not_woken answers for it, never an
@@ -15903,7 +16803,7 @@ def wake_lapsed(tid, session):
 
 
 def resume_session(s, locks=None, quiet=False, event=None, project=None, carried=None, words=None, returns=False,
-                   stop_turn=False, due=True):
+                   stop_turn=False, due=True, check=None):
     """A seat's wake (T2's M2): the seat's own steps ahead of it, then the
     wake of its record (wake), which starts its session's process under the
     same id and hands it nothing. The WakeResult; the caller pushes what it
@@ -15931,7 +16831,7 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
     delivery, and its record's verb_delivered, from a verb): checked under
     the seat's lock, before any gate, nothing stopped or launched —
     ResumeHeld (ResumeRefused for an ended one). `due` is the deliverer's
-    (deliver_next) from delivery (`quiet`)."""
+    (deliver_next) from delivery (`quiet`); `check` as wake's."""
     if locks is not None and not quiet and opened_by_human(s["current"]):
         if canonical_end(s["current"], seat_project(s)):
             # Ended (opened_by_human reads the records set aside too): nothing is recorded or held for it, since
@@ -16015,7 +16915,7 @@ def resume_session(s, locks=None, quiet=False, event=None, project=None, carried
 
     try:
         woke = wake(threads_module().get(seat_id) or {"thread": seat_id}, s["current"], due=due, returns=returns,
-                    on_live=on_live)
+                    on_live=on_live, **({} if check is None else {"check": check}))
     finally:
         if took is not None:
             took.release()
@@ -17583,12 +18483,12 @@ def cmd_retire(a):
     if target[0] == "seat":
         if a.purge and replayed_purge(purging, target[1], "purged"):
             return
-        _retire_one(target[1], a.purge, target[2], how)
+        _retire_one(target[1], a.purge, target[2], how, thread_id=resolved_thread(target[1]))
         return
     project, m = target[1], target[2]
     if not m.local:
         die("%s is on %s" % (m.alias, m.machine), EXIT_UNKNOWN)
-    retire_member(project, m, a.purge, how=how, thread_id=bound)
+    retire_member(project, m, a.purge, how=how, thread_id=bound or resolved_thread(m))
 
 
 def ended_target(q):
@@ -17673,9 +18573,10 @@ def retire_member(project, m, purge, verb="retired", how=None, thread_id=None):
     interactive session has none, and runs on in its human's terminal. The
     end names the process it saw and holds for that process's life: only
     another process, or one started after it, returns it (its human
-    reopening it). `thread_id`: the thread the name named (ended_target),
-    whose record alone is acted on, refused when it is gone or no longer
-    has this session current."""
+    reopening it). `thread_id`: the thread the name named (ended_target,
+    or a name through a channel: resolved_thread), whose record alone is
+    acted on, refused when it is gone or no longer has this session
+    current."""
     threads = threads_module()
     thread = threads.thread_of(m.session) if thread_id is None else threads.get(thread_id)
     if thread_id is not None and (thread is None or thread["current"] != m.session):
@@ -17827,18 +18728,37 @@ def retired_in_log(project, sid):
     return e is not None and e["kind"] == "retired" and e.get("reason") in END_REASONS
 
 
-def seat_owner_guard(s0, purge, how):
+def seat_ending(s, thread_id=None):
+    """(the canonical thread of the seat's session, or None; the record a
+    seat's end ends): that thread's record where it holds the session, else
+    the seat's own. With `thread_id`, the thread a name through a channel
+    resolved (resolved_thread), that record alone, both values: refused,
+    exit 4, when it is gone or no longer holds the seat's session, never
+    the session's canonical thread read again in its place."""
+    threads = threads_module()
+    cur = s["current"]
+    if thread_id is not None:
+        t = threads.get(thread_id)
+        if t is None or t["current"] != cur:
+            die("thread %s has no record of this machine with seat %s/%s's session %s any more: nothing was ended"
+                % (thread_id[:8], s["group"], s["alias"], cur[:8] or "(none)"), EXIT_UNKNOWN)
+        return t, t
+    thread = threads.thread_of(cur) if cur else None
+    return thread, thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+
+
+def seat_owner_guard(s0, purge, how, thread_id=None):
     """owner_guard for a seat's end, asked before its locks are taken (the
-    question can take a minute): the record that ends (its session's
-    canonical one, else the seat's own) and the seat. Nothing is asked for
+    question can take a minute): the record that ends (seat_ending: its
+    session's canonical one, else the seat's own; the thread a name through
+    a channel resolved, `thread_id`) and the seat. Nothing is asked for
     a seat that is no thread (a lane B session's) or a retire of one ended
     already, which ends nothing: an Exempt saying which, which the end
     proves again under the locks (end_and_stop, asked_all)."""
     threads = threads_module()
     cur = s0["current"]
-    t = threads.thread_of(cur) if cur else None
     own = threads.get(s0["seat_id"])
-    t = t if t is not None and t["current"] == cur else own
+    t = seat_ending(s0, thread_id)[1]
     if t is None:
         return threads.Exempt("no-thread")
     if threads.record_ended(t) and not purge:
@@ -17848,9 +18768,9 @@ def seat_owner_guard(s0, purge, how):
                        else "%s/%s" % (s0["group"], s0["alias"]))
 
 
-def _retire_one(s0, purge, session="", how=None):
+def _retire_one(s0, purge, session="", how=None, thread_id=None):
     asked = seat_owner_guard(s0, purge, how or OwnerAsk("%s/%s" % (s0["group"], s0["alias"]),
-                                                        "purge" if purge else "retire"))
+                                                        "purge" if purge else "retire"), thread_id=thread_id)
     locks, s = locked_fresh(s0, "retire", session)
     try:
         if s["engine"] == "codex":
@@ -17859,7 +18779,7 @@ def _retire_one(s0, purge, session="", how=None):
             hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
             hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
-        end_and_stop(s, purge, asked)
+        end_and_stop(s, purge, asked, thread_id=thread_id)
         if purge:
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
@@ -17870,7 +18790,7 @@ def _retire_one(s0, purge, session="", how=None):
         unlock(locks)
 
 
-def end_and_stop(s, purge, asked=None):
+def end_and_stop(s, purge, asked=None, thread_id=None):
     """A seat's end, then its turn stopped (stop_session) only once the
     retirement is in the log (retired_in_log): a session that retires
     itself, whose stop can end its caller, is stopped only after its record
@@ -17878,7 +18798,8 @@ def end_and_stop(s, purge, asked=None):
     appended stops nothing. Only what the end saw is stopped, while it is
     still that (stop_seen_turn): a process started since is one the end did
     not see, which returns the seat. Which record
-    ends is the canonical one of the seat's session (thread_of): a thread
+    ends (seat_ending) is the canonical one of the seat's session (thread_of),
+    or the thread a name through a channel resolved (`thread_id`): a thread
     its human opened that an older copy seated ends by that record
     (end_human), its entry bringing the seat in line, retired or for a
     purge deleted; else the seat's own (end_seat). The verb's lifecycle
@@ -17886,11 +18807,11 @@ def end_and_stop(s, purge, asked=None):
     answer) is asked by the verb before this (seat_owner_guard), and what
     cleared it (`asked`: the short ids asked about, or why none was needed)
     is proved again here, under the seat's locks, and by the end under the
-    record's lock (sminos_threads.asked_all)."""
+    record's lock (sminos_threads.asked_all). `thread_id`: the thread a
+    name through a channel resolved, which alone is ended (seat_ending)."""
     cur = s["current"]
     threads = threads_module()
-    thread = threads.thread_of(cur) if cur else None
-    record = thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+    thread, record = seat_ending(s, thread_id)
     # Whether the end that stands recorded its process, read while its record stands (a purge deletes it).
     known = record is not None and (record["opened"] == "human" or threads.seat_ended(record))
     if record is not None and not threads.asked_all(record, asked):
@@ -18147,15 +19068,15 @@ def cmd_remove(a):
         return
     s0, bound, opened = resolve_seat_or_opened(a.seat, "remove it", found=found)
     if opened is not None:
-        retire_member(opened[0], opened[1], True, verb="removed", how=how)
+        retire_member(opened[0], opened[1], True, verb="removed", how=how, thread_id=resolved_thread(opened[1]))
         return
     if found[0] == "seat" and replayed_purge(purging, s0, "removed"):
         return
-    asked = seat_owner_guard(s0, True, how)
+    asked = seat_owner_guard(s0, True, how, thread_id=resolved_thread(s0))
     locks, s = locked_fresh(s0, "remove", bound)
     try:
         # A removed seat's session leaves the family with it.
-        end_and_stop(s, True, asked)
+        end_and_stop(s, True, asked, thread_id=resolved_thread(s0))
         print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
@@ -18226,12 +19147,17 @@ def list_scope(a):
     first (as before), or with --project; --machine, --state, --here, --org
     and words narrow the rows. Under --org or --project every argument is a
     word. --channel is a row filter like the others: it widens too (cmd_list
-    keeps the rows in a channel it names)."""
+    keeps the rows in a channel it names); a first argument that names a
+    channel registered here is --channel of it (CH2's M4), the rest still
+    row filters."""
     args = list(a.args)
     if a.org or a.projects:
         named, words = "", args
     else:
         named, words = (args[0], args[1:]) if args else ("", [])
+    if named and hasattr(a, "channel") and (channel := registered_channel(named)) is not None:
+        a.channel = list(a.channel or []) + [channel.id]
+        named = ""
     if not (named or a.projects or a.machine or a.state or a.org or a.here or words or getattr(a, "channel", None)):
         return view_projects("")[0], [], False
     if named:
@@ -19105,9 +20031,25 @@ def guide_text(session, launch, source="", title=""):
     fork = (" You are a fork of another session: a copy, with a session id and a name of your own. Every sminos"
             " line above this one was written for the session you were copied from, and messages addressed to it"
             " are not for you; you are its peer.") if source == "fork" else ""
+    # A lane A member is a thread (sminos_records.lane_of); one MAWS launched (lane B) is told nothing of it.
+    thread = (" You are a thread: a member still when this process ends, woken by a message addressed to you."
+              if threads_module().lane_a(session) else "")
+    # Making a channel is a thread's (`channel create` refuses a caller that is none), so the guide's create-then-add
+    # is offered to a thread only; a session that is no thread may still say into one, as a session not in it.
+    make = (" A channel holds sessions of several projects on one piece of work: `%s channel create <name>`, then"
+            " `%s channel add <name> <thread>...`, each thread as <project>/<alias> or its short" % (cli, cli)
+            if thread else "")
+    # The channels the session's thread is in, by name (CH2's M10): a line only for a thread in any.
+    channels = [(known_project(c) or make_project(c, c, "", "", None)).name
+                for c in channels_module().channels_of(session)]
+    inside = ["Your thread is in the channel%s %s, with sessions of other projects: `%s list` shows them. A message"
+              " from a member there ends with a reply line whose tag keeps your answer in that channel; one from a"
+              " session not in it, marked (not in <channel>) after its sender, ends with a reply line to that"
+              " session's own project: run each as given"
+              % ("s" if len(channels) > 1 else "", ", ".join(sorted(channels)), cli)] if channels else []
     return "\n".join([
-        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
-        % (who, project.name, enrollment()["machine"], where, fork),
+        "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s%s"
+        % (who, project.name, enrollment()["machine"], where, thread, fork)] + inside + [
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
         "To find one or tell it something, run sminos in Bash:",
         "  %s list            peer sessions in your project; --here sessions on this machine, --org every connected"
@@ -19118,7 +20060,9 @@ def guide_text(session, launch, source="", title=""):
         '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'
         " status nobody must act on goes here" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
-        " a bare @alias reaches only your project" % cli,
+        " a bare @alias reaches your project and the channels you are in" % cli,
+        '  %s say --in <channel> "@<alias> ..."   said in a channel, as is "@<channel>/<alias> ...";'
+        " there @all reaches its live members, and untagged prompts no one.%s" % (cli, make),
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"
@@ -19132,31 +20076,54 @@ def guide_text(session, launch, source="", title=""):
 ROSTER_SOURCES = ("compact", "resume")   # a session that goes on with its own conversation, summarized or old
 ROSTER_CAP = 10        # peers the roster names
 ROSTER_BUDGET = 3.0    # seconds the roster may spend, inside the hook's bound of 10
+ROSTER_CHANNELS = 10   # channels' logs the roster reads beside its projects': those its thread's statements named last
+ROSTER_THREAD = "#thread"   # a key's first part for a peer met in a channel, the second its thread (no log id holds #)
+
+
+def roster_clock():
+    """The roster's clock (time.monotonic()): its one deadline is read from it alone, so a test can move it."""
+    return time.monotonic()
+
+
+def _roster_past(until):
+    return until is not None and roster_clock() > until
+
+
+def _roster_note(out, key, way, ts, alias, sid=""):
+    """One exchange counted in a roster's rows: its time for its way, the latest's alias and session kept."""
+    row = out.setdefault(key, {"in": "", "out": "", "at": "", "alias": "", "session": ""})
+    row[way] = max(row[way], ts)
+    if ts >= row["at"]:
+        row["at"], row["alias"], row["session"] = ts, alias, sid or row["session"]
 
 
 def _roster_exchanges(session, projects):
-    """{(project id, peer session): {"in", "out", "at", "alias"}}: when
-    `session`, with the sessions it continues, last wrote each peer a tagged
-    sminos message (`out`) and last was written one by it (`in`), "" for
-    neither, as the logs of `projects` hold them; `alias` is the peer's as the
-    latest of them named it (`at`). A message into another project is read
-    off the copy its own project's log keeps (record_copy), whose recipients
-    name their project; one from another project names the sender's
-    (`from_project`). An untagged line or an @all names no one in
-    particular, and the engine's own SendMessage is in no log."""
-    out, seen = {}, set()
-
-    def note(key, way, ts, alias):
-        row = out.setdefault(key, {"in": "", "out": "", "at": "", "alias": ""})
-        row[way] = max(row[way], ts)
-        if ts >= row["at"]:
-            row["at"], row["alias"] = ts, alias
-
+    """({(project id, peer session): {"in", "out", "at", "alias", "session"}}, what the channels' part reads on
+    from): when `session`, with the sessions it continues, last wrote each peer a tagged sminos message (`out`)
+    and last was written one by it (`in`), "" for neither, as the logs of `projects` hold them; `alias` is the
+    peer's as the latest of them named it (`at`). A message into another project is read off the copy its own
+    project's log keeps (record_copy), whose recipients name their project; one from another project names the
+    sender's (`from_project`). An untagged line or an @all names no one in particular, and the engine's own
+    SendMessage is in no log. A copy whose recipient's `project` is a channel and whose entry names its thread
+    is keyed by that thread, (ROSTER_THREAD, thread), as a peer met in a channel is (_roster_channel_exchanges);
+    one with no thread (an older copy's) keeps the B3 path. The second value: {"thread": the session's own
+    row's (info_thread), "stated": {project id: its events} for each log holding a `channels` event of that
+    thread, "seen": the refs counted}."""
+    out, seen, logs, thread = {}, set(), [], ""
     for p in projects:
         events = log_read(p)
-        mine = {session, *lineage(session, _projection(events))}
+        info = _projection(events)
+        logs.append((p, events, info))
+        thread = thread or info_thread(info.get(session))
+    stated = {}
+    for p, events, info in logs:
+        mine = {session, *lineage(session, info)}
         for e in events:
             to = e.get("to")
+            if e["kind"] == "channels":
+                if thread and e.get("thread") == thread:
+                    stated[p.id] = events
+                continue
             if e["kind"] != "say" or e.get("wake") or not isinstance(to, list):
                 continue
             sender = writer_session(e["writer"])
@@ -19172,20 +20139,140 @@ def _roster_exchanges(session, projects):
                 seen.add(ref)
                 for r in to:
                     if r["session"] not in mine:
-                        note((str(r.get("project") or p.id), r["session"]), "out", e["ts"], str(r.get("alias") or ""))
+                        where, peer = str(r.get("project") or p.id), _entry_thread(r)
+                        key = (ROSTER_THREAD, peer) if peer and is_channel_id(where) else (where, r["session"])
+                        _roster_note(out, key, "out", e["ts"], str(r.get("alias") or ""), r["session"])
             elif sender and any(r["session"] in mine for r in to):
                 seen.add(ref)
-                note((str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
-    return out
+                _roster_note(out, (str(e.get("from_project") or p.id), sender), "in", e["ts"], str(e.get("from") or ""))
+    return out, {"thread": thread, "stated": stated, "seen": seen}
 
 
-def _roster_peer(pid, sid, all_seats):
+def _roster_channel_exchanges(rows, context, until=None):
+    """The channels' part of a roster's rows (CH2's M9), added to `rows`: the logs of the channels the session's
+    thread's statements in its projects named, those it has left included (_roster_statements,
+    _roster_channels), where two members' exchange leaves no copy in any project. There "mine" is by thread: a
+    message whose `thread` is the session's thread, or an entry of whose `to` names it. A peer met there is
+    keyed by its thread, (ROSTER_THREAD, thread), whatever session or channel it was met in, `session` the one
+    the latest exchange named; a message from outside a channel is its author's thread's too where it names
+    one, else keyed by `from_project`, its sender's own project, as one from another project is. No new unit of work starts once `until` has passed: before the
+    registrations are read, between the logs replayed for statements, between channels. Answers whether the
+    thread holds a channel now as its statements say (the latest that took effect names one): what decides,
+    for resolve_tag, whether a bare alias is matched in shared rosters too; True when they could not all be
+    replayed in time, since naming a tag's project where it was not needed costs nothing."""
+    thread, stated, seen = context["thread"], context["stated"], context["seen"]
+    if not stated:
+        return False
+    named, last = {}, ("", ())
+    for events in stated.values():
+        if _roster_past(until):
+            return True
+        got, latest = _roster_statements(events, thread)
+        last = max(last, latest)
+        for c, ts in got.items():
+            named[c] = max(named.get(c, ""), ts)
+    holds = bool(last[1])
+    if not named or _roster_past(until):
+        return holds
+    for c in _roster_channels(named, until):
+        if _roster_past(until):
+            break
+        events = log_read(c)
+        if _roster_past(until):   # the read returned past the deadline: its events are not scanned
+            break
+        for e in events:
+            to = e.get("to")
+            if e["kind"] != "say" or e.get("wake") or not isinstance(to, list) or "copy" in e:
+                continue
+            ref = "%s:%s:%d" % (c.id, e["writer"], e["seq"])
+            if ref in seen:
+                continue
+            named_to = [r for r in to if isinstance(r, dict) and UUID_RE.fullmatch(str(r.get("session") or ""))
+                        and _entry_thread(r)]
+            sender, by = writer_session(e["writer"]), _entry_thread(e)
+            if by == thread:
+                seen.add(ref)
+                for r in named_to:
+                    if r["thread"] != thread:
+                        _roster_note(rows, (ROSTER_THREAD, r["thread"]), "out", e["ts"], str(r.get("alias") or ""),
+                                     r["session"])
+            elif sender and any(r["thread"] == thread for r in named_to):
+                seen.add(ref)
+                outside = str(e.get("from_project") or "")
+                # Its author's thread when the post names one, wherever it came from: the session it was written
+                # from may be another thread's since.
+                key = (ROSTER_THREAD, by) if by else (outside, sender) if outside else (c.id, sender)
+                _roster_note(rows, key, "in", e["ts"], str(e.get("from") or ""), sender)
+    return holds
+
+
+def _entry_thread(d):
+    """The thread an event or an entry of its `to` names in `thread`; "" for one of the wrong type, as a reader
+    of a channel's log takes it (CH2's §2)."""
+    t = d.get("thread")
+    return t if isinstance(t, str) else ""
+
+
+def info_thread(r):
+    """The thread a projection's row is: its `joined` in effect's stamp, else its statement in effect's `thread`
+    (the rule a channel's rows are told apart by, sminos_channels.row_thread); "" for none."""
+    for e in ((r or {}).get("joined"), (r or {}).get("stated")):
+        t = _entry_thread(e or {})
+        if t:
+            return t
+    return ""
+
+
+def _roster_statements(events, thread):
+    """({channel id: the ts of the latest statement naming it}, (ts, channels) of the latest of them): the
+    thread's statements in one log that took effect, by the fold's rules (sminos_threads.Fold: under its
+    session's `joined` in effect, by that joined's writer, past its seq), whichever session of the thread wrote
+    them, where that `joined` is stamped with the thread or with none (sminos_channels.once_in's rule). A
+    hand-off's lineage decides nothing: a refill's occupant is the same thread as the session it replaced, and
+    continues none of it."""
+    threads, fold, named, last = threads_module(), threads_module().Fold(), {}, ("", ())
+    for e in events:
+        sid, kind = e.get("session"), e.get("kind")
+        if kind not in ("joined", "retired", "channels") or not isinstance(sid, str) or not sid \
+                or writer_session(e.get("writer") or "") != sid:
+            continue
+        if kind != "channels":
+            fold.add(sid, e)
+            continue
+        fold.state(sid, e)
+        if fold.stated.get(sid) is e and e["thread"] == thread \
+                and _entry_thread(fold.joined.get(sid) or {}) in ("", thread):
+            ts, chans = str(e.get("ts") or ""), threads.stated_set(e)
+            last = max(last, (ts, chans))
+            for c in chans:
+                named[c] = max(named.get(c, ""), ts)
+    return named, last
+
+
+def _roster_channels(named, until=None):
+    """The channels registered here among `named` ({channel id: the latest statement's ts}): the ROSTER_CHANNELS
+    whose latest statement is newest. Each one's registration read by its id, newest first, until that many are
+    found, none begun once `until` has passed; [] with no registration read for none."""
+    picked = []
+    for c in sorted(named, key=lambda c: named[c], reverse=True):
+        if len(picked) >= ROSTER_CHANNELS or _roster_past(until):
+            break
+        ch = known_project(c) if is_channel_id(c) else None
+        if ch is not None:
+            picked.append(ch)
+    return picked
+
+
+def _roster_peer(pid, sid, all_seats, listed=False):
     """(project, member, ended, projection) a peer is now: followed into the
     session it continues in (a hand-off) and into the project it moved to;
     `ended` when its membership there is retired. None when no project known
     here holds it: a channel's log, whose legacy `joined` an older copy
     wrote, holds no member, though its `retired` `moved` is followed (the
-    frontier review's B3)."""
+    frontier review's B3). A peer met in a channel is its thread
+    (_roster_thread_row). `listed`: a row the log shows unlisted to this
+    reader (unlisted_here) is none, for a peer the channels' part alone met;
+    a project's peer is looked up as the merge base looked it up."""
     for _ in range(4):   # a move chain, bounded
         p = known_project(pid)
         if p is None:
@@ -19201,23 +20288,92 @@ def _roster_peer(pid, sid, all_seats):
         if latest.get("kind") == "retired" and moved_to and moved_to != p.id:
             pid = moved_to
             continue
-        if r is None or is_channel_id(p.id):
+        if r is None or is_channel_id(p.id) or (listed and unlisted_here(sid, r)):
             return None
         m = _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False, True, info)
         return p, m, latest.get("kind") == "retired", info
     return None
 
 
-def _roster_tag(p, m, here, info):
+def _roster_thread_index(index, until=None):
+    """Fills the roster's one thread index ({"read": {project dir names}, "rows": {thread: [(project, session,
+    row, projection)]}, "complete": bool}) from the projections of every project known here, read-only (no
+    view, no reconciliation: the guide must not write), a project at a time, in the directory's order, none
+    started, read or projected once `until` has passed. A row the log shows unlisted to this reader is none. Whether every
+    project has been read: a thread's row is never chosen from a part of them."""
+    if index["complete"]:
+        return True
+    try:
+        names = sorted(n for n in os.listdir(projects_root()) if not n.startswith(".") and not is_channel_id(n))
+    except OSError:
+        names = []
+    for name in names:
+        if name in index["read"]:
+            continue
+        if _roster_past(until):
+            return False
+        p = known_project(name)
+        if p is not None:
+            if _roster_past(until):
+                return False
+            events = log_read(p)
+            if _roster_past(until):
+                return False
+            info = _projection(events)
+            for sid, r in info.items():
+                t = info_thread(r)
+                if t and not unlisted_here(sid, r):
+                    index["rows"].setdefault(t, []).append((p, sid, r, info))
+        index["read"].add(name)
+    index["complete"] = True
+    return True
+
+
+def _roster_thread_row(thread, all_seats, index, until=None):
+    """(the row a peer met in a channel is now, as _roster_peer answers, or None; whether it was looked for in
+    every project): its thread's rows found by their stamp (info_thread, _roster_thread_index), never through
+    the session a message once named. Of the rows whose membership in effect is a `joined` and whose member
+    has not ended (has_ended: a machine the org retired ends it too), the one whose membership is newest
+    (sminos_channels._newest_row's rule: two of one moment decide for neither, and none is given); with none,
+    the latest of those that ended. None, with False, where the index could not be read whole in time."""
+    if not _roster_thread_index(index, until) or _roster_past(until):
+        return None, False   # its members are not built past the deadline: they read the engine's state
+
+    def at(x):
+        return str(((x[0][2] or {}).get("latest") or {}).get("ts") or "")
+    found = []
+    for p, sid, r, info in index["rows"].get(thread, []):
+        latest = (r or {}).get("latest") or {}
+        if latest.get("kind") == "joined" or (latest.get("kind") == "retired" and latest.get("reason") in END_REASONS):
+            if _roster_past(until):
+                return None, False
+            found.append(((p, sid, r, info), _member(sid, r, seats_by_session(p, all_seats).get(sid), None, False,
+                                                     True, info)))
+    live = [x for x in found if ((x[0][2] or {}).get("latest") or {}).get("kind") == "joined" and not has_ended(x[1])]
+    if live:
+        newest = [x for x in live if at(x) == max(map(at, live))]
+        if len(newest) != 1:
+            return None, True
+        (p, _, _, info), m = newest[0]
+        return (p, m, False, info), True
+    if not found:
+        return None, True
+    (p, _, _, info), m = max(found, key=at)
+    return (p, m, True, info), True
+
+
+def _roster_tag(p, m, here, info, qualify=False):
     """The tag that reaches member `m` of `p` from a session of `here`:
     `@alias` in its own project, `@<project>/<alias>` from another (§5), with
     `#short` when another member there holds the alias too; quoted when the
     bare form would not parse back whole (leading_tags), and `@<short>` when
-    neither form does."""
+    neither form does. `qualify`: the project is named in its own project
+    too, for a reader in a channel, whose bare alias resolve_tag also matches
+    in the rosters of the channels it shares (_with_shared, CH2's M1)."""
     alias = m.alias
     if not alias or alias == m.short:
         return "@" + m.short
-    project = "" if here is not None and p.id == here.id else tag_project(p)
+    project = "" if here is not None and p.id == here.id and not qualify else tag_project(p)
     body = (project + "/" if project else "") + alias
     shared = any(s != m.session and r["latest"] and r["latest"]["kind"] == "joined"
                  and logged_alias(s, info)[0] == alias for s, r in info.items())
@@ -19248,44 +20404,108 @@ def roster_text(session, launch):
     now, when the last exchange was and which way, and whether its last
     message is unanswered. Read from the logs, never the conversation: a
     summary keeps addresses (an engine socket, an alias) that have gone
-    stale. The logs read are its project's and its launch directory's; a
-    peer reached only through the engine's SendMessage is in neither. ""
-    when it exchanged none. Read-only, and bounded by ROSTER_BUDGET: what does
-    not fit is left out."""
-    until = time.time() + ROSTER_BUDGET
+    stale. The logs read are its project's and its launch directory's, and
+    the channels' its thread's statements there named; a peer reached only
+    through the engine's SendMessage is in none. "" when it exchanged none.
+    Read-only, and bounded by ROSTER_BUDGET, one deadline on roster_clock
+    through every stage, checked before each unit of work (a single file
+    read is never cut short): what does not fit is left out. The project
+    logs' peers are found first, as a session in no channel's always were
+    (that roster is unchanged); what the budget leaves goes to the channels'
+    part (_roster_channel_exchanges) and the peers it adds or moves, and
+    the two are ranked together. A peer met in a channel whose thread could
+    not be looked for in every project in time is given by its message's
+    name with no tag: a tag chosen from a part of them may be a stale one.
+    A peer met in a project whose row there is stamped with a thread found
+    whole is that thread's one row; a peer's name, and whether it was met
+    in a channel, are its latest exchange's."""
+    until = roster_clock() + ROSTER_BUDGET
     here = session_project(session, launch)
     if here is None:
         return ""
     home = resolve_project(launch)
-    rows = _roster_exchanges(session, [here] + ([home] if home is not None and home.id != here.id else []))
-    all_seats = seats()
-    peers, lines = {}, []
-    for (pid, sid), row in sorted(rows.items(), key=lambda kv: max(kv[1]["in"], kv[1]["out"]), reverse=True):
-        if len(peers) >= ROSTER_CAP or time.time() > until:
-            break
-        now = _roster_peer(pid, sid, all_seats)
-        if now is not None and now[1].session == session:
+    rows, context = _roster_exchanges(session, [here] + ([home] if home is not None and home.id != here.id else []))
+    all_seats, index = seats(), {"read": set(), "rows": {}, "complete": False}
+    peers, tried = {}, set()
+
+    def last(row):
+        return max(row["in"], row["out"])
+
+    def resolve(keys, channel_only=()):
+        added = 0
+        for key in sorted(keys, key=lambda k: last(rows[k]), reverse=True):
+            if added >= ROSTER_CAP or _roster_past(until):
+                return
+            tried.add(key)
+            pid, sid = key
+            thread = sid if pid == ROSTER_THREAD else ""
+            sid = rows[key]["session"] if thread else sid
+            now, complete = _roster_thread_row(thread, all_seats, index, until) if thread \
+                else (_roster_peer(pid, sid, all_seats, key in channel_only), True)
+            if now is not None and now[1].session == session:
+                continue
+            pkey = (now[0].id, now[1].session) if now else key
+            if pkey in peers:   # two sessions of one member
+                held = peers[pkey]
+                held["keys"].append(key)
+                if thread and not held["thread"]:   # what merge_threads merges a project's stale row into
+                    held["thread"], held["complete"] = thread, complete
+                continue
+            peers[pkey] = {"now": now, "keys": [key], "thread": thread, "complete": complete}
+            added += 1
+
+    def merge_threads():
+        # A peer met in a project whose row there carries the stamp of a thread a channel's lookup found whole is
+        # that thread's: the lookup read every project, the project's row may be one its move has left.
+        found = {peer["thread"]: pkey for pkey, peer in peers.items()
+                 if peer["thread"] and peer["complete"] and peer["now"] is not None}
+        for pkey, peer in list(peers.items()):
+            if peer["thread"] or peer["now"] is None:
+                continue
+            _, m, _, info = peer["now"]
+            into = found.get(info_thread(info.get(m.session)))
+            if into is not None and into != pkey:
+                peers[into]["keys"] += peer.pop("keys")
+                del peers[pkey]
+
+    resolve([k for k in rows if k[0] != ROSTER_THREAD])
+    before = {k: last(r) for k, r in rows.items()}
+    holds = _roster_channel_exchanges(rows, context, until)
+    resolve([k for k in rows if k not in tried and (k[0] == ROSTER_THREAD or before.get(k) != last(rows[k]))],
+            {k for k in rows if k not in before})
+    merge_threads()
+    # A reader in a channel: resolve_tag matches its bare alias in the rosters it shares too (CH2's M1).
+    qualify = bool(peers) and holds
+    ranked = sorted(peers.values(), key=lambda peer: max(last(rows[k]) for k in peer["keys"]), reverse=True)
+    lines = []
+    for peer in ranked[:ROSTER_CAP]:
+        # What it is called and how it was met are the latest exchange's (`won`), whichever key found it.
+        won = max(peer["keys"], key=lambda k: last(rows[k]))
+        now, row = peer["now"], dict(rows[won])
+        thread = won[1] if won[0] == ROSTER_THREAD else ""
+        sid = row["session"] if thread else won[1]
+        row["in"], row["out"] = max(rows[k]["in"] for k in peer["keys"]), max(rows[k]["out"] for k in peer["keys"])
+        when = last(row)
+        way = "it wrote you" if row["in"] == when else "you wrote it"
+        tail = "last: %s %s%s" % (way, _roster_when(when), ", unanswered" if row["in"] > row["out"] else "")
+        if now is None and thread:
+            where = "no project known here holds its thread now, no tag reaches it" if peer["complete"] \
+                else "where its thread is now was not read in time, no tag given"
+            lines.append("  %s [%s], met in a channel: %s; %s" % (row["alias"] or sid[:8], sid[:8], where, tail))
             continue
-        key = (now[0].id, now[1].session) if now else (pid, sid)
-        if key in peers:   # two sessions of one member, the newer exchange read first
-            held = peers[key][2]
-            held["in"], held["out"] = max(held["in"], row["in"]), max(held["out"], row["out"])
-            continue
-        peers[key] = (now, sid, dict(row))
-    for now, sid, row in peers.values():
-        last = max(row["in"], row["out"])
-        way = "it wrote you" if row["in"] == last else "you wrote it"
-        tail = "last: %s %s%s" % (way, _roster_when(last), ", unanswered" if row["in"] > row["out"] else "")
         if now is None:
             lines.append("  %s [%s], in no project known here; %s" % (row["alias"] or sid[:8], sid[:8], tail))
             continue
         p, m, ended, info = now
         who = "%s [%s], %s on %s" % (m.alias, m.short, p.name, m.machine or "?")
         if ended:
+            # A thread met in a channel is named as its message named it (the seam's "by the name the message
+            # gave it"), whatever its row was called when it ended.
+            who = "%s [%s], %s on %s" % (row["alias"] or m.alias, m.short, p.name, m.machine or "?") if thread else who
             lines.append("  %s: its session ended, no tag reaches it; %s" % (who, tail))
             continue
         charge = charge_shown(m)
-        lines.append("  %s  %s, %s%s; %s" % (_roster_tag(p, m, here, info), who, m.state or "state unknown",
+        lines.append("  %s  %s, %s%s; %s" % (_roster_tag(p, m, here, info, qualify), who, m.state or "state unknown",
                                              ', in charge: "%s"' % charge if charge else "", tail))
     if not lines:
         return ""
@@ -19613,9 +20833,15 @@ def who_thread(name):
         # The record that represents the seat's thread, as its retire's guard reads it (seat_owner_guard): its
         # session's canonical one (a thread its human opened that an older copy seated), else the seat's own; none
         # for a seat a session of no thread holds (lane B, one the MAWS app launched), which nothing guards.
+        # A seat named through a channel: the thread the name resolved (resolved_thread), never the session's
+        # canonical one read again, and only while it still holds the session the lookup saw (as seat_ending binds
+        # the destructive verbs): an answer is never built from two states.
         cur = s["current"]
-        rec = threads.thread_of(cur) if cur else None
-        rec = rec if rec is not None and rec["current"] == cur else threads.get(s["seat_id"])
+        bound = resolved_thread(s)
+        rec = threads.get(bound) if bound else seat_ending(s)[1]
+        if bound and (rec is None or rec["current"] != cur):
+            die("'%s': thread %s no longer holds session %s, which the name came to (seat %s/%s changed meanwhile): "
+                "name it again" % (name, bound[:8], cur[:8] or "(none)", s["group"], s["alias"]), EXIT_UNKNOWN)
         state_word = row.state if row is not None else state(s)
         answer = {"thread": rec["thread"] if rec else "", "session": cur, "alias": s["alias"],
                   "opened": rec["opened"] if rec else "", "state": state_word,
@@ -20009,6 +21235,10 @@ def build_parser():
     ce.add_argument("channel")
     ce.add_argument("machine")
     ce.set_defaults(fn=cmd_channel)
+    cl = chsub.add_parser("lead", add_help=False)
+    cl.add_argument("channel")
+    cl.add_argument("thread")
+    cl.set_defaults(fn=cmd_channel)
 
     hb = sub.add_parser("hub", add_help=False, prefix_chars="\0")
     hb.add_argument("words", nargs="*")
@@ -20266,7 +21496,8 @@ def main(argv=None):
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
-                "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine>")
+                "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine> | lead <channel> "
+                "<thread|none>")
         die("unknown command: %s (try: sminos help)" % argv[0])
     if a.cmd == "spawn" and a.asked_from is not None and a.on is None and os.environ.get("CLAUDE_CODE_SESSION_ID"):
         # The transport's flag: the record it gives the new session is a terminal spawn's (spawn_provenance), so
@@ -20274,6 +21505,9 @@ def main(argv=None):
         # anything, the task's read included, as `say --notice` is; over `devcloud vm ssh` no session runs it.
         die("spawn: --asked-from is the form another machine's sminos calls over devcloud vm ssh, and a session is "
             "not one: drop it (sminos spawn --on <vm> opens a session on another machine)")
+    if a.cmd == "channel" and a.channel_op == "lead" and os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        # The owner's act alone (CH2's M8): refused inside a session before anything is read or migrated.
+        die(channels_module().LEAD_IN_SESSION, 1)
     stdin_body(a)
     migrate()
     HINTS["on"] = a.cmd in READING_VERBS

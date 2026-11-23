@@ -80,7 +80,7 @@ def post_command(path, body, wait_ms=COMMAND_WAIT_MS):
         c.close()
 
 
-def deliver(session, project, event, text):
+def deliver(session, project, event, text, thread=None):
     """The bridge's submission of a log event of the project `project` (its
     id): True once submitted (or found already submitted), None when the
     session has no bridge, False when the bridge refused it (nothing was
@@ -88,8 +88,16 @@ def deliver(session, project, event, text):
     answer: it may have been submitted. The key names the project, since
     every project numbers a writer's events on its own. A duplicate is taken
     as delivered, since it was submitted before, but said: were it not, the
-    event would be lost with no other trace."""
-    body = {"op": "deliver", "key": {"project": project, "writer": event["writer"], "seq": event["seq"]}, "text": text}
+    event would be lost with no other trace. In a channel's log (`thread`,
+    CH2's M3) the key's scope is the channel and the thread it is owed to,
+    `<channel id>#<thread id>` in its `project`: the channel numbers a
+    writer's events once for every thread, and a session may serve one
+    thread, then another. A bridge takes `project` as an opaque scope (its
+    mark `<project>/<writer>`, its refusals' key, the child's kept marks),
+    so every bridge a running session has loaded keeps the threads apart
+    (`#` is in no project's or channel's id)."""
+    scope = project if thread is None else "%s#%s" % (project, thread)
+    body = {"op": "deliver", "key": {"project": scope, "writer": event["writer"], "seq": event["seq"]}, "text": text}
     try:
         r = post_command(B.endpoint(session), body)
     except Unanswered as e:
@@ -180,7 +188,7 @@ def supervisor_reply(short, text, session=""):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None, project=None, words=None, marker=None, carried=None):
+def push_live(peer, session, text, event=None, project=None, words=None, marker=None, carried=None, thread=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's) and `project` the id of the project whose
@@ -218,7 +226,8 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     before each route that follows a declined bridge (the supervisor, the
     inbox frame);
     S.PushHeld when the session is held or another process runs it,
-    SendFailed("before") when none does."""
+    SendFailed("before") when none does. `thread`: a channel's event's
+    thread, for the bridge's key (deliver)."""
     S.reach_hold(project, session, [event] if carried is None else carried, words)
     peer = S.bound_peer(peer, session)
     # The first push after a wake carries sminos's line (T2's §2, §4), put in before a route is chosen as the text's
@@ -228,12 +237,12 @@ def push_live(peer, session, text, event=None, project=None, words=None, marker=
     line = S.wake_line_for(peer, session)
     if line is not None:
         text = "%s\n\n%s" % (text.rstrip("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"), S.wake_module().line_text(line[1]))
-    _routes(peer, session, text, event, project, words, marker)
+    _routes(peer, session, text, event, project, words, marker, **({} if thread is None else {"thread": thread}))
     if line is not None:
         S.wake_line_pushed(line[0], session, line[1])
 
 
-def _routes(peer, session, text, event, project, words, marker):
+def _routes(peer, session, text, event, project, words, marker, thread=None):
     """push_live's routes, the peer bound: a receipt's marker to the inbox;
     a person's words through the bridge, then the supervisor; else the inbox
     frame. A machine's notice (S.notice_of) is nobody's words: the inbox
@@ -254,7 +263,7 @@ def _routes(peer, session, text, event, project, words, marker):
                     session[:8], S.event_ref(event), mode))
         notice = event is not None and S.notice_of(event)
         owner = not notice and (words if words is not None else event is not None and S.owner_event(event))
-        if owner and deliver(session, project, event, text):
+        if owner and deliver(session, project, event, text, **({} if thread is None else {"thread": thread})):
             return
         # The bridge declined, which can take seconds: each route after it is bound again, so a `/clear` meanwhile
         # (the same pid, job and socket, another session) is no route for this session's text.
@@ -269,7 +278,15 @@ def _routes(peer, session, text, event, project, words, marker):
         str(event.get("via") or event.get("from") or "")
     # from_project arrives in synced events and lands in a shell argument: only an id-shaped one is used
     origin = event.get("from_project") if event is not None else None
-    origin = origin if isinstance(origin, str) and S.valid_name(origin) else project
+    origin = origin if isinstance(origin, str) and S.valid_name(origin) else None
+    if origin is None and event is not None and S.is_channel_id(project):
+        # A channel's message from a member (CH2's M3): answered in the channel, to the sender's thread, whatever
+        # session it holds by then; a `say`'s `thread` is a UUID as a writer's session is, else none (a `human`).
+        thread = event.get("thread")
+        S.send_frame(S.socket_path_of(peer), text, sender,
+                     thread if isinstance(thread, str) and S.UUID_RE.fullmatch(thread) else "", project)
+        return
+    origin = origin or project
     S.send_frame(S.socket_path_of(peer), text, sender, S.writer_session(event["writer"]) if event is not None else "",
                  str(origin or "") if event is not None else "")
 

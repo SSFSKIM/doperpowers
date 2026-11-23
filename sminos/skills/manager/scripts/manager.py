@@ -247,6 +247,34 @@ def _paths(t):
     return [(sid, S.transcript_now(sid)) for sid in t.sessions]
 
 
+def _owner_logs(project):
+    """[(name, id, events)] of the logs whose owner's words corroborate a delivery: the subscription's project's,
+    and every channel's known on the machine (CH2's M9), since a window may look back past a membership."""
+    return [(p.name, p.id, S.log_read(p)) for p in ([project] if project is not None else []) + S.known_channels()]
+
+
+def _owner_threads(events, sessions):
+    """The threads the lineage's sessions have been, as their own `joined`, `retired` and statements in the
+    project's log (`events`) stamp them: whom a channel's message to this lineage names, whichever session it was
+    addressed to. Every stamp, not the latest: a session reused by another thread is both, each in its own episode,
+    and a frame both could have received certifies neither (OwnerWords' exactly-one rule)."""
+    sessions = set(sessions)
+    return {e["thread"] for e in events
+            if e.get("kind") in ("joined", "retired", "channels") and isinstance(e.get("session"), str)
+            and e["session"] in sessions
+            and isinstance(e.get("thread"), str) and e["thread"]
+            and S.writer_session(e.get("writer") or "") == e["session"]}
+
+
+def _owner_words(project, sessions):
+    """The OwnerWords a window's deliveries are corroborated by: the logs read once, and the lineage's threads
+    derived from its project's events only when a channel's log is among them."""
+    logs = _owner_logs(project)
+    channel = any(S.is_channel_id(log_id) for _, log_id, _ in logs)
+    threads = _owner_threads(logs[0][2], sessions) if channel and project is not None else set()
+    return W.OwnerWords(logs, sessions, threads)
+
+
 def cmd_transcript(a):
     t = resolve(a.member)
     refuse_remote(t)
@@ -263,7 +291,7 @@ def cmd_transcript(a):
 
     def corroborate(text):
         if "words" not in owner:
-            owner["words"] = W.OwnerWords(S.log_read(t.project) if t.project is not None else [], t.sessions)
+            owner["words"] = _owner_words(t.project, t.sessions)
         return owner["words"].corroborates(text)
 
     try:

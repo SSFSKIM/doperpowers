@@ -224,10 +224,12 @@ print(json.dumps({"projects": [{"id": p, "name": "team", "kind": "hub", "retired
 PY
 )"
 rl10_as mac mac
-rl10_serve "\"org\": $DIRECTORY, \"verdict\": \"peer\""
+# notice_words: each stand-in answers `words` about a notice when told to (MAWS answers `peer`), so what is tested is
+# sminos's own guard, which hands a notice over as a peer's frame whatever the word (endpoint_standin's §8 rule).
+rl10_serve "\"org\": $DIRECTORY, \"verdict\": \"peer\", \"notice_words\": true"
 start_daemon
 rl10_as vm vm
-rl10_serve "\"org\": $DIRECTORY"
+rl10_serve "\"org\": $DIRECTORY, \"notice_words\": true"
 start_daemon
 relayed() { rl10_relay "$EPM" "$EPV"; "$@"; }
 on_vm() { rl10_as vm vm; run_in "$VHOME" "$@"; }   # the host's own program: no session

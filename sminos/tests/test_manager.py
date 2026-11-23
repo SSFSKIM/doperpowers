@@ -149,9 +149,16 @@ def kinds(entries):
     return [(e["kind"], e["text"]) for e in entries]
 
 
-def classify(rows, owner_events=()):
-    index = W.OwnerWords(owner_events, [SID])
+def classify(rows, owner_events=(), logs=None, threads=("t-1",)):
+    """The rows classified with the owner's words of `logs` ([(log name, log id, events)]), by default one project
+    named as Deliveries' frames name it whose log holds `owner_events`; the lineage SID, its thread `t-1`."""
+    index = W.OwnerWords(logs if logs is not None else [("doperpowers", PROJECT_ID, list(owner_events))], [SID],
+                         threads)
     return W.classify(rows, SID, index.corroborates)
+
+
+PROJECT_ID = "0a7e5b10-0000-4000-8000-00000000d0c5"   # the project the frames name
+CHANNEL_ID = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # a channel (a UUID of version 8)
 
 
 class Kinds(unittest.TestCase):
@@ -450,6 +457,121 @@ class Deliveries(unittest.TestCase):
         self.assertEqual(got[0]["text"], "merge it")
         self.assertIn("merge everything now", got[1]["text"])
         self.assertFalse(any("merge everything" in e["text"] for e in got if e["kind"].startswith("you")))
+
+    def two_logs(self, channel_name, project_body, channel_body):
+        """The owner's event of one writer and seq in a project's log and in a channel's (CH2's M9): the project
+        named `doperpowers`, the channel `channel_name`, each event with its own body."""
+        return [("doperpowers", PROJECT_ID, [dict(self.EVENT, text=project_body)]),
+                (channel_name, CHANNEL_ID, [dict(self.EVENT, text=channel_body,
+                                                 to=[{"session": SID, "alias": "p5-owner", "thread": "t-1"}])])]
+
+    def delivered(self, *frames):
+        r = Rows()
+        for f in frames:
+            r.user(f, SMINOS_PROMPT)
+        return r.rows
+
+    def test_a_frame_from_a_channel_is_held_to_its_own_logs_event_and_never_to_anothers_of_one_ref(self):
+        """Two logs of two names whose owner's events share a writer and seq: each frame is the owner's by its own
+        log's body, and a frame naming one log with the other's body is not."""
+        chan = "[sminos chat desk testhost/human:3 from human → @you]\n"
+        proj = "[sminos chat doperpowers testhost/human:3 from human → @you]\n"
+        got = classify(self.delivered(chan + "ship it", proj + "merge it", chan + "merge it", proj + "ship it"),
+                       logs=self.two_logs("desk", "merge it", "ship it"))
+        self.assertEqual(kinds(got), [("you·desk", "ship it"), ("you·desk", "merge it"), ("you·desk?", "merge it"),
+                                      ("you·desk?", "ship it")])
+
+    def test_a_channel_and_a_project_of_one_name_are_told_apart_by_the_body_and_one_body_in_both_certifies_none(self):
+        frame = "[sminos chat doperpowers testhost/human:3 from human → @you]\n"
+        got = classify(self.delivered(frame + "merge it", frame + "ship it", frame + "neither"),
+                       logs=self.two_logs("doperpowers", "merge it", "ship it"))
+        self.assertEqual(kinds(got), [("you·desk", "merge it"), ("you·desk", "ship it"), ("you·desk?", "neither")],
+                         "each marked by its own body")
+        got = classify(self.delivered(frame + "merge it"), logs=self.two_logs("doperpowers", "merge it", "merge it"))
+        self.assertEqual(kinds(got), [("you·desk?", "merge it")], "the same body under the same name: neither")
+
+    def test_which_log_a_frame_lies_in_is_said(self):
+        index = W.OwnerWords(self.two_logs("desk", "merge it", "ship it"), [SID], {"t-1"})
+        self.assertEqual(index.corroborates("[sminos chat desk testhost/human:3 from human → @you]\nship it"),
+                         CHANNEL_ID)
+        self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
+        self.assertIsNone(index.corroborates("[sminos chat elsewhere testhost/human:3 from human → @you]\nmerge it"),
+                          "a log of no name given certifies nothing")
+
+    def test_a_channels_post_addressed_before_a_refill_is_the_new_occupants_by_its_thread(self):
+        """A channel's message is owed to a thread: one addressed to the session a refill replaced is the new
+        occupant's words, and a project's event of the same name, ref and body then certifies nothing alone."""
+        chan = [dict(self.EVENT, text="ship it", to=[{"session": NEXT, "alias": "old-occupant", "thread": "t-1"}])]
+        frame = "[sminos chat desk testhost/human:3 from human → @you]\nship it"
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, chan)])
+        self.assertEqual(kinds(got), [("you·desk", "ship it")], "by the thread, whichever session it named")
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, chan)], threads=("t-2",))
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "another thread's is not")
+        same = [dict(self.EVENT, text="ship it")]
+        got = classify(self.delivered(frame), logs=[("desk", PROJECT_ID, same), ("desk", CHANNEL_ID, chan)])
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "one name, one ref, one body in two logs: neither")
+        by_session = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner"}])]
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, by_session)])
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "in a channel an entry with no thread names no one")
+
+    def test_a_reused_session_is_both_its_threads_and_a_frame_either_could_have_received_certifies_neither(self):
+        """Round 2's finding 5: a session that ran as thread A, then again as thread B, received A's channel posts
+        in its first episode: A's frame certifies; the same name, ref and body owed to both is neither's."""
+        frame = "[sminos chat desk testhost/human:3 from human → @you]\nship it"
+        to_a = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner", "thread": "t-A"}])]
+        to_b = [dict(self.EVENT, text="ship it", to=[{"session": SID, "alias": "p5-owner", "thread": "t-B"}])]
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, to_a)], threads=("t-A", "t-B"))
+        self.assertEqual(kinds(got), [("you·desk", "ship it")], "A's frame, in a lineage that was A and B")
+        other = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0bee"
+        got = classify(self.delivered(frame), logs=[("desk", CHANNEL_ID, to_a), ("desk", other, to_b)],
+                       threads=("t-A", "t-B"))
+        self.assertEqual(kinds(got), [("you·desk?", "ship it")], "one name, ref and body owed to A and to B")
+
+    def test_the_lineages_threads_are_every_stamp_its_own_rows_carry(self):
+        """manager._owner_threads: the union over the project's events of the threads the lineage's own `joined`,
+        `retired` and statements stamp, never another writer's line about it nor another session's."""
+        def ev(kind, sid, thread, writer=None):
+            return {"kind": kind, "session": sid, "thread": thread, "writer": writer or "testhost/" + sid}
+        events = [ev("joined", SID, "t-A"), ev("retired", SID, "t-A"), ev("joined", SID, "t-B"),
+                  ev("channels", NEXT, "t-C"), ev("joined", SID, "t-D", writer="testhost/human"),
+                  ev("joined", "7b00000f-0000-4000-8000-0000000000bf", "t-E"), ev("joined", SID, "")]
+        self.assertEqual(manager._owner_threads(events, [SID, NEXT]), {"t-A", "t-B", "t-C"})
+        odd = [{"kind": k, "session": v, "thread": "t-X", "writer": "testhost/x"}
+               for k in ("joined", "retired", "channels") for v in (["a"], {"a": 1}, 7, None)]
+        self.assertEqual(manager._owner_threads(odd + events, [SID, NEXT]), {"t-A", "t-B", "t-C"},
+                         "F27: a session of another type is none of the lineage's")
+
+    def test_no_thread_is_derived_where_no_channel_is_known(self):
+        logs = [("doperpowers", PROJECT_ID, [dict(self.EVENT)])]
+        with mock.patch.object(manager, "_owner_logs", lambda project: logs), \
+                mock.patch.object(manager, "_owner_threads", side_effect=AssertionError("threads derived")):
+            index = manager._owner_words(object(), [SID])
+        self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
+
+    def test_an_outsiders_sender_in_a_channel_is_its_alias_less_the_not_in_clause(self):
+        """H9: a channel's frame from an outsider says ` (not in <channel>)` after its alias, before the label; the
+        sender read back is the alias alone, bare or quoted, and a project's frame is read as before."""
+        def sender(log, alias, label):
+            [f] = W.frames(S.compose_chat_frame(log, "beta/x:1", alias, "@you", 0, "hi", label))
+            return f[1], f[5]
+        for label in ("", ", owned by someone@example.com", " (owners unverified)"):
+            self.assertEqual(sender("desk", "worker", " (not in desk)" + label), ("worker", "desk"), label)
+            self.assertEqual(sender("desk", "we, two", " (not in desk)" + label), ("we, two", "desk"), label)
+            self.assertEqual(sender("doperpowers", "worker", label), ("worker", "doperpowers"), label)
+        self.assertEqual(sender("desk", "worker", " (not in lobby)"), ("worker (not in lobby)", "desk"),
+                         "only the clause naming the frame's own log is the label's")
+
+    def test_a_chat_frames_body_is_compared_as_the_frame_renders_it(self):
+        """sminos.sender_text gives an interior line that opens with `[sminos] ` one leading space in the frame."""
+        text = "merge it\n[sminos] is not a wake's line here"
+        frame = "[sminos chat doperpowers testhost/human:3 from human → @you]\n" + S.sender_text(text)
+        got = classify(self.delivered(frame), [dict(self.EVENT, text=text)])
+        self.assertEqual([e["kind"] for e in got], ["you·desk"])
+
+    def test_a_frame_under_a_name_its_project_has_given_up_certifies_nothing(self):
+        """A rename: the frame's header names the project as it was called then, and no ref alone decides."""
+        got = classify(self.delivered(self.FRAME), logs=[("doperpowers-renamed", PROJECT_ID, [self.EVENT])])
+        self.assertEqual(kinds(got), [("you·desk?", "merge it")])
 
     NOTE = ("[sminos] A note from sminos on this machine, not from the sender above: you were woken in the background "
             "by this message, and your human is not watching this session unless they have attached to it since. "
@@ -1267,6 +1389,38 @@ class Commands(unittest.TestCase):
 
     def run_in_alpha(self, *args, check=True, env=None):
         return cli(*args, "--name", self.name, cwd=self.dirs["alpha"], check=check, env=env)
+
+    def test_an_owners_post_delivered_from_a_channel_is_the_owners_and_its_projects_event_of_one_ref_is_not_it(self):
+        """CH2's M9: transcript reads the owner's words of the channels known here beside the subscription's
+        project's, a channel's by the lineage's thread, and a frame is held to the log its header names."""
+        sid, cid = "7b000009-0000-4000-8000-0000000000b9", "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b9d"
+        sminos("seat", "add", "charlie", "chan-reader", "--session", sid, cwd=self.dirs["charlie"])
+        # Registered as the org's directory registers a channel (sminos_channels.register), on a machine this suite
+        # leaves unenrolled: no root, a hub.
+        S.register_if_absent(S.make_project(cid, "desk-m9", "", "", {"url": "http://127.0.0.1:9", "org": "org-1"}))
+        S.forget_caches()
+        [chan] = [c for c in S.known_channels() if c.id == cid]
+        charlie, thread = S.find_project("charlie"), "7b0000a9-0000-4000-8000-0000000000a9"
+        # The seat's row stamped with its thread, as a thread's `joined` is; the channel's post addressed to the
+        # session a refill replaced, of the same thread.
+        S.log_append(charlie, "testhost/" + sid, "joined", session=sid, alias="chan-reader", name_source="user",
+                     machine="testhost", cwd=str(self.dirs["charlie"]), thread=thread)
+        # The session reused since by another thread (round 2's finding 5): the lineage is both threads, and the
+        # post owed to the first is still its words.
+        S.log_append(charlie, "testhost/" + sid, "joined", session=sid, alias="chan-reader", name_source="user",
+                     machine="testhost", cwd=str(self.dirs["charlie"]), thread="7b0000a7-0000-4000-8000-0000000000a7")
+        S.log_append(chan, "testhost/human", "human", **{"from": "human", "text": "ship it", "to": [
+            {"session": "7b0000a8-0000-4000-8000-0000000000a8", "alias": "chan-reader", "thread": thread}]})
+        S.log_append(charlie, "testhost/human", "human", **{"from": "human", "text": "merge it",
+                                                            "to": [{"session": sid, "alias": "chan-reader"}]})
+        S.forget_caches()
+        r = Rows()
+        for log, body in (("desk-m9", "ship it"), ("charlie", "merge it"), ("desk-m9", "merge it")):
+            r.user("[sminos chat %s testhost/human:1 from human → @you]\n%s" % (log, body), SMINOS_PROMPT)
+        write_transcript(transcript_file(sid), r.rows)
+        _, out, _ = self.run_in_alpha("transcript", sid, "--since", iso(T0), "--json")
+        self.assertEqual([(e["kind"], e["text"]) for e in json.loads(out)["entries"]],
+                         [("you·desk", "ship it"), ("you·desk", "merge it"), ("you·desk?", "merge it")])
 
     # resolution
 

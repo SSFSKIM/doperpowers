@@ -5,13 +5,13 @@
 # Declared channels through the launcher, on one machine (CH1 of
 # docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md; its plan,
 # docs/doperpowers/plans/2026-11-21-sminos-channels-ch1.md, the proof map):
-# nothing is said into a channel, from a session or from a terminal, every
-# log's files unchanged (A10); `join <channel>` is refused naming
+# `join <channel>` is refused naming
 # `channel add`, and a `.smns` naming a channel's id files its directory in
 # the machine's project, saying why (A8's halves); a verb that writes a fact
 # about a thread (`charge`, `status`, `retire`) writes it to the thread's own
-# project however the thread is named, and one that names it through a
-# channel is refused (A11), again with the thread in a channel. The verbs
+# project however the thread is named (A11), through a channel it is in
+# included (CH2's M1), and one that names it through a channel it is not in
+# is refused, naming where the name answers. The verbs
 # `channel create`, `add` and `remove` (M4): refused without the capability,
 # every log unchanged; with it, a thread creating a channel with itself,
 # adding and removing another by a request carried out before the command
@@ -24,8 +24,16 @@
 # from a terminal, a thread not in the channel and for a machine the org
 # does not list, then adding and removing a machine by hand, and `list
 # --org` ending with a section for a channel with a member and none once its
-# last member left. The first channel is registered as the
-# org's directory registers one (sminos_channels.register).
+# last member left. What is said into a channel (CH2's M4): a person's
+# untagged note, a session in no channel saying into it (its project in
+# `from_project`, its copy, its line), the refusals of a name no member
+# answers, a selector and the unquoted `name#short` qualifier with every
+# log unchanged, `chat <channel>` and `list <channel>`. The lead (CH2's
+# M8): `channel lead` refused inside a session, with no terminal and without
+# a typed yes, every log unchanged; a typed yes on a controlling pty names
+# it, `channel show` prints it, the person's untagged post is addressed to
+# it and a session's is not, and `none` clears it. The first channel is
+# registered as the org's directory registers one (sminos_channels.register).
 # One machine cut over to its endpoint (daemon/identity.json); no endpoint
 # runs. Hermetic: HOME and SMINOS_HOME are temporary; `claude` is a stub;
 # the sessions are `sleep`s with engine records the suite writes.
@@ -134,29 +142,6 @@ session_record worker "$S1" "$LIVE_PID" "$APPDIR"
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 run_in "$APPDIR" "$SMINOS" list --json
 assert_contains "$OUT" "\"session\": \"$S1\"" "a session in app is a member of it"
-
-echo "nothing is said into a channel:"
-BEFORE="$(logs_sum)"
-REFUSED="is a channel, and speaking in a channel is not available in this version of sminos yet: nothing was recorded. Tag the thread itself (@<alias>#<short> or @<short>), which reaches it in its own project as today"
-for how in "terminal" "session"; do
-  pre=(); [ "$how" = session ] && pre=(env CLAUDE_CODE_SESSION_ID="$S1")
-  run_in "$APPDIR" ${pre[@]+"${pre[@]}"} "$SMINOS" say --in desk-integration "hello there"
-  assert_rc 1 "$RC" "say --in <channel> from a $how is refused, exit 1"
-  assert_contains "$OUT" "desk-integration $REFUSED" "saying why, and which tag works today ($how)"
-  run_in "$APPDIR" ${pre[@]+"${pre[@]}"} "$SMINOS" say --in "$DESK" "hello there"
-  assert_rc 1 "$RC" "and by its id ($how)"
-  run_in "$APPDIR" ${pre[@]+"${pre[@]}"} "$SMINOS" say "@desk-integration/worker hello there"
-  assert_rc 1 "$RC" "a tag qualified by a channel is refused ($how)"
-  assert_contains "$OUT" "desk-integration $REFUSED" "in the same words ($how)"
-  run_in "$APPDIR" ${pre[@]+"${pre[@]}"} "$SMINOS" say --project desk-integration "hello there"
-  assert_rc 1 "$RC" "a selector naming a channel is refused ($how)"
-  assert_contains "$OUT" "desk-integration $REFUSED" "in the same words, before the selector reads its scope ($how)"
-done
-assert_equals "$(logs_sum)" "$BEFORE" "no log file of any project or channel changed"
-assert_equals "$(channel_files)" 0 "the channel's log holds nothing"
-run_in "$APPDIR" "$SMINOS" say "@worker the plain tag"
-assert_rc 0 "$RC" "the plain tag reaches the thread in its own project"
-assert_contains "$(kinds_of "$APP" "$S1")" "joined" "its project's log is where it is"
 
 echo "join and .smns:"
 run_in "$APPDIR" in_session "$S1" "$SMINOS" join desk-integration
@@ -312,19 +297,123 @@ for name in "$SHORT" "$S1" "worker#$SHORT"; do
 done
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^in-charge$')" 3 "three in-charge lines in its project's log"
 assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^status$')" 3 "three status lines there"
-# `who --thread` (EN.G1) names its thread through find_target too, so it is refused as every verb is.
+# Named through a channel it is in (CH2's M1), a verb finds it in the channel's roster and writes where it writes
+# today, in its own project; `who --thread` (EN.G1) names its thread through find_target too. Through a channel it
+# is not in, no member answers, and the refusal names where the name does.
+TWO_BEFORE="$(find "$SMINOS_HOME/projects/$TWO" -type f -name '*.jsonl' -exec shasum {} + | LC_ALL=C sort)"
+for q in desk-two "$TWO" "desk-two#${TWO:0:8}"; do
+  run_in "$APPDIR" "$SMINOS" charge "$q/worker" "minding via $q"
+  assert_rc 0 "$RC" "charge names the thread through $q"
+  run_in "$APPDIR" "$SMINOS" status "$q/worker" "now via $q"
+  assert_rc 0 "$RC" "status names the thread through $q"
+  run_in "$APPDIR" "$SMINOS" who --thread "$q/worker"
+  assert_rc 0 "$RC" "who --thread names it through $q"
+done
+assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^in-charge$')" 6 "three more in-charge lines in its project's log"
+assert_equals "$(kinds_of "$APP" "$S1" | tr ' ' '\n' | grep -c '^status$')" 6 "three more status lines there"
 for verb in "who --thread desk-integration/worker" "charge desk-integration/worker x" "status desk-integration/worker x" \
     "retire desk-integration/worker"; do
   # shellcheck disable=SC2086
   run_in "$APPDIR" "$SMINOS" $verb
   assert_rc 4 "$RC" "$verb is refused, exit 4"
-  assert_contains "$OUT" "'desk-integration/worker' names a thread through a channel, which is not available in this version of sminos yet: name it by its own name (<alias>#<short> or <short>)" "saying how to name it ($verb)"
+  assert_contains "$OUT" "no member worker in channel desk-integration; elsewhere: app/worker#$SHORT" "naming where it answers ($verb)"
 done
-run_in "$APPDIR" "$SMINOS" retire "worker#$SHORT"
-assert_rc 0 "$RC" "retire names it by alias#short"
+run_in "$APPDIR" "$SMINOS" retire "desk-two/worker"
+assert_rc 0 "$RC" "retire names it through the channel"
 assert_contains "$(kinds_of "$APP" "$S1")" "retired" "its retirement is in its own project's log"
+assert_equals "$(find "$SMINOS_HOME/projects/$TWO" -type f -name '*.jsonl' -exec shasum {} + | LC_ALL=C sort)" \
+  "$TWO_BEFORE" "the channel's log files byte for byte as they were"
 assert_equals "$(channel_files)" 0 "nothing was ever written in the channel's log"
 assert_equals "$(log_kinds "$TWO")" "channel-env channel-request" "nor, with the thread in a channel, anything but requests and the pool's events in that one's"
+
+echo "what is said into a channel (CH2's M4):"
+said_in() { # log-id — each message of the log in order: its kind, whom its to names, whether it carries from_project and copy
+  python3 - "$SMINOS_HOME/projects/$1/log" <<'PY'
+import glob, json, os, sys
+rows = []
+for p in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
+    for line in open(p):
+        e = json.loads(line)
+        if e["kind"] in ("say", "human"):
+            to = e["to"] if e["to"] == "*" else ",".join(
+                str(r.get("alias")) + ("+thread" if r.get("thread") else "") for r in e["to"])
+            rows.append((e["ts"], e["kind"], to, "from_project" if "from_project" in e else "-",
+                         "copy" if "copy" in e else "-"))
+print("\n".join(" ".join(r[1:]) for r in sorted(rows)))
+PY
+}
+THREE="$(channel_id desk-three)"
+run_in "$T" "$SMINOS" say --in desk-three "a person's note"
+assert_rc 0 "$RC" "a terminal says into a channel"
+assert_contains "$OUT" "in desk-three" "recorded in the channel's log"
+assert_equals "$(said_in "$THREE")" "human * - -" "untagged: one event under the machine's human writer, no from_project"
+run_in "$T" in_session "$S3" "$SMINOS" say --in desk-three "@helper from outside"
+assert_rc 0 "$RC" "a session in no channel says into it"
+assert_contains "$OUT" "you are not in desk-three: replies to this come to you directly, in alpha. sminos channel add desk-three places you in it" "told it is no member, where replies come and how to add itself"
+assert_contains "$OUT" "copy " "its copy kept in its own project"
+assert_equals "$(said_in "$THREE" | tail -1)" "say helper+thread from_project -" "its message names the member's thread and carries its project"
+BEFORE="$(logs_sum)"
+run_in "$APPDIR" in_session "$S2" "$SMINOS" say "@desk-three/there hi"
+assert_rc 4 "$RC" "a name no member of the channel answers is refused, exit 4"
+assert_contains "$OUT" "no member there in channel desk-three; elsewhere: @alpha/there#${S3:0:8}" "naming where it answers"
+run_in "$APPDIR" in_session "$S2" "$SMINOS" say --in desk-three "@there hi"
+assert_contains "$OUT" "Drop --in to reach it in its own project" "and with --in, how to reach it"
+run_in "$APPDIR" in_session "$S2" "$SMINOS" say --project desk-three "hello"
+assert_rc 1 "$RC" "a selector naming a channel is refused, exit 1"
+assert_contains "$OUT" "desk-three is a channel, and a selector names projects: sminos say --in desk-three \"@all …\" reaches its live members" "naming --in"
+run_in "$APPDIR" in_session "$S2" "$SMINOS" say "@desk-three#${THREE:0:8}/helper hi"
+assert_rc 1 "$RC" "the unquoted name#short qualifier is refused, exit 1"
+assert_contains "$OUT" "opens no tag (a tag's qualifier takes no #): nothing was recorded" "it opens no tag"
+assert_equals "$(logs_sum)" "$BEFORE" "no log file changed by a refusal"
+run_in "$T" "$SMINOS" chat desk-three -n 5
+assert_rc 0 "$RC" "chat <channel>"
+assert_contains "$OUT" "human → *  a person's note" "reads the person's note"
+assert_contains "$OUT" "there (not in desk-three) → @helper" "and the outsider's message, saying it is not in the channel"
+run_in "$T" "$SMINOS" list desk-three
+assert_rc 0 "$RC" "list <channel>"
+assert_contains "$OUT" "# desk-three" "prints the channel as --channel does"
+assert_contains "$OUT" "helper [${S2:0:8}]" "with its member"
+run_in "$APPDIR" "$SMINOS" say "@helper the plain tag"
+assert_rc 0 "$RC" "the plain tag still reaches the thread"
+assert_contains "$OUT" "in app" "in its own project"
+
+echo "the lead (CH2's M8):"
+at_tty() { # answer command... — OUT and RC of the command on a controlling pty of its own, the answer typed at
+  set +e   # its prompt (pty_answer.py: killed and reaped at its deadline, exit 124)
+  OUT="$(python3 -B "$SCRIPT_DIR/pty_answer.py" "$@" 2>&1)"; RC=$?; set -e
+}
+no_tty() { # command... — OUT and RC of the command with no controlling terminal (a new session)
+  set +e
+  OUT="$(python3 -c 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:], start_new_session=True).returncode)' "$@" 2>&1)"
+  RC=$?; set -e
+}
+BEFORE="$(logs_sum)"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "channel lead inside a session is refused"
+assert_contains "$OUT" "channel lead is for a person at a terminal, and this runs inside a session: nothing was written" "saying it is the person's"
+no_tty "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "and where there is no terminal"
+assert_contains "$OUT" "needs its owner at a terminal to confirm it, and this has none: nothing was written" "saying so"
+at_tty n "$SMINOS" channel lead desk-three helper
+assert_rc 1 "$RC" "a person who does not type yes"
+assert_contains "$OUT" "not confirmed: nothing was written" "is told nothing was written"
+assert_equals "$(logs_sum)" "$BEFORE" "no log file changed by a refusal"
+at_tty y "$SMINOS" channel lead desk-three helper
+assert_rc 0 "$RC" "a typed yes at a terminal names the lead"
+assert_contains "$OUT" "Make helper#${S2:0:8} the lead of desk-three?" "after asking"
+assert_contains "$OUT" "helper#${S2:0:8} leads desk-three" "and says so"
+run_in "$T" "$SMINOS" channel show desk-three
+assert_equals "$(grep -A1 "^# desk-three " <<<"$OUT" | sed -n 2p)" "lead  helper#${S2:0:8}" "channel show prints the lead after its heading"
+run_in "$T" "$SMINOS" say --in desk-three "do it"
+assert_rc 0 "$RC" "the person's untagged post"
+assert_equals "$(said_in "$THREE" | tail -1)" "human helper+thread - -" "is addressed to the lead"
+run_in "$APPDIR" in_session "$S1" "$SMINOS" say --in desk-three "a session's note"
+assert_equals "$(said_in "$THREE" | tail -1)" "say * from_project -" "a session's untagged post is not the lead's"
+at_tty y "$SMINOS" channel lead desk-three none
+assert_rc 0 "$RC" "none clears it"
+assert_contains "$OUT" "desk-three has no lead" "saying so"
+run_in "$T" "$SMINOS" channel show desk-three
+assert_equals "$(grep -c '^lead ' <<<"$OUT" || true)" 0 "and channel show prints no lead"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

@@ -424,8 +424,8 @@ run_suites_a() {
     fail "the verbs, what a sender is told on any machine, and the direct send (test_wake_verbs.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_wake_senders.py"; then pass "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; else
     fail "one, two and five senders over the three ways against the wake, its holds, its grace and its transitions (test_wake_senders.py)"; fi
-  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; else
-    fail "sminos 1.27.10, 1.51.0 and 1.52.0 beside this code, each held to its version, over a store with channels too (test-older-cli.sh)"; fi
+  if "$SCRIPT_DIR/test-older-cli.sh"; then pass "sminos 1.27.10, 1.51.0, 1.52.0 and 1.54.1 beside this code, each held to its version, over a store whose channel holds messages too (test-older-cli.sh)"; else
+    fail "sminos 1.27.10, 1.51.0, 1.52.0 and 1.54.1 beside this code, each held to its version, over a store whose channel holds messages too (test-older-cli.sh)"; fi
   if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; else
     fail "a retired machine's sessions read gone; machines says what the endpoint carries (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
@@ -496,6 +496,9 @@ run_suites_b() {
   else fail "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"; fi
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_rl10_probes.py"; then
+    pass "what the rl10 replay checks in place of its probes: a position is its log's, a words? held to the log it names, a member any session staged here, an unattested scene (test_rl10_probes.py)"
+  else fail "what the rl10 replay checks in place of its probes: a position is its log's, a words? held to the log it names, a member any session staged here, an unattested scene (test_rl10_probes.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
   # (rl10_conformance.py): every line as written, its probes checked over the whole conversation instead.
   while IFS= read -r line; do
@@ -609,9 +612,24 @@ run_channels() {
   if python3 -B "$SCRIPT_DIR/test_channels_roster.py"; then
     pass "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"
   else fail "the roster, the listing and the pool: list's sections, --channel, answers, channel show and env (test_channels_roster.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_names.py"; then
+    pass "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"
+  else fail "names through a channel: a verb's target, a bare alias through a shared channel, every row of the id rule (test_channels_names.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_debt.py"; then
+    pass "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"
+  else fail "what a channel owes a thread: by its id, past its boundary, across every transition; daemon owed (test_channels_debt.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_delivery.py"; then
+    pass "a channel's message pushed, woken for and held, by the thread: the last check, the boundary, receipts, the frame (test_channels_delivery.py)"
+  else fail "a channel's message pushed, woken for and held, by the thread: the last check, the boundary, receipts, the frame (test_channels_delivery.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_say.py"; then
+    pass "saying into a channel: the doors, a member and an outsider, the reply line, the refusals, chat and list, the merge base's output (test_channels_say.py)"
+  else fail "saying into a channel: the doors, a member and an outsider, the reply line, the refusals, chat and list, the merge base's output (test_channels_say.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_channels_lead.py"; then
+    pass "the lead: the verb at a terminal and its refusals, whose lead is in effect, the post as its human's words, a notice, channel show (test_channels_lead.py)"
+  else fail "the lead: the verb at a terminal and its refusals, whose lead is in effect, the post as its human's words, a notice, channel show (test_channels_lead.py)"; fi
   echo
-  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; else
-    fail "channels through the launcher: nothing said into one, join, .smns, a verb's fact, create, add, remove, the listing (test-channels.sh)"; fi
+  if "$SCRIPT_DIR/test-channels.sh"; then pass "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; else
+    fail "channels through the launcher: join, .smns, a verb's fact, create, add, remove, the listing, what is said into one (test-channels.sh)"; fi
   if "$SCRIPT_DIR/test-channels-machines.sh"; then pass "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; else
     fail "channels across three machines: known for two holders and not a follower, a removal, a return, the last member (test-channels-machines.sh)"; fi
 }
@@ -862,6 +880,7 @@ assert_contains "$(field "$R_UUID" task)" "    sminos say - <<'EOF'" "preamble t
 assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
 assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
+assert_contains "$(field "$R_UUID" task)" "it, a reply line to that session's own project" "preamble: an outsider's reply line goes to its own project (CH2's final reading, H10)"
 assert_contains "$(field "$R_UUID" task)" "with no reply line: nobody answers it, and its content" "preamble teaches a machine's notice as it arrives: a chat frame from <program>@<machine>, no reply line (X8)"
 assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
 assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"

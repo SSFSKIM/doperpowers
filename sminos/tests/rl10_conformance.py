@@ -40,8 +40,19 @@ declared channel's (CH1's M6, its case 13, staged by registering the
 channel under the fixture's id and name and placing S1 by its own change),
 and a channel's requests across machines (CH1's M7, case 14, the
 fifteenth, which CH1's review calls case 15, staged by narrowing S2 and
-then S1 to private before the request naming each arrives), and nothing is
-amended here.
+then S1 to private before the request naming each arrives), and a channel's
+messages (CH2's M7, cases 15 to 18: S7 and S8, S10 and S9 staged as live
+sessions of P, each but S7 placed in the channel by its own change and S10
+and S9 given their reach in one change of the record; the three writes made
+through sminos's own `say`, its clock held at the fixture's `ts`; a thread id
+the fixture names for a session of this machine bound to the one sminos
+minted for it, bind_threads), and the endpoint's `audience` for each local
+session, sent down after the member frame that states it (its members and
+digest as the fixture pins them: the member ids are the fixture's, and the
+digest is the endpoint's input, never this code's to make), and nothing is
+amended here. What is checked
+over the whole conversation in place of the probes is rl10_probes.py's,
+built for a conversation of several logs.
 
 Prints one `ok` or `FAIL` line per line of the conversation it plays, for
 run-sminos-tests.sh to count, and exits 1 when one fails.
@@ -88,6 +99,7 @@ sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 
 import endpoint_standin  # noqa: E402 — its connection's reads and writes
+import rl10_probes as probes  # noqa: E402 — what is checked in place of the probes
 import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
@@ -414,6 +426,7 @@ def project(name, hub):
 
 
 SESSIONS = {}   # session → (its processes, its registry record's path)
+STAGED = []     # every session staged on this machine, in order, an ended one too: the members a words? may name
 
 
 def session(p, sid, alias):
@@ -430,6 +443,16 @@ def session(p, sid, alias):
         json.dump({"pid": proc.pid, "sessionId": sid, "name": alias, "nameSource": "user", "cwd": p.root,
                    "kind": "interactive", "status": "idle", "messagingSocketPath": sock}, f)
     SESSIONS[sid] = ((proc, inbox), path)
+    STAGED.append(sid)
+
+
+def inbox_texts(sid):
+    """What a staged session's inbox took, one line a frame, as it took them."""
+    try:
+        with open(os.path.join(BASE, "in-%s.sock.received" % sid[:8]), encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError:
+        return []
 
 
 def end_session(sid):
@@ -653,13 +676,129 @@ def stage_private(name):
     return stage
 
 
+SAY = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+ts = sys.argv[2]
+sminos.now = lambda ms=False: ts
+sminos.main(sys.argv[3:])
+"""
+
+REACH = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+sid, access, member, grade = sys.argv[2:6]
+sminos.sibling_module("sminos_visibility").set_visibility(sid, access=access, share=(member, grade) if member else None,
+                                                          operator=True)
+"""
+
+
+def say_at(ts, args, sid=None):
+    """A `sminos say` through its own door, as a session (`sid`) or a person
+    at a terminal runs it, in a process of its own, sminos's clock held at
+    the fixture's `ts` for it (append_at's hold, for a verb)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    if sid:
+        env["CLAUDE_CODE_SESSION_ID"] = sid
+    r = subprocess.run([sys.executable, "-B", "-c", SAY, SCRIPTS, ts, "say", *args], capture_output=True, text=True,
+                       cwd=P_.root, env=env)
+    if r.returncode:
+        raise RuntimeError("sminos say %r: %s" % (args, r.stderr.strip()))
+
+
+def stage_member(name, alias, placed=True, access=None, share=None):
+    """Cases 16 to 18: a live session of P (session()), joined as a thread,
+    placed in the channel by its own change when `placed`, then its reach
+    set in one change of the record (set_visibility, as the app's record
+    act sets it: one policyRev), when `access` is given."""
+    def stage():
+        sid = B["session:" + name]
+        session(P_, sid, alias)
+        sminos.forget_caches()
+        sminos.reconcile(P_)
+        if placed:
+            r = subprocess.run([sys.executable, "-B", "-c", PLACE, SCRIPTS, B["channel:C"], "desk-integration", "add",
+                                sid], capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError("%s's own add to the channel: %s" % (name, r.stderr.strip()))
+        if access:
+            member, grade = share or ("", "")
+            r = subprocess.run([sys.executable, "-B", "-c", REACH, SCRIPTS, sid, access, member, grade],
+                               capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError("%s's reach: %s" % (name, r.stderr.strip()))
+    return stage
+
+
+CARRY = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+print(sminos.channels_module().carry_words(sminos.known_project(sys.argv[2])))
+"""
+
+
+def stage_carried(ask, verdict, session, text):
+    """The word the uplink kept for the channel's message the fixture's ask
+    `ask` was about carried out, as the daemon's channel pass carries it
+    (sminos_channels.carry_words), in a process of its own: the replay runs
+    the uplink alone, and a writer's next message to a thread is asked about
+    only once its last is settled. The answer's line is only written to the
+    socket, so the word is waited for until the uplink has kept it; the pass
+    must then carry words out, that one taken among them (the words kept on
+    the earlier cases' answers, which no pass has carried yet, go too). The
+    word must be the fixture's `verdict` on that ask, and carrying it must
+    hand the message's `text` to `session`'s inbox (a word kept as another
+    verdict, settled without a delivery, is the defect this is here for)."""
+    words = os.path.join(sminos.root(), "projects", B["channel:C"], sminos.channels_module().WORDS_DIR)
+
+    def kept():
+        try:
+            return [n for n in os.listdir(words) if n.endswith(".%s.json" % IDS.get(ask))]
+        except OSError:
+            return []
+    if not wait_for(kept, timeout=10):
+        raise RuntimeError("the uplink kept no word on %s's answer (%s)" % (ask, IDS.get(ask)))
+    with open(os.path.join(words, kept()[0])) as f:
+        word = json.load(f)
+    if word.get("verdict") != verdict:
+        raise RuntimeError("the uplink kept %r on %s's answer, not %r" % (word.get("verdict"), ask, verdict))
+    before = len(inbox_texts(B["session:" + session]))
+    r = subprocess.run([sys.executable, "-B", "-c", CARRY, SCRIPTS, B["channel:C"]], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("carrying out the channel's kept words: %s" % r.stderr.strip())
+    if not r.stdout.strip().isdigit() or int(r.stdout) < 1 or kept():
+        raise RuntimeError("the channel's pass carried out %s kept words, %s's %s" % (
+            r.stdout.strip(), ask, "left behind" if kept() else "taken"))
+    if not wait_for(lambda: any(text in t for t in inbox_texts(B["session:" + session])[before:]), timeout=10):
+        raise RuntimeError("carrying %s's word handed %s nothing carrying %r" % (ask, session, text))
+
+
+def stage_both(*stages):
+    return lambda: [stage() for stage in stages]
+
+
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
          (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
          (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
          (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4"),
          (13, 0): stage_channel("add"), (13, 4): stage_channel("remove"),
-         (14, 3): stage_private("S2"), (14, 8): stage_private("S1")}
+         (14, 3): stage_private("S2"), (14, 9): stage_private("S1"),
+         (15, 0): stage_both(stage_member("S8", "integrator"), stage_member("S7", "scout", placed=False)),
+         (15, 4): lambda: say_at("2026-10-27T18:10:00.000Z",
+                                 ["--in", "desk-integration", "@integrator the fixture case is ready for review"],
+                                 B["session:S7"]),
+         (16, 4): stage_member("S10", "solo", access="private"),
+         (17, 0): stage_member("S9", "review", access="private", share=(B["member:B"], "converse")),
+         (17, 10): lambda: say_at("2026-10-27T18:11:00.000Z",
+                                 ["--in", "desk-integration", "@integrator pick up the channel's review"]),
+         (18, 0): stage_both(lambda: stage_carried("w-ch-3", "words", "S8", "pick up the channel's review"),
+                             lambda: say_at("2026-10-27T18:12:00.000Z",
+                                            ["--notice", "ci-watch", "--in", "desk-integration",
+                                             "@integrator the integration build failed"]))}
 
 
 # The endpoint's scenes that bind what later lines name: another machine of
@@ -672,15 +811,54 @@ def scene_add_machine(step):
 
 
 def scene_machine_event(step):
+    B[step["binding"]] = probes.machine_event(step, iso(), B["kid:" + step["machine"]])
+
+
+def scene_device_words(step):
+    """A person's words written into a channel's log by one of member B's
+    devices, as the endpoint sends them down, owed to the scene's thread
+    when it names one (case 18). The device words of cases 7 and 11, in P's
+    log, are bound before the replay begins (stage_device_words)."""
+    if "project" not in step:
+        return
     at = iso()
-    B[step["binding"]] = {"ts": at, "created": at, "writer": "%s/%s" % (step["machine"], step["session"]),
-                          "seq": step["seq"], **step["body"],
-                          "attest": {"owners": step["owners"], "ownersProof": [], "origin": {"kind": "terminal"},
-                                     "stateVersion": 6},
-                          "sig": {"kid": B["kid:" + step["machine"]], "value": "AQ"}}
+    entry = {"session": step["session"], "alias": step["alias"], **({"thread": step["thread"]} if "thread" in step else {})}
+    B[step["binding"]] = {"ts": at, "writer": "hub/" + B["member:B"], "seq": step["seq"], "kind": "human",
+                          "from": "human", "member": B["member:B"], "to": [entry],
+                          "text": "@%s from %s, into the channel" % (step["alias"], step["device"]), "created": at,
+                          "sig": {"kid": B["kid:" + step["device"]], "value": "AQ"}}
 
 
-SCENES = {"add-machine": scene_add_machine, "machine-event": scene_machine_event}
+SCENES = {"add-machine": scene_add_machine, "machine-event": scene_machine_event, "device-words": scene_device_words}
+
+
+def bind_threads(x):
+    """A thread id the fixture names for a session of this machine (an entry
+    of `to`: its `session` and `thread`; an event: its `writer`'s session and
+    `thread`) stands for the one sminos minted for that session's thread, as
+    a `vary`'d `thread` does (IDS); another machine's literal stays as it is."""
+    if isinstance(x, list):
+        for v in x:
+            bind_threads(v)
+        return
+    if not isinstance(x, dict):
+        return
+    for v in x.values():
+        bind_threads(v)
+    lit = x.get("thread")
+    if not isinstance(lit, str) or "{{" in lit or lit in IDS:
+        return
+    ref = x.get("session")
+    if not isinstance(ref, str) and isinstance(x.get("writer"), str):
+        ref = x["writer"].rpartition("/")[2]
+    try:
+        sid = subst(ref) if isinstance(ref, str) else None
+    except KeyError:
+        return
+    if sid in STAGED:
+        t = sminos.threads_module().current_record(sid, fresh=True)
+        if t is not None:
+            IDS[lit] = t["thread"]
 
 
 # ------------------------------------------------------------- what sminos did with a down line
@@ -804,10 +982,10 @@ def check_request(name, binding, placed):
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
-         (7, 13): check_delivered("S2", "from b1"), (11, 39): check_delivered("S2", "from b2"),
-         (11, 7): check_revoked(3), (11, 29): check_revoked(4),
-         (11, 32): check_revoked(5, ["b1"]), (9, 13): check_send_entered, (14, 1): check_revoked(6, ["b1"]),
-         (14, 6): check_request("S2", "request:R1", True), (14, 11): check_request("S1", "request:R2", False)}
+         (7, 13): check_delivered("S2", "from b1"), (11, 42): check_delivered("S2", "from b2"),
+         (11, 7): check_revoked(3), (11, 32): check_revoked(4),
+         (11, 35): check_revoked(5, ["b1"]), (9, 13): check_send_entered, (14, 1): check_revoked(6, ["b1"]),
+         (14, 7): check_request("S2", "request:R1", True), (14, 13): check_request("S1", "request:R2", False)}
 
 
 def late_checks(P):
@@ -815,8 +993,8 @@ def late_checks(P):
     CHECK.update({(5, 3): check_spent(P, own("human"), 7), (5, 7): check_spent(P, own("human"), 8),
                   (7, 1): check_stored(hub_b, 1, "device"), (7, 3): check_spent(P, hub_b, 2),
                   (7, 7): check_stored("old-mini/human", 1, "legacy"), (7, 9): check_spent(P, hub_b, 3),
-                  (9, 10): check_spawn, (11, 22): check_vector(hub_b, 5),
-                  (11, 30): check_stored(hub_b, 6, "device"), (11, 34): check_spent(P, hub_b, 7)})
+                  (9, 10): check_spawn, (11, 25): check_vector(hub_b, 5),
+                  (11, 33): check_stored(hub_b, 6, "device"), (11, 37): check_spent(P, hub_b, 7)})
 
 
 # ------------------------------------------------------------- probes
@@ -826,17 +1004,27 @@ def words_lines():
     return [(c.number, f) for c in EP.accepted for f in c.frames if f.get("t") == "words?"]
 
 
+def uploads():
+    """(log id, event) of every event sminos uploaded, under the log its frame named."""
+    return [(f.get("project"), e) for c in EP.accepted for f in c.frames if f.get("t") == "events"
+            for e in f.get("events", [])]
+
+
 def upload_events():
-    return [e for c in EP.accepted for f in c.frames if f.get("t") == "events" for e in f.get("events", [])]
+    return [e for _, e in uploads()]
 
 
 def probe_one_body():
-    bodies = {}
-    for e in upload_events():
-        bodies.setdefault((e["writer"], e["seq"]), set()).add(json.dumps(e, sort_keys=True))
-    twice = [k for k, v in bodies.items() if len(v) > 1]
+    twice = probes.bodies_twice(uploads())
     return not twice, "every position sminos uploaded carries one body (%d positions)%s" % (
-        len(bodies), "; more than one at %r" % twice if twice else "")
+        len({(log, e["writer"], e["seq"]) for log, e in uploads()}), "; more than one at %r" % twice if twice else "")
+
+
+def logs_here():
+    """{log id: (writer, seq) → the event this machine stores there, or None}, every log known here."""
+    sminos.forget_caches()
+    return {p.id: (lambda w, s, p=p: next((e for e in held(p, w) if e["seq"] == s), None))
+            for p in sminos.known_logs()}
 
 
 def probe_no_created():
@@ -857,31 +1045,24 @@ def probe_addressed():
 
 
 def probe_as_stored():
-    wrong = []
-    for _, f in words_lines():
-        p = P_ if f.get("project") == P_.id else Q_
-        stored = next((e for e in held(p, f["event"]["writer"]) if e["seq"] == f["event"]["seq"]), None)
-        if stored is None or {k: v for k, v in stored.items() if k != "verified"} != f["event"]:
-            wrong.append(f["id"])
+    wrong = probes.not_as_stored([f for _, f in words_lines()], logs_here())
     return not wrong, "every words? carries its event exactly as stored, its verdict left out%s" % (
         ": not %r" % wrong if wrong else "")
 
 
 def probe_project():
-    out = [f["id"] for _, f in words_lines() if f.get("project") not in (P_.id, Q_.id)]
+    out = probes.not_in_its_log([f for _, f in words_lines()], logs_here())
     return not out, "every words? names the project whose log holds its event%s" % (": not %r" % out if out else "")
 
 
 def probe_members():
-    members = {B["session:S%d" % n] for n in range(1, 6)}
-    out = [f["id"] for _, f in words_lines() if f["session"] not in members]
+    out = probes.not_members([f for _, f in words_lines()], STAGED)
     return not out, "every words? names a member of this machine%s" % (": not %r" % out if out else "")
 
 
 def probe_revoked():
     restart = EP.accepted[-1].number
-    out = [f["id"] for n, f in words_lines() if n == restart and f["event"].get("seq") == 1
-           and f["event"]["writer"] == "hub/" + B["member:B"]]
+    out = probes.asked_again([f for n, f in words_lines() if n == restart], P_.id, "hub/" + B["member:B"], 1)
     return not out, "b1's words are never asked after its device is revoked%s" % (": %r" % out if out else "")
 
 
@@ -899,19 +1080,20 @@ PROBES = {
     (6, 11): ("the endpoint's answer to it", None),
     (7, 16): ("a words? for a session with no member here", probe_members),
     (7, 17): ("the endpoint's answer to it", None),
-    (11, 36): ("a revoked signer's words asked again", probe_revoked),
-    (11, 37): ("the endpoint's answer to it", None),
+    (11, 39): ("a revoked signer's words asked again", probe_revoked),
+    (11, 40): ("the endpoint's answer to it", None),
 }
 
-# A line that says what sminos sent after another line was: matched only past
-# that one's. Case 13's frame with no channels key is S1's after its
-# removal, not one of the same shape it sent before it was placed.
-AFTER = {(13, 4): (13, 2)}
-
-# A step whose line comes on the next connection: none since the fixture
-# places the host resend on the reconnect, before its restated.
-NEXT_CONNECTION = {}
-DEFERRED = []
+# A line that says what sminos sent after other lines were: matched only past
+# the latest of theirs on its connection. Case 13's frame with no channels
+# key is S1's after its removal, not one of the same shape it sent before it
+# was placed. A channel's lines wait for what the fixture puts before them
+# (probes.order_edges): a session's member frame before an upload to or from
+# it and before an ask about it, an own event's upload before an ask about
+# it; read off the lines, so a line inserted between them leaves them.
+AFTER = {(13, 4): [(13, 2)]}
+for _at, _deps in probes.order_edges(CASES).items():
+    AFTER[_at] = sorted(set(AFTER.get(_at, [])) | set(_deps))
 
 
 # ------------------------------------------------------------- unstaged asks
@@ -987,12 +1169,20 @@ def up(ci, si, step, opts):
     want = subst(step["up"])
     vary = step.get("vary", [])
     pred = opts.get("pred") or (lambda f: f.get("t") == want["t"] and matches(want, f, vary))
-    since = STEPS.get(AFTER.get((ci, si)))
-    i = find(conn, pred, after=since[1] if since is not None and since[0] == conn.number else -1)
+    after = probes.after_index(AFTER.get((ci, si), []), STEPS, conn.number)
+    i = find(conn, pred, after=after)
     if i is None:
         near = [f for f in conn.frames if f.get("t") == want["t"]]
         return False, "no such line on connection %d; expected %s; of its kind sminos sent %s" % (
             conn.number, json.dumps(want)[:600], json.dumps(near[-3:])[:900])
+    with EP.cv:
+        early = probes.early_match(conn.frames, probes.sent_as(want, pred), after,
+                                   {j for n, j in MATCHED if n == conn.number})
+    if early is not None:
+        # The line's first transmission is the one the endpoint saw first: one before what it waits for is the
+        # ordering broken, whatever was sent again after it.
+        return False, "sent first at %d on connection %d, before what it waits for (matched up to %d)" % (
+            early, conn.number, after)
     MATCHED.add((conn.number, i))
     if "id" in vary and isinstance(step["up"].get("id"), str):
         IDS[step["up"]["id"]] = conn.frames[i]["id"]
@@ -1012,8 +1202,49 @@ STEPS = {}   # (case, step) → (connection, index) of the line it matched
 
 def down(step):
     conn = conn_of(step)
-    conn.write(subst(step["down"]))
+    frame = subst(step["down"])
+    since = len(AUDIENCES_TAKEN)
+    conn.write(frame)
+    if frame.get("t") == "audience":
+        return audience_kept(frame, since)
     return True, ""
+
+
+AUDIENCES_TAKEN = []   # each `audience` frame the uplink handed to keep_audience, in order, and its answer
+
+
+def record_audiences():
+    """keep_audience, as the uplink in this process calls it, recording each
+    frame and whether it was taken: a line the fixture sends again as it
+    was (case 11's, after case 3's) leaves the kept file as it was, so the
+    file alone cannot show that the uplink took the line sent now."""
+    import sminos_audience as audience
+    real = audience.keep_audience
+
+    def keep(frame):
+        taken = real(frame)
+        AUDIENCES_TAKEN.append((copy.deepcopy(frame), taken))
+        return taken
+    mock.patch.object(audience, "keep_audience", keep).start()
+
+
+def audience_kept(frame, since):
+    """An `audience` line is the uplink's once it takes it: the uplink
+    handed this frame to keep_audience after it was written (`since`, the
+    record's length before) and it was taken, and the session's entry in
+    daemon/audiences.json is the frame's owners, members and policyRev
+    (and what it withdrew), as the fixture pins them; one the uplink
+    refused (a digest that is not its members') leaves none."""
+    import sminos_audience as audience
+    members = frame.get("members")
+    want = {"owners": sorted(set(frame["owners"])), "members": sorted(set(members)) if members is not None else None,
+            "policyRev": frame["policyRev"], **({"withdrawn": sorted(set(frame["withdrawn"]))}
+                                                if frame.get("withdrawn") else {})}
+    took = wait_for(lambda: any(f == frame and taken for f, taken in AUDIENCES_TAKEN[since:]), timeout=10)
+    got = took and wait_for(lambda: (lambda x: x if x == want else None)(audience.entry_of(frame["session"])),
+                            timeout=10)
+    return bool(got), "the uplink %s the line; it keeps %r for session %s, not %r" % (
+        "took" if took else "did not take", audience.entry_of(frame["session"]), frame["session"][:8], want)
 
 
 def open_(step):
@@ -1042,18 +1273,6 @@ def check_restated(ci, si):
     return True, "the case's restatement is before restated"
 
 
-def run_deferred(conn_name):
-    for (ci, si), why, step, opts in list(DEFERRED):
-        ok, why2 = up(ci, si, step, opts)
-        if ok:
-            n, i = STEPS[(ci, si)]
-            restated = STEPS.get((11, 14))
-            ok = restated is not None and restated[0] == n and i < restated[1]
-            why2 = "" if ok else "not before the restated of connection %d" % n
-        say("ok" if ok else "FAIL", "%s (%s)%s" % (name_of(ci, si, step), why, "" if ok else " — " + why2))
-        DEFERRED.remove(((ci, si), why, step, opts))
-
-
 def replay():
     global P_, Q_
     P_, Q_ = stage_machine()
@@ -1072,6 +1291,7 @@ def replay():
     for name, word in (("warn", "warning"), ("note", "note")):
         mock.patch.object(sminos, name,
                           lambda msg, word=word: sminos.daemon_log("sminos: %s: %s" % (word, msg))).start()
+    record_audiences()
     threading.Thread(target=lambda: box.update(kept=uplink.run_rl10(halt.is_set, halt)), daemon=True).start()
     try:
         for ci, case in enumerate(CASES):
@@ -1079,18 +1299,17 @@ def replay():
                 if time.monotonic() - STARTED > DEADLINE:
                     say("FAIL", "the replay took more than %d s: stopped at %d.%d" % (DEADLINE, ci, si))
                     return
+                if (ci, si) in STAGE:
+                    STAGE[(ci, si)]()
+                bind_threads(step)
                 if "scene" in step or "quiet" in step:
                     if step.get("scene") in SCENES:
                         SCENES[step["scene"]](subst(step))
+                        PLANNED.update(planned_asks())   # an ask about the event the scene bound is the conversation's
                     continue
-                if (ci, si) in STAGE:
-                    STAGE[(ci, si)]()
                 name = name_of(ci, si, step)
                 if (ci, si) in PROBES:
                     continue   # said at the end, with what sminos does instead
-                if (ci, si) in NEXT_CONNECTION:
-                    DEFERRED.append(((ci, si), NEXT_CONNECTION[(ci, si)], step, {}))
-                    continue
                 if "up" in step:
                     ok, fail = up(ci, si, step, {})
                 elif "down" in step:
@@ -1106,8 +1325,6 @@ def replay():
                 if ok and step.get("up", {}).get("t") == "restated":
                     ok, said = check_restated(ci, si)
                     fail = "" if ok else said
-                    if ok and ci == 11:
-                        run_deferred("main")
                 say("ok" if ok else "FAIL", name + (" — " + fail if not ok else ""))
         time.sleep(1.0)
         for (ci, si), (why, probe) in sorted(PROBES.items()):
@@ -1118,8 +1335,6 @@ def replay():
                 continue
             ok, said = probe()
             say("ok" if ok else "FAIL", "%s — the endpoint's alone (%s): %s" % (name_of(ci, si, step), why, said))
-        for (ci, si), _, step, _ in DEFERRED:
-            say("FAIL", "%s — never matched on a later connection" % name_of(ci, si, step))
         if not FAILED:
             replay_beyond()   # while the uplink still runs: its reads are what is checked
     finally:

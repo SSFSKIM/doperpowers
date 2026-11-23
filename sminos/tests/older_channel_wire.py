@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """The wire check of test-older-cli.sh (CH1's M8: "the checker, baselined on
-the store as the older copy left it, clean over an uplink run on it").
+the store as the older copy left it, clean over an uplink run on it"; CH2's
+M11: under CH2's rules, the kinds a channel now carries, ALLOWED_SPOKEN, and
+a thread's delivery record under a channel's log, deliveries=False).
 
     older_channel_wire.py baseline <file> <channel id>...
         channel_wire.baseline of the store ($SMINOS_HOME) as it is now, kept
@@ -92,8 +94,8 @@ def check(path, machine, ids):
             for w, kinds in first_received(ep, cid):
                 who = "human" if w.endswith("/human") else w.split("/", 1)[1]
                 print(who, " ".join(kinds))
-        breaches = wire.published(ep.received, ids, before) + wire.written(os.environ["SMINOS_HOME"], ids, machine,
-                                                                           before)
+        breaches = wire.published(ep.received, ids, before, allowed=wire.ALLOWED_SPOKEN) + wire.written(
+            os.environ["SMINOS_HOME"], ids, machine, before, allowed=wire.ALLOWED_SPOKEN, deliveries=False)
         print("breaches %d" % len(breaches))
         for b in breaches:
             print(b)

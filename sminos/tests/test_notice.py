@@ -104,8 +104,8 @@ class Marker(unittest.TestCase):
         sid = str(uuidlib.uuid4())
         plain = dict(event(text="do this"), to=[{"session": sid, "alias": "x"}])
         marked = dict(event(text="devcloud on vm: idle", notice="devcloud"), seq=2, to=[{"session": sid, "alias": "x"}])
-        words = manager_window.OwnerWords([plain, marked], [sid])
-        self.assertEqual(words.texts, {"do this"})
+        words = manager_window.OwnerWords([("p", "p-1", [plain, marked])], [sid])
+        self.assertEqual(set(words.texts), {"do this"})
 
 
 # ------------------------------------------------------------ the rig

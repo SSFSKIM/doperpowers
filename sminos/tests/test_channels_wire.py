@@ -28,7 +28,9 @@ import contextlib
 import io
 import json
 import fcntl
+import re
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +62,9 @@ import sminos_uplink as uplink  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import test_threads as T1  # noqa: E402 — its fixtures by module
 from test_channels_requests import OTHER, SAME_ID, SIGNER, Requests  # noqa: E402
+from test_channels_delivery import FAR, W1, W2, Receipts  # noqa: E402
+from test_channels_delivery import Channel as Delivering  # noqa: E402
+import uuid as uuidlib  # noqa: E402
 
 LIMIT = threads.CHANNEL_LIMIT
 
@@ -139,9 +144,12 @@ class Checker(unittest.TestCase):
             {"t": "member", "session": S1, "project": DESK, "lane": "A", "state": "idle"},
             session("presence"), session("machine"), session("host"), session("rows"), session("settled"),
             session("end", body={"reason": "unsubscribed"}),
+            session("delivery", body={"event": {"writer": W, "seq": 1}, "outcome": "sent"}),
             {"t": "pending", "project": DESK, "pending": []},
-            {"t": "words?", "id": "w", "project": DESK, "session": S1, "event": {"kind": "human"}},
-            {"t": "reach?", "id": "r", "project": DESK, "session": S1, "event": {"kind": "say"}},
+            {"t": "words?", "id": "w", "project": DESK, "session": S1, "event": {"kind": "say"}},
+            {"t": "words?", "id": "w", "project": DESK, "session": S1, "event": {"kind": "channel-request"}},
+            {"t": "reach?", "id": "r", "project": DESK, "session": S1, "event": {"kind": "channel-env"}},
+            {"t": "reach?", "id": "r", "project": DESK, "session": S1, "event": {"kind": "channel-lead"}},
             {"t": "snapshots", "id": "a", "project": DESK, "events": [self.joined], "next": None, "done": True},
             self.events(DESK, ev(W, 9, "say", text="x")),
             self.events(DESK, ev(W, 9, "channels", channels=[])),
@@ -153,6 +161,70 @@ class Checker(unittest.TestCase):
         for f in breaches:
             got = wire.published([f], [DESK, LOBBY], self.before, welcomed={1})
             self.assertEqual(len(got), 1, (f, got))
+
+    def test_what_is_said_in_a_channel_is_allowed_with_the_spoken_kinds(self):
+        """CH2's M4: a message in a channel's log, a member's and an outsider's, a person's and a notice."""
+        to = [{"session": S1, "alias": "w", "thread": S2}]
+        spoken = [ev(W, 5, "say", to=to, text="x", thread=S1), ev(W, 6, "say", to="*", text="y", thread=S1),
+                  ev(W, 7, "say", to=to, text="z", thread=S1, from_project=APP),
+                  ev("%s/human" % MACHINE, 2, "human", to=to, text="h"),
+                  ev("%s/human" % MACHINE, 3, "human", to="*", text="n", notice="devcloud")]
+        self.assertEqual(wire.published([self.events(DESK, *spoken)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN), [])
+        self.assertEqual(len(wire.published([self.events(DESK, *spoken)], [DESK], {})), len(spoken),
+                         "each a breach under CH1's kinds")
+
+    def test_the_questions_about_a_message_under_a_channels_id(self):
+        """CH2's M6 (its §8): a `words?` about a `human`, and a `reach?` about a `say`, a `human` or a request, under
+        a channel's id, are allowed; about anything else each is a breach (test_each_frame_of_the_breach_list)."""
+        asked = [{"t": "words?", "id": "w", "project": DESK, "session": S1, "event": {"kind": "human"}}] + [
+            {"t": "reach?", "id": "r", "project": DESK, "session": S1, "event": {"kind": k}}
+            for k in ("say", "human", "channel-request")]
+        self.assertEqual(wire.published(asked, [DESK], {}, allowed=wire.ALLOWED_SPOKEN), [])
+        self.assertEqual(wire.published(asked, [DESK], {}), [], "a rule of the checker's, not of its arguments")
+
+    def test_a_frame_of_a_shape_it_does_not_know_is_refused(self):
+        """CH2's M5 found the stand-in's control `state()["received"]` (dicts of `conn` and `frame`) read as bare
+        frames, each passing unchecked: a frame is a dict with a `t`, or a stand-in's (number, frame); anything else
+        is refused, never passed by."""
+        member = {"t": "member", "session": S1, "project": DESK}
+        self.assertEqual(len(wire.published([member], [DESK])), 1)
+        self.assertEqual(len(wire.published([(1, member)], [DESK])), 1)
+        for shape in ({"conn": 1, "frame": member}, [1, member], (1, member, 2), "member", None, {"t": 7}):
+            with self.subTest(shape=shape), self.assertRaises(ValueError):
+                wire.published([shape], [DESK])
+
+    def test_each_breach_of_a_spoken_event_on_the_wire_and_on_disk(self):
+        to = [{"session": S1, "alias": "w", "thread": S2}]
+        human = "%s/human" % MACHINE
+        breaches = {
+            "copy": ev(W, 5, "say", to=to, text="x", copy="%s:%s:1" % (APP, W)),
+            "from_project": ev(human, 2, "human", to=to, text="h", from_project=APP),
+            "a lead's from_project": ev(human, 3, "channel-lead", thread=S2, session=S1, from_project=APP),
+            "no thread": ev(W, 6, "say", to=[{"session": S1, "alias": "w"}], text="x"),
+            "a thread of no string": ev(human, 4, "human", to=[{"session": S1, "alias": "w", "thread": 7}], text="x"),
+            "a lead's to": ev(human, 5, "channel-lead", thread=S2, session=S1, to=to),   # CH2's M8: never to
+            "a lead's session with no thread": ev(human, 6, "channel-lead", thread=None, session=S1),
+            "a lead's session and no thread at all": ev(human, 7, "channel-lead", session=S1),
+        }
+        for why, e in breaches.items():
+            got = wire.published([self.events(DESK, e)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN)
+            self.assertEqual(len(got), 1, (why, got))
+            home = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, home)
+            log = os.path.join(home, "projects", DESK, "log")
+            os.makedirs(log)
+            with open(os.path.join(log, "w.jsonl"), "w") as f:
+                f.write(json.dumps(e) + "\n")
+            got = wire.written(home, [DESK], MACHINE, {}, allowed=wire.ALLOWED_SPOKEN, deliveries=False)
+            self.assertEqual(len(got), 1, (why, got))
+
+    def test_a_lead_naming_a_thread_and_one_clearing_it_are_allowed(self):
+        """CH2's M8 (its §5): `thread` and that thread's `session`, plain or under a stream of the machine's human
+        writer; `thread: null` with no `session`."""
+        human = "%s/human" % MACHINE
+        leads = [ev(human, 2, "channel-lead", thread=None), ev(human, 3, "channel-lead", thread=S2, session=S1),
+                 ev(human + "~" + "0" * 16, 1, "channel-lead", thread=S2, session=S1)]
+        self.assertEqual(wire.published([self.events(DESK, *leads)], [DESK], {}, allowed=wire.ALLOWED_SPOKEN), [])
 
     def test_the_older_copy_suites_upload_order_is_first_receipt(self):
         """older_channel_wire.first_received (test-older-cli.sh's wire check) reads the order the stand-in first
@@ -194,7 +266,41 @@ class Checker(unittest.TestCase):
             open(os.path.join(home, "projects", LOBBY, d, name), "w").close()
         got = wire.written(home, [DESK, LOBBY], MACHINE, before)
         self.assertEqual(len(got), 3, got)
-        self.assertEqual(len(wire.written(home, [DESK, LOBBY], MACHINE, before, deliveries=False)), 2)
+        self.assertEqual(len(wire.written(home, [DESK, LOBBY], MACHINE, before, deliveries=False)), 3,
+                         "an empty file is no record of writer entries")
+
+    def test_a_channels_delivery_records_under_deliveries_false(self):
+        """CH2's M2: allowed with deliveries=False is a thread's record, by its id, and its lock; a file named
+        by anything else (a person's, `human.json`), or one that is no record, is a breach either way."""
+        self.assertEqual(wire.PUSHED, sminos.PUSHED, "the checker's copy of what a pushed note may say")
+        home = tempfile.mkdtemp(dir=BASE)
+        d = os.path.join(home, "projects", DESK, "delivered")
+        os.makedirs(d)
+        for name, body in ((S1 + ".json", {"%s/x" % MACHINE: {"settled": 2, "pending": 3, "attempts": 1,
+                                                               "pushed": [3, "sent"], "revoked": [5],
+                                                               "held": [[4, S1]]}}),
+                           (S2 + ".json", {}), (S1 + ".lock", None)):
+            with open(os.path.join(d, name), "w") as f:
+                if body is not None:
+                    json.dump(body, f)
+        self.assertEqual(wire.written(home, [DESK], MACHINE, deliveries=False), [])
+        self.assertEqual(len(wire.written(home, [DESK], MACHINE)), 1, "CH1's rule, the default: any record")
+        for name, body in (("human.json", "{}"), ("x.tmp", ""), (S2 + ".json", "[]"), (S2 + ".json", '{"w": 3}'),
+                           (S2 + ".json", "{torn"), (S2 + ".json", '{"w": {"settled": "x"}}'),
+                           (S2 + ".json", '{"w": {}}'), (S2 + ".json", '{"w": {"settled": null, "pending": null, '
+                                                                   '"attempts": 0}}'),
+                           (S2 + ".json", '{"w": {"settled": 1, "pending": null, "attempts": 0, "revoked": "2"}}'),
+                           (S2 + ".json", '{"w": {"settled": 1, "pending": null, "attempts": 0, "held": [[2]]}}')):
+            with self.subTest(name=name, body=body):
+                with open(os.path.join(d, name), "w") as f:
+                    f.write(body)
+                got = wire.written(home, [DESK], MACHINE, deliveries=False)
+                self.assertEqual(len(got), 1, got)
+                if name != S2 + ".json":
+                    os.unlink(os.path.join(d, name))
+                else:
+                    with open(os.path.join(d, name), "w") as f:
+                        f.write("{}")
 
 
 # ------------------------------------------------------------- a real uplink
@@ -938,6 +1044,67 @@ class Asks(Requests, T1.Sessions):
         sminos.forget_caches()
         self.assertTrue(link.may_leave(self.chan(LOBBY)), "answered")
 
+    def test_a_channel_with_a_message_written_here_not_taken_does_not_leave(self):
+        """CH2's M6: a machine that only wrote into a channel keeps its log open until what it wrote has gone up
+        (sminos_channels.unsent: past the upstream's `taken`, or queued), and a channel that left comes back for it
+        (Leaving's `stays` is may_leave's negation); a request alone keeps its own rule (outstanding)."""
+        tid, sid, _ = self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        self.assertTrue(link.may_leave(c), "nothing written: it may leave")
+        w = "%s/%s" % (sminos.host_name(), sid)
+        e = sminos.log_append(c, w, "say", to="*", text="a note", thread=tid)
+        sminos.forget_caches()
+        self.assertTrue(channels.unsent(c))
+        self.assertFalse(link.may_leave(c), "a message written here, not taken by the upstream")
+        hublog.HubLog(c, link.cred).write_taken({"taken": {w: e["seq"]}})
+        sminos.forget_caches()
+        self.assertFalse(channels.unsent(c))
+        self.assertTrue(link.may_leave(c), "gone up: it may leave")
+        os.makedirs(os.path.join(c.home, sminos.QUEUED), exist_ok=True)
+        with open(sminos.queued_path(c, "%s/human" % sminos.host_name()), "w") as f:
+            f.write(json.dumps({"ts": sminos.now(ms=True), "writer": "%s/human" % sminos.host_name(), "kind": "human",
+                                "to": "*", "text": "waits for its head"}) + "\n")
+        sminos.forget_caches()
+        self.assertFalse(link.may_leave(c), "a person's message still queued here")
+
+    def test_a_lead_written_here_not_taken_keeps_the_channel_and_brings_it_back(self):
+        """CH2's M8, review round 1: a lead (and a clearing one) is written on a machine with no member as readily
+        as a person's message: unsent counts it, so a followed channel stays open, or comes back, until it went
+        up, plain or under a stream, and when it waits in the queue."""
+        self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        human = "%s/human" % sminos.host_name()
+        taken = {}
+        for writer, fields in ((human, {"thread": None}), (human + "~" + "0" * 16, {"thread": S1, "session": S1})):
+            with self.subTest(writer=writer):
+                e = sminos.log_append(c, writer, "channel-lead", **fields)
+                sminos.forget_caches()
+                self.assertTrue(channels.unsent(c))
+                self.assertFalse(link.may_leave(c), "a lead written here, not taken by the upstream")
+                taken[writer] = e["seq"]
+                hublog.HubLog(c, link.cred).write_taken({"taken": dict(taken)})
+                sminos.forget_caches()
+                self.assertFalse(channels.unsent(c), "gone up")
+        os.makedirs(os.path.join(c.home, sminos.QUEUED), exist_ok=True)
+        with open(sminos.queued_path(c, human), "w") as f:
+            f.write(json.dumps({"ts": sminos.now(ms=True), "writer": human, "kind": "channel-lead",
+                                "thread": None}) + "\n")
+        sminos.forget_caches()
+        self.assertTrue(channels.unsent(c), "a clearing event still queued here")
+
+    def test_a_machine_whose_name_begins_with_this_ones_holds_no_upload_here(self):
+        """Review round 1: unsent counts this machine's writers by the writer's exact machine, as HubLog.own does,
+        never by a file name's prefix: `<host>.peer/human` is another machine's, and keeps no log open here."""
+        self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        sminos.log_append(c, "%s.peer/human" % sminos.host_name(), "human", to="*", text="another machine's")
+        sminos.forget_caches()
+        self.assertFalse(channels.unsent(c))
+        self.assertTrue(link.may_leave(c))
+
     def test_a7_an_answer_waits_on_no_lock_and_the_pass_that_carries_requests_uses_it(self):
         tid, sid, _ = self.human()
         self.remote(DESK, "add", sid, tid)
@@ -1615,6 +1782,816 @@ class WireAsks(unittest.TestCase):
 
     def test_an_endpoint_without_reach_is_asked_nothing_and_the_request_waits(self):
         self.asked_nothing(("channels",), "endpoint")
+
+
+# ------------------------------------------------------------- CH2's M6: a channel's messages, asked and kept
+
+
+HOLDER = ("import fcntl, sys\n"
+          "fs = [open(p, 'a') for p in sys.argv[1:]]\n"
+          "for f in fs:\n"
+          "    fcntl.flock(f, fcntl.LOCK_EX)\n"
+          "print('held', flush=True)\n"
+          "sys.stdin.read()\n")
+
+CUT_OVER = ("import json, sys; sys.path.insert(0, %r); from unittest import mock; import sminos, sminos_channels; "
+            "mock.patch.object(sminos.sibling_module('sminos_rl10'), 'cut_over', return_value=True).start(); "
+            "mock.patch.object(sminos.audience_module(), 'reach_capable', return_value=True).start(); ")
+
+
+class Messages(Delivering):
+    """The uplink's asks about a channel's messages and the daemon's carrying out of the word (CH2's M6, the plan's
+    §4), a Link's own over a real store on a machine cut over to an endpoint that decides reach: the uplink chooses
+    by M2's selection, asks, and keeps the answer in a file; the daemon's channel pass carries it out. Every case of
+    the consumer thread's seam holds its lock in another real process (HOLDER)."""
+
+    def setUp(self):
+        os.environ.pop("MAWS_USER_DATA", None)
+        super().setUp()
+        self.cut_over()
+
+    def cut_over(self, reach=True):
+        for target, name, value in ((sminos.sibling_module("sminos_rl10"), "cut_over", True),
+                                    (sminos.audience_module(), "reach_capable", reach)):
+            patcher = mock.patch.object(target, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        sminos.forget_caches()
+
+    def link(self, serves=True, reach=True):
+        link = uplink.Link(dict(CRED, machine=sminos.host_name()), {}, transport=mock.Mock(number=1))
+        self.addCleanup(link.close)
+        link.generation = 1
+        link.log_lane = link.session_lane = Lane()
+        link.reach, link.serves_channels = reach, serves
+        link.logs[DESK] = hublog.HubLog(self.chan(DESK), link.cred)
+        link.opened.add(DESK)
+        link.channels.add(DESK)
+        return link
+
+    def ask_pass(self, link):
+        """One tick's ask pass, as Link.tick runs it: the members the plane reads, then the words pass. The time it
+        took."""
+        sminos.forget_caches()
+        link.next_member_read = 0.0
+        link.members(time.monotonic())
+        sminos.forget_caches()
+        at = time.monotonic()
+        link.ask_words({})
+        return time.monotonic() - at
+
+    def asks(self, link, t=("words?", "reach?")):
+        return [f for f in link.session_lane.sent if f.get("t") in t and f.get("project") == DESK]
+
+    def answer(self, link, ask, verdict, **more):
+        """The endpoint's answer on `ask`, as the consumer thread dispatches it: the time it took."""
+        sminos.forget_caches()
+        at = time.monotonic()
+        link.dispatch({"t": "words" if ask["t"] == "words?" else "reach", "id": ask["id"], "verdict": verdict,
+                       **more}, None)
+        return time.monotonic() - at
+
+    def kept(self):
+        d = os.path.join(self.chan(DESK).home, channels.WORDS_DIR)
+        return sorted(os.listdir(d)) if os.path.isdir(d) else []
+
+    def carry(self):
+        """The daemon's channel pass, in this process: the kept words carried out, then the delivery."""
+        sminos.forget_caches()
+        got = channels.carry_words(self.chan(DESK))
+        sminos.forget_caches()
+        channels.deliver(self.chan(DESK))
+        return got
+
+    def held_elsewhere(self, *paths):
+        """Each lock file of `paths` taken by another real process and kept until the function returned is called."""
+        for path in paths:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        proc = subprocess.Popen([sys.executable, "-c", HOLDER, *paths], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                text=True)
+        self.assertEqual(proc.stdout.readline().strip(), "held")
+
+        def release():
+            if proc.poll() is None:
+                proc.stdin.close()
+                proc.wait(10)
+            proc.stdout.close()
+        self.addCleanup(release)
+        return release
+
+    def delivery_lock(self, tid):
+        return os.path.join(self.chan(DESK).home, "delivered", tid + ".lock")
+
+    def record_exists(self, tid):
+        return os.path.exists(os.path.join(self.chan(DESK).home, "delivered", tid + ".json"))
+
+    # -- the path, end to end
+
+    def test_a_message_is_asked_about_once_its_word_kept_and_the_daemon_carries_it_out(self):
+        tid, sid, received = self.live()
+        e = self.message((str(uuidlib.uuid4()), tid), text="across machines")   # its entry names another session
+        link = self.link()
+        self.ask_pass(link)
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual((ask["t"], ask["project"], ask["session"]), ("reach?", DESK, sid),
+                         "under the channel's id, to the thread's current session, whatever session the entry names")
+        self.assertEqual(ask["event"], {k: v for k, v in e.items() if k != "verified"})
+        at = link.session_lane.sent.index(ask)
+        self.assertIn(sid, [f.get("session") for f in link.session_lane.sent[:at] if f.get("t") == "member"],
+                      "its member frame first, under its own project")
+        self.assertLess(self.answer(link, ask, "deliver"), 1.0)
+        self.assertEqual(self.received(received), [], "the uplink pushes nothing")
+        [name] = self.kept()
+        self.assertTrue(name.startswith(tid + "."), name)
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1, "a kept word is asked about nothing more")
+        self.assertEqual(self.carry(), 1)
+        self.assertEqual(len(self.got(received, "across machines")), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+        self.assertEqual(self.kept(), [], "taken by its carrier")
+        self.carry()
+        self.assertEqual(len(self.got(received, "across machines")), 1, "once")
+        outbox = os.path.join(self.chan(DESK).home, sminos.sibling_module("sminos_outcomes").OUTBOX)
+        self.assertFalse(os.path.exists(outbox), "no outcome kept for the uplink under a channel's id")
+
+    def test_one_ask_at_a_time_for_a_thread_and_a_writer_and_a_silent_head_holds_back_that_writer_alone(self):
+        tid, sid, received = self.live()
+        a1 = self.message((sid, tid), text="w1 first")
+        self.message((sid, tid), text="w1 second")
+        b1 = self.message((sid, tid), writer=W2, text="w2 first")
+        link = self.link()
+        self.ask_pass(link)
+        self.ask_pass(link)
+        self.assertEqual(sorted((f["event"]["writer"], f["event"]["seq"]) for f in self.asks(link)),
+                         sorted([(W1, a1["seq"]), (W2, b1["seq"])]), "each writer's head, once")
+        [w2] = [f for f in self.asks(link) if f["event"]["writer"] == W2]
+        self.answer(link, w2, "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(received, "w2 first")), 1, "another writer's message goes")
+        self.assertEqual(self.got(received, "w1 first") + self.got(received, "w1 second"), [],
+                         "the unanswered head holds back its own writer's next message")
+
+    def test_a_refusal_is_settled_here_with_no_frame_back_and_a_peer_word_on_a_persons_message_asks_reach(self):
+        tid, sid, received = self.live()
+        refused = self.message((sid, tid), text="refused")
+        words = self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="a person's words")
+        link = self.link()
+        self.ask_pass(link)
+        by = {f["event"]["writer"]: f for f in self.asks(link)}
+        self.assertEqual(by[W1]["t"], "reach?")
+        self.assertEqual(by["%s/human" % FAR]["t"], "words?", "a person's words are asked about as words")
+        self.answer(link, by[W1], "refuse", reason="not-reachable")
+        self.answer(link, by["%s/human" % FAR], "peer")
+        self.assertEqual(self.kept(), [tid + "." + by[W1]["id"] + ".json"], "the peer word is not kept")
+        [reach] = [f for f in self.asks(link, ("reach?",)) if f["event"]["writer"] == "%s/human" % FAR]
+        self.assertEqual(reach["event"], by["%s/human" % FAR]["event"], "the same event, asked reach")
+        self.answer(link, reach, "deliver")
+        before = len(link.session_lane.sent)
+        self.carry()
+        self.assertEqual(self.got(received, "refused"), [])
+        self.assertEqual(self.settled(tid, W1), refused["seq"], "settled refused-reach on this machine")
+        self.assertEqual(len(self.got(received, "a person's words")), 1, "pushed as a peer's")
+        self.assertEqual(self.settled(tid, "%s/human" % FAR), words["seq"])
+        self.assertEqual(link.session_lane.sent[before:], [], "nothing goes back")
+
+    def test_a_kept_word_is_kept_while_its_threads_delivery_record_cannot_be_read(self):
+        tid, sid, received = self.live()
+        e = self.message((sid, tid), text="past an unreadable record")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        [name] = self.kept()
+        record = os.path.join(self.chan(DESK).home, "delivered", tid + ".json")
+        os.makedirs(os.path.dirname(record), exist_ok=True)
+        with open(record, "w") as f:
+            f.write("{not a record")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.kept(), [name], "unreadable is not stale: the word is kept")
+        self.assertEqual(self.got(received, "past an unreadable record"), [])
+        os.unlink(record)
+        self.assertEqual(self.carry(), 1, "carried out once the record reads")
+        self.assertEqual(len(self.got(received, "past an unreadable record")), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+        self.assertEqual(self.kept(), [])
+
+    def test_a_held_recipient_and_a_thread_whose_record_holds_an_open_entry_are_asked_nothing(self):
+        tid, sid = self.stopped(mode="plan")   # not woken: held for its mode
+        self.message((sid, tid), text="to a held thread")
+        link = self.link()
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "a held session is asked about nothing")
+        tid2, sid2, _ = self.live(name="term-b")
+        self.message((sid2, tid2), text="over an open entry")
+        record = threads.get(tid2)
+        with mock.patch.object(threads, "set_holders", lambda: {sid2: dict(record, pending={"op": "advance"})}):
+            self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "nothing asked over an open entry")
+
+    def test_a_word_older_than_word_kept_is_carried_out_by_no_one_and_its_message_asked_again(self):
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="too late")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        with mock.patch.object(channels.time, "time", lambda real=time.time: real() + channels.WORD_KEPT + 1):
+            self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.got(received, "too late"), [])
+        self.assertEqual(self.kept(), [], "discarded where it was found")
+        with mock.patch.object(uplink.time, "monotonic", lambda real=time.monotonic: real() + channels.WORD_KEPT + 1):
+            link.ask_words({})
+        self.assertEqual(len(self.asks(link)), 2, "asked again once the uplink's memory of it is out")
+
+    def test_a_word_is_aged_from_when_the_reader_took_its_frame(self):
+        """Review round 1: a consumer that dispatches an answer late buys it no more time: the word's age is
+        counted from when the reader took the frame (Link.received), not from its dispatch."""
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="taken long ago")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        link.received = time.time() - channels.WORD_KEPT - 1   # the reader took it a minute and more ago
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.got(received, "taken long ago"), [])
+        self.assertEqual(self.kept(), [], "discarded where it was found")
+        link.ask_words({})
+        self.assertEqual(len(self.asks(link)), 2, "asked again at once: the uplink holds it good no longer")
+
+    def test_two_words_for_one_event_push_it_once(self):
+        tid, sid, received = self.live()
+        e = self.message((sid, tid), text="asked twice")
+        first, second = self.link(), self.link()   # the uplink restarted between: two words for one event
+        for link in (first, second):
+            self.ask_pass(link)
+            [ask] = self.asks(link)
+            self.answer(link, ask, "deliver")
+        self.assertEqual(len(self.kept()), 2)
+        self.carry()
+        self.carry()
+        self.assertEqual(len(self.got(received, "asked twice")), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+        self.assertEqual(self.kept(), [])
+
+    def test_two_real_processes_carrying_one_word_push_one_frame_and_neither_hangs(self):
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="two carriers")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        code = CUT_OVER % SCRIPTS + "print(sminos_channels.carry_words(sminos.known_project(%r)))" % DESK
+        procs = [subprocess.Popen([sys.executable, "-B", "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True) for _ in range(2)]
+        outs = [p.communicate(timeout=60) for p in procs]
+        self.assertEqual([p.returncode for p in procs], [0, 0], [err for _, err in outs])
+        self.assertEqual(sorted(out.strip() for out, _ in outs), ["0", "1"], "one carried it, the other nothing")
+        self.assertEqual(len(self.got(received, "two carriers")), 1)
+
+    def test_a_notice_tagged_to_a_member_is_delivered_on_the_word_as_a_peers_frame_from_its_program(self):
+        tid, sid, received = self.live()
+        self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="lease ends", notice="devcloud")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual(ask["t"], "words?")
+        self.answer(link, ask, "words")   # sminos's own guard: a notice is nobody's words, whatever the word
+        self.carry()
+        [frame] = self.got(received, "lease ends")
+        self.assertIn("from devcloud@%s" % FAR, frame.splitlines()[1])
+        self.assertNotIn("To reply", frame, "a notice has no reply line")
+
+    # -- the consumer thread: every lock held by another process
+
+    def test_an_answer_writes_its_file_and_waits_on_no_lock_while_a_launch_is_stalled(self):
+        tid, sid = self.stopped()
+        self.message((sid, tid), text="woken on the word")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.switch("barrier")   # a launch would stall at the engine's barrier
+        release = self.held_elsewhere(os.path.join(threads.store_dir(), ".lock"),
+                                      os.path.join(sminos.root(), ".metalock"), self.delivery_lock(tid),
+                                      os.path.join(self.chan(DESK).home, "project.json.lock"))
+        self.assertLess(self.answer(link, ask, "deliver"), 1.0, "the answer waited")
+        self.assertLess(self.ask_pass(link), 1.0, "the next pass waited")
+        self.assertEqual(len(self.kept()), 1, "its file is there")
+        self.assertEqual((self.launches(), self.woken_got(sid, "woken on the word")), (0, []), "nothing launched")
+        self.assertEqual(self.owed_to(tid), [(W1, 1)], "still owed")
+        release()
+        os.unlink(os.path.join(self.state, "barrier"))
+        self.assertEqual(self.carry(), 1)
+        self.assertTrue(wait_for(lambda: len(self.woken_got(sid, "woken on the word")) == 1), self.frames(sid))
+        self.assertEqual(self.launches(), 1)
+
+    def test_the_receipts_lock_busy_leaves_an_event_with_a_receipt_for_a_later_pass(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="handed before")
+        Receipts.receipt(self, DESK, sid, e, tid)
+        link = self.link()
+        release = self.held_elsewhere(os.path.join(sminos.holder_module().home(), "receipts.lock"))
+        self.assertLess(self.ask_pass(link), 1.0, "the pass waited on the receipts' lock")
+        self.assertEqual(self.asks(link), [], "not asked this pass")
+        release()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual(ask["event"]["seq"], e["seq"], "asked about on a later pass")
+
+    def test_a_stopped_threads_receipt_left_by_a_gone_process_is_asked_about_and_woken_for_once(self):
+        """test_wake_delivery's Awaiting, in a channel where the endpoint decides reach: the push would retry
+        (holder_due), so the ask goes."""
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="handed to a process that is gone")
+        Receipts.receipt(self, DESK, sid, e, tid)
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        self.carry()
+        self.assertTrue(wait_for(lambda: self.woken_got(sid, "handed to a process that is gone")), self.frames(sid))
+        self.assertEqual(self.launches(), 1, "woken once")
+        self.carry()
+        self.assertEqual(self.launches(), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+    def test_an_ask_never_answered_is_dropped_writes_nothing_and_is_asked_again(self):
+        tid, sid, _ = self.live()
+        self.message((sid, tid), text="never answered")
+        self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="nor these words")
+        link = self.link()
+        self.ask_pass(link)
+        first = {f["t"]: f["id"] for f in self.asks(link)}
+        self.assertEqual(set(first), {"words?", "reach?"})
+        release = self.held_elsewhere(self.delivery_lock(tid))
+        with mock.patch.object(uplink.time, "monotonic", lambda real=time.monotonic: real() + uplink.WORDS_WAIT + 1):
+            at = time.monotonic()
+            link.ask_words({})
+            self.assertLess(time.monotonic() - at, 1.0, "the expiry waited")
+        self.assertFalse(self.record_exists(tid), "no delivery record written")
+        again = [f for f in self.asks(link) if f["id"] not in first.values()]
+        self.assertEqual(sorted(f["t"] for f in again), ["reach?", "words?"], "each asked again, under a new id")
+        release()
+
+    def test_an_answer_taken_after_its_deadline_is_dropped_and_the_message_asked_again(self):
+        """The frontier review (F19): an answer the consumer dispatches past its ask's deadline, before
+        expire_asks has run, keeps no word and asks nothing more (a late `peer` asks no `reach?`); the message stays
+        owed and is asked afresh."""
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="answered too late")
+        self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="these words too late")
+        link = self.link()
+        self.ask_pass(link)
+        by = {f["t"]: f for f in self.asks(link)}
+        self.assertEqual(set(by), {"words?", "reach?"})
+        for ask, verdict in ((by["reach?"], "deliver"), (by["words?"], "peer")):
+            overdue = link.asks[ask["id"]]["deadline"] + 1
+            with mock.patch.object(uplink.time, "monotonic", return_value=overdue):
+                self.answer(link, ask, verdict)   # no expire_asks has run: the ask is still held as it lands
+            self.assertNotIn(ask["id"], link.asks)
+        self.assertEqual(self.kept(), [], "no word kept past the deadline")
+        self.assertEqual(len(self.asks(link)), 2, "a late peer asks no reach?")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.got(received, "answered too late"), [])
+        self.ask_pass(link)
+        again = [f for f in self.asks(link) if f["id"] not in (by["reach?"]["id"], by["words?"]["id"])]
+        self.assertEqual(sorted(f["t"] for f in again), ["reach?", "words?"], "each asked afresh")
+        self.answer(link, [f for f in again if f["t"] == "reach?"][0], "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(received, "answered too late")), 1)
+
+    def test_no_reach_is_asked_where_the_current_welcome_did_not_list_it(self):
+        """The frontier review (F20): the channel's choice asks `reach?` only where the live welcome listed `reach`,
+        as the project loop does, whatever the kept capabilities on disk say."""
+        tid, sid, _ = self.live()
+        self.message((sid, tid), text="no reach listed")
+        link = self.link(reach=False)
+        self.ask_pass(link)
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link, ("reach?",)), [], "no reach? where the welcome left it out")
+        link.reach = True
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link, ("reach?",))), 1, "asked once the welcome lists it")
+
+    def test_an_own_event_is_asked_about_only_once_its_upload_is_on_the_lane_before_the_ask(self):
+        """The frontier review (F17): this machine's own event is asked about only once its position has gone up
+        on this stream: not while the upload waits for the endpoint's `have` (after a reconnect), nor while its
+        frame is undrawn; then its upload is on the lane before the ask."""
+        tid, sid, _ = self.live()
+        own = "%s/human" % sminos.host_name()
+        e = sminos.log_append(self.chan(DESK), own, "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "from this machine"})
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        self.assertIsNone(hl.have, "no have yet: nothing of the log goes up")
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "not asked before its event has gone up")
+        hl.have = {}
+        with mock.patch.object(link, "senders_before", return_value=False):
+            link.upload(hl)   # its frame undrawn
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "nor while its frame is undrawn")
+        link.upload(hl)
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual((ask["event"]["writer"], ask["event"]["seq"]), (own, e["seq"]))
+        sent = link.session_lane.sent
+        [up] = [n for n, f in enumerate(sent) if f.get("t") == "events" and f.get("project") == DESK]
+        self.assertLess(up, sent.index(ask), "its upload first on the lane")
+
+    def test_the_reach_ask_after_a_peer_word_waits_for_an_own_events_upload_too(self):
+        """The second reading (G7): the `reach?` a `peer` word calls for is gated on the upload position as the
+        first ask is (F17): once a resend rewound it, the event is asked about only after its upload is on the lane
+        again, ahead of the ask."""
+        tid, sid, _ = self.live()
+        own = "%s/human" % sminos.host_name()
+        e = sminos.log_append(self.chan(DESK), own, "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "words from here"})
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.have = {}
+        link.upload(hl)
+        self.ask_pass(link)
+        [words] = self.asks(link)
+        self.assertEqual(words["t"], "words?")
+        hl.on_resend({"t": "resend", "project": DESK, "writer": own, "from": e["seq"]})   # the hub lacks it again
+        self.answer(link, words, "peer")
+        self.assertEqual(self.asks(link, ("reach?",)), [], "no reach? before its event is up again")
+        link.upload(hl)
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != words["id"]]
+        self.answer(link, again, "peer")
+        [reach] = self.asks(link, ("reach?",))
+        sent = link.session_lane.sent
+        last_up = max(n for n, f in enumerate(sent) if f.get("t") == "events" and f.get("project") == DESK)
+        self.assertLess(last_up, sent.index(reach), "its upload again first on the lane")
+
+    def test_a_reach_ask_waits_for_a_moved_senders_frame_under_its_project_now(self):
+        """The frontier review (F18): the sending session of this machine is looked for under the project it is a
+        member of now (member_project_now, as the upload path reads it), not under the plane's row from before its
+        move: the `reach?` waits, reconciling nothing, until the plane's next read puts its frame there first."""
+        tid, sid, _ = self.live()
+        sender, _, stid = self.member(name="speaker")
+        other = "9a9a9a9a-0000-4000-8000-00000000009c"
+        sminos.register_if_absent(sminos.make_project(other, "elsewhere", "", "", {"url": URL, "org": ORG}))
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.have = {}
+        e = sminos.log_append(self.chan(DESK), sminos.writer_id(sender), "say", **{
+            "from": "speaker", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "said before a move",
+            "thread": stid})
+        sminos.forget_caches()
+        link.next_member_read = 0.0
+        link.members(time.monotonic())
+        link.upload(hl)
+        self.assertTrue(any(x["seq"] == e["seq"] for f in link.log_lane.sent if f.get("t") == "events"
+                            for x in f["events"] if x["writer"] == e["writer"]), "its upload went")
+        self.write_own(sender, [{"kind": "retired", "reason": "moved", "project": other, "thread": stid}])
+        self.write_own(sender, [self.old_joined(sender, alias="speaker", thread=stid)],
+                       p=sminos.known_project(other))
+        sminos.forget_caches()
+        with mock.patch.object(link.plane, "refresh", side_effect=AssertionError("a reconciliation")), \
+                mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read")):
+            link.ask_words({})
+        self.assertEqual(self.asks(link, ("reach?",)), [], "not asked while the plane holds its row from before")
+        # The plane's next read, as it finds the session in its project now (its process here stays in the source's
+        # directory, so a reconciliation of this rig would undo the move the test writes).
+        link.plane.member_rows.setdefault(other, {})[sender] = link.plane.member_rows[self.p.id].pop(sender)
+        link.member_known[other] = sminos.known_project(other)
+        link.ask_words({})
+        [ask] = self.asks(link, ("reach?",))
+        sent = link.session_lane.sent
+        self.assertIn(other, [f.get("project") for f in sent[:sent.index(ask)]
+                              if f.get("t") == "member" and f.get("session") == sender],
+                      "the sender's frame under its project now first")
+
+    def test_a_withheld_says_notice_goes_to_its_thread_and_never_to_a_session_that_is_another_threads_now(self):
+        """The frontier review (F10): the notice of a say into a channel the hub withheld is the sending thread's:
+        shown to the session that goes on with that thread, never to the session that wrote it once that session
+        is another thread's (or none's)."""
+        tid, sid, proc, received = self.live_member()
+        writer = sminos.writer_id(sid)
+        e = sminos.log_append(self.chan(DESK), writer, "say", **{
+            "from": "handy", "to": [{"session": str(uuidlib.uuid4()), "alias": "ghost", "thread": str(uuidlib.uuid4())}],
+            "text": "the secret words", "thread": tid})
+        sminos.forget_caches()
+        hl = hublog.HubLog(self.chan(DESK), {"key": None, "machine": sminos.host_name()})
+        self.assertTrue(hl.withhold_own(writer, e["seq"]))
+        job, jproc = T1.Sessions.job(self, sid)
+        jreceived = self.inbox(job, jproc, "j")
+        self.reconcile()
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["current"], job, "the thread went on in another session")
+        hl.show_notices()
+        notice = "[sminos: your message to ghost was not delivered: not-reachable]"
+        self.assertEqual([f for f in self.received(received) if notice in f], [], "not the session that wrote it")
+        self.assertEqual(len([f for f in wait_for(lambda: self.received(jreceived), timeout=10) if notice in f]), 1,
+                         "the thread's session now")
+
+    def test_a_recipient_the_plane_has_no_row_for_is_passed_by_and_asked_after_its_next_read(self):
+        tid, sid, _ = self.live()
+        self.message((sid, tid), text="to a new row")
+        link = self.link()
+        release = self.held_elsewhere(os.path.join(threads.store_dir(), ".finish", tid + ".lock"))
+        link.plane.member_rows.clear()   # its session joined since the plane last read its project
+        with mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read")), \
+                mock.patch.object(channels, "own_row", side_effect=AssertionError("a row looked up")), \
+                mock.patch.object(channels, "owing", side_effect=AssertionError("owing asked")):
+            at = time.monotonic()
+            link.ask_words({})
+            self.assertLess(time.monotonic() - at, 1.0)
+        self.assertEqual(self.asks(link), [], "passed by before owing is asked")
+        release()
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link)), 1, "asked after the plane's next ordinary read")
+
+    def test_a_removal_between_the_choice_and_the_queuing_sends_no_question(self):
+        tid, sid, _ = self.live()
+        self.message((sid, tid), text="removed meanwhile")
+        link = self.link()
+        real = link.queue_asks
+
+        def queue(batch):
+            self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+            sminos.forget_caches()
+            return real(batch)
+        with mock.patch.object(link, "queue_asks", queue):
+            self.ask_pass(link)
+        self.assertEqual(self.asks(link), [])
+
+    # -- what the word was asked for
+
+    def released_after(self, meanwhile, again=True):
+        """A message asked about, its answer kept back while meanwhile() runs, then released: (the thread, its
+        session now, the inbox file or None, the link)."""
+        tid, sid, proc, received = self.live_member()
+        self.message((sid, tid), text="a late word")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        got = meanwhile(tid, sid, proc)
+        sminos.forget_caches()
+        self.answer(link, ask, "deliver")
+        self.carry()
+        return tid, ask, got, link, received
+
+    def test_a_word_released_after_a_removal_or_a_removal_and_an_add_pushes_nothing_and_is_not_owed(self):
+        for add in (False, True):
+            with self.subTest(add=add):
+                def meanwhile(tid, sid, proc):
+                    self.assertEqual(channels.change(tid, DESK, "remove", sid).state, "applied")
+                    if add:
+                        self.add(tid, sid, DESK)
+                tid, ask, _, link, received = self.released_after(meanwhile)
+                self.assertEqual(self.got(received, "a late word"), [], "dropped unused")
+                self.assertEqual(self.launches(), 0)
+                self.assertEqual(self.kept(), [])
+                self.assertIn(self.owed_to(tid), (None, []), "not owed")
+
+    def test_a_word_released_after_a_change_of_access_is_dropped_and_the_message_asked_again(self):
+        def meanwhile(tid, sid, proc):
+            records.set_policy(sid, lambda access, shares: ("private", []))
+        tid, ask, _, link, received = self.released_after(meanwhile)
+        self.assertEqual(self.got(received, "a late word"), [], "dropped unused")
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != ask["id"]]
+        self.answer(link, again, "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(received, "a late word")), 1, "delivered on the answer for the reach now")
+
+    def test_a_change_of_access_while_the_receipts_are_planned_hands_nothing_over_on_that_word(self):
+        """Review rounds 1 to 3: a push may wait, after its word was taken, for the receipts' lock (`while`
+        "planning") or, for a live process with no delivery mode yet, for that process's mode lock while the
+        handoff chooses `legacy` (`while` "choosing", the lock held by another real process). The word's binding
+        (the reach among it) is checked under the receipts' lock once the mode is chosen, before a legacy push
+        goes or a gate receipt is written: nothing is handed over on the stale word, no prepared receipt is left
+        for a later ordinary pass to hand over, and the message is asked about again, for the reach as it is now."""
+        hd = sminos.holder_module()
+        cases = [(gate, kind, "planning") for gate in (False, True) for kind in ("say", "human")]
+        cases += [(False, kind, "choosing") for kind in ("say", "human")]
+        for gate, kind, during in cases:
+            with self.subTest(gate=gate, kind=kind, during=during):
+                tid, sid, proc, received = self.live_member(name="p%d%s%s" % (gate, kind[0], during[0]))
+                if gate:
+                    self.assertEqual(hd.activate(proc.pid, "launch-1", sid)["mode"], "gate")
+                text = "meanwhile %s %s %s" % (gate, kind, during)
+                writer = W1 if kind == "say" else "%s/human" % FAR
+                verdict = "deliver" if kind == "say" else "words"
+                self.message((sid, tid), writer=writer, kind=kind, text=text)
+                link = self.link()
+                self.ask_pass(link)
+                [ask] = [f for f in self.asks(link) if f["event"].get("text") == text]
+                self.assertEqual(ask["t"], "reach?" if kind == "say" else "words?")
+                self.answer(link, ask, verdict)
+
+                def narrow(sid=sid):
+                    records.set_policy(sid, lambda access, shares: ("private", []))
+                    sminos.forget_caches()
+                if during == "planning":
+                    def plan(*a, real=hd.plan, **k):
+                        narrow()
+                        return real(*a, **k)
+                    with mock.patch.object(hd, "plan", plan):
+                        self.carry()
+                else:
+                    release = self.held_elsewhere(hd._mode_path(hd._process_of(proc.pid), ".lock"))
+                    waiting, failed = threading.Event(), []
+
+                    @contextlib.contextmanager
+                    def mode_lock(p, real=hd._mode_lock):
+                        waiting.set()   # the handoff is about to wait on the lock another process holds
+                        with real(p):
+                            yield
+
+                    def carry():
+                        try:
+                            self.carry()
+                        except BaseException as err:  # noqa: BLE001 — reported by the main thread
+                            failed.append(err)
+                    with mock.patch.object(hd, "_mode_lock", mode_lock):
+                        t = threading.Thread(target=carry)
+                        t.start()
+                        self.assertTrue(waiting.wait(30), "the handoff reached the mode lock")
+                        time.sleep(0.2)
+                        self.assertTrue(t.is_alive(), "and waits on it")
+                        narrow()
+                        release()
+                        t.join(60)
+                    self.assertFalse(t.is_alive())
+                    self.assertEqual(failed, [])
+                self.assertEqual(self.got(received, text), [], "nothing handed over on that word")
+                self.assertEqual(self.kept(), [])
+                self.carry()   # an ordinary pass: no receipt the stopped attempt prepared stands for the word
+                self.assertEqual(self.got(received, text), [], "nor by the next ordinary pass")
+                self.assertIn((writer, ask["event"]["seq"]), self.owed_to(tid), "still owed")
+                self.ask_pass(link)
+                [again] = [f for f in self.asks(link) if f["event"].get("text") == text and f["id"] != ask["id"]]
+                self.answer(link, again, verdict)
+                self.carry()
+                self.assertEqual(len(self.got(received, text)), 1, "delivered on the answer for the reach now")
+
+    def test_a_word_released_after_a_hand_off_is_dropped_and_the_message_asked_for_the_job(self):
+        handed = {}
+
+        def meanwhile(tid, sid, proc):
+            job, jproc = T1.Sessions.job(self, sid)
+            handed["inbox"] = self.inbox(job, jproc, "j")
+            self.reconcile()
+            self.end(proc)
+            self.reconcile()
+            handed["job"] = job
+        tid, ask, _, link, received = self.released_after(meanwhile)
+        self.assertEqual(threads.get(tid)["current"], handed["job"])
+        self.assertEqual(self.got(received, "a late word") + self.got(handed["inbox"], "a late word"), [],
+                         "dropped unused")
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != ask["id"]]
+        self.assertEqual(again["session"], handed["job"], "asked for the session that continues the thread")
+        self.answer(link, again, "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(handed["inbox"], "a late word")), 1)
+
+    # -- a word and a launch
+
+    def test_a_word_carried_across_a_launch_and_a_change_of_access_hands_nothing_over_and_launches_once(self):
+        tid, sid = self.stopped()
+        self.message((sid, tid), text="across the launch")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        self.switch("barrier")
+        code = CUT_OVER % SCRIPTS + "print(sminos_channels.carry_words(sminos.known_project(%r)))" % DESK
+        p = subprocess.Popen([sys.executable, "-B", "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True)
+        self.assertTrue(wait_for(lambda: self.launches() >= 1, timeout=30), "the launch entered")
+        try:
+            records.set_policy(sid, lambda access, shares: ("private", []))
+        finally:
+            os.unlink(os.path.join(self.state, "barrier"))
+        _, err = p.communicate(timeout=120)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual(self.woken_got(sid, "across the launch"), [], "no text handed over on that word")
+        self.assertEqual(self.owed_to(tid), [(W1, 1)])
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != ask["id"]]
+        self.answer(link, again, "deliver")
+        self.carry()
+        self.assertTrue(wait_for(lambda: len(self.woken_got(sid, "across the launch")) == 1), self.frames(sid))
+        self.assertEqual(self.launches(), 1, "no second launch")
+
+    # -- sending and the wire (M4's seam)
+
+    def test_a_projects_upload_reads_no_event_for_a_channels_message(self):
+        """The final reading (H8, B11): whether a batch carries a channel's message is asked of a channel's
+        upload alone; a project's upload looks at no event's kind for it, as at the merge base."""
+
+        class Counted(tuple):
+            asked = 0
+
+            def __contains__(self, kind):
+                Counted.asked += 1
+                return tuple.__contains__(self, kind)
+        link = self.link()
+        hl = link.logs[self.p.id] = hublog.HubLog(self.p, link.cred)
+        hl.have = {}
+        sminos.log_append(self.p, "%s/human" % sminos.host_name(), "human", **{"from": "human", "to": "*",
+                                                                             "text": "to the project"})
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "CHAT_KINDS", Counted(sminos.CHAT_KINDS)):
+            link.upload(hl)
+            self.assertEqual(Counted.asked, 0, "no kind read for a project's batch")
+            self.assertEqual([f["project"] for f in link.log_lane.sent if f.get("t") == "events"], [self.p.id])
+            chan = link.logs[DESK]
+            chan.have = {}
+            sminos.log_append(self.chan(DESK), "%s/human" % sminos.host_name(), "human", **{
+                "from": "human", "to": "*", "text": "into the channel"})
+            sminos.forget_caches()
+            link.upload(chan)
+        self.assertGreater(Counted.asked, 0, "a channel's batch is asked")
+        self.assertIn(DESK, [f["project"] for f in link.log_lane.sent if f.get("t") == "events"])
+
+    def test_a_messages_upload_waits_for_its_senders_row_and_a_retired_senders_goes_with_no_frame(self):
+        sender, rproc, tid = self.member(name="speaker")
+        self.add(tid, sender, DESK)
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.have = {}
+        to = [{"session": str(uuidlib.uuid4()), "alias": "far", "thread": str(uuidlib.uuid4())}]
+        sminos.log_append(self.chan(DESK), "%s/%s" % (sminos.host_name(), sender), "say", to=to,
+                          text="uploaded after its frame", thread=tid)
+        sminos.forget_caches()
+        link.plane.member_rows.clear()   # its session joined since the plane last read its project
+        with mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read")), \
+                mock.patch.object(link.plane, "refresh", side_effect=AssertionError("a reconciliation")):
+            at = time.monotonic()
+            link.upload(hl)
+            self.assertLess(time.monotonic() - at, 1.0)
+        self.assertEqual([f for f in link.log_lane.sent if f.get("t") == "events"], [], "the frame waits")
+        link.next_member_read = 0.0
+        link.members(time.monotonic())
+        link.upload(hl)
+        sent = link.log_lane.sent
+        [up] = [n for n, f in enumerate(sent) if f.get("t") == "events"]
+        self.assertIn(sender, [f.get("session") for f in sent[:up] if f.get("t") == "member"],
+                      "the sender's member frame first, under its own project")
+        self.assertNotIn(DESK, [f.get("project") for f in sent if f.get("t") == "member"])
+        # A sender retired since it wrote owes no frame: its message goes up, row or no row.
+        self.assertEqual(self.cli("retire", sender)[0], 0)
+        sminos.log_append(self.chan(DESK), "%s/%s" % (sminos.host_name(), sender), "say", to=to,
+                          text="after its retirement", thread=tid)
+        sminos.forget_caches()
+        link.plane.member_rows.clear()
+        hl.undraw()
+        link.upload(hl)
+        self.assertTrue(any(e.get("text") == "after its retirement" for f in link.log_lane.sent
+                            if f.get("t") == "events" for e in f["events"]), "it went with no frame")
+
+class WireSameAsBase(unittest.TestCase):
+    """B11 on the wire (CH2's M6): on a machine that knows no channel, the uplink's frames — the member set, the
+    project's hello and presence, the uploads, the `words?` and `reach?` asks and what their answers carry out, an
+    unanswered ask asked again — and what each inbox receives are, but for ids, times and paths, what the merge
+    base's code produces for the same scene (wire_scene.py, driven tick by tick in one process)."""
+
+    def scene(self, scripts):
+        home = tempfile.mkdtemp(prefix="smws.", dir="/tmp")   # short: an inbox's socket path is bounded
+        self.addCleanup(shutil.rmtree, home, True)
+        got = subprocess.run([sys.executable, "-B", os.path.join(HERE, "wire_scene.py"), scripts, home],
+                             capture_output=True, text=True, timeout=300)
+        self.assertEqual(got.returncode, 0, got.stderr[-3000:])
+        text = got.stdout
+        for path in (os.path.realpath(home), home, os.path.realpath(scripts), scripts):
+            text = text.replace(path, "<%s>" % ("home" if "smws." in path else "scripts"))
+        text = re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z", "<ts>", text)
+        keep = {"6c000b01-0000-4000-8000-0000000000b1", "6c000b02-0000-4000-8000-0000000000b2", APP}
+        text = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                      lambda m: m.group(0) if m.group(0) in keep else "<id>", text)
+        text = re.sub(r"\b[0-9a-f]{16,64}\b", "<hex>", text)
+        # The plugin's version, which a frame names (a machine's `sminos`), is each tree's own: 1.55.0 is CH2's.
+        text = re.sub(r'("sminos":\s*)"\d+\.\d+\.\d+"', r'\1"<version>"', text)
+        return json.loads(text)
+
+    def test_the_frames_of_a_machine_with_no_channel_are_the_merge_bases(self):
+        from test_channels_say import MERGE_BASE, extracted
+        tmp = tempfile.mkdtemp(dir=BASE)
+        base = os.path.dirname(extracted(MERGE_BASE, tmp))
+        mine = self.scene(SCRIPTS)
+        kinds = [f.get("t") for f in mine["frames"]]
+        for t in ("member", "hello", "events", "words?", "reach?"):
+            self.assertIn(t, kinds, "the scene sends what it is to compare")
+        self.assertEqual(len([f for f in mine["frames"] if f.get("t") == "words?"]), 3,
+                         "the person's words asked, and the unanswered one asked again")
+        self.assertEqual({k: len(v) for k, v in mine["inboxes"].items()}, {"ann": 1, "bee": 1})
+        theirs = self.scene(base)
+        if mine != theirs:
+            import difflib
+            a, b = (json.dumps(x, indent=1, sort_keys=True).splitlines() for x in (theirs, mine))
+            self.fail("this tree's frames differ from the merge base's:\n"
+                      + "\n".join(difflib.unified_diff(a, b, "merge base", "this tree", lineterm="", n=2)))
 
 
 def on(ep, conn, pred):

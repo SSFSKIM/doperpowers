@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -1079,6 +1080,261 @@ class BenchOpensOnRl10(unittest.TestCase):
         self.assertTrue(host.ep.stopping, "the stand-in did not outlive its failed setup")
         self.assertFalse(os.path.exists(host.ep.socket_path))
         self.assertEqual(env.env["SMINOS_RL10"], host.ep.rl10_path(), "the machine was pointed at it")
+
+
+class BenchChannels(unittest.TestCase):
+    """bench_scale.py's channel shapes (CH2's M7) on a small synthetic
+    machine: --channels N registers N channels, --held H of them with
+    members drawn from the live threads across their projects, placed by
+    their own change as `channel add` places one; `verbs` reads from the
+    senders' records that they hold the memberships, then times its matched
+    pairs, each line a command that succeeded."""
+
+    SMALL = ["--dirs", "3", "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "2", "--mini", "1",
+             "--says", "2", "--own", "2", "--live", "5", "--rooted", "4"]
+
+    def verbs(self, *flags):
+        # The scripts named as Concrete Steps names them, relative to where the bench is run from.
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "verbs",
+                            os.path.relpath(SCRIPTS, PLUGIN_ROOT), *self.SMALL, *flags], capture_output=True,
+                           text=True, timeout=600, cwd=PLUGIN_ROOT,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
+        self.assertEqual(r.returncode, 0, r.stdout[-3000:] + r.stderr[-3000:])
+        self.assertNotIn("FAILED", r.stdout, r.stdout)
+        return r.stdout
+
+    def test_the_pairs_with_channels(self):
+        out = self.verbs("--channels", "3")
+        self.assertIn("channels: 3 registered, 3 held; the sender's record holds 3 of them, the other's none", out)
+        for label in ("channel show, a machine that knows 1 channel", "channel show, a machine that knows 3 channels",
+                      "list, by a thread in 3 channels", "list, by the same thread in none",
+                      "say @<alias>, by a thread in 3 channels", "say @<alias>, by a thread in none"):
+            self.assertRegex(out, r"(?m)^%s +[0-9.]+ s wall, [0-9.]+ s CPU$" % label.replace("@", "@"))
+        self.assertIn("the sender's record holds none of them now", out)
+
+    def test_no_channel(self):
+        out = self.verbs("--channels", "0")
+        self.assertIn("channels: none on this machine", out)
+        for label in ("list, by a thread in none", "say @<alias>, by a thread in none"):
+            self.assertRegex(out, r"(?m)^%s +[0-9.]+ s wall, [0-9.]+ s CPU$" % label)
+        self.assertNotIn("channel show", out)
+
+    def test_the_plan_of_memberships(self):
+        """Who is placed where: the sender in every held channel, the other
+        sender in none, the first channel holding every live thread but the
+        other sender, each other held channel two more; the rest registered
+        with no member."""
+        import bench_scale
+        live = ["s%d" % i for i in range(6)]
+        plan = bench_scale.channel_plan(["c%d" % i for i in range(5)], 3, live)
+        self.assertEqual([c for c, _ in plan], ["c0", "c1", "c2", "c3", "c4"])
+        held = dict(plan)
+        self.assertEqual(held["c0"], ["s0", "s2", "s3", "s4", "s5"])
+        for c in ("c1", "c2"):
+            self.assertEqual(len(held[c]), 3)
+            self.assertEqual(held[c][0], "s0")
+            self.assertNotIn("s1", held[c])
+        self.assertEqual(held["c3"], [])
+        self.assertEqual(held["c4"], [])
+
+
+class BenchChannelReads(unittest.TestCase):
+    """What the bench says of its channel figures when it could not count
+    them, and the flags it refuses before it builds anything."""
+
+    def test_a_trace_without_the_hook_installed_is_unobserved(self):
+        import bench_scale
+        d = tempfile.mkdtemp(prefix="smr.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "reads.log")
+        self.assertIsNone(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), "no trace at all")
+        with open(path, "w") as f:
+            f.write("12.000 7\n")
+        self.assertIsNone(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), "reads, but no install line")
+        with open(path, "w") as f:
+            f.write("installed 5.000 7\ninstalled 5.000 8\n9.000 7\n12.000 7\n15.000 8\n21.000 7\n")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), 1, "its own, inside the window")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 9, 10.0, 20.0), None, "another process's install")
+        with open(path, "w") as f:
+            f.write("installed 5.000 7\n")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), 0, "installed and nothing read")
+
+    def test_the_flags_are_refused_before_anything(self):
+        for flags, said in ((["--held", "2"], "--held needs --channels"),
+                            (["--channels", "3", "--held", "4"], "0 <= H <= N"),
+                            (["--channels", "-1"], "0 <= H <= N")):
+            for mode in ("verbs", "run"):
+                r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), mode, SCRIPTS, *flags],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 2, (mode, flags, r.stdout, r.stderr))
+                self.assertIn(said, r.stderr)
+                self.assertNotIn("built", r.stdout, "refused before the machine was built")
+
+
+class BenchUploadWindow(unittest.TestCase):
+    """The bench's hook, as the uplink runs it: the upload window counts its
+    log's turns of Link.upload_pass alone, and an end asked for in the
+    middle of a turn is carried out once that turn is counted."""
+
+    def setUp(self):
+        import bench_scale
+        d = tempfile.mkdtemp(prefix="smu.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.out = os.path.join(d, "uplink.prof")
+        self.ns = {"__name__": "bench_hook"}
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+        meta = list(sys.meta_path)
+
+        def restore():
+            for sig, h in handlers.items():
+                signal.signal(sig, h)
+            sys.meta_path[:] = meta
+        self.addCleanup(restore)
+        with mock.patch.dict(os.environ, {"BENCH_PROFILE": self.out}), \
+                mock.patch.object(sys, "argv", ["sminos.py", "daemon", "uplink"]):
+            exec(bench_scale.HOOK, self.ns)
+        ns = self.ns
+
+        def work(i):
+            return i
+
+        class Link:
+            def upload_pass(self, hl, live=None, state=None):
+                if hl.ending:
+                    ns["end"]()   # SIGUSR2, landing inside the turn
+                return [work(i) for i in range(10)]
+
+        self.Link = Link
+        self.uplink = types.SimpleNamespace(Link=Link)
+        patcher = mock.patch.dict(sys.modules, {"sminos_uplink": self.uplink})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.env = mock.patch.dict(os.environ, {"BENCH_PROFILE": self.out})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def hl(self, log, ending=False):
+        return types.SimpleNamespace(project=types.SimpleNamespace(id=log), ending=ending)
+
+    def counted(self):
+        with open(self.out + ".upload") as f:
+            return json.load(f)
+
+    def test_an_end_inside_a_turn_publishes_that_turn_counted(self):
+        real = self.Link.upload_pass
+        with open(self.out + ".mode", "w") as f:
+            f.write("upload ch")
+        self.ns["begin"]()
+        link = self.Link()
+        link.upload_pass(self.hl("other"))
+        link.upload_pass(self.hl("ch"))
+        link.upload_pass(self.hl("ch", ending=True))
+        got = self.counted()
+        self.assertEqual(got["log"], "ch")
+        self.assertEqual(got["counted"][0], 2, "both of its turns, the one the end landed in too; none of another log's")
+        self.assertGreaterEqual(got["counted"][1], 22, "each turn's Python calls: itself and its ten")
+        self.assertIs(self.Link.upload_pass, real, "the counting is gone with the window")
+
+    def test_an_end_between_turns_publishes_at_once(self):
+        with open(self.out + ".mode", "w") as f:
+            f.write("upload ch")
+        self.ns["begin"]()
+        self.Link().upload_pass(self.hl("ch"))
+        self.ns["end"]()
+        self.assertEqual(self.counted()["counted"][0], 1)
+
+
+class BenchUploadWindowParent(unittest.TestCase):
+    """The bench's side of an upload window, against the hook running in
+    this process (its signals sent here) and an upload pass on a thread of
+    its own, as the uplink's tick loop: a message is posted only once a turn
+    of the log is counted, and a window whose messages are not all accepted
+    when it closes gives no count, whatever goes up after."""
+
+    def setUp(self):
+        import bench_scale
+        self.bench = bench_scale
+        d = tempfile.mkdtemp(prefix="smw.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        out = os.path.join(d, "uplink.prof")
+        self.env = types.SimpleNamespace(env={"BENCH_PROFILE": out})
+        ns = {"__name__": "bench_hook"}
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+        meta = list(sys.meta_path)
+
+        def restore():
+            for sig, h in handlers.items():
+                signal.signal(sig, h)
+            sys.meta_path[:] = meta
+        self.addCleanup(restore)
+        with mock.patch.dict(os.environ, {"BENCH_PROFILE": out}), \
+                mock.patch.object(sys, "argv", ["sminos.py", "daemon", "uplink"]):
+            exec(bench_scale.HOOK, ns)
+        self.ns = ns
+        self.pending, self.accepted = [], []
+        self.posted, self.first, self.stop = threading.Event(), threading.Event(), threading.Event()
+        self.hold_last = False
+        t = self
+
+        def member_project_now():
+            return None
+
+        class Link:
+            calls = 0
+
+            def upload_pass(self, hl, live=None):
+                Link.calls += 1
+                if Link.calls == 1:   # a turn already running when the window opens
+                    t.first.set()
+                    t.posted.wait(3.0)
+                while t.pending and not (t.hold_last and len(t.pending) == 1):
+                    member_project_now()
+                    t.accepted.append(t.pending.pop(0))
+        patcher = mock.patch.dict(os.environ, {"BENCH_PROFILE": out})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        modules = mock.patch.dict(sys.modules, {"sminos_uplink": types.SimpleNamespace(Link=Link)})
+        modules.start()
+        self.addCleanup(modules.stop)
+        hl = types.SimpleNamespace(project=types.SimpleNamespace(id="ch"))
+
+        def turns():
+            link = Link()
+            while not self.stop.is_set():
+                link.upload_pass(hl)
+                time.sleep(0.02)
+        self.loop = threading.Thread(target=turns, daemon=True)
+        self.loop.start()
+        self.addCleanup(self.loop.join, 5)
+        self.addCleanup(self.stop.set)
+        self.assertTrue(self.first.wait(5))
+
+    def post(self, n):
+        def act():
+            self.pending.extend(range(n))
+            self.posted.set()
+        return act
+
+    def test_messages_are_posted_once_a_turn_of_the_log_is_counted(self):
+        w = self.bench.upload_window(self.env, os.getpid(), "ch", self.post(2), accepted=lambda: len(self.accepted),
+                                     k=2, give_up=10)
+        self.assertEqual(w["counted"][2], 2, "both messages drawn by counted turns: %r" % (w,))
+
+    def test_a_window_closed_short_of_its_messages_gives_no_count(self):
+        self.hold_last = True
+        close = signal.getsignal(signal.SIGUSR2)
+
+        def late(*a):   # a turn outside the window takes the last message as the close is asked for
+            self.hold_last = False
+            while self.pending:
+                self.accepted.append(self.pending.pop(0))
+            close(*a)
+        signal.signal(signal.SIGUSR2, late)
+        w = self.bench.upload_window(self.env, os.getpid(), "ch", self.post(2), accepted=lambda: len(self.accepted),
+                                     k=2, give_up=1.5)
+        self.assertEqual(len(self.accepted), 2, "the last message went up, after the window")
+        self.assertNotIn("counted", w)
+        self.assertIn("1 of 2", w["failed"])
 
 
 def processes():

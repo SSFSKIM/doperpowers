@@ -4,8 +4,12 @@ bridge --session <id>`) with this process as its mod, answering `btw` as
 bridge-btw.tsx does and `ask` as bridge-ask.tsx does — the op answered at
 once (`started`, or a refusal with its code), then its start and its end on
 the stream, the end carrying the answer and its usage, or the reason there is
-none. Its capabilities list the ops it is given, so `bridge_offers` reads them
-as a loaded module's.
+none — and, given `deliver`, a person's words as bridge.tsx's deliver takes
+them: its `delivered` event (outcome `submitted`, the key as given) posted,
+then the answer `submitted`, each text it took kept in `delivered`. Its
+capabilities list the ops it is given, so `bridge_offers` reads them as a
+loaded module's. `cwd` is the session's as its start says it (where the
+child's export finds its project); `env`, the child's environment.
 
 How each op is answered, `btw` and `ask` alike:
     {"text": "...", "usage": {...}}   an answer (usage defaults to USAGE)
@@ -47,25 +51,25 @@ class _Unix(http.client.HTTPConnection):
 
 
 class StandIn:
-    def __init__(self, cli, session, ops=("btw", "ask"), btw=None, ask=None, log=None):
+    def __init__(self, cli, session, ops=("btw", "ask"), btw=None, ask=None, log=None, cwd="/", env=None):
         self.session, self.ops, self.log = session, list(ops), log
         self.answers = {"btw": btw or {"text": "Keeps the stand-in's tool working."},
                         "ask": ask or {"text": "Nothing blocking."}}
-        self.cli, self.commands = cli, []
+        self.cli, self.commands, self.delivered, self.cwd, self.env = cli, [], [], cwd, env
         self.start_child()
 
     def start_child(self):
         """A child for the session, this process its mod: its hello read, then the session's start and the
         mod's state (with the capabilities) posted, as a module that loads does."""
         self.proc = subprocess.Popen([str(self.cli), "bridge", "--session", self.session], stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True)
+                                     stderr=subprocess.DEVNULL, text=True, env=self.env)
         hello = json.loads(self.proc.stdout.readline())
         assert hello.get("op") == "hello", hello
         self.child = (hello["socket"], hello["nonce"])   # one value: a post never pairs one child's socket with another's nonce
         threading.Thread(target=self.drain, args=(self.proc,), daemon=True).start()
         caps = {"sminos": "test", "protocol": 2, "engine": "test", "ops": self.ops, "reads": [], "routes": {},
                 "controls": {op: {"available": True} for op in self.ops}}
-        self.post({"type": "session", "phase": "start", "session": self.session, "cwd": "/", "t": 0},
+        self.post({"type": "session", "phase": "start", "session": self.session, "cwd": self.cwd, "t": 0},
                   {"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": hello.get("seed") or {},
                    "capabilities": caps, "t": 0})
 
@@ -92,6 +96,11 @@ class StandIn:
 
     def answer(self, cmd):
         op, oid = cmd.get("op"), cmd.get("id")
+        if op == "deliver" and op in self.ops:
+            self.delivered.append(cmd.get("text"))
+            self.post({"type": "delivered", "key": cmd.get("key"), "outcome": "submitted", "t": 0})
+            self.post({"type": "result", "id": oid, "op": op, "ok": True, "result": {"submitted": True}})
+            return
         how = self.answers.get(op) if op in self.ops else None
         if how is None:
             self.post({"type": "result", "id": oid, "op": op, "ok": False, "error": "unknown op: %s" % op})
