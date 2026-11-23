@@ -1068,11 +1068,21 @@ def _target(q):
 
 def _caller(session):
     """The calling session's own thread, or exit 1 when it is none here."""
-    record = sminos.threads_module().current_record(session, fresh=True)
-    t = _local(record, session, "")
+    t = _self(session)
     if t.refusal:
         sminos.die("this session (%s) cannot be placed in a channel: %s" % (session[:8], t.refusal), 1)
     return t
+
+
+def _self(session):
+    """The calling session as `channel create` and a self-add read it (_local over its current record)."""
+    return _local(sminos.threads_module().current_record(session, fresh=True), session, "")
+
+
+def _may_self_add(session):
+    """Whether `channel add <channel>` with no target would take this session (_caller's check): a stamp alone is
+    not enough, since it survives the session's controller turning lane B."""
+    return bool(session) and not _self(session).refusal
 
 
 def _placed(op, channel, outcome):
@@ -1830,7 +1840,7 @@ OPENS_NO_TAG = ("%s opens no tag (a tag's qualifier takes no #): nothing was rec
                 "\"@<alias> …\", or qualify the tag with the channel's id")
 NO_DIRECTORYS = "%s is a channel, and no directory's project: say --in %s to speak in it"
 NOT_A_MEMBER = "you are not in %s: replies to this come to you directly, in %s"
-SELF_ADD = ". sminos channel add %s places you in it"   # a thread's only: `channel add` refuses a caller that is none
+SELF_ADD = ". sminos channel add %s places you in it"   # only where `channel add` would take the caller (_may_self_add)
 NO_HOME = ("you are not in %s, and this session's project cannot be told, so a reply would have nowhere to "
            "reach you: nothing was recorded")
 DROP_IN = "Drop --in to reach it in its own project"
@@ -2065,7 +2075,7 @@ def speak(channel, a, session, tags):
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:
         fields["from_project"] = home.id   # the sender's own project, where a reply finds it (C5)
-    said = Said(fields, outsider, NOT_A_MEMBER % (channel.name, home.name) + (SELF_ADD % channel.name if thread else "")
+    said = Said(fields, outsider, NOT_A_MEMBER % (channel.name, home.name) + (SELF_ADD % channel.name if _may_self_add(session) else "")
                 if outsider else "", rows)
     sminos.say_into(a, channel, home, session, sender, writer, kind, recipients, wake, raws, said=said)
 

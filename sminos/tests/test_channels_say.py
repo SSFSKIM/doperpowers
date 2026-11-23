@@ -555,6 +555,29 @@ class Outsider(Say):
         self.assertIn("you are not in desk: replies to this come to you directly, in app", out)
         self.assertNotIn("places you in it", out)
 
+    def test_a_thread_whose_session_turned_lane_b_keeps_its_stamp_and_is_not_offered_the_self_add(self):
+        """A thread's stamp survives its session's controller turning lane B, but `channel add` (its `_caller`)
+        refuses such a caller: the event keeps the stamp, and the line offers no add it would be refused
+        (CH2's final review, R7)."""
+        rtid, rsid, received = self.live("reader")
+        otid, osid, _ = self.outsider()
+        self.assertTrue(otid, "a thread")
+        records.set_controller(osid, "B")
+        sminos.forget_caches()
+        self.assertEqual(threads.stamp(osid), otid, "its stamp survives the change of controller")
+        code, out = self.as_session(osid, "say", "--in", "desk", "@reader after the change", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.says()[-1].get("thread"), otid, "the event keeps the stamp")
+        self.assertIn("you are not in desk: replies to this come to you directly, in app", out)
+        self.assertNotIn("places you in it", out)
+        code, out = self.as_session(osid, "channel", "add", "desk", cwd=self.app_root)
+        self.assertEqual(code, 1, out)
+        self.assertIn("it is no thread (its session is lane B)", out, "the add it is not offered is refused")
+        ntid, nsid, _ = self.open_here("newcomer", self.app_root)
+        code, out = self.as_session(osid, "channel", "add", "desk", "app/newcomer", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        self.assertIn("newcomer#%s: in desk" % nsid[:8], out, "but it may place another thread, by name (R8)")
+
     def test_its_event_carries_the_thread_the_rosters_sweep_gave_it(self):
         """A live session not yet a thread when it says: the roster's sweep over its project makes it one, and
         the event carries that thread."""
