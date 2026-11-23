@@ -1057,6 +1057,17 @@ class Asks(Requests, T1.Sessions):
         sminos.forget_caches()
         self.assertFalse(link.may_leave(c), "a person's message still queued here")
 
+    def test_a_machine_whose_name_begins_with_this_ones_holds_no_upload_here(self):
+        """Review round 1: unsent counts this machine's writers by the writer's exact machine, as HubLog.own does,
+        never by a file name's prefix: `<host>.peer/human` is another machine's, and keeps no log open here."""
+        self.human()
+        link = self.link()
+        c = self.chan(DESK)
+        sminos.log_append(c, "%s.peer/human" % sminos.host_name(), "human", to="*", text="another machine's")
+        sminos.forget_caches()
+        self.assertFalse(channels.unsent(c))
+        self.assertTrue(link.may_leave(c))
+
     def test_a7_an_answer_waits_on_no_lock_and_the_pass_that_carries_requests_uses_it(self):
         tid, sid, _ = self.human()
         self.remote(DESK, "add", sid, tid)
@@ -1935,6 +1946,22 @@ class Messages(Delivering):
             link.ask_words({})
         self.assertEqual(len(self.asks(link)), 2, "asked again once the uplink's memory of it is out")
 
+    def test_a_word_is_aged_from_when_the_reader_took_its_frame(self):
+        """Review round 1: a consumer that dispatches an answer late buys it no more time: the word's age is
+        counted from when the reader took the frame (Link.received), not from its dispatch."""
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="taken long ago")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        link.received = time.time() - channels.WORD_KEPT - 1   # the reader took it a minute and more ago
+        self.answer(link, ask, "deliver")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.got(received, "taken long ago"), [])
+        self.assertEqual(self.kept(), [], "discarded where it was found")
+        link.ask_words({})
+        self.assertEqual(len(self.asks(link)), 2, "asked again at once: the uplink holds it good no longer")
+
     def test_two_words_for_one_event_push_it_once(self):
         tid, sid, received = self.live()
         e = self.message((sid, tid), text="asked twice")
@@ -2119,6 +2146,33 @@ class Messages(Delivering):
         self.answer(link, again, "deliver")
         self.carry()
         self.assertEqual(len(self.got(received, "a late word")), 1, "delivered on the answer for the reach now")
+
+    def test_a_change_of_access_while_the_receipts_are_planned_hands_nothing_over_on_that_word(self):
+        """Review round 1: the push may wait in the receipts' planner after the word was taken; the word's
+        binding (the reach among it) is checked again after that wait, before the text is handed over."""
+        tid, sid, proc, received = self.live_member()
+        self.message((sid, tid), text="planned meanwhile")
+        link = self.link()
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.answer(link, ask, "deliver")
+        hd = sminos.holder_module()
+        real = hd.plan
+
+        def plan(*a, **k):
+            records.set_policy(sid, lambda access, shares: ("private", []))
+            sminos.forget_caches()
+            return real(*a, **k)
+        with mock.patch.object(hd, "plan", plan):
+            self.carry()
+        self.assertEqual(self.got(received, "planned meanwhile"), [], "nothing handed over on that word")
+        self.assertEqual(self.kept(), [])
+        self.assertEqual(self.owed_to(tid), [(W1, 1)], "still owed")
+        self.ask_pass(link)
+        [again] = [f for f in self.asks(link) if f["id"] != ask["id"]]
+        self.answer(link, again, "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(received, "planned meanwhile")), 1, "delivered on the answer for the reach now")
 
     def test_a_word_released_after_a_hand_off_is_dropped_and_the_message_asked_for_the_job(self):
         handed = {}

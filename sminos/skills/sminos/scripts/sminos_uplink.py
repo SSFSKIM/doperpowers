@@ -2508,21 +2508,25 @@ class Link:
         (sminos_channels.keep_word), bound to the thread, the session and
         the reach the ask was put for and to the event; its key noted good
         for WORD_KEPT (words_kept); the daemon nudged, whose channel pass
-        carries it out (carry_words). A file that cannot be written is said,
+        carries it out (carry_words). Its age is counted from when the
+        reader took the frame (Link.received), so a consumer that dispatches
+        it late buys it no more time. A file that cannot be written is said,
         and the event, still owed, is asked again by a later pass."""
         chans = sminos.channels_module()
         o, e = held["owing"], held["event"]
         self.message_silent.discard((held["key"], e["seq"]))
+        now = time.time()
+        at = min(self.received, now) if self.received is not None else now
         word = {"kind": kind, "verdict": verdict, "reason": reason, "thread": o.thread, "session": o.session,
                 "reach": o.reach, "writer": e["writer"], "seq": e["seq"], "hash": sminos.event_hash(e),
-                "at": time.time()}
+                "at": at}
         try:
             chans.keep_word(o.channel.id, o.thread, ask, word)
         except OSError as err:
             log("the endpoint's word on %s in %s could not be kept (%s): asked again" % (
                 sminos.event_ref(e), o.channel.name, err.strerror or type(err).__name__))
             return
-        self.words_kept[chans.word_key(o, e)] = time.monotonic() + chans.WORD_KEPT
+        self.words_kept[chans.word_key(o, e)] = time.monotonic() + chans.WORD_KEPT - (now - at)
         seen = daemon.nudged_at() == self.nudge
         sminos.nudge_daemon()
         if seen:

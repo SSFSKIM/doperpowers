@@ -2968,7 +2968,9 @@ def unsent(channel):
     (`queued`): while either holds, a followed channel does not leave this
     machine, and one that left comes back (sminos_uplink.Link.may_leave),
     so what was said here goes up. Requests keep their own rule
-    (outstanding). A file it cannot read keeps the channel too."""
+    (outstanding). This machine's writers are those whose machine is
+    exactly this one's, as HubLog.own reads them (`<host>.peer/…` is
+    another machine's). A file it cannot read keeps the channel too."""
     hublog = sminos.sibling_module("sminos_hublog")
     for path in glob.glob(os.path.join(glob.escape(channel.home), sminos.QUEUED, "*.jsonl")):
         if any(e.get("kind") in sminos.CHAT_KINDS for e in sminos.queued_events(path)):
@@ -2983,7 +2985,8 @@ def unsent(channel):
     if not isinstance(held, dict):
         return True
     taken = hublog.HubLog.seqs(held.get("taken"))
-    prefix = sminos.machine_name_now().replace("/", ".") + "."
+    machine = sminos.machine_name_now()
+    prefix = machine.replace("/", ".") + "."   # the files to read; whose they are is the writer's exact machine
     log_dir = os.path.join(channel.home, "log")
     try:
         names = os.listdir(log_dir)
@@ -2996,7 +2999,7 @@ def unsent(channel):
             continue
         path = os.path.join(log_dir, name)
         writer, last, _ = hublog.writer_and_last(path)
-        if writer and last > taken.get(writer, 0) \
+        if writer and writer.startswith(machine + "/") and last > taken.get(writer, 0) \
                 and any(e["seq"] > taken.get(writer, 0) and e["kind"] in sminos.CHAT_KINDS
                         for e in hublog.read_events(path)):
             return True
