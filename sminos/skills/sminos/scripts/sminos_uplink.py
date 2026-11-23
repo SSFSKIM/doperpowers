@@ -2430,13 +2430,18 @@ class Link:
         session: the thread's current session, event: as stored, its
         verified left out}`, its recipient's member frame first under its
         own project as the plane last read it (member_on_lane; for a
-        `reach?`, the sending session's too when it is this machine's and a
-        member of a project now), else asked once the plane's next read has
-        it. One ask out at a time for a thread and a writer, held under
+        `reach?`, the sending session's too when it is this machine's, under
+        the project it is a member of now, sminos.member_project_now, as an
+        upload's senders are read), else asked once the plane's next read
+        has it. One ask out at a time for a thread and a writer, held under
         (channel id, thread, writer), marked a channel's, with its Owing (the
         thread, the session and the reach it was put for) and the event. An
-        event whose word is kept and still good (words_kept) is asked about
-        nothing more; one whose signer is revoked, or that carries a signer
+        event of this machine's own writers is asked about only once its
+        position has gone up on this stream (HubLog.sent: held by the
+        endpoint, or its upload queued on the lane ahead of the ask), never
+        while the upload waits for the endpoint's `have` or its frame is
+        undrawn. An event whose word is kept and still good (words_kept) is
+        asked about nothing more; one whose signer is revoked, or that carries a signer
         while the revocation set cannot be read, is not asked (the daemon's
         pass marks it). The answer is kept in a file and carried out by the
         daemon (on_words, on_reach): nothing here pushes, launches, or waits
@@ -2477,20 +2482,23 @@ class Link:
                     continue
                 if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
                     continue
+                if hl.own(e["writer"]) and e["seq"] > hl.sent.get(e["writer"], 0):
+                    continue   # this machine's own, not gone up on this stream yet: asked once its upload is queued
                 if not self.member_on_lane(o.project, o.session):
                     if o.session in self.members_unsent:
                         self.words_due = True   # its frame waits for lane capacity: asked once it is queued
                     continue   # a row not there yet, or under another project: asked after the plane's next read
                 sender = sminos.writer_session(e["writer"])
                 if kind == "reach?" and sender and sminos.writer_base(e["writer"]) == "%s/%s" % (here, sender):
-                    # The endpoint decides a reach by the sending session's record too, when it is this machine's.
-                    own = rows.get(sender)
-                    if own is not None and not self.member_on_lane(own[0], sender):
+                    # The endpoint decides a reach by the sending session's record too, when it is this machine's:
+                    # its frame under the project it is a member of now, read fresh as the upload path reads it
+                    # (senders_before), never the plane's row from before a move; while the plane holds none
+                    # there, asked after its next read. One a member of no project now owes no frame.
+                    now_in = sminos.member_project_now(sender)
+                    if now_in is not None and not self.member_on_lane(now_in, sender):
                         if sender in self.members_unsent:
                             self.words_due = True
                         continue
-                    if own is None and chans._project_now(sender) is not None:
-                        continue   # a member of a project the plane has not read it in yet: asked after its read
                 ask = os.urandom(12).hex()
                 frame = {"t": kind, "id": ask, "project": pid, "session": o.session,
                          "event": {k: v for k, v in e.items() if k != "verified"}}

@@ -2174,6 +2174,73 @@ class Messages(Delivering):
         self.ask_pass(link)
         self.assertEqual(len(self.asks(link, ("reach?",))), 1, "asked once the welcome lists it")
 
+    def test_an_own_event_is_asked_about_only_once_its_upload_is_on_the_lane_before_the_ask(self):
+        """The frontier review (F17): this machine's own event is asked about only once its position has gone up
+        on this stream: not while the upload waits for the endpoint's `have` (after a reconnect), nor while its
+        frame is undrawn; then its upload is on the lane before the ask."""
+        tid, sid, _ = self.live()
+        own = "%s/human" % sminos.host_name()
+        e = sminos.log_append(self.chan(DESK), own, "human", **{
+            "from": "human", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "from this machine"})
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        self.assertIsNone(hl.have, "no have yet: nothing of the log goes up")
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "not asked before its event has gone up")
+        hl.have = {}
+        with mock.patch.object(link, "senders_before", return_value=False):
+            link.upload(hl)   # its frame undrawn
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link), [], "nor while its frame is undrawn")
+        link.upload(hl)
+        self.ask_pass(link)
+        [ask] = self.asks(link)
+        self.assertEqual((ask["event"]["writer"], ask["event"]["seq"]), (own, e["seq"]))
+        sent = link.session_lane.sent
+        [up] = [n for n, f in enumerate(sent) if f.get("t") == "events" and f.get("project") == DESK]
+        self.assertLess(up, sent.index(ask), "its upload first on the lane")
+
+    def test_a_reach_ask_waits_for_a_moved_senders_frame_under_its_project_now(self):
+        """The frontier review (F18): the sending session of this machine is looked for under the project it is a
+        member of now (member_project_now, as the upload path reads it), not under the plane's row from before its
+        move: the `reach?` waits, reconciling nothing, until the plane's next read puts its frame there first."""
+        tid, sid, _ = self.live()
+        sender, _, stid = self.member(name="speaker")
+        other = "9a9a9a9a-0000-4000-8000-00000000009c"
+        sminos.register_if_absent(sminos.make_project(other, "elsewhere", "", "", {"url": URL, "org": ORG}))
+        sminos.forget_caches()
+        link = self.link()
+        hl = link.logs[DESK]
+        hl.have = {}
+        e = sminos.log_append(self.chan(DESK), sminos.writer_id(sender), "say", **{
+            "from": "speaker", "to": [{"session": sid, "alias": "a", "thread": tid}], "text": "said before a move",
+            "thread": stid})
+        sminos.forget_caches()
+        link.next_member_read = 0.0
+        link.members(time.monotonic())
+        link.upload(hl)
+        self.assertTrue(any(x["seq"] == e["seq"] for f in link.log_lane.sent if f.get("t") == "events"
+                            for x in f["events"] if x["writer"] == e["writer"]), "its upload went")
+        self.write_own(sender, [{"kind": "retired", "reason": "moved", "project": other, "thread": stid}])
+        self.write_own(sender, [self.old_joined(sender, alias="speaker", thread=stid)],
+                       p=sminos.known_project(other))
+        sminos.forget_caches()
+        with mock.patch.object(link.plane, "refresh", side_effect=AssertionError("a reconciliation")), \
+                mock.patch.object(sminos, "view_of", side_effect=AssertionError("a view read")):
+            link.ask_words({})
+        self.assertEqual(self.asks(link, ("reach?",)), [], "not asked while the plane holds its row from before")
+        # The plane's next read, as it finds the session in its project now (its process here stays in the source's
+        # directory, so a reconciliation of this rig would undo the move the test writes).
+        link.plane.member_rows.setdefault(other, {})[sender] = link.plane.member_rows[self.p.id].pop(sender)
+        link.member_known[other] = sminos.known_project(other)
+        link.ask_words({})
+        [ask] = self.asks(link, ("reach?",))
+        sent = link.session_lane.sent
+        self.assertIn(other, [f.get("project") for f in sent[:sent.index(ask)]
+                              if f.get("t") == "member" and f.get("session") == sender],
+                      "the sender's frame under its project now first")
+
     def test_a_recipient_the_plane_has_no_row_for_is_passed_by_and_asked_after_its_next_read(self):
         tid, sid, _ = self.live()
         self.message((sid, tid), text="to a new row")
