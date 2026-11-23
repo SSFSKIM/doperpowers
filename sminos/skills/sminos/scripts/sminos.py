@@ -18468,7 +18468,7 @@ def cmd_retire(a):
     if target[0] == "seat":
         if a.purge and replayed_purge(purging, target[1], "purged"):
             return
-        _retire_one(target[1], a.purge, target[2], how)
+        _retire_one(target[1], a.purge, target[2], how, thread_id=resolved_thread(target[1]))
         return
     project, m = target[1], target[2]
     if not m.local:
@@ -18713,18 +18713,37 @@ def retired_in_log(project, sid):
     return e is not None and e["kind"] == "retired" and e.get("reason") in END_REASONS
 
 
-def seat_owner_guard(s0, purge, how):
+def seat_ending(s, thread_id=None):
+    """(the canonical thread of the seat's session, or None; the record a
+    seat's end ends): that thread's record where it holds the session, else
+    the seat's own. With `thread_id`, the thread a name through a channel
+    resolved (resolved_thread), that record alone, both values: refused,
+    exit 4, when it is gone or no longer holds the seat's session, never
+    the session's canonical thread read again in its place."""
+    threads = threads_module()
+    cur = s["current"]
+    if thread_id is not None:
+        t = threads.get(thread_id)
+        if t is None or t["current"] != cur:
+            die("thread %s has no record of this machine with seat %s/%s's session %s any more: nothing was ended"
+                % (thread_id[:8], s["group"], s["alias"], cur[:8] or "(none)"), EXIT_UNKNOWN)
+        return t, t
+    thread = threads.thread_of(cur) if cur else None
+    return thread, thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+
+
+def seat_owner_guard(s0, purge, how, thread_id=None):
     """owner_guard for a seat's end, asked before its locks are taken (the
-    question can take a minute): the record that ends (its session's
-    canonical one, else the seat's own) and the seat. Nothing is asked for
+    question can take a minute): the record that ends (seat_ending: its
+    session's canonical one, else the seat's own; the thread a name through
+    a channel resolved, `thread_id`) and the seat. Nothing is asked for
     a seat that is no thread (a lane B session's) or a retire of one ended
     already, which ends nothing: an Exempt saying which, which the end
     proves again under the locks (end_and_stop, asked_all)."""
     threads = threads_module()
     cur = s0["current"]
-    t = threads.thread_of(cur) if cur else None
     own = threads.get(s0["seat_id"])
-    t = t if t is not None and t["current"] == cur else own
+    t = seat_ending(s0, thread_id)[1]
     if t is None:
         return threads.Exempt("no-thread")
     if threads.record_ended(t) and not purge:
@@ -18734,9 +18753,9 @@ def seat_owner_guard(s0, purge, how):
                        else "%s/%s" % (s0["group"], s0["alias"]))
 
 
-def _retire_one(s0, purge, session="", how=None):
+def _retire_one(s0, purge, session="", how=None, thread_id=None):
     asked = seat_owner_guard(s0, purge, how or OwnerAsk("%s/%s" % (s0["group"], s0["alias"]),
-                                                        "purge" if purge else "retire"))
+                                                        "purge" if purge else "retire"), thread_id=thread_id)
     locks, s = locked_fresh(s0, "retire", session)
     try:
         if s["engine"] == "codex":
@@ -18745,7 +18764,7 @@ def _retire_one(s0, purge, session="", how=None):
             hint = 'sminos fill %s/%s --resume "<task>"' % (s["group"], s["alias"])
         else:
             hint = 'sminos fill %s/%s "<task>"' % (s["group"], s["alias"])
-        end_and_stop(s, purge, asked)
+        end_and_stop(s, purge, asked, thread_id=thread_id)
         if purge:
             print("purged %s/%s [%s] from the registry (session transcript left intact)%s" % (
                 s["group"], s["alias"], s["seat_id"], worktree_note(s)))
@@ -18756,7 +18775,7 @@ def _retire_one(s0, purge, session="", how=None):
         unlock(locks)
 
 
-def end_and_stop(s, purge, asked=None):
+def end_and_stop(s, purge, asked=None, thread_id=None):
     """A seat's end, then its turn stopped (stop_session) only once the
     retirement is in the log (retired_in_log): a session that retires
     itself, whose stop can end its caller, is stopped only after its record
@@ -18764,7 +18783,8 @@ def end_and_stop(s, purge, asked=None):
     appended stops nothing. Only what the end saw is stopped, while it is
     still that (stop_seen_turn): a process started since is one the end did
     not see, which returns the seat. Which record
-    ends is the canonical one of the seat's session (thread_of): a thread
+    ends (seat_ending) is the canonical one of the seat's session (thread_of),
+    or the thread a name through a channel resolved (`thread_id`): a thread
     its human opened that an older copy seated ends by that record
     (end_human), its entry bringing the seat in line, retired or for a
     purge deleted; else the seat's own (end_seat). The verb's lifecycle
@@ -18772,11 +18792,11 @@ def end_and_stop(s, purge, asked=None):
     answer) is asked by the verb before this (seat_owner_guard), and what
     cleared it (`asked`: the short ids asked about, or why none was needed)
     is proved again here, under the seat's locks, and by the end under the
-    record's lock (sminos_threads.asked_all)."""
+    record's lock (sminos_threads.asked_all). `thread_id`: the thread a
+    name through a channel resolved, which alone is ended (seat_ending)."""
     cur = s["current"]
     threads = threads_module()
-    thread = threads.thread_of(cur) if cur else None
-    record = thread if thread is not None and thread["current"] == cur else threads.get(s["seat_id"])
+    thread, record = seat_ending(s, thread_id)
     # Whether the end that stands recorded its process, read while its record stands (a purge deletes it).
     known = record is not None and (record["opened"] == "human" or threads.seat_ended(record))
     if record is not None and not threads.asked_all(record, asked):
@@ -19037,11 +19057,11 @@ def cmd_remove(a):
         return
     if found[0] == "seat" and replayed_purge(purging, s0, "removed"):
         return
-    asked = seat_owner_guard(s0, True, how)
+    asked = seat_owner_guard(s0, True, how, thread_id=resolved_thread(s0))
     locks, s = locked_fresh(s0, "remove", bound)
     try:
         # A removed seat's session leaves the family with it.
-        end_and_stop(s, True, asked)
+        end_and_stop(s, True, asked, thread_id=resolved_thread(s0))
         print("removed %s/%s [%s] (chat history kept)%s" % (s["group"], s["alias"], s["seat_id"], worktree_note(s)))
     finally:
         unlock(locks)
@@ -20793,9 +20813,10 @@ def who_thread(name):
         # The record that represents the seat's thread, as its retire's guard reads it (seat_owner_guard): its
         # session's canonical one (a thread its human opened that an older copy seated), else the seat's own; none
         # for a seat a session of no thread holds (lane B, one the MAWS app launched), which nothing guards.
+        # A seat named through a channel: the thread the name resolved (resolved_thread), never the session's
+        # canonical one read again.
         cur = s["current"]
-        rec = threads.thread_of(cur) if cur else None
-        rec = rec if rec is not None and rec["current"] == cur else threads.get(s["seat_id"])
+        rec = threads.get(resolved_thread(s)) if resolved_thread(s) else seat_ending(s)[1]
         state_word = row.state if row is not None else state(s)
         answer = {"thread": rec["thread"] if rec else "", "session": cur, "alias": s["alias"],
                   "opened": rec["opened"] if rec else "", "state": state_word,

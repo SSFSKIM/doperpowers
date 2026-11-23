@@ -379,8 +379,8 @@ class Owned(Owner):
         self.standin(hosts=[host("dc-a-0001", new[:8])])
         real = sminos.seat_owner_guard
 
-        def filled(*a):
-            got = real(*a)
+        def filled(*a, **k):
+            got = real(*a, **k)
             self.assertEqual(got, threads.Exempt("ended"))
             with open(sminos.meta_path(seat_id)) as f:   # a fill's return, between the question and the locks
                 raw = json.load(f)

@@ -803,5 +803,83 @@ class Frontier2(Names):
         self.assertIn("twin#%s" % s2[:8], out)
 
 
+class Frontier3(Names):
+    """The final reading (H3): every verb that resolved a seat through a channel (a ThreadSeat) acts on its
+    thread, never on the canonical thread of the seat's session read again."""
+
+    def reused(self):
+        """G5's fixture: the seat keeper in DESK and a bystander its human opened; right after the lookup the
+        seat's session becomes the bystander's current one. (seat id, seat's session, bystander's thread, a
+        find_target that makes the change after it answers.)"""
+        stid, ssid, _ = self.seat("keeper")
+        self.placed(stid, ssid, DESK)
+        t2, _ = self.named(None, alias="bystander")
+        real = sminos.find_target
+
+        def found_then_taken(q):
+            got = real(q)
+
+            def mutate(view, raw):
+                raw["current"] = ssid
+                raw["sessions"] = list(dict.fromkeys(raw["sessions"] + [ssid]))
+                return True
+            self.assertTrue(threads._change(t2, mutate))
+            sminos.forget_caches()
+            return got
+        return stid, ssid, t2, found_then_taken
+
+    def untouched(self, t2, ssid):
+        t = threads.get(t2)
+        self.assertIsNotNone(t, "the bystander's record is not purged")
+        self.assertFalse(threads.record_ended(t), "nor ended")
+        self.assertEqual(t["current"], ssid)
+
+    def test_h3_retire_purge_of_a_seat_through_a_channel_never_ends_the_bystander(self):
+        stid, ssid, t2, found = self.reused()
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("retire", "desk/keeper", "--purge")
+        self.untouched(t2, ssid)
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(sminos.reload_seat(stid), "the seat named is what was purged")
+
+    def test_h3_remove_of_a_seat_through_a_channel_never_ends_the_bystander(self):
+        stid, ssid, t2, found = self.reused()
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("remove", "desk/keeper")
+        self.untouched(t2, ssid)
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(sminos.reload_seat(stid), "the seat named is what was removed")
+
+    def test_h3_retire_of_a_seat_through_a_channel_never_ends_the_bystander(self):
+        stid, ssid, t2, found = self.reused()
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("retire", "desk/keeper")
+        self.untouched(t2, ssid)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(sminos.reload_seat(stid)["status"], "retired", "the seat named is what was retired")
+
+    def test_h3_who_thread_of_a_seat_through_a_channel_is_the_seats_thread(self):
+        stid, ssid, t2, found = self.reused()
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("who", "--thread", "desk/keeper")
+        self.assertEqual(code, 0, out)
+        got = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual((got["thread"], got["alias"]), (stid, "keeper"))
+
+    def test_h3_a_projects_seat_name_reads_its_sessions_canonical_thread_as_at_the_merge_base(self):
+        """B11: the binding is the channel route's alone."""
+        stid, ssid, t2, found = self.reused()
+        with mock.patch.object(sminos, "find_target", found):
+            code, out = self.cli("who", "--thread", "g/keeper")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out.strip().splitlines()[-1])["thread"], t2)
+        seen = []
+        with mock.patch.object(sminos, "end_and_stop", lambda *a, **k: seen.append(k.get("thread_id"))), \
+                mock.patch.object(sminos, "seat_owner_guard", lambda *a, **k: seen.append(k.get("thread_id"))):
+            self.cli("retire", "g/keeper")
+            self.cli("remove", "g/keeper")
+        self.assertEqual(seen, [None] * 4, "no thread handed down for a project's name")
+
+
 if __name__ == "__main__":
     unittest.main()
