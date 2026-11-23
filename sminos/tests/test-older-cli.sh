@@ -523,6 +523,13 @@ for line in sys.stdin:
     if e.get("session") == sys.argv[1] and e.get("kind") == "channels":
         print(e.get("op"), ",".join(e["channels"]))' "$SID"
 }
+record_whole() { # the thread's record as a copy may change it: its set, positions, every answer whole (its time, the
+  # basis of a request's expiry, included) and open entry, as one JSON line, for a record compared with itself
+  py 'import json, sys
+r = json.load(open(sys.argv[1]))
+print(json.dumps([r.get(k) for k in ("channels", "began", "answered", "pending")], sort_keys=True))' \
+    "$SMINOS_HOME/threads/$THREAD.json"
+}
 record_keys() { # the thread's record: its set, positions, answered requests and open entry's op, as one JSON line
   py 'import json, sys
 r = json.load(open(sys.argv[1]))
@@ -607,7 +614,7 @@ sys.stdout.write(text)' "$SID" "<sid>" "${SID:0:8}" "<short>" "$THREAD" "<thread
     "$PROJECT" "<project>" "${PROJECT:0:8}" "<pshort>" "$CHANNEL" "<channel>" "$REPO" "<repo>" "$(dirname "$HOME")" "<case>" <<<"$1"
 }
 older_over() { # the older copy's verbs over the case's store (1.54's `channel show` among them): VERBS, each one's exit and output, normalised,
-  # its tick's line for the channel, the channel's own, apart in TICK_CHANNEL; with KEYS set, the thread record's
+  # its tick's line for the channel, the channel's own, apart in TICK_CHANNEL; with KEYS set (record_whole), the thread record's
   # keys asserted as they were after each verb
   VERBS="" TICK_CHANNEL=""
   local label out labels="list list-json say send tick"
@@ -629,7 +636,7 @@ older_over() { # the older copy's verbs over the case's store (1.54's `channel s
     VERBS="$VERBS== $label $RC
 $out
 "
-    [ -z "${KEYS:-}" ] || assert_equals "$(record_keys)" "$KEYS" "after its $label the record's set, positions and answer are as written"
+    [ -z "${KEYS:-}" ] || assert_equals "$(record_whole)" "$KEYS" "after its $label the record's set, positions and answers are as written"
   done
   VERBS="$VERBS== launches $(launches) $(older_launches)
 == delivery
@@ -677,12 +684,12 @@ channel_store() { # label — the copy's verbs over a store with channels, again
   echo " the same verbs over a store with the thread in a channel (its statement), a request and a channel-env:"
   stopped_thread auto
   with_channels
-  KEYS="$(record_keys)"
-  assert_equals "$KEYS" '[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"alpha/human": 1}}, [["'"$CHANNEL"'", "'"$REQUEST"'"]], null]' \
+  assert_equals "$(record_keys)" '[["'"$CHANNEL"'"], {"'"$CHANNEL"'": {"alpha/human": 1}}, [["'"$CHANNEL"'", "'"$REQUEST"'"]], null]' \
     "the record holds the set, where its membership began and the request it answered"
+  KEYS="$(record_whole)"
   older_over
   assert_equals "$VERBS" "$plain" "each verb exits and prints as it did without channels, launches as it did, and its messages land and fare as they did"
-  EMPTY_VERBS="$VERBS"   # what channel_said compares a channel that holds messages with
+  EMPTY_VERBS="$VERBS" EMPTY_TICK="$TICK_CHANNEL"   # what channel_said compares a channel that holds messages with
   local fate
   fate="$(normal "$(delivery)")"
   assert_not_contains "$fate" "<channel>" "neither message is in the channel's log"
@@ -706,6 +713,8 @@ channel_store() { # label — the copy's verbs over a store with channels, again
   older projects
   assert_equals "$(grep -cE '^desk-integration +hub +0 +0 +-$' <<<"$OUT")" 1 "it lists the channel as a project with no member"
   run "$SMINOS" projects
+  assert_equals "$RC" 0 "this code's projects runs"
+  assert_contains "$OUT" "olderproj" "listing the project"
   assert_not_contains "$OUT" "desk-integration" "this code lists it as none"
   echo " the session reopened by its human, the older copy first:"
   opened
@@ -781,7 +790,7 @@ channel_join() { # label live|closed — the copy's `join <channel id>` by hand 
   THREAD="$(row thread)"
   with_channels
   local keys
-  keys="$(record_keys)"
+  keys="$(record_whole)"
   run env STUB_WHO=older CLAUDE_CODE_SESSION_ID="$SID" "$OLDER" join "$CHANNEL"
   assert_equals "$RC" 0 "the older copy joins it into the channel"
   SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" baseline "$T/baseline-$1-$2" "$CHANNEL"
@@ -804,7 +813,7 @@ print(len(sminos.view_of(sminos.known_project(sys.argv[2])).members))' "$CHANNEL
   assert_equals "$(channel_kinds)" "channel-env joined retired-moved" "this code undoes the joined: retired moved"
   assert_equals "$(own_events | tail -1)" "joined - stamped" "the session is a member of its one project again"
   assert_equals "$(row state)" idle "listed live there"
-  assert_equals "$(record_keys)" "$keys" "its set, positions and answer as they were"
+  assert_equals "$(record_whole)" "$keys" "its set, positions and answers as they were"
   assert_equals "$(stated)" "$CHANNEL" "and its log states the set"
   OUT="$(MAWS_USER_DATA="$(dirname "$HOME")/m" SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" \
     check "$T/baseline-$1-$2" alpha "$CHANNEL" 2>&1)" || true
@@ -881,7 +890,8 @@ sminos.log_append(sminos.known_project(sys.argv[2]), "%s/human" % sminos.machine
   local kept
   kept="$(channel_delivered)"
   assert_contains "$kept" "$THREAD.json " "the thread's delivery record of this code's is there"
-  KEYS="$(record_keys)" older_over
+  KEYS="$(record_whole)" older_over
+  assert_equals "$TICK_CHANNEL" "$EMPTY_TICK" "its tick's line for the channel is what it was over the channel that held nothing"
   assert_equals "$VERBS" "$EMPTY_VERBS" \
     "each verb exits and prints as it did over the channel that held nothing, launches as it did, and its messages fare as they did"
   assert_equals "$(channel_delivered)" "$kept" "the channel's delivery records are byte for byte as they were"
@@ -893,6 +903,7 @@ sminos.log_append(sminos.known_project(sys.argv[2]), "%s/human" % sminos.machine
   run "$SMINOS" daemon tick
   assert_equals "$(took "two from beta in the channel") $(took "one from beta in the channel")" "1 0" \
     "its passes push the owed message once and the settled one never"
+  assert_equals "$(channel_settled "beta/$SENDER")" 2 "and settle it in the thread's record"
   uplink_check "$1-said" "$(printf '%s channel-env\nhuman channel-request channel-lead\nbreaches 0' "$SID")"
 }
 
@@ -916,21 +927,85 @@ enroll() { # the case's machine cut over as alpha to an endpoint stand-in that l
   done
   kill "$daemon"; wait "$daemon" 2>/dev/null || true
 }
-daemon_until() { # this|older text... — that copy's daemon run, its uplink to the stand-in, until keeper's inbox took
-  # a frame carrying each text (30 s), and a few passes more; then stopped. On a machine cut over to its endpoint a
-  # person's message waits for the endpoint's word (`words?`), and a message from another machine in a channel for
-  # its `reach?`, which the uplink asks and the daemon's passes carry out: a one-shot tick delivers neither.
-  local who=$1 launcher="$SMINOS" end=$((SECONDS + 30)) d t
+daemon_start() { # this|older — that copy's daemon run, its uplink to the stand-in, in the background: DAEMON its pid.
+  # On a machine cut over to its endpoint a person's message waits for the endpoint's word (`words?`), and a message
+  # from another machine in a channel for its `reach?`, which the uplink asks and the daemon's passes carry out: a
+  # one-shot tick delivers neither.
+  local launcher="$SMINOS"
+  [ "$1" = older ] && launcher="$OLDER"
+  (cd "$REPO" && exec env STUB_WHO="$1" "$launcher" daemon run --interval 1) >> "$(dirname "$HOME")/daemon.out" 2>&1 &
+  DAEMON=$!
+  PIDS+=("$DAEMON")
+}
+daemon_stop() { kill "$DAEMON"; wait "$DAEMON" 2>/dev/null || true; }
+daemon_until() { # this|older text... — that copy's daemon run until keeper's inbox took a frame carrying each text
+  # (30 s), and a few passes more; then stopped
+  local end=$((SECONDS + 30)) t
+  daemon_start "$1"
   shift
-  [ "$who" = older ] && launcher="$OLDER"
-  (cd "$REPO" && exec env STUB_WHO="$who" "$launcher" daemon run --interval 1) >> "$(dirname "$HOME")/daemon.out" 2>&1 &
-  d=$!
-  PIDS+=("$d")
   for t in "$@"; do
     until [ "$(took "$t")" -gt 0 ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done
   done
   sleep 3   # what its next passes would push again
-  kill "$d"; wait "$d" 2>/dev/null || true
+  daemon_stop
+}
+relayed() { # text — a message to keeper's thread from beta's member, handed down the stand-in's live connection as
+  # the relay hands another machine's event (signed by beta, in the endpoint's echo form), once the running daemon's
+  # uplink has opened the channel there; then until this machine's copy of the channel's log holds it (30 s)
+  python3 -B - "$SCRIPT_DIR" "$EP" "$CHANNEL" "$SID" "$THREAD" "$SENDER" "$SENDER_THREAD" "$1" \
+    "$SMINOS_HOME/projects/$CHANNEL/log" <<'PY_RELAY'
+import glob, json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+import endpoint_standin as es
+ep, cid, sid, tid, sender, sthread, text, logs = sys.argv[2:10]
+served = es.Served(ep)
+writer = "beta/" + sender
+
+
+def held():
+    out = []
+    for path in glob.glob(os.path.join(logs, "*.jsonl")):
+        with open(path) as f:
+            out += [json.loads(line) for line in f if line.strip()]
+    return out
+
+
+end = time.time() + 30
+while cid not in (served.opened().get("projects") or {}):
+    if time.time() > end:
+        sys.exit("the uplink never opened the channel at the stand-in")
+    time.sleep(0.1)
+seq = 1 + max([e["seq"] for e in held() if e.get("writer") == writer] or [0])
+body = {"ts": es.iso(), "writer": writer, "seq": seq, "kind": "say", "from": "birch", "thread": sthread, "text": text,
+        "to": [{"session": sid, "alias": "keeper", "thread": tid}]}
+event = {**es.upload_form(body), "sig": {"kid": "k-beta", "sig": es.b64url(b"\x02" * 64)},
+         "attest": {"owners": [], "ownersProof": [], "origin": {"kind": "terminal"}, "stateVersion": 1}}
+served.events(cid, [{"event": event, "signer": {"kind": "machine", "ref": "ref-beta", "name": "beta",
+                                                "keyId": "k-beta"}, "owners": []}])
+while not any(e.get("text") == text for e in held()):
+    if time.time() > end:
+        sys.exit("this machine never stored the message relayed")
+    time.sleep(0.1)
+PY_RELAY
+}
+channel_settled() { # writer — that writer's settled prefix in keeper's thread's delivery record in the channel
+  py 'import json, sys
+try:
+    rec = json.load(open(sys.argv[1]))
+except OSError:
+    rec = {}
+print((rec.get(sys.argv[2]) or {}).get("settled", 0))' "$SMINOS_HOME/projects/$CHANNEL/delivered/$THREAD.json" "$1"
+}
+verbs_ran() { # what 1.54's compared verbs printed (VERBS) — each listing, show and tick ran, over this store's names
+  local v
+  for v in list list-json show tick; do
+    assert_contains "$VERBS" "== $v 0" "its $v exits 0"
+  done
+  assert_contains "$VERBS" "(no members in olderproj)" "its list names the project"
+  assert_contains "$VERBS" '"project": "olderproj"' "its list --json lists the thread's row in it"
+  assert_contains "$VERBS" "# desk-integration  <channel>" "its channel show shows the channel"
+  assert_contains "$VERBS" "keeper [<short>]" "with the thread in it"
+  assert_contains "$VERBS" "olderproj: reconciled" "its tick passes the project"
 }
 unenroll() { # the stand-in stopped, the case's environment as the other cases have it
   kill "$SERVE_PID" 2>/dev/null || true; wait "$SERVE_PID" 2>/dev/null || true
@@ -950,7 +1025,8 @@ case_1_54() {
   enroll
   stopped_thread auto
   created
-  KEYS="$(record_keys)" older_over
+  KEYS="$(record_whole)" older_over
+  verbs_ran
   empty="$VERBS"
   unenroll
 
@@ -965,13 +1041,16 @@ case_1_54() {
   settled_first
   kept="$(channel_delivered)"
   assert_contains "$kept" "$THREAD.json " "the thread's delivery record of this code's is there"
-  KEYS="$(record_keys)"
+  KEYS="$(record_whole)"
   older_over
+  verbs_ran
   assert_equals "$VERBS" "$empty" \
     "each verb exits and prints as it did over the empty channel, launches as it did, and its messages fare as they did"
   assert_equals "$TICK_CHANNEL" "" "its tick reconciles no channel as a project"
   older projects
-  assert_not_contains "$OUT" "desk-integration" "its projects lists none"
+  assert_equals "$RC" 0 "its projects runs"
+  assert_contains "$OUT" "olderproj" "listing the project"
+  assert_not_contains "$OUT" "desk-integration" "and no channel"
   logs="$(logs_digest)"
   run env STUB_WHO=older CLAUDE_CODE_SESSION_ID="$SID" "$OLDER" join desk-integration
   assert_equals "$RC" 1 "its join of the channel is refused (exit 1)"
@@ -983,9 +1062,20 @@ case_1_54() {
   assert_equals "$RC" 1 "and so is a tag through the channel (exit 1)"
   assert_contains "$OUT" "speaking in a channel is not available in this version of sminos yet" "in the same sentence"
   assert_equals "$(logs_digest)" "$logs" "no log gained anything"
-  beta_says "@keeper three from beta in the channel"   # it arrives while 1.54 runs
-  echo " 1.54's daemon, its uplink to the stand-in:"
-  daemon_until older "hello from the older say" "a send from the older copy"
+  echo " 1.54's daemon, its uplink to the stand-in, a message to the thread relayed to it meanwhile:"
+  daemon_start older
+  if relayed "@keeper three from beta in the channel"; then pass "1.54's uplink stored the message the relay brought, in the channel's log"; else fail "1.54's uplink stored the message the relay brought, in the channel's log"; fi
+  local end=$((SECONDS + 30))
+  until [ "$(took "a send from the older copy")" -gt 0 ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.2; done
+  sleep 3   # what its next passes would push
+  daemon_stop
+  assert_equals "$(here_py 'import json, glob, os
+for p in glob.glob(os.path.join(sys.argv[2], "*.jsonl")):
+    for line in open(p):
+        e = json.loads(line)
+        if e.get("text") == "@keeper three from beta in the channel":
+            print(e["kind"], [(t.get("session"), t.get("thread")) for t in e.get("to") or []] == [(sys.argv[3], sys.argv[4])])' \
+    "$SMINOS_HOME/projects/$CHANNEL/log" "$SID" "$THREAD")" "say True" "stored as it came, its thread address whole"
   local fate
   fate="$(normal "$(delivery)")"
   assert_equals "$(grep '^pushed\|^delivered' <<<"$fate")" "$(printf '%s\n' \
@@ -994,7 +1084,7 @@ case_1_54() {
   assert_equals "$(older_launches)" 1 "waking it once"
   assert_equals "$(took "from beta in the channel")" 0 "it never delivers the channel's mail"
   assert_equals "$(channel_delivered)" "$kept" "the delivery record is byte for byte what it was"
-  assert_equals "$(record_keys)" "$KEYS" "and the thread's set, positions and answer are what they were"
+  assert_equals "$(record_whole)" "$KEYS" "and the thread's set, positions and answers are what they were"
   KEYS=""
   SMINOS_SCRIPTS="$SCRIPTS" python3 -B "$SCRIPT_DIR/older_channel_wire.py" baseline "$T/baseline-$1-said" "$CHANNEL"
   echo " this code after 1.54:"
@@ -1003,6 +1093,10 @@ case_1_54() {
   daemon_until this "three from beta in the channel" "two from beta in the channel"
   assert_equals "$(took "three from beta in the channel") $(took "two from beta in the channel") $(took "one from beta in the channel")" \
     "1 1 0" "it pushes the message that arrived while 1.54 ran once, the other owed one once, the settled one never"
+  assert_equals "$(channel_settled "beta/$SENDER")" 3 "and settles both in the thread's record"
+  daemon_until this
+  assert_equals "$(took "three from beta in the channel") $(took "two from beta in the channel")" "1 1" \
+    "a fresh daemon and uplink push neither again"
   uplink_check "$1-said" "$(printf 'human channel-request channel-lead\nbreaches 0')"
   unenroll
 
@@ -1011,8 +1105,11 @@ case_1_54() {
   enroll
   stopped_thread auto
   created
-  older list
-  beta_says "@keeper seven from beta in the channel"
+  daemon_start older
+  if relayed "@keeper seven from beta in the channel"; then pass "1.54's uplink stored a message the relay brought"; else fail "1.54's uplink stored a message the relay brought"; fi
+  sleep 3   # what its passes would push
+  daemon_stop
+  assert_equals "$(took "seven from beta in the channel")" 0 "1.54 pushed nothing of it"
   older channel remove desk-integration keeper
   assert_equals "$RC" 0 "its channel remove of the thread runs"
   older channel add desk-integration keeper
@@ -1022,6 +1119,7 @@ case_1_54() {
   daemon_until this "nine from beta in the channel"
   assert_equals "$(took "nine from beta in the channel") $(took "seven from beta in the channel")" "1 0" \
     "this code pushes a message that arrived after the add, and never the one before it"
+  assert_equals "$(channel_settled "beta/$SENDER")" 2 "settling the one it pushed"
   assert_equals "$(stated)" "$CHANNEL" "and the thread is in the channel"
   unenroll
 
