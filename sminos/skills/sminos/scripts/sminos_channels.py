@@ -1899,8 +1899,9 @@ def speak(channel, a, session, tags):
     writes: a member, a person at a terminal and a machine's notice as a
     member; a session that is no member (channels_of, read once, here, from
     its own machine's record) with its project in `from_project`, its copy
-    where record_copy keeps one, and one line; refused (NO_HOME) when its
-    project cannot be told, never written as a member's. The sender's
+    where record_copy keeps one, and one line; its post into the channel
+    refused (NO_HOME) when its project cannot be told, never written as a
+    member's. The sender's
     stamp is taken after the rosters' sweeps, which can make it a thread,
     and `@all` leaves out its row by session and by thread, each compared
     with its own kind. A tag qualified by the channel
@@ -1929,10 +1930,6 @@ def speak(channel, a, session, tags):
         sender = caller["alias"] if caller else sminos.default_from("")
         writer, kind = sminos.writer_id(session), "say"
         outsider = channel.id not in channels_of(session)
-        if outsider and home is None:
-            # No project to name in `from_project`, to keep its copy in, or for a reply to reach: a session that is
-            # no member is never written as one for want of a project.
-            sminos.die(NO_HOME % channel.name, 1)
     else:
         home, sender, writer, kind, outsider = None, "human", sminos.writer_id(), "human", False
     if any(sminos.is_all(t) for t in tags) and len(tags) != 1:
@@ -2028,6 +2025,11 @@ def speak(channel, a, session, tags):
         leader = lead_of(channel)
         if leader is not None and (r := _entry_of(channel, *leader)) is not None:
             recipients, rows, raws = [r], {r["thread"]: leader}, [[]]
+    if outsider and home is None:
+        # No project to name in `from_project`, to keep its copy in, or for a reply to reach: a session that is no
+        # member is never written into the channel as one for want of a project (the direct route above, a
+        # project's say, needs none).
+        sminos.die(NO_HOME % channel.name, 1)
     # The sender's stamp, taken after every sweep of the rosters above (any can make a live sender a thread).
     thread = threads.stamp(session) if session else ""
     fields = {"thread": thread} if kind == "say" and thread else {}

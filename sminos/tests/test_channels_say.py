@@ -727,6 +727,24 @@ class Refused(Say):
         self.assertEqual(e["thread"], stid)
         self.assertEqual(len(self.got(received, "as a member")), 1)
 
+    def test_a_session_whose_project_cannot_be_told_follows_a_reply_line_to_a_thread_that_left_directly(self):
+        """The direct route is a project's say and writes nothing into the channel: no project of the sender's is
+        needed for it, and it is taken; a post into the channel by the same session is refused."""
+        gtid, gsid, greceived = self.live("gone")
+        self.live("reader")
+        self.removed(gtid, gsid)
+        otid, osid, _ = self.outsider()
+        chan_before = self.says()
+        with mock.patch.object(sminos, "session_project", return_value=None):
+            code, out = self.as_session(osid, "say", "@desk/%s answer directly" % gtid[:8], cwd=self.app_root)
+            self.assertEqual(code, 0, out)
+            self.assertIn("@desk/%s is not in desk now: sent to it directly, in %s" % (gtid[:8], self.p.name), out)
+            self.assertEqual(len(self.got(greceived, "answer directly")), 1, "delivered")
+            self.assertEqual(self.says(), chan_before, "nothing in the channel's log")
+            before = self.logs()
+            self.refused(*self.as_session(osid, "say", "@desk/reader into the channel", cwd=self.app_root),
+                         channels.NO_HOME % "desk", 1, before)
+
     def test_a_tag_that_names_a_thread_once_in_the_channel_with_no_row_now(self):
         stid, ssid, _ = self.live("writer")
         gone_sid, gone_tid = str(uuidlib.uuid4()), str(uuidlib.uuid4())
