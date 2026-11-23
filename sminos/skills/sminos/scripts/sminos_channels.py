@@ -2831,7 +2831,10 @@ def delivered(channel, thread):
 
 def _names_a_thread(e):
     to = e.get("to")
-    if not isinstance(to, list) or "copy" in e or e["writer"].startswith("legacy/"):
+    # A message alone is owed: the import checks the envelope, not each kind's fields, so a lead (or any other
+    # kind) whose `to` names a thread is no message, and owes it nothing.
+    if not isinstance(to, list) or e.get("kind") not in sminos.CHAT_KINDS or "copy" in e \
+            or e["writer"].startswith("legacy/"):
         return ()
     return tuple(dict.fromkeys(r["thread"] for r in to
                                if isinstance(r, dict) and isinstance(r.get("thread"), str) and r["thread"]))
@@ -2850,7 +2853,8 @@ def addressed_threads(events):
     part of a channel's log owed() reads for each thread, read once for all
     of them and once for a log that has not moved (sminos.log_memo; read it,
     never change it). An entry with no `thread`, or one that is no string,
-    names no one; a copy is owed to no one."""
+    names no one; a copy, and an event that is no message (a `say` or a
+    `human`), are owed to no one."""
     return sminos.log_memo(events, "thread-addressees", _addressed)
 
 

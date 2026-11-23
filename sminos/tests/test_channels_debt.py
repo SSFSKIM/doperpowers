@@ -159,6 +159,7 @@ class Selection(Debts, T1.Sessions):
         self.message(DESK, to="*")                                  # an untagged post
         twice = self.message(DESK, (sid, tid), (str(uuidlib.uuid4()), tid))
         person = self.message(DESK, (sid, tid), writer="%s/human" % FAR, kind="human")
+        self.message(DESK, (sid, tid), kind="channel-lead")         # no message, whatever its `to` names (F21)
         self.assertEqual(self.owed_to(tid), [never, twice, person], "each once, in the log's order")
 
     def test_d4_a_thread_removed_is_owed_nothing_and_its_record_stays_as_it_is(self):
