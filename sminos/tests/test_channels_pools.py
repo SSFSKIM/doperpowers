@@ -302,6 +302,16 @@ class Which(Pools):
             "desk", "say could not be recorded: disk full")])
         self.assertEqual((self.notices(DESK), len(self.notices(LOBBY))), ([], 1))
 
+    def test_no_channel_to_look_at_reads_no_roster_and_writes_no_log(self):
+        """Fix wave 2: every channel known here has left it, so none is a candidate: the no-pool line, exit 0, and
+        no project's view built (which would reconcile, joining a live session it has not seen yet)."""
+        self.session(root=self.root)   # a live session no reconciliation has joined yet
+        before = self.logs()
+        with mock.patch.object(sminos, "has_left", lambda p: True):
+            code, out, err = self.notice()
+        self.assertEqual((code, out, err), (0, channels.POOLS_NONE + "\n", ""))
+        self.assertEqual(self.logs(), before, "no log changed")
+
     def test_a_channel_that_has_left_this_machine_is_passed_over_without_a_word(self):
         ftid, _, fw = self.far_in(DESK, "faraway")
         self.by_hand(DESK, fw, ftid)

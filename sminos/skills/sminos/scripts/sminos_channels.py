@@ -2636,9 +2636,9 @@ def record_in_pools(a):
     whose append fails is said on standard error and passed over, the rest
     written, and the exit is then 1."""
     here = sminos.host_name().lower()
-    swept = rosters()   # the one sweep every pool below is read over
-    held = [c for c in sorted(sminos.known_channels(), key=lambda c: (c.name, c.id))
-            if not sminos.has_left(c) and any(e["machine"].lower() == here for e in pool(c, swept.get(c.id, [])))]
+    candidates = [c for c in sorted(sminos.known_channels(), key=lambda c: (c.name, c.id)) if not sminos.has_left(c)]
+    swept = rosters() if candidates else {}   # the one sweep every pool is read over; none with no channel to read
+    held = [c for c in candidates if any(e["machine"].lower() == here for e in pool(c, swept.get(c.id, [])))]
     if not held:
         print(POOLS_NONE)
         return
