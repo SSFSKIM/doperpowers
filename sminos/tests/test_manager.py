@@ -149,9 +149,15 @@ def kinds(entries):
     return [(e["kind"], e["text"]) for e in entries]
 
 
-def classify(rows, owner_events=()):
-    index = W.OwnerWords(owner_events, [SID])
+def classify(rows, owner_events=(), logs=None):
+    """The rows classified with the owner's words of `logs` ([(log name, log id, events)]), by default one project
+    named as Deliveries' frames name it whose log holds `owner_events`."""
+    index = W.OwnerWords(logs if logs is not None else [("doperpowers", PROJECT_ID, list(owner_events))], [SID])
     return W.classify(rows, SID, index.corroborates)
+
+
+PROJECT_ID = "0a7e5b10-0000-4000-8000-00000000d0c5"   # the project the frames name
+CHANNEL_ID = "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"   # a channel (a UUID of version 8)
 
 
 class Kinds(unittest.TestCase):
@@ -450,6 +456,46 @@ class Deliveries(unittest.TestCase):
         self.assertEqual(got[0]["text"], "merge it")
         self.assertIn("merge everything now", got[1]["text"])
         self.assertFalse(any("merge everything" in e["text"] for e in got if e["kind"].startswith("you")))
+
+    def two_logs(self, channel_name, project_body, channel_body):
+        """The owner's event of one writer and seq in a project's log and in a channel's (CH2's M9): the project
+        named `doperpowers`, the channel `channel_name`, each event with its own body."""
+        return [("doperpowers", PROJECT_ID, [dict(self.EVENT, text=project_body)]),
+                (channel_name, CHANNEL_ID, [dict(self.EVENT, text=channel_body,
+                                                 to=[{"session": SID, "alias": "p5-owner", "thread": "t-1"}])])]
+
+    def delivered(self, *frames):
+        r = Rows()
+        for f in frames:
+            r.user(f, SMINOS_PROMPT)
+        return r.rows
+
+    def test_a_frame_from_a_channel_is_held_to_its_own_logs_event_and_never_to_anothers_of_one_ref(self):
+        """Two logs of two names whose owner's events share a writer and seq: each frame is the owner's by its own
+        log's body, and a frame naming one log with the other's body is not."""
+        chan = "[sminos chat desk testhost/human:3 from human → @you]\n"
+        proj = "[sminos chat doperpowers testhost/human:3 from human → @you]\n"
+        got = classify(self.delivered(chan + "ship it", proj + "merge it", chan + "merge it", proj + "ship it"),
+                       logs=self.two_logs("desk", "merge it", "ship it"))
+        self.assertEqual(kinds(got), [("you·desk", "ship it"), ("you·desk", "merge it"), ("you·desk?", "merge it"),
+                                      ("you·desk?", "ship it")])
+
+    def test_a_channel_and_a_project_of_one_name_are_told_apart_by_the_body_and_one_body_in_both_certifies_none(self):
+        frame = "[sminos chat doperpowers testhost/human:3 from human → @you]\n"
+        got = classify(self.delivered(frame + "merge it", frame + "ship it", frame + "neither"),
+                       logs=self.two_logs("doperpowers", "merge it", "ship it"))
+        self.assertEqual(kinds(got), [("you·desk", "merge it"), ("you·desk", "ship it"), ("you·desk?", "neither")],
+                         "each marked by its own body")
+        got = classify(self.delivered(frame + "merge it"), logs=self.two_logs("doperpowers", "merge it", "merge it"))
+        self.assertEqual(kinds(got), [("you·desk?", "merge it")], "the same body under the same name: neither")
+
+    def test_which_log_a_frame_lies_in_is_said(self):
+        index = W.OwnerWords(self.two_logs("desk", "merge it", "ship it"), [SID])
+        self.assertEqual(index.corroborates("[sminos chat desk testhost/human:3 from human → @you]\nship it"),
+                         CHANNEL_ID)
+        self.assertEqual(index.corroborates(self.FRAME), PROJECT_ID)
+        self.assertIsNone(index.corroborates("[sminos chat elsewhere testhost/human:3 from human → @you]\nmerge it"),
+                          "a log of no name given certifies nothing")
 
     NOTE = ("[sminos] A note from sminos on this machine, not from the sender above: you were woken in the background "
             "by this message, and your human is not watching this session unless they have attached to it since. "
@@ -1267,6 +1313,30 @@ class Commands(unittest.TestCase):
 
     def run_in_alpha(self, *args, check=True, env=None):
         return cli(*args, "--name", self.name, cwd=self.dirs["alpha"], check=check, env=env)
+
+    def test_an_owners_post_delivered_from_a_channel_is_the_owners_and_its_projects_event_of_one_ref_is_not_it(self):
+        """CH2's M9: transcript reads the owner's words of the channels known here beside the subscription's
+        project's, and a frame is held to the log its header names."""
+        sid, cid = "7b000009-0000-4000-8000-0000000000b9", "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b9d"
+        sminos("seat", "add", "charlie", "chan-reader", "--session", sid, cwd=self.dirs["charlie"])
+        # Registered as the org's directory registers a channel (sminos_channels.register), on a machine this suite
+        # leaves unenrolled: no root, a hub.
+        S.register_if_absent(S.make_project(cid, "desk-m9", "", "", {"url": "http://127.0.0.1:9", "org": "org-1"}))
+        S.forget_caches()
+        [chan] = [c for c in S.known_channels() if c.id == cid]
+        to = [{"session": sid, "alias": "chan-reader"}]
+        S.log_append(chan, "testhost/human", "human", **{"from": "human", "text": "ship it",
+                                                         "to": [dict(to[0], thread="t-1")]})
+        S.log_append(S.find_project("charlie"), "testhost/human", "human", **{"from": "human", "text": "merge it",
+                                                                                "to": to})
+        S.forget_caches()
+        r = Rows()
+        for log, body in (("desk-m9", "ship it"), ("charlie", "merge it"), ("desk-m9", "merge it")):
+            r.user("[sminos chat %s testhost/human:1 from human → @you]\n%s" % (log, body), SMINOS_PROMPT)
+        write_transcript(transcript_file(sid), r.rows)
+        _, out, _ = self.run_in_alpha("transcript", sid, "--since", iso(T0), "--json")
+        self.assertEqual([(e["kind"], e["text"]) for e in json.loads(out)["entries"]],
+                         [("you·desk", "ship it"), ("you·desk", "merge it"), ("you·desk?", "merge it")])
 
     # resolution
 

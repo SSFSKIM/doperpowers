@@ -120,9 +120,10 @@ def without_note(text):
 
 
 def frames(text):
-    """[(kind, sender, ref, body, whole)] for each sminos frame in a delivered text, in order: kind `chat` (ref
-    its event's `writer:seq`) or `message` (ref its message id); `whole` the frame's own text, header line and
-    body, the last one's less a wake's line (without_note). [] for a text that opens with none."""
+    """[(kind, sender, ref, body, whole, log)] for each sminos frame in a delivered text, in order: kind `chat` (ref
+    its event's `writer:seq`, `log` the name of the log its header names, a project's or a channel's) or
+    `message` (ref its message id, `log` ""); `whole` the frame's own text, header line and body, the last one's
+    less a wake's line (without_note). [] for a text that opens with none."""
     text = without_note(text)
     heads = sorted([("chat", m) for m in CHAT_FRAME_RE.finditer(text)] +
                    [("message", m) for m in MESSAGE_FRAME_RE.finditer(text)], key=lambda h: h[1].start())
@@ -133,36 +134,47 @@ def frames(text):
         end = heads[i + 1][1].start() if i + 1 < len(heads) else len(text)
         body, whole = text[m.end():end].rstrip("\n"), text[m.start():end].rstrip("\n")
         if kind == "chat":
-            out.append(("chat", _sender(m.group(3)), m.group(2), body, whole))
+            out.append(("chat", _sender(m.group(3)), m.group(2), body, whole, m.group(1)))
         else:
-            out.append(("message", _sender(m.group(1)), m.group(2), body, whole))
+            out.append(("message", _sender(m.group(1)), m.group(2), body, whole, ""))
     return out
 
 
 class OwnerWords:
-    """The owner's words a project's log holds for one lineage (sminos.owner_event: `human` events of
+    """The owner's words the logs given hold for one lineage (sminos.owner_event: `human` events of
     `<machine>/human` or `hub/<member>`, addressed to one of `sessions` by sminos.addressed_to), to corroborate
-    what the bridge delivered to that session as the owner's."""
+    what the bridge delivered to that session as the owner's. `logs`: [(the log's name, its id, its events)],
+    a project's and channels' (CH2's M9). A frame's header names its log by its display name alone, which a
+    channel and a project, or two channels, may share, and each log numbers a writer's events on its own: so
+    every candidate under (log name, ref) is kept, each with its log's id and its body, and a display name
+    alone never decides which log a frame came from."""
 
-    def __init__(self, events, sessions):
-        self.by_ref, self.texts = {}, set()
-        for e in events:
-            if S.owner_event(e) and isinstance(e.get("text"), str) and any(S.addressed_to(e, s) for s in sessions):
-                self.by_ref[S.event_ref(e)] = e["text"].strip()
-                self.texts.add(e["text"].strip())
+    def __init__(self, logs, sessions):
+        self.by_key, self.texts = {}, {}
+        for name, log_id, events in logs:
+            for e in events:
+                if S.owner_event(e) and isinstance(e.get("text"), str) and any(S.addressed_to(e, s) for s in sessions):
+                    body = e["text"].strip()
+                    self.by_key.setdefault((name, S.event_ref(e)), []).append((log_id, body))
+                    self.texts.setdefault(body, log_id)
 
     def corroborates(self, text):
-        """Whether one delivered frame from the owner, or a bare text, is the owner's words to this lineage as
-        the log holds them: a chat frame names, by its ref, such an event with exactly its text; a message frame
-        or a bare text (MAWS's RL10 send, which never logs) is such an event's whole text. A text of several
-        frames is classified frame by frame, never corroborated whole."""
+        """The id of the log whose owner's words to this lineage one delivered frame from the owner, or a bare
+        text, is; None when it is none. A chat frame is such an event of a log of the name its header gives,
+        under its ref and with exactly its body, and exactly one candidate under that name and ref may have
+        that body: none, or one in each of two logs of one name, certifies nothing. A message frame or a bare
+        text (MAWS's RL10 send, which never logs) is such an event's whole text, in whichever log holds it
+        first. A text of several frames is classified frame by frame, never corroborated whole."""
         fs = frames(text)
         if not fs:
-            return text.strip() in self.texts
+            return self.texts.get(text.strip())
         if len(fs) != 1 or fs[0][1] != "human":
-            return False
-        kind, _, ref, body, _ = fs[0]
-        return self.by_ref.get(ref) == body.strip() if kind == "chat" else body.strip() in self.texts
+            return None
+        kind, _, ref, body, _, log = fs[0]
+        if kind != "chat":
+            return self.texts.get(body.strip())
+        found = [log_id for log_id, held in self.by_key.get((log, ref), ()) if held == body.strip()]
+        return found[0] if len(found) == 1 else None
 
 
 def _local(ts):
@@ -481,7 +493,7 @@ class Classifier:
         else:
             # One push can carry several frames, each its own sender's: each is classified on its own, so one
             # frame's evidence never vouches for another sender's words.
-            for n, (_, sender, _, body, whole) in enumerate(frames(stripped)):
+            for n, (_, sender, _, body, whole, _) in enumerate(frames(stripped)):
                 if sender != "human":
                     self._add(n, ts, "peer", whole, **{"from": sender})
                 else:

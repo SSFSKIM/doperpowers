@@ -859,10 +859,11 @@ class ChannelReconcile(Machine):
     def test_a_resumes_roster_gives_no_tag_through_a_channel(self):
         """The frontier review's B3: a message an older copy sent to a peer
         it read as a member of the channel names the channel as the peer's
-        project. The roster a resume reads gives no tag into the channel:
-        the peer is in no project known here while its legacy `joined`
-        stands, and in its own project once this code's `retired` `moved`
-        names it."""
+        project, and no thread. The roster a resume reads gives no tag into
+        the channel: the peer is in no project known here while its legacy
+        `joined` stands, and in its own project once this code's `retired`
+        `moved` names it. (An entry that names a thread is found by its
+        thread from CH2's M9 on: test_a_peer_met_in_a_channel_...)"""
         sid, peer = "6c000010-0000-4000-8000-0000000000e1", "6c000011-0000-4000-8000-0000000000e2"
         self.live(sid, self.root)
         self.tick()
@@ -882,6 +883,59 @@ class ChannelReconcile(Machine):
         said = sminos.roster_text(sid, self.root)
         self.assertNotIn("@desk-integration/", said)
         self.assertIn("@worker#6c000011  worker [6c000011], app on %s" % MACHINE, said, "the sender is a worker too")
+
+    def stated(self, sid):
+        """The live session `sid` of app, made a thread by a tick, with a statement of its own naming the channel,
+        as `channel add` leaves one: its thread."""
+        self.live(sid, self.root)
+        self.tick()
+        tid = sminos.threads_module().stamp(sid)
+        self.assertTrue(tid)
+        sminos.log_append(self.p, "%s/%s" % (MACHINE, sid), "channels", session=sid, thread=tid, channels=[DESK],
+                          op="add")
+        sminos.forget_caches()
+        return tid
+
+    def test_a_peer_met_in_a_channel_that_no_project_here_holds_is_named_as_its_message_named_it(self):
+        """CH2's M9: a peer met only in a channel, on a machine whose projects this one does not hold, is listed
+        by the name its message gave it, with no tag; and one whose session's row here is another thread's is not
+        taken for it."""
+        sid, far, reused = ("6c00002%d-0000-4000-8000-0000000000f%d" % (n, n) for n in (1, 2, 3))
+        tid = self.stated(sid)
+        self.live(reused, self.root, name="reused")
+        self.tick()
+        self.assertNotEqual(sminos.threads_module().stamp(reused), "")
+        for writer, thread, alias, text in (("beta/%s" % far, "6c0000a2-0000-4000-8000-0000000000a2", "far-peer", "a"),
+                                            ("%s/%s" % (MACHINE, reused), "6c0000a3-0000-4000-8000-0000000000a3",
+                                             "old-name", "b")):
+            sminos.log_append(self.c, writer, "say", **{"from": alias, "thread": thread, "text": text,
+                                                         "to": [{"session": sid, "alias": "worker", "thread": tid}]})
+        sminos.log_append(self.c, "beta/%s" % far, "say", **{"from": "far-peer", "thread": "x", "text": "c",
+                                                              "to": "*"})
+        sminos.forget_caches()
+        said = sminos.roster_text(sid, self.root)
+        self.assertIn("far-peer [6c000022], met in a channel: no project known here holds its thread now, no tag"
+                      " reaches it", said)
+        self.assertIn("old-name [6c000023], met in a channel: no project known here holds its thread now", said,
+                      "a session whose row here is another thread's is not the peer")
+        self.assertNotIn("reused [", said)
+        self.assertNotIn("desk-integration", said)
+
+    def test_a_session_whose_thread_made_no_statement_reads_no_channel(self):
+        """B11's cost: a session in no channel reads no channel's log and no registration of one."""
+        sid = "6c000030-0000-4000-8000-0000000000f4"
+        self.live(sid, self.root)
+        self.tick()
+        sminos.log_append(self.c, "beta/6c000031-0000-4000-8000-0000000000f5", "say",
+                          **{"from": "far-peer", "thread": "t", "text": "a",
+                             "to": [{"session": sid, "alias": "worker",
+                                     "thread": sminos.threads_module().stamp(sid)}]})
+        sminos.forget_caches()
+        read, real = [], sminos.log_read
+        with mock.patch.object(sminos, "log_read", lambda p, *a, **k: read.append(p.id) or real(p, *a, **k)), \
+                mock.patch.object(sminos, "known_channels", side_effect=AssertionError("no registration read")):
+            self.assertEqual(sminos.roster_text(sid, self.root), "")
+        self.assertNotIn(DESK, read)
 
     def test_an_import_into_a_channel_delivers_nothing(self):
         calls = []

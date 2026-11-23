@@ -26,7 +26,13 @@ FAILURES=0
 PASSES=0
 T="$(mktemp -d /tmp/smg.XXXXXX)"
 T="$(cd "$T" && pwd -P)"
-trap 'rm -rf "$T"' EXIT
+PIDS=()
+cleanup() {
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done
+  for pid in ${PIDS[@]+"${PIDS[@]}"}; do wait "$pid" 2>/dev/null || true; done
+  rm -rf "$T"
+}
+trap cleanup EXIT
 
 pass() { PASSES=$((PASSES + 1)); echo "  ok   $1"; }
 fail() { FAILURES=$((FAILURES + 1)); echo "  FAIL $1"; }
@@ -342,6 +348,138 @@ guide "$(payload "$ME3" "$REPO" "$ME3_TX" | sed 's/"startup"/"compact"/')"
 roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
 assert_contains "$(head -1 <<<"$OUT")" "project otherproj" "me3 is in otherproj by its join, whose log does not hold its hand-off"
 assert_contains "$(line peer-p)" "you wrote it" "a message the session it continues sent there counts, read off the copy at home"
+
+echo "the roster through a channel: peers met only by say --in (CH2's M9):"
+# Each session a process of its own (a `sleep`), so that the daemon's tick makes it a thread of its own; a channel
+# verb's capability as a welcome that listed `channels` keeps it; `claude` a stub, so that no push reaches an engine.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\ncase "$1" in agents) echo "[]" ;; esac\nexit 0\n' > "$T/bin/claude"
+chmod +x "$T/bin/claude"
+export PATH="$T/bin:$PATH"
+own_record() { # name session cwd — an engine record for a running interactive session, its process of its own
+  sleep 600 &
+  PIDS+=("$!")
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+    "$!" "$2" "$1" "$3" > "$HOME/.claude/sessions/$1.json"
+}
+python3 - "$SCRIPTS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos_audience
+sminos_audience.keep_capabilities(["channels"])
+PY
+U=c0000c00-0000-4000-8000-0000000000c0    # in teamproj; creates the channel
+V=c1000c01-0000-4000-8000-0000000000c1    # in otherproj; placed in the channel by U
+X=c2000c02-0000-4000-8000-0000000000c2    # in otherproj; in no channel, says into it once
+Y=c3000c03-0000-4000-8000-0000000000c3    # in otherproj; placed in the channel, written there once, then ended
+for s in "chan-u $U $REPO" "chan-v $V $OTHER" "chan-x $X $OTHER" "chan-y $Y $OTHER"; do
+  # shellcheck disable=SC2086
+  set -- $s
+  own_record "$1" "$2" "$3"
+  transcript "$2" "$3"
+done
+tx_of() { printf '%s' "$HOME/.claude/projects/p-$1/$1.jsonl"; }
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+as_session() { # session dir command... — OUT and RC of the command as that session runs it there
+  local sid=$1 d=$2; shift 2
+  set +e; OUT="$(cd "$d" && CLAUDE_CODE_SESSION_ID="$sid" "$SMINOS" "$@" 2>&1)"; RC=$?; set -e
+}
+as_session "$U" "$REPO" channel create guide-desk
+assert_equals "$RC" "0" "a thread creates a channel"
+as_session "$U" "$REPO" channel add guide-desk otherproj/chan-v otherproj/chan-y
+assert_equals "$RC" "0" "and places two threads of another project in it"
+as_session "$U" "$REPO" say --in guide-desk "@chan-v hello through the channel"
+assert_equals "$RC" "0" "a member says into the channel"
+as_session "$V" "$OTHER" say --in guide-desk "@chan-u hello back"
+assert_equals "$RC" "0" "and the other answers there"
+as_session "$X" "$OTHER" say --in guide-desk "@chan-u from outside"
+assert_equals "$RC" "0" "a thread in no channel says into it"
+as_session "$U" "$REPO" say --in guide-desk "@chan-y for the one that will end"
+assert_equals "$RC" "0" "and the member writes a third"
+assert_equals "$(python3 - "$SCRIPTS" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+[c] = [c for c in sminos.known_channels() if c.name == "guide-desk"]
+print(sum(1 for e in sminos.log_read(c) if e["kind"] == "say" and "from_project" not in e),
+      sum(1 for e in sminos.log_read(c) if e["kind"] == "say" and "from_project" in e))
+PY
+)" "3 1" "three members' messages in the channel's log, and the outsider's with its project"
+roster_of() { # session dir — the roster its compaction's guidance ends with
+  guide "$(payload "$1" "$2" "$(tx_of "$1")" | sed 's/"startup"/"compact"/')"
+  roster="$(sed -n '/who you exchanged sminos messages with/,$p' <<<"$OUT")"
+}
+tag_of() { { line "$1" || true; } | python3 -c 'import sys; print(sys.stdin.read().strip().split("  ")[0])'; }
+roster_of "$U" "$REPO"
+assert_contains "$(line chan-v)" "@otherproj/chan-v " "a peer met only in a channel is listed, tagged in its own project"
+assert_contains "$(line chan-v)" "otherproj on alpha" "with where it is"
+assert_contains "$(line chan-v)" "it wrote you" "and the exchange's last direction"
+assert_contains "$(line chan-x)" "@otherproj/chan-x " "a thread outside the channel that said into it, for the member, by the channel's log"
+assert_contains "$(line chan-x)" "unanswered" "its message unanswered"
+assert_not_contains "$roster" "guide-desk" "never a tag qualified by the channel"
+U_TO_V="$(tag_of chan-v)"
+U_TO_X="$(tag_of chan-x)"
+roster_of "$V" "$OTHER"
+assert_contains "$(line chan-u)" "@teamproj/chan-u " "and each for the other"
+assert_contains "$(line chan-u)" "you wrote it" "its own reply the last exchange"
+V_TO_U="$(tag_of chan-u)"
+roster_of "$X" "$OTHER"
+assert_contains "$(line chan-u)" "@teamproj/chan-u " "the outsider lists the member it wrote, by its copy"
+assert_contains "$(line chan-u)" "you wrote it" "never answered"
+X_TO_U="$(tag_of chan-u)"
+set +e; OUT="$(cd "$OTHER" && "$SMINOS" retire otherproj/chan-y 2>&1)"; RC=$?; set -e
+assert_equals "$RC" "0" "a peer's thread ends"
+as_session "$U" "$REPO" channel remove guide-desk
+assert_equals "$RC" "0" "the reader leaves the channel"
+roster_of "$U" "$REPO"
+assert_contains "$(line chan-y)" "chan-y [${Y:0:8}]" "a peer met only in a channel that has since ended is listed by its name"
+assert_contains "$(line chan-y)" "its session ended, no tag reaches it" "as ended"
+assert_contains "$(line chan-v)" "$U_TO_V " "a channel it has left is still read: the peer, by the tag of its own project"
+assert_contains "$(line chan-x)" "$U_TO_X " "and the outsider"
+reaches() { # session dir tag peer-session text — the tag, run by the session as written, records a message to the peer
+  as_session "$1" "$2" say "$3 $5"
+  assert_equals "$RC" "0" "$3 run as written is taken"
+  assert_equals "$(python3 - "$SMINOS_HOME/projects" "$4" "$5" <<'PY'
+import glob, json, os, sys
+print(sum(1 for path in glob.glob(os.path.join(sys.argv[1], "*", "log", "*.jsonl")) for line in open(path)
+          for e in [json.loads(line)] if e.get("kind") == "say" and e.get("text", "").endswith(sys.argv[3])
+          and "copy" not in e and any(isinstance(r, dict) and r.get("session") == sys.argv[2] for r in e.get("to") or [])))
+PY
+)" "1" "and reaches the peer it names ($3)"
+}
+reaches "$U" "$REPO" "$U_TO_V" "$V" "ping one"
+reaches "$U" "$REPO" "$U_TO_X" "$X" "ping two"
+reaches "$V" "$OTHER" "$V_TO_U" "$U" "ping three"
+reaches "$X" "$OTHER" "$X_TO_U" "$U" "ping four"
+roster_of "$U" "$REPO"
+assert_equals "$(grep -c 'chan-v \[' <<<"$roster")" "1" "a peer met in a project and in a channel is one row"
+assert_contains "$(line chan-v)" "it wrote you" "its last exchange the newest, whichever log holds it"
+
+echo "the roster of a session in no channel is the merge base's, byte for byte (B11):"
+MERGE_BASE=61b27ebee04ab1e3c61c7e966eec656cfc851451   # `git merge-base origin/main HEAD` when M9 was built
+TOP="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+if ! git -C "$TOP" cat-file -e "$MERGE_BASE^{commit}" 2>/dev/null && ! git -C "$TOP" fetch -q --depth=1 origin "$MERGE_BASE"; then
+  fail "the merge base ${MERGE_BASE:0:8} cannot be had from this clone or from origin"
+else
+  mkdir -p "$T/base"
+  git -C "$TOP" archive "$MERGE_BASE" sminos | tar -x -C "$T/base"
+  rosters() { # launcher — each listed session's compaction roster, an age ("35m ago") left out
+    local s
+    for s in "$ME $REPO $ME_TX" "$ME2 $REPO $ME2_TX" "$ME3 $REPO $ME3_TX" "$A $REPO $T/none.jsonl"; do
+      # shellcheck disable=SC2086
+      set -- $s
+      payload "$1" "$2" "$3" | sed 's/"startup"/"compact"/' | "$LAUNCHER" guide 2>&1 |
+        sed -n '/who you exchanged sminos messages with/,$p' | sed -E 's/, [0-9]+[mhd] ago/, _ ago/'
+      echo "--"
+    done
+  }
+  LAUNCHER="$SMINOS"
+  ours="$(rosters)"
+  LAUNCHER="$T/base/sminos/skills/sminos/scripts/sminos"
+  base="$(rosters)"
+  assert_contains "$ours" "peer-a [" "the rosters compared are not empty"
+  assert_equals "$ours" "$base" "on a machine that knows a channel, each roster of a session in none is the merge base's"
+fi
 
 echo "a fork is told the guidance above it was its parent's:"
 S10=0a00000a-0000-4000-8000-00000000000a

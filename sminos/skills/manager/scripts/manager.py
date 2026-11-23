@@ -247,6 +247,12 @@ def _paths(t):
     return [(sid, S.transcript_now(sid)) for sid in t.sessions]
 
 
+def _owner_logs(project):
+    """[(name, id, events)] of the logs whose owner's words corroborate a delivery: the subscription's project's,
+    and every channel's known on the machine (CH2's M9), since a window may look back past a membership."""
+    return [(p.name, p.id, S.log_read(p)) for p in ([project] if project is not None else []) + S.known_channels()]
+
+
 def cmd_transcript(a):
     t = resolve(a.member)
     refuse_remote(t)
@@ -263,7 +269,7 @@ def cmd_transcript(a):
 
     def corroborate(text):
         if "words" not in owner:
-            owner["words"] = W.OwnerWords(S.log_read(t.project) if t.project is not None else [], t.sessions)
+            owner["words"] = W.OwnerWords(_owner_logs(t.project), t.sessions)
         return owner["words"].corroborates(text)
 
     try:
