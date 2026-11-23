@@ -1,8 +1,10 @@
 # Doperpowers agents for Codex
 
-These TOML definitions port the contracts in `agents/*.md` to Codex's native
+These TOML definitions port the review roles in `agents/*.md` to Codex's native
 subagent runtime. Their names remain `doperpowers:<role>`. Claude continues
-loading the Markdown definitions; its configuration is unchanged.
+loading the Markdown definitions; its configuration is unchanged. The executors
+(`plan-executor`, `task-executor`) have no port: a spec is executed in Claude
+Code.
 
 | Role | Model | Effort |
 |---|---|---|
@@ -12,15 +14,10 @@ loading the Markdown definitions; its configuration is unchanged.
 | adversarial-reviewer | gpt-6-astra | high |
 | critique | gpt-6-astra | high |
 | task-reviewer | gpt-5.6-sol | xhigh |
-| plan-executor | gpt-5.6-sol | xhigh |
-| task-executor | gpt-5.6-sol | high |
 
 The reviewer pins match Claude's GPT routes. The critic uses Astra for design
-judgment; the executors use Sol at the project's execution tiers. Role files
-pin both model and effort, so changing the parent model does not change them.
-Claude's `plan-executor` (2026-09-25) and `task-executor` (2026-09-26) are
-pinned to opus; the Codex mirrors keep Sol, since Codex has
-no Claude route.
+judgment. Role files pin both model and effort, so changing the parent model
+does not change them.
 
 ## Install or update
 
@@ -58,14 +55,12 @@ Replace any Codex instruction that requires the companion runtime with native
 dispatch: `agent_type = "doperpowers:reviewer-low"`, `reviewer-medium`, or
 `reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
 use `doperpowers:adversarial-reviewer`; design debates use `doperpowers:critique`.
-A spec's Plan of Work and its individual milestones use `plan-executor` and
-`task-executor`, and the controller sends task reviews to `task-reviewer`.
+A milestone's review uses `doperpowers:task-reviewer`.
 
 When a shared skill says `Agent`, use Codex's native spawn operation with the
 declared role and a fresh context. `SendMessage` means the native message or
 follow-up operation; wait for completion before treating a result as a review.
-The task executor keeps its self-review contract; its controller owns the
-independent reviewer. Reviewer definitions carry that same no-delegation boundary
+Reviewer definitions carry a no-delegation boundary
 as instructions: Claude's `disallowedTools` field is not a Codex agent setting.
 These definitions do not establish a separate permission boundary; the parent
 session's permissions still matter.
