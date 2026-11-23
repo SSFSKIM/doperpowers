@@ -2,9 +2,10 @@
 
 > **Composite:** `docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`,
 > child **EN** (Environments), acceptance group **G2** (child id **EN.G2**).
-> **Parent pin:** that file's blob `bd23edd6177ca411fa44d6c117c3ebb76455190e`,
-> as `origin/main` holds it at `2003d1e3` and, unchanged, at `6577f179`,
-> which this branch has merged. The child's section in the
+> **Parent pin:** that file's blob `e0c6561fc1ff67850ae5415bfebbaa75a3b53387`,
+> as `origin/main` holds it at `1b5b56f9`, which this branch has merged:
+> the composite as its writer revised it from this plan's last section
+> (pull request #621). The child's section in the
 > composite is its spec. D4 is its design, binding where marked, with D3
 > (Listing, The timeline, The lead), D5 and D7; X2, X3, X6, X7, X8 and X9 are
 > its contracts; CH's document
