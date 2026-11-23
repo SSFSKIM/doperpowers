@@ -1006,7 +1006,7 @@ def common_git_dir(cwd):
         return ""
     try:
         p = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=wait_left(10))
     except Exception:
         return ""
     common = p.stdout.strip() if p.returncode == 0 else ""
@@ -13499,12 +13499,16 @@ def agents_json():
         _AGENTS_LOADED = True
         try:
             p = subprocess.run(["claude", "agents", "--json", "--all"],
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=wait_left(60))
             if p.returncode != 0:
                 _AGENTS = None
             else:
                 parsed = json.loads(p.stdout) if p.stdout.strip() else []
                 _AGENTS = parsed if isinstance(parsed, list) else None
+        except subprocess.TimeoutExpired:
+            _AGENTS = None
+            if _WAITS_UNTIL is not None:
+                _AGENTS_LOADED = False   # cut short by a deadline, not the harness's answer: a later read asks again
         except Exception:
             _AGENTS = None
     return _AGENTS
@@ -14551,7 +14555,7 @@ def claude_stop(short):
     if not short:
         return True
     try:
-        p = subprocess.run(["claude", "stop", short], capture_output=True, text=True, timeout=60)
+        p = subprocess.run(["claude", "stop", short], capture_output=True, text=True, timeout=wait_left(60))
     except Exception:
         return False
     return p.returncode == 0
@@ -15083,10 +15087,45 @@ def set_aside(path, r):
     return aside
 
 
+# A deadline every wait of this process takes while it is set (waits_until): each lock waited for (flock_until,
+# the earlier where a caller gives one too) and each child process run with a timeout of its own (wait_left). The
+# one deadline of a spawn's placements (EN.G2's plan, §1), which reach waits, deep in the paths they call, that
+# take none.
+_WAITS_UNTIL = None
+
+
+@contextmanager
+def waits_until(deadline):
+    """Every wait within the block ends by `deadline`: a lock LockBusy past
+    it, a child process's timeout what is left of it (wait_left)."""
+    global _WAITS_UNTIL
+    before, _WAITS_UNTIL = _WAITS_UNTIL, deadline if _WAITS_UNTIL is None else min(deadline, _WAITS_UNTIL)
+    try:
+        yield
+    finally:
+        _WAITS_UNTIL = before
+
+
+def waits_deadline():
+    """The deadline waits_until sets now, None outside one."""
+    return _WAITS_UNTIL
+
+
+def wait_left(seconds):
+    """A child process's timeout: `seconds`, or what is left of
+    waits_until's deadline where that is less (a moment at least)."""
+    if _WAITS_UNTIL is None:
+        return seconds
+    return max(0.01, min(seconds, _WAITS_UNTIL - time.time()))
+
+
 def flock_until(f, deadline, exclusive=True):
     """A flock on f, exclusive or shared; with a deadline, retried without
-    blocking until it, then LockBusy. Without one, it waits as long as it takes."""
+    blocking until it, then LockBusy. Without one, it waits as long as it
+    takes, but for waits_until's."""
     mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    if _WAITS_UNTIL is not None:
+        deadline = _WAITS_UNTIL if deadline is None else min(deadline, _WAITS_UNTIL)
     if deadline is None:
         fcntl.flock(f, mode)
         return
@@ -15359,9 +15398,10 @@ def render_preamble(project, alias, by="", channels=()):
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
-    placed = "\n\n" + " ".join(PLACED_SENTENCE % c for c in channels) if channels else ""
-    return (t.replace("{{PROJECT}}", project).replace("{{ALIAS}}", alias)
-             .replace("{{BY}}", by or "the operator").replace("{{CHANNELS}}", placed))
+    values = {"PROJECT": project, "ALIAS": alias, "BY": by or "the operator",
+              "CHANNELS": "\n\n" + " ".join(PLACED_SENTENCE % c for c in channels) if channels else ""}
+    # One pass over the template: a placeholder written in a value (a project's name, say) is kept as written.
+    return re.sub(r"\{\{(PROJECT|ALIAS|BY|CHANNELS)\}\}", lambda m: values[m.group(1)], t)
 
 
 def compose_task(task, brief, preamble):
@@ -15820,11 +15860,12 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     # lock is still held, right after our own writes; never re-read after the wait.
     guard = same_gen(current_gen(rec_id))
     unlock(locks)
-    placed = None
+    placed = carried = None
     if placing is not None:
         # After the launch nothing is a refusal (EN.G2's §1): every way a placement ends is one entry, said below.
-        placed = channels_module().place_spawned(rec_id, uuid, {"cwd": runcwd or cwd, "group": group}
-                                                 if asked is not None else None, placing["channels"], placing["org"])
+        placed, carried = channels_module().place_spawned(
+            rec_id, uuid, {"cwd": runcwd or cwd, "group": group} if asked is not None else None,
+            placing["channels"], placing["org"])
     if wait:
         status = finish_turn(rec_id, short, alias, uuid, guard)
     wt = ("  worktree=%s (branch worktree-%s)" % (runcwd, re.sub(r"[^a-zA-Z0-9._-]", "-", worktree))) if worktree else ""
@@ -15845,7 +15886,8 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
     for words in placed_warnings:
         warn(words)
     return {"verb": verb, "group": group, "alias": alias, "short": short, "seat": rec_id, "session": uuid,
-            "status": status, "cwd": runcwd or cwd, "project": project, "channels": placed}
+            "status": status, "cwd": runcwd or cwd, "project": project, "channels": placed,
+            "not_carried": carried}
 
 
 def spawn_provenance(settings, merged, terminal=False):

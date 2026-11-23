@@ -149,6 +149,12 @@ class Placed(Spawns):
                           'in it.' % (name, cid, cid, cid), task)
         self.assertIn("is not your human's instruction.\n\nYou are being placed", task, "after the channels' paragraph")
 
+    def test_a_placeholder_written_in_a_name_is_kept_as_written(self):
+        for channels_asked in ((), ({"id": DESK, "name": "desk"},)):
+            text = sminos.render_preamble("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d", channels_asked)
+            for literal in ("p{{CHANNELS}}q", "a{{BY}}b", "c{{PROJECT}}d"):
+                self.assertIn(literal, text, (literal, channels_asked))
+
     def test_a_refill_of_a_stopped_seat_keeps_its_channel_and_states_under_the_new_writer(self):
         code, out, err, first = self.spawn("--channel", "lobby")
         self.assertEqual(code, 0, out + err)
@@ -321,7 +327,7 @@ class Deadline(Spawns):
         self.assertEqual(holder.stdout.readline().strip(), "held")
         with mock.patch.dict(os.environ, {"SMINOS_PLACE_BUDGET": "1.5"}):
             began = time.monotonic()
-            got = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
+            got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
                                          [{"id": DESK, "name": "desk"}, {"id": unknown, "name": "fresh"},
                                           {"id": LOBBY, "name": "lobby"}], HUB["org"])
             took = time.monotonic() - began
@@ -332,13 +338,61 @@ class Deadline(Spawns):
         self.assertGreaterEqual(took, 1.4)
         self.assertEqual(sminos.registration(unknown), {}, "nothing registered without its lock")
 
+    def hold(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        holder = subprocess.Popen([sys.executable, "-c", "import fcntl, sys, time\nf = open(sys.argv[1], 'a')\n"
+                                   "fcntl.flock(f, fcntl.LOCK_EX)\nprint('held', flush=True)\ntime.sleep(60)",
+                                   path], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: (holder.kill(), holder.wait(), holder.stdout.close()))
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+
+    def placed_under(self, budget, seat, sid, asked):
+        said = io.StringIO()
+        with mock.patch.dict(os.environ, {"SMINOS_PLACE_BUDGET": budget}), contextlib.redirect_stderr(said):
+            began = time.monotonic()
+            got, carried = channels.place_spawned(seat["seat_id"], sid, None, asked, HUB["org"])
+            took = time.monotonic() - began
+        self.assertIsNone(sminos.waits_deadline(), "the deadline is the placement's alone")
+        self.assertIsNone(carried, "no seat, no carriage read")
+        return got, took, said.getvalue()
+
+    def test_a_lock_the_add_reaches_with_no_deadline_of_its_own_is_waited_for_until_the_placements(self):
+        # The seat's project registered without its optional `remote`: the first path into its home after the
+        # placement drops the caches rewrites project.json under its lock, which the statement's append reaches
+        # with no deadline of its own. Held, the record's add is committed and its statement left to the next
+        # reconciliation, as `channel add` leaves it: applied, said, and at the deadline.
+        code, out, err, sid = self.spawn()
+        seat = self.seat_of()
+        reg = os.path.join(self.p.home, "project.json")
+        with open(reg) as f:
+            d = json.load(f)
+        d.pop("remote", None)
+        with open(reg, "w") as f:
+            json.dump(d, f)
+        self.hold(reg + ".lock")
+        got, took, said = self.placed_under("0.3", seat, sid, [{"id": DESK, "name": "desk"}])
+        self.assertEqual(got, [{"id": DESK, "state": "applied", "why": ""}])
+        self.assertLess(took, 1.0, "the deadline holds for a lock the add reaches without one")
+        self.assertIn("is left to the next reconciliation", said)
+        self.assertEqual(threads.get(seat["seat_id"])["channels"], [DESK], "the record holds it")
+
+    def test_a_lock_met_before_the_add_is_committed_is_time(self):
+        # The seat store's lock, under which set_channels commits the add.
+        code, out, err, sid = self.spawn()
+        seat = self.seat_of()
+        self.hold(os.path.join(sminos.root(), ".metalock"))
+        got, took, said = self.placed_under("0.3", seat, sid, [{"id": DESK, "name": "desk"}])
+        self.assertEqual(got, [{"id": DESK, "state": "failed", "why": "time"}])
+        self.assertLess(took, 1.0)
+        self.assertEqual(threads.get(seat["seat_id"])["channels"], [], "nothing committed")
+
     def test_a_channel_this_machine_does_not_know_is_registered_from_the_request_and_one_it_knows_kept(self):
         code, out, err, sid = self.spawn()
         seat = self.seat_of()
         fresh = channel_ids(1)[0]
-        got = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
+        got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
                                      [{"id": fresh, "name": "fresh"}, {"id": DESK, "name": "elsewhere"}], HUB["org"])
-        self.assertEqual([g["state"] for g in got], ["applied", "applied"])
+        self.assertEqual(([g["state"] for g in got], carried), (["applied", "applied"], ""), "carried: no word")
         reg = sminos.registration(fresh)
         self.assertEqual((reg["name"], reg["root"], reg["hub"]["org"]), ("fresh", "", HUB["org"]))
         self.assertEqual(sminos.registration(DESK)["name"], "desk", "its own registration kept")
@@ -347,9 +401,10 @@ class Deadline(Spawns):
         code, out, err, sid = self.spawn("--channel", "lobby")
         seat = self.seat_of()
         with mock.patch.object(sminos, "not_carried", side_effect=lambda p, org: "x" if p.id == self.p.id else ""):
-            got = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
+            got, carried = channels.place_spawned(seat["seat_id"], sid, {"cwd": self.root, "group": seat["group"]},
                                          [{"id": DESK, "name": "desk"}], HUB["org"])
-        self.assertEqual(got, [{"id": DESK, "state": "failed", "why": "project-not-carried"}])
+        self.assertEqual((got, carried), ([{"id": DESK, "state": "failed", "why": "project-not-carried"}], "x"),
+                         "the carriage word the outcome's not_carried takes, from the same read")
         self.assertEqual(threads.get(seat["seat_id"])["channels"], [LOBBY], "what it held is kept")
 
     def test_anything_else_is_error_said_and_never_raised(self):
@@ -358,7 +413,7 @@ class Deadline(Spawns):
         said = io.StringIO()
         with mock.patch.object(channels, "change", side_effect=RuntimeError("boom")), \
                 contextlib.redirect_stderr(said):
-            got = channels.place_spawned(seat["seat_id"], sid, None, [{"id": DESK, "name": "desk"}], HUB["org"])
+            got, carried = channels.place_spawned(seat["seat_id"], sid, None, [{"id": DESK, "name": "desk"}], HUB["org"])
         self.assertEqual(got, [{"id": DESK, "state": "failed", "why": "error"}])
         self.assertIn("placing the spawned thread failed: RuntimeError: boom", said.getvalue())
 

@@ -467,8 +467,8 @@ as_child() { # session command... — run on vm1 as that session, from its seat'
   local sid=$1; shift
   (cd "$VH/Developer/GitHub/repo" && CLAUDE_CODE_SESSION_ID="$sid" vm "$@")
 }
-said_to() { # writer — the sessions the last say under it names
-  python3 - "$VS" "$1" <<'PY2'
+said_to() { # writer [sminos-home] — the sessions the last say under it names, on vm1 unless another home is named
+  python3 - "${2:-$VS}" "$1" <<'PY2'
 import glob, json, os, sys
 home, writer = sys.argv[1:]
 last = None
@@ -576,6 +576,13 @@ assert_contains "$GOT" "c3#${C3:0:8}: asked; pending on vm1" "asked of vm1 for t
 REQ="$(log_of "$SMINOS_HOME" "$LOBBY" | grep channel-request | tail -1 || true)"
 assert_contains "$REQ" "\"session\": \"$C3\"" "the request names its session"
 assert_not_contains "$REQ" "$L" "and never the local member"
+SAY="$(grep -o 'sminos say "@[^"]*"' <<<"$OUT" | head -1)"
+assert_equals "$SAY" "sminos say \"@$C3 …\"" "the banner names the placed thread by its whole session id"
+set +e
+GOT="$(cd "$WORK" && CLAUDE_CODE_SESSION_ID="$S" bash -c "${SAY/sminos/\"\$0\"}" "$SMINOS" 2>&1)"; RC=$?
+set -e
+assert_rc 0 "$RC" "its say, run as printed beside a local member named for its short"
+assert_equals "$(said_to "mac/$S" "$SMINOS_HOME")" "$C3" "reaches the remote thread, not the local member"
 rm "$HOME/.claude/sessions/local.json"
 
 echo "== the identity gone to another org by the placement: no statement, one warning, no command"
@@ -588,7 +595,24 @@ assert_rc 0 "$RC" "the spawn stands"
 assert_contains "$OUT" "spawn completed, but none of the placements asked for was made: vm1 is no longer enrolled in this org" "said once"
 assert_not_contains "$OUT" "channel add" "with no command"
 assert_equals "$(stated "$C4")" "" "no statement"
+assert_contains "$OUT" "which its enrollment does not carry (this machine is not enrolled in the org)" \
+  "G1's no-reach note, from the placement's own read"
+assert_not_contains "$OUT" "it is listed here once" "and no promise"
 identity "$VS" vm1 org-1
+
+echo "== the seat's project made uncarried by the placement: G1's note from the placement's own read, one warning"
+# The project the seat is filed in, carried at the launch, retired in vm1's directory while the engine launches.
+during_launch "printf '{\"projects\": [{\"id\": \"$PID_MAC\", \"name\": \"repo\", \"retired\": true}], \"machines\": [], \"at\": \"\"}' > '$VS/daemon/org.json'"
+standin
+on c4b --on vm1 --channel "$DESK"
+settled
+C4B="$(seat_session c4b)"
+assert_rc 0 "$RC" "the spawn stands"
+assert_contains "$OUT" "which its enrollment does not carry (the org's directory has retired it)" "G1's no-reach note"
+assert_contains "$OUT" "none of the placements asked for (desk) was made: its project on vm1 is not carried" "one warning"
+assert_not_contains "$OUT" "it is listed here once" "and no promise"
+assert_equals "$(stated "$C4B")" "" "no statement"
+rm -f "$VS/daemon/org.json"
 
 echo "== --worktree onto a seat already in desk, landing in a project vm1 does not carry: no placement at all"
 mkdir -p "$VH/work/stale"   # the engine's checkout: a stale .smns naming another org, a project vm1 does not carry
@@ -670,7 +694,9 @@ kill "$LOCKER" 2>/dev/null || true
 echo "== a VM that has kept no welcome is waited on, then spawned; at the wait's end, exit 75 and no launch"
 rm "$VS/daemon/audiences.json"
 standin
-( n=0; until [ "$(ssh_calls)" -ge 1 ] || [ $n -ge 600 ]; do sleep 0.05; n=$((n + 1)); done; sleep 0.3
+: > "$T/err"   # the welcome kept again once the Mac has said it waits for one, on `on`'s standard error
+( n=0; until grep -q "has kept no welcome of its endpoint yet" "$T/err" 2>/dev/null || [ $n -ge 600 ]; do
+    sleep 0.05; n=$((n + 1)); done
   welcome "$VS" ) & PIDS+=("$!")
 SMINOS_ON_ENROLL_POLL=0.5 on c7 --on vm1 --channel "$DESK"
 assert_rc 0 "$RC" "spawned once the welcome is kept"

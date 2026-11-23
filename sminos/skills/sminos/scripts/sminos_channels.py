@@ -1470,15 +1470,21 @@ def for_spawn(values, here):
 
 def place_spawned(thread_id, session, seat, asked, org):
     """A spawned thread placed in the channels asked (§1's placement), once
-    the launcher has returned its session: never exits, never raises, and
-    returns one entry a channel in the order asked, {"id", "state", "why"}
-    as the outcome line carries it. The caches are dropped first, so the
-    enrollment, the org's directory and each registration are read as they
-    are now; one deadline, PLACE_BUDGET from then (SMINOS_PLACE_BUDGET),
-    bounds every wait in it. `org` is the request's on a VM, else the org
-    this machine was enrolled in when the command began; `seat`, on a VM
-    only, the seat's {cwd, group}, whose project is read again and tested
-    (a spawn here places as `channel add` would, and makes no such test).
+    the launcher has returned its session: never exits, never raises.
+    (entries, not_carried): one entry a channel in the order asked,
+    {"id", "state", "why"} as the outcome line carries it, and, with a
+    `seat`, why this machine's enrollment does not carry the seat's project
+    as these same reads find it (sminos.NOT_CARRIED_WORDS, "" where it does:
+    the outcome's G1 `not_carried`, §1), None where they did not get that
+    far (no seat, the deadline, an error). The caches are dropped first, so
+    the enrollment, the org's directory and each registration are read as
+    they are now, and again at the end; one deadline, PLACE_BUDGET from then
+    (SMINOS_PLACE_BUDGET), bounds every wait in it, however deep
+    (sminos.waits_until: each lock, each child process). `org` is the
+    request's on a VM, else the org this machine was enrolled in when the
+    command began; `seat`, on a VM only, the seat's {cwd, group}, whose
+    project is read again and tested (a spawn here places as `channel add`
+    would, and makes no such test).
 
     1. this machine's enrollment none, or of another org: every channel
        `identity`, none tried; 2. the seat's project not carried: every
@@ -1487,24 +1493,40 @@ def place_spawned(thread_id, session, seat, asked, org):
        where this machine does not know it (a lock not had in time: `time`);
        4. its registration and the directory read now: none, `unregistered`;
        not carried (but for one that has left this machine), `not-carried`;
-       5. the thread's own add (change), its outcome as it is. Anything else
-       is `error`, said on standard error."""
+       5. the thread's own add (change), its outcome as it is: a lock met
+       past the deadline before the add is committed is `time`; one met
+       after it (the statement's append) leaves the statement to the next
+       reconciliation, said, and the add `applied`, as `channel add` says
+       it. Anything else is `error`, said on standard error."""
     deadline = time.time() + place_budget()
+    try:
+        with sminos.waits_until(deadline):   # every wait in here, however deep, by the one deadline
+            return _place_all(thread_id, session, seat, asked, org, deadline)
+    finally:
+        sminos.forget_caches()   # nothing read under the deadline, a read it cut short among them, outlives it
 
+
+def _place_all(thread_id, session, seat, asked, org, deadline):
     def every(why):
         return [{"id": c["id"], "state": "failed", "why": why} for c in asked]
+    carried = None
     try:
         sminos.forget_caches()
         mine = sminos.enrollment()
         if mine is None or mine.get("org") != org:
-            return every("identity")
+            return every("identity"), sminos.NOT_ENROLLED if seat is not None else None
         if seat is not None:
             project = sminos.seat_project(seat, fresh=True)
-            if project is not None and sminos.not_carried(project, org):
-                return every("project-not-carried")
+            if time.time() >= deadline:
+                return every("time"), None   # a read the deadline cut short (wait_left) tells nothing
+            carried = sminos.not_carried(project, org) if project is not None else ""
+            if carried:
+                return every("project-not-carried"), carried
+    except sminos.LockBusy:
+        return every("time"), None
     except (Exception, SystemExit) as e:
         _said(e)
-        return every("error")
+        return every("error"), None
     out = []
     for c in asked:
         if time.time() >= deadline:
@@ -1518,7 +1540,7 @@ def place_spawned(thread_id, session, seat, asked, org):
             _said(e)
             state, why = "failed", "error"
         out.append({"id": c["id"], "state": state, "why": why})
-    return out
+    return out, carried
 
 
 def _place_one(thread_id, session, c, org, deadline):

@@ -266,8 +266,11 @@ class Answering:
              "project": {"id": project.id, "name": project.name} if project is not None else None,
              "machine": sminos.host_name(), "cwd": spawned["cwd"], "head": head_of(spawned["cwd"])}
         # The project the seat was filed in (the engine's directory, a --worktree's included), when this machine's
-        # enrollment does not carry it: one of sminos.NOT_CARRIED_WORDS, which an older Mac ignores.
-        why = sminos.not_carried(project, self.request["org"]) if project is not None and self.request else ""
+        # enrollment does not carry it: one of sminos.NOT_CARRIED_WORDS, which an older Mac ignores. Where channels
+        # were placed, as the placement's own fresh reads found it (§1), else read here.
+        why = spawned.get("not_carried")
+        if why is None:
+            why = sminos.not_carried(project, self.request["org"]) if project is not None and self.request else ""
         if why:
             d["not_carried"] = why
         if self.request.get("channels"):
@@ -1073,8 +1076,10 @@ def remote(c, vm, request, directory, enrolled):
                         d["machine"], d["project"]["name"],
                         " (%s)" % why if why in sminos.NOT_CARRIED_WORDS else ""))
     else:
+        # In channels, by the session's whole id: a local member or a channel-mate may be named for its short, and a
+        # bare name is read as an alias before an id (sminos._resolve_tag). Without channels, G1's words.
         print("%s  (message it: sminos say \"@%s …\"; it is listed here once %s's events arrive)"
-              % (line, d["session"][:8], d["machine"]), flush=True)
+              % (line, d["session"] if c.channels else d["session"][:8], d["machine"]), flush=True)
     if c.channels:
         said_placements(c, d)
     if c.made is not None:
