@@ -77,7 +77,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M3 — Pushing and waking from a channel's log. `af78de21`, `11482879`, fixes `b544d7f4`, `0c969840`, `dddf22b4`; three reviews at the high rung (the bound), the third's four fixes (`dddf22b4`) made after it and named to M6's review of M2 to M6. Gates GREEN on `dddf22b4`; sminos-idle 32,724; sminos-channels 2m08s.
 - [x] (2026-11-22) M4 — Saying into a channel: the doors, the reply, the read. `d5c345bc`, fixes `934afd76`, `b9fc61a4`; reviewed clean at the third review (one Minor on a draft sentence's wording left for open point 4). Gates GREEN on `b9fc61a4`; sminos-idle 32,663; sminos-channels 2m06s.
 - [x] (2026-11-22) M5 — The scene on a real engine. Run whole against `f775004d` (Claude Code 2.1.330, haiku, a scratch home): all four steps showed what they expect; no fault of M1 to M4, no code changed; the checker found nothing over the stand-in's frames and the store; every process stopped. Step 4's hand-off made as Surprises says.
-- [ ] M6 — Across machines: asking, and carrying out off the consumer thread.
+- [ ] M6 — Across machines: asking, and carrying out off the consumer thread. (Built `5af6ab8c`; gates GREEN; sminos-idle 32,837; sminos-channels 2m48s of its 4m timeout; in review as M2 to M6 in one range.)
 - [ ] M7 — Held to MAWS's fixture, and what a channel costs.
 - [ ] M8 — The lead, and whose words a post is.
 - [ ] M9 — What reads a session's exchanges reads a channel's.
@@ -3780,6 +3780,31 @@ them today.
     its last review notes it overclaims for a tag no member answers
     anywhere). `@alias#short` and an id-form tag still get their project
     named, from a read that does not reconcile.
+- 2026-11-22 — **M6 as built** (`5af6ab8c`). Decisions the executor made
+  where the plan is silent, kept by the controller:
+  - `unsent` counts a channel's `say` and `human` events alone (counting
+    every event broke CH1's leaving rule for its own kinds).
+  - A kept word's key (`word_key`) holds the session and the reach, so
+    after a hand-off or a change of access the message is asked about again
+    at once. A word whose carrying out stops on `PassLost` or an unreadable
+    record stays until the next carrying pass or its expiry.
+  - The plane's rows (`plane_rows`) leave out a session that two projects'
+    rows show until the plane's next read. A `reach?` whose sender is a
+    session of this machine with no row on the plane waits while that
+    sender is a member of a project now (`_project_now`, files alone).
+  - The stand-in applies §8's rules under any project id;
+    `T/test-notice-machines.sh` gained `notice_words: true` so it still
+    tests sminos's own guard. `T/wire_scene.py` drives one uplink in one
+    process, so the wire's comparison with the merge base
+    (`WireSameAsBase`) is deterministic. The checker raises on a frame
+    shape it does not know.
+  - The speak scene of `T/test-channels-machines.sh` covers M11's steps 1
+    to 7 and 9 on fresh machines (each with an `auto` policy ceiling);
+    M6's cross-machine cases run after it in a channel of their own. Three
+    cases are proved by unit tests and not across machines: row D13 (a
+    session id another thread reuses), a writing machine's log kept open
+    until its message has gone up (a follower leaves only after a day), and
+    the read-only refusal after a launch.
 
 
 ## Outcomes & Retrospective
