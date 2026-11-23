@@ -3930,6 +3930,12 @@ them today.
   - The replay does not prove the endpoint's policy-cache gate for a
     recipient it does not know: the pinned case uses a listed local
     recipient (the proof map keeps that limit).
+- 2026-11-22 — **MAWS's side of the fixture, as a contract.** MAWS's app,
+  writing into a channel, puts the recipient's `thread` in each `to` entry,
+  and sends the endpoint's `audience` frames before the lines that rest on
+  them; its conversation at `86c79d0a3` holds both, and this tree's replay
+  rests on them. The composite's holder records the contract on the
+  composite (X-contracts); this plan only names where CH2 depends on it.
 
 
 ## Outcomes & Retrospective
