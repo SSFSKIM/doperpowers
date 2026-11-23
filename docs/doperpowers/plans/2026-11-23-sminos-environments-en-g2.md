@@ -63,9 +63,11 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
 - [x] (2026-11-23) The plan's second review (ten findings), the holder's
   rulings on what the first revision had opened, and this revision, the
   last before the build (Decision Log, "The plan's second review").
-- [ ] The owner's answers to O1 to O6 (Decisions that are the owner's).
-  The plan builds the default of each unless an answer changes it. M3
-  does not merge before the holder has confirmed O6's state.
+- [x] (2026-11-23) The owner's answers to O1 and O6 (Decisions that are
+  the owner's): O1 "지금까지 쓴 금액", the amount spent so far, as built;
+  O6 "원문 그대로", the notice's own full text is what a host records in a
+  channel (`CHANNEL_TEXT = "full"`, built in the whole-range fix wave).
+  O2 to O5 build their defaults, unanswered.
 - [x] (2026-11-23) M1 — A spawn placed in a channel. Commits
   14b80ade0..943becdb5, fixes 7ac6f0feb and 93a5f7097; review clean.
   GREEN on 93a5f7097: `sminos-idle` 32081, `sminos-channels` 4m06s.
@@ -210,8 +212,8 @@ item is proved where Concrete Steps' proof map says.
    hand), and in no pool of `other`, sends its idle notice or its lease
    warning. Afterwards `desk`'s and `ops`'s logs each hold one `human`
    event under `<vm>/human` with `notice` `devcloud` and `to` `"*"`, whose
-   text names the VM, what happened and its lifetime and holds no
-   repository's name, and `other`'s holds none. `sminos chat desk` on
+   text is the notice's own full text (O6, the owner's answer of 2026-11-23), the
+   repositories with unpushed work named, and `other`'s holds none. `sminos chat desk` on
    another machine prints it from `devcloud@<vm>`. No frame is delivered
    for it, no thread is woken, the lead of `desk` is not addressed, and
    the manager's reading of what the owner said leaves it out. The pool
@@ -321,7 +323,7 @@ hash; they mean the same here. Added:
   (Decision Log, "The plan's review"): a spawn onto a stopped seat places
   by the thread's own statement; the pool a host tests is the pool its
   own copy of the logs holds; what a host records in a channel is the
-  short text unless the owner answers O6 otherwise; the child's address
+  notice's full text (O6, the owner's answer of 2026-11-23); the child's address
   for its spawner is checked in the form the child will use.
 - **Nothing new on the wire or in a log.** No event kind, no field, no
   frame, no capability. A notice in a channel is the `human` event with
@@ -814,12 +816,12 @@ each of which fails without the behaviour it names:
 such channel's log by the host's own `say`, and read everywhere as CH2
 already reads it.
 
-**Not merged before the holder confirms O6's state.** What this milestone
-puts in a host's boot library is frozen on every host built from it, and
-a text posted into a channel cannot be recalled. The milestone is built
-and reviewed with O6's default (the short text); the holder says, before
-the change that carries it merges, whether the owner has answered and
-how. The answer changes one constant and the tests that pin it.
+**The text a host records is the notice's own** (O6, the owner's answer of 2026-11-23:
+"원문 그대로"). What this milestone puts in a host's boot library is frozen
+on every host built from it, and a text posted into a channel cannot be
+recalled. It was built and reviewed with the short text, the default
+while the owner had not answered; the answer changed one constant and
+the tests that pin it, in the whole-range fix wave.
 
 **Touches:** `S/sminos.py` (`say`'s `--pools` in the parser and
 `cmd_say`'s branch, the docstring's `say` lines), `S/sminos_channels.py`
@@ -862,11 +864,13 @@ And:
   thread of it that left); and a hand-add the host cannot honour from
   what it may read (`_by_hand` honours an event only through a row of the
   roster as the reader reads it) records nothing.
-- **What goes into a channel is the short text** (O6's default, R23). The
-  chain keeps the full text. `notices.py` holds one constant that says
-  which of the two the channels' record takes, and each of the two texts
-  has one function that composes its short form (§5), so the owner's
-  answer is that constant and its tests.
+- **What goes into a channel is the notice's full text** (O6, the
+  owner's answer; R23). `notices.py` holds one constant that says which
+  of the two texts the channels' record takes, now `"full"`; each text
+  keeps the function that composes its short form (§5), so the other
+  answer stays one constant and its tests. Every reader of the channel's
+  log reads the repositories' names, and a host that has not read its
+  removal from a pool records one more notice there, names included.
 - **One channel's trouble is that channel's.** The writer goes through
   every channel whose pool holds the machine: one it cannot write to (a
   registration its enrollment does not carry, a log that cannot be
@@ -918,15 +922,15 @@ which fails without the behaviour it names:
 - *Between machines* (`test-channels-machines.sh`): the event written on
   a machine that holds no member of the channel (in its pool by hand)
   reaches another machine's copy of the channel's log.
-- *On the host.* The fourth call's arguments, with the short text where
-  the chain's steps carry the full one; that it follows each way the
+- *On the host.* The fourth call's arguments, with the full text the
+  chain's steps carry (and, with the constant set to `"short"`, the
+  short text); that it follows each way the
   chain ends (sent at the first step, gone on, fallen to the journal);
   that exit 2 says its line and calls nothing again; that exit 0 with a
   waiting line calls nothing again; that a host with no sminos or not cut
-  over makes no call; that the short text of an idle notice and of a
-  lease warning holds no repository's name where the full one does; and,
-  with the constant set to the full text, that the fourth call carries
-  it.
+  over makes no call; and that the short text of an idle notice and of a
+  lease warning, which the constant can still choose, holds no
+  repository's name where the full one does.
 
 ### M4 — What sessions are taught, what sits beside the code, and the gates on the final head
 
@@ -1136,7 +1140,7 @@ its timeout in `.github/ci-kit.yml`.
 | 6 after the launch nothing is a refusal | M1: `test_channels_spawn.py` (each `failed` word, the limit, a lock held on the second channel), `test-on.sh` (the outcome's `channels` with each failed entry; a registration made uncarried, a known channel retired and the identity changed between the check and the placement; the `--worktree` refill of a seat that holds a requested channel; the merge base's sminos as the VM side onto a seat already in channels; a delay before the VM side starts, then the held lock, with a Mac's bound that outlasts it and one that does not; the inspection run from the login directory), each asserting one launch |
 | 7 `channel show` on a Mac | M2: `test_driver_info.py` (the reply for a VM, an adopted machine, a host with no price, a handed-on host), `test_vm_info.py` (sminos's reading of the driver's own replies), `test_channels_roster.py` (the lines and `--json`), `test-channels-machines.sh` (the suffix for a machine a spawned thread put in the pool); M5 |
 | 8 `channel show`, missing or partial | M2: `test_vm_info.py` (no CLI, an older devcloud, exit 6, no answer in time, another exit, each reply that is not whole), `test_driver_info.py` (four accounts: listed, failed, stalled, not started; a stalled type list; the second profile's account), `test_channels_roster.py` (both renderers on each: the line, `coverage`, the roster and the exit unchanged) |
-| 9 a notice in the timeline | M3: `test_channels_pools.py` (which channels, the event, nothing delivered, the removal not yet read and the hand-add not readable), `test_idle.py` and `test_lease.py` (the short text), `test-channels-machines.sh` (written on one machine, read by another's `chat`); built by CH2 and run unchanged: `test_channels_say.Words`, `test_channels_lead` (the lead rule, a tagged notice, the manager's classifier); M5 |
+| 9 a notice in the timeline | M3: `test_channels_pools.py` (which channels, the event, nothing delivered, the removal not yet read and the hand-add not readable), `test_idle.py` and `test_lease.py` (the full text, and the short one the constant can choose), `test-channels-machines.sh` (written on one machine, read by another's `chat`); built by CH2 and run unchanged: `test_channels_say.Words`, `test_channels_lead` (the lead rule, a tagged notice, the manager's classifier); M5 |
 | 10 the notice's own delivery is unchanged | M3: `test_idle.py`, `test_lease.py` (the chain's calls as before, the fourth call, exit 2, exit 0 with a waiting line), `test_channels_pools.py` (the queued event, once, after its release), the `devcloud-host` gate (the host's services against the sminos stand-in) |
 | 11 nothing else changed | M1 to M3: a comparison with the merge base's sminos, extracted from git, in each milestone's suite (the banner, the preamble, the request and the outcome of a spawn with no channel; a `say`; `channel show` of a pool of one; the two parsers, flag by flag and prefix by prefix, differing in `spawn --c` and `say --p` and nowhere else). For `say` the parser is compared with the merge base (1b5b56f9, `T/test_channels_pools.py`) and the output with CH2's base (61b27ebee, `test_channels_say.SameAsBase`, unchanged): between those two bases `say`'s output did not change (1.55.1 only escaped globs), and a second copy of the scene would lengthen `sminos-channels` for nothing (the holder's word); M4: every gate on the final head |
 | 12 what sessions are taught is true | M4: the evaluation's report; the tests that pin the preamble's lines and `sminos help` |
@@ -1204,7 +1208,7 @@ session's own short id.
    en-live-a-<run>` exits 1 naming `<vm>`, `devcloud vm down <vm>` and
    `devcloud vm owner <vm> <thread>`.
 7. A notice, through the host's own delivery, as root (G1's step 8, the
-   same program, with the short text the host composes for a channel):
+   same program; a channel records the full text, O6):
 
        devcloud vm ssh <vm> --root -- 'python3 -P - <<"PY"
        import os, sys
@@ -1222,7 +1226,7 @@ session's own short id.
    en-live-<run>` or the line that the event waits for the upstream's
    head. On the Mac, within five minutes: `sminos chat <C> -n 5 --json`
    holds exactly one `human` event under `<vm>/human` with `notice`
-   `devcloud`, `to` `"*"` and the short text, and `sminos chat <C> -n 5`
+   `devcloud`, `to` `"*"` and the full text, and `sminos chat <C> -n 5`
    prints it from `devcloud@<vm>`; A was handed the full text in its
    project as G1 delivers it, and no frame for the channel's record.
 8. Hand the VM on, retire the thread that made it, and try the new owner:
@@ -1539,7 +1543,10 @@ not at all for a pool that holds no other. What it concludes is one of:
 
 - `hosts`, a list of objects, each with `name` a string equal, without
   regard to case, to a name asked; `account` a non-empty string;
-  `creator` null or `@` and one or more hex digits; and one of two
+  `creator` null or `@` and a printable word with no space (a short id
+  of hex digits resolves to a thread; any other label, which the driver
+  allows, is shown as itself and that host keeps its age and cost: the
+  whole-range reading's W3); and one of two
   forms. A provider's: `provider` a non-empty string, no `adopted`,
   `created` a finite number of 0 or more (never null, never a boolean),
   `spent` null or a finite number of 0 or more, `currency` null or a
@@ -1640,9 +1647,10 @@ timeout:
 
     say --notice devcloud --pools <the channels' text>
 
-**The channels' text.** One constant, `CHANNEL_TEXT = "short"`, says
-which text the call carries: `short`, the argument, or with `"full"` the
-chain's `text`. With `"short"` and no `short` given, the call is not
+**The channels' text.** One constant, `CHANNEL_TEXT = "full"` (O6,
+the owner's answer; built `"short"` until it came), says which text the
+call carries: with `"full"` the chain's `text`, or with `"short"` the
+`short` argument. With `"short"` and no `short` given, the call is not
 made: a full text is never recorded in a channel by omission. The two
 callers give it, each from its own composer, which gains `short=False`
 (`idle.text(d, state, current, found, short=False)`,
@@ -1734,7 +1742,8 @@ later.
   observation is made in (a VM kept twenty days, above 100 euros), and
   one command and the other then agree. It is an estimate at list price,
   not a bill, and is absent for an adopted machine and a type with no
-  price. A different answer changes §3's suffix (M2).
+  price. A different answer changes §3's suffix (M2). **Answered by the
+  owner, 2026-11-23: "지금까지 쓴 금액", (a), as built.**
 - **O2. Whether a notice in a channel prompts anyone.** (a) No one: an
   untagged record, read at the next `sminos chat <channel>`. (b) `@all`:
   a turn in every live member of every channel whose pool holds the VM,
@@ -1780,9 +1789,11 @@ later.
   reaches the owning thread through the chain; a short text can be
   lengthened for hosts built later; a full text once posted cannot be
   recalled, nor changed on a host already built. The answer is one
-  constant in `D/boot/devcloudlib/notices.py` and its tests (§5), and M3
-  does not merge before the holder has confirmed the state of this
-  question.
+  constant in `D/boot/devcloudlib/notices.py` and its tests (§5).
+  **Answered by the owner, 2026-11-23: "원문 그대로", (b).** A host records
+  the notice's own full text in a channel, repository names included;
+  the constant is `"full"`, and the vm skill and devcloud's README say
+  plainly that a channel holds it.
 
 ## Open points
 
@@ -2161,8 +2172,9 @@ above.
   under this profile); a share of the budget for each account, which
   the driver has no seam for and one command does not need.
 - 2026-11-23 — **R23. The pool a host tests is its own copy's, and what
-  it records there is the short text** (the holder's rulings on the
-  review's sixth finding; O6). *Alternative rejected for the pool:* a
+  it records there is the notice's full text** (the holder's ruling on
+  the review's sixth finding for the pool; for the text, the owner's
+  answer to O6, which replaced the short text built as its default). *Alternative rejected for the pool:* a
   host asking another machine, or the hub, whether it is still in a
   pool: nothing answers such a question today, and the notice would wait
   on it.
