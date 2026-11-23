@@ -17,8 +17,6 @@ MODELS = {
     "adversarial-reviewer": ("gpt-6-astra", "high"),
     "task-reviewer": ("gpt-5.6-sol", "xhigh"),
     "critique": ("gpt-6-astra", "high"),
-    "plan-executor": ("gpt-5.6-sol", "xhigh"),
-    "task-executor": ("gpt-5.6-sol", "high"),
 }
 
 READ_ONLY = {

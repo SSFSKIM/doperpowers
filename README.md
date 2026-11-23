@@ -109,7 +109,7 @@ Then, in `~/.claude/settings.json`, turn on function hooks (sminos's bridge and 
 This is one person's daily setup, published as it runs. It moves fast (the plugin version is past 7.200) and is shaped by how its maintainer works, so a few things are worth knowing up front:
 
 - **Some agents are pinned to models served through a local gateway.** The `review-code` reviewers and a few others run on another model family (`sol`, `astra`). Without that gateway, point the `model:` lines in [`agents/`](agents/) at models you have, and do the same for the `LADDER` in the `review-code` panel workflow ([`code-review.js`](skills/review-code/workflows/code-review.js)), which pins them itself; its `deriverModel`, `finderModel` and `verifierModel` arguments override a lane per call.
-- **Built for Claude Code.** sminos, to-human and the hooks are Claude Code plugins. The skills also ship as a local [Codex plugin](.codex-plugin/), with [ports of the agent definitions](codex/agents/README.md); upstream's other harness adapters were dropped.
+- **Built for Claude Code.** sminos, to-human and the hooks are Claude Code plugins. The skills also ship as a local [Codex plugin](.codex-plugin/), with [ports of the review agents](codex/agents/README.md); upstream's other harness adapters were dropped.
 - **The board is a backlog.** `issue-tracker` keeps deferred work as GitHub issues that a session takes when you name one. The unattended pipeline that once dispatched agents onto tickets [is dormant](docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md): a session working with you proved faster and more reliable.
 
 Every skill, agent and hook is listed in [What's inside](docs/whats-inside.md).

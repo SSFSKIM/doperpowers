@@ -83,7 +83,7 @@ this marketplace never replaces one you already registered.
 ## Codex
 
 The skills also ship as a local Codex plugin manifest in
-[`.codex-plugin/`](../.codex-plugin/), and the agent definitions have native
+[`.codex-plugin/`](../.codex-plugin/), and the review agents have native
 Codex ports with their own install guide in
 [`codex/agents/`](../codex/agents/README.md). sminos and to-human are Claude
 Code only.
