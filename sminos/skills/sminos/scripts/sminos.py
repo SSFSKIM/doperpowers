@@ -10811,9 +10811,10 @@ def cmd_say(a):
         # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read.
         if a.notice is None:
             die("--pools records a machine's own notice: give --notice <program>")
-        if a.in_:
+        given = getattr(a, "given", frozenset())   # by presence: an empty value is still the flag given
+        if a.in_ or "in_" in given:
             die("--pools records in every channel whose pool holds this machine: drop --in")
-        if selector_given(a):
+        if selector_given(a) or given & {"projects", "machine"}:
             die("--pools records in every channel whose pool holds this machine: drop the selector")
         if leading_tags(a.text):
             die("--pools records an untagged notice, and this text opens with a tag: drop it")
@@ -21197,6 +21198,16 @@ def usage():
     print((__doc__ or "").strip())
 
 
+class Given(argparse.Action):
+    """A flag's value stored as argparse stores it, and the flag's dest added
+    to `given` however empty its value (`--in=`, `--project=`, `--machine=,`):
+    what `say --pools` refuses by presence, not by truth."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.given = getattr(namespace, "given", frozenset()) | {self.dest}
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="sminos", add_help=False)
     sub = p.add_subparsers(dest="cmd")
@@ -21270,20 +21281,21 @@ def build_parser():
     s.add_argument("--from", dest="frm", default="")
     s.set_defaults(fn=cmd_send)
 
-    def scope_flags(sp):
-        sp.add_argument("--project", dest="projects", type=comma_list, default=[])
-        sp.add_argument("--machine", type=comma_list, default=[])
+    def scope_flags(sp, given=False):
+        noted = {"action": Given} if given else {}
+        sp.add_argument("--project", dest="projects", type=comma_list, default=[], **noted)
+        sp.add_argument("--machine", type=comma_list, default=[], **noted)
         sp.add_argument("--state", type=state_words, default=[])
         sp.add_argument("--org", action="store_true")
         sp.add_argument("--here", action="store_true")
 
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
-    say.add_argument("--in", dest="in_", default="")
+    say.add_argument("--in", dest="in_", default="", action=Given)
     say.add_argument("--notice", default=None)
     say.add_argument("--exit-held", action="store_true")
     say.add_argument("--pools", action="store_true")
-    scope_flags(say)
+    scope_flags(say, given=True)
     say.set_defaults(fn=cmd_say, args=[])
 
     chat = sub.add_parser("chat", add_help=False)

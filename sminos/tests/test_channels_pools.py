@@ -132,6 +132,11 @@ class Form(Pools):
             "beside --in": (("--notice", "devcloud", "--pools", "--in", "desk"), None, "--in"),
             "beside a selector": (("--notice", "devcloud", "--pools", "--project", "app"), None, "selector"),
             "beside --org": (("--notice", "devcloud", "--pools", "--org"), None, "selector"),
+            # Given with an empty value, each still given: refused by presence (fix wave 1).
+            "beside an empty --in": (("--notice", "devcloud", "--pools", "--in="), None, "--in"),
+            "beside an empty --project": (("--notice", "devcloud", "--pools", "--project="), None, "selector"),
+            "beside an empty --machine": (("--notice", "devcloud", "--pools", "--machine=,"), None, "selector"),
+            "beside an empty --state": (("--notice", "devcloud", "--pools", "--state="), None, "--state"),
         }
         for why, (argv, session, words) in cases.items():
             with self.subTest(why):
@@ -162,6 +167,7 @@ for argv in json.loads(sys.argv[2]):
         ns = vars(sminos.build_parser().parse_args(argv))
         ns.pop("fn", None)
         ns.pop("pools", None)
+        ns.pop("given", None)   # which flags were given, beside their values: this tree's, for --pools
         out.append(ns)
     except SystemExit as e:
         out.append("exit %s" % e.code)
