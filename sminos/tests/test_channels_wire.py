@@ -2134,6 +2134,46 @@ class Messages(Delivering):
         self.assertEqual(sorted(f["t"] for f in again), ["reach?", "words?"], "each asked again, under a new id")
         release()
 
+    def test_an_answer_taken_after_its_deadline_is_dropped_and_the_message_asked_again(self):
+        """The frontier review (F19): an answer the consumer dispatches past its ask's deadline, before
+        expire_asks has run, keeps no word and asks nothing more (a late `peer` asks no `reach?`); the message stays
+        owed and is asked afresh."""
+        tid, sid, received = self.live()
+        self.message((sid, tid), text="answered too late")
+        self.message((sid, tid), writer="%s/human" % FAR, kind="human", text="these words too late")
+        link = self.link()
+        self.ask_pass(link)
+        by = {f["t"]: f for f in self.asks(link)}
+        self.assertEqual(set(by), {"words?", "reach?"})
+        for ask, verdict in ((by["reach?"], "deliver"), (by["words?"], "peer")):
+            overdue = link.asks[ask["id"]]["deadline"] + 1
+            with mock.patch.object(uplink.time, "monotonic", return_value=overdue):
+                self.answer(link, ask, verdict)   # no expire_asks has run: the ask is still held as it lands
+            self.assertNotIn(ask["id"], link.asks)
+        self.assertEqual(self.kept(), [], "no word kept past the deadline")
+        self.assertEqual(len(self.asks(link)), 2, "a late peer asks no reach?")
+        self.assertEqual(self.carry(), 0)
+        self.assertEqual(self.got(received, "answered too late"), [])
+        self.ask_pass(link)
+        again = [f for f in self.asks(link) if f["id"] not in (by["reach?"]["id"], by["words?"]["id"])]
+        self.assertEqual(sorted(f["t"] for f in again), ["reach?", "words?"], "each asked afresh")
+        self.answer(link, [f for f in again if f["t"] == "reach?"][0], "deliver")
+        self.carry()
+        self.assertEqual(len(self.got(received, "answered too late")), 1)
+
+    def test_no_reach_is_asked_where_the_current_welcome_did_not_list_it(self):
+        """The frontier review (F20): the channel's choice asks `reach?` only where the live welcome listed `reach`,
+        as the project loop does, whatever the kept capabilities on disk say."""
+        tid, sid, _ = self.live()
+        self.message((sid, tid), text="no reach listed")
+        link = self.link(reach=False)
+        self.ask_pass(link)
+        self.ask_pass(link)
+        self.assertEqual(self.asks(link, ("reach?",)), [], "no reach? where the welcome left it out")
+        link.reach = True
+        self.ask_pass(link)
+        self.assertEqual(len(self.asks(link, ("reach?",))), 1, "asked once the welcome lists it")
+
     def test_a_recipient_the_plane_has_no_row_for_is_passed_by_and_asked_after_its_next_read(self):
         tid, sid, _ = self.live()
         self.message((sid, tid), text="to a new row")

@@ -1055,7 +1055,10 @@ class Link:
         """The ask of this kind an answer names, no longer held (its key's
         ask out cleared, and the next pass due); None for an answer to no ask
         of this kind held here — one past its deadline, one a revocation
-        dropped — which is no answer."""
+        dropped — which is no answer. A channel's (CH2's M6) dispatched past
+        its deadline, before expire_asks has run, is none either: its ask is
+        dropped, and the event, still owed, is asked afresh (as a channel's
+        request's answer is, request_answered)."""
         ask = frame.get("id")
         held = self.asks.get(ask) if isinstance(ask, str) else None
         if held is None or held.get("t", "words?") != kind:
@@ -1063,6 +1066,8 @@ class Link:
         del self.asks[ask]
         self.asked.pop(held["key"], None)
         self.words_due = True
+        if held.get("channel") and time.monotonic() > held["deadline"]:
+            return None
         return held
 
     def ask_peer(self, held):
@@ -2457,7 +2462,7 @@ class Link:
                 continue
             channel = hl.project
             try:
-                due = chans.asks_due(channel, rows, kept=set(self.words_kept))
+                due = chans.asks_due(channel, rows, kept=set(self.words_kept), reach=self.reach)
             except (Exception, SystemExit) as e:  # noqa: BLE001 — one channel's failure is not the pass's
                 failed = repr(e)
                 if self.requests_failing.get(("messages", pid)) != failed:

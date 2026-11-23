@@ -3087,7 +3087,7 @@ def word_key(o, e):
     return (o.channel.id, o.thread, o.session, o.reach, e["writer"], e["seq"], sminos.event_hash(e))
 
 
-def asks_due(channel, rows, kept=()):
+def asks_due(channel, rows, kept=(), reach=True):
     """The uplink's choice of what to ask the endpoint about a channel's
     messages, [(Owing, event, "words?" | "reach?")]: reads only, and no lock
     waited for. `rows`: {session: (Project, Member)} as the plane holds them.
@@ -3100,7 +3100,8 @@ def asks_due(channel, rows, kept=()):
     outside event on a read-only machine, one noted pushed, a recipient
     whose record cannot be read, none), less one whose word_key is in
     `kept`. "words?" where words_route says ask, else "reach?" where the
-    reach gate needs the endpoint's word. An event a receipt is held for is
+    reach gate needs the endpoint's word and `reach` (the current welcome
+    listed it, as the project loop asks). An event a receipt is held for is
     planned with the receipts' lock only tried (reach_due: a busy one leaves
     it for a later pass), and asked about when sminos.holder_due says it is
     next pushed."""
@@ -3122,7 +3123,7 @@ def asks_due(channel, rows, kept=()):
         return []
     out = []
     for kind, due in (("words?", sminos.words_due(channel, [], owing=owings)),
-                      ("reach?", sminos.reach_due(channel, [], owing=owings))):
+                      ("reach?", sminos.reach_due(channel, [], owing=owings) if reach else {})):
         for session, es in sorted(due.items()):
             o = owings[session]
             out.extend((o, e, kind) for e in es if word_key(o, e) not in kept)
