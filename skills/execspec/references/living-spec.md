@@ -272,8 +272,9 @@ requirement of the product and says what the requirement is for.
 The spec states the design as it stands. When course changes — a ruling, a
 review finding, a discovery, a gap resolved while building — rewrite every
 section the change touches so the document reads as if it had always said
-this: the rule and its reason. Who ruled, when, in whose words, and what
-the text said before go in the commit message. Every executor and reviewer
+this: the rule and its reason, with nothing in it that a reader who never
+saw the earlier text could tell had changed. Who ruled, when, in whose
+words, and what the text said before go in the commit message. Every executor and reviewer
 reads the whole document, and a superseded statement left standing, or a
 sentence that tells its own history, is one more thing each of them must
 reconcile. A statement about the system's stages — what holds between two
