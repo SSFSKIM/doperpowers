@@ -944,6 +944,23 @@ class Read(Say):
         self.assertNotIn("said in its second session", out)
         self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", tid + ".json")))
 
+    def test_chat_of_a_session_that_is_no_thread_keeps_its_cursor_apart_from_a_thread_of_its_id(self):
+        """A seat's thread id is its first session's: that session, run again before it is any thread's, reads
+        the channel under a cursor of its own, never the seat's thread's."""
+        rtid, rsid, _ = self.live("reader")
+        wtid, wsid, _ = self.live("writer")
+        self.as_session(wsid, "say", "--in", "desk", "@reader unread")
+        self.assertEqual(threads.stamp(rtid), "", "a session of the thread's id that is no thread")
+        code, out = self.as_session(rtid, "chat", "desk")
+        self.assertEqual(code, 0, out)
+        self.assertIn("unread", out)
+        self.assertFalse(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", rtid + ".json")),
+                         "the thread's cursor untouched")
+        code, out = self.as_session(rsid, "chat", "desk")
+        self.assertIn("chat desk · 1 new", out, "the thread's message still unread to it")
+        code, out = self.as_session(rtid, "chat", "desk")
+        self.assertIn("(no new messages)", out, "the session's own cursor moved")
+
     def test_chat_over_an_older_copys_closed_join_changes_no_record_and_no_log_file(self):
         sid, proc, tid = self.member(name="olden")
         self.end(proc)

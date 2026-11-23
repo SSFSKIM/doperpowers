@@ -2034,6 +2034,9 @@ def owing_for(channel, thread):
     return owing(channel, record, own_row(record)), ""
 
 
+SESSION_CURSOR = "session-%s"   # a channel's chat cursor of a session that is no thread (chat)
+
+
 def chat(channel, a, session):
     """cmd_chat's read over a channel's log (§6), by sminos.chat_read: the
     channel's own view first (view_of, which reconciles a channel as a
@@ -2046,7 +2049,9 @@ def chat(channel, a, session):
     the thread's own messages are not unread, whichever of its sessions
     wrote them (sminos.frame_of's rule). A session that is no thread, and a
     person at a terminal, read as in a project: the cursor the session's
-    (or the terminal's), its own writer's messages not unread."""
+    (or the terminal's), its own writer's messages not unread. A session's
+    is kept apart from a thread's (`session-<id>`): a seat's thread id is
+    its first session's, which may read here when it is no thread."""
     if a.host:
         sminos.die(HOST_IS_PROJECTS % channel.name, 1)
     sminos.view_of(channel)
@@ -2055,7 +2060,7 @@ def chat(channel, a, session):
     pool = [e for e in events if e["kind"] in kinds]
     thread = sminos.threads_module().stamp(session) if session else ""
     me = sminos.writer_id(session or None)
-    sminos.chat_read(channel, a, events, pool, thread or session,
+    sminos.chat_read(channel, a, events, pool, thread or (SESSION_CURSOR % session if session else ""),
                      (lambda e: e.get("thread") != thread) if thread else
                      (lambda e: sminos.writer_base(e["writer"]) != me),
                      lambda e, label: sminos.chat_line(
