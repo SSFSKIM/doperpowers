@@ -3979,6 +3979,18 @@ them today.
   - Logged in TECH-DEBT rather than fixed (`66fb95b8`): the pending
     statement's bare tag; the manager's union across projects; the former
     name; the thread index's cost.
+- 2026-11-23 — **The holder's ruling on the frontier review (D1).** A pass
+  for a thread's former session that finds an admitted receipt settles the
+  thread's record. The receipt is the delivery operation's own evidence
+  that the thread's then-current session took the message, and its lookup
+  carries the thread; settling on it is what keeps the successor from a
+  second copy. It stands. Also ruled in the triage: the sender's notice of
+  a refused say stays a synchronous push in the upload pass (the base's
+  mechanism, logged beside the import) but carries the sender's thread
+  (F10); files that cannot be read are logged as one class (L2) except
+  where the code already tells unreadable from empty and then drops the
+  difference (F8, F24). `chat <channel>` reconciles as every view does
+  (D2), and eight characters of a thread id in the reply line stand (D3).
 
 
 ## Outcomes & Retrospective
