@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""rl10_probes.py, what the conformance replay checks in place of its probes,
+over a conversation that holds more than one project and a channel (MAWS's
+cases for a message under a channel's id): a position is a log's, a words?
+is held to the log it names, and a session is this machine's when the replay
+staged it here."""
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import rl10_probes as probes  # noqa: E402
+
+P, Q, C = "p-id", "q-id", "5c2a9e10-7b3d-8f41-9a6c-2d4e6f8a0b1c"
+S1, S2, S8 = "s1", "s2", "s8"
+
+
+def ev(writer, seq, text, **more):
+    return {"ts": "2026-10-27T18:11:00.000Z", "writer": writer, "seq": seq, "kind": "human", "from": "human",
+            "to": [{"session": S8, "alias": "integrator"}], "text": text, **more}
+
+
+class Bodies(unittest.TestCase):
+    def test_one_writer_in_two_logs_is_two_positions(self):
+        """The operator's writer holds seq 1 in a project's log and in a channel's."""
+        self.assertEqual(probes.bodies_twice([(P, ev("host/human", 1, "run the tests")),
+                                              (C, ev("host/human", 1, "pick up the review"))]), [])
+
+    def test_another_body_at_one_position_is_found(self):
+        self.assertEqual(probes.bodies_twice([(P, ev("host/human", 1, "a")), (P, ev("host/human", 1, "b"))]),
+                         [(P, "host/human", 1)])
+
+    def test_the_same_body_resent_is_one(self):
+        self.assertEqual(probes.bodies_twice([(C, ev("host/human", 2, "a")), (C, ev("host/human", 2, "a"))]), [])
+
+
+class Asks(unittest.TestCase):
+    def setUp(self):
+        self.held = {P: {}, Q: {}, C: {("host/human", 1): {**ev("host/human", 1, "pick up"), "verified": {"x": 1}}}}
+        self.logs = {pid: (lambda w, s, pid=pid: self.held[pid].get((w, s))) for pid in (P, Q, C)}
+
+    def ask(self, project, event, session=S8, i="w1"):
+        return {"t": "words?", "id": i, "project": project, "session": session, "event": event}
+
+    def test_a_channel_s_event_is_read_from_the_channel_s_log(self):
+        asks = [self.ask(C, ev("host/human", 1, "pick up"))]
+        self.assertEqual(probes.not_as_stored(asks, self.logs), [])
+        self.assertEqual(probes.not_in_its_log(asks, self.logs), [])
+
+    def test_another_body_than_the_one_stored_is_found(self):
+        asks = [self.ask(C, ev("host/human", 1, "another body"))]
+        self.assertEqual(probes.not_as_stored(asks, self.logs), ["w1"])
+
+    def test_a_log_that_holds_no_such_event_or_none_is_found(self):
+        asks = [self.ask(P, ev("host/human", 1, "pick up"), i="w1"), self.ask(None, ev("host/human", 1, "x"), i="w2")]
+        self.assertEqual(probes.not_in_its_log(asks, self.logs), ["w1", "w2"])
+
+    def test_a_session_staged_here_later_is_a_member(self):
+        members = [S1, S2, "s3", "s4", "s5", S8]
+        asks = [self.ask(C, ev("host/human", 1, "pick up"), session=S8, i="w1"),
+                self.ask(C, ev("host/human", 1, "pick up"), session="elsewhere", i="w2")]
+        self.assertEqual(probes.not_members(asks, members), ["w2"])
+
+
+class Revoked(unittest.TestCase):
+    def test_the_same_position_in_another_log_is_another_event(self):
+        e = {"writer": "hub/m-b", "seq": 1}
+        asks = [{"id": "w1", "project": P, "event": e}, {"id": "w2", "project": C, "event": e}]
+        self.assertEqual(probes.asked_again(asks, P, "hub/m-b", 1), ["w1"])
+
+
+class MachineEvent(unittest.TestCase):
+    STEP = {"machine": "b-mini", "session": "human", "seq": 1, "body": {"kind": "human", "text": "hi"}}
+
+    def test_a_scene_with_no_owners_is_unattested(self):
+        e = probes.machine_event(self.STEP, "2026-10-27T18:00:00.000Z", "kid")
+        self.assertNotIn("attest", e)
+        self.assertEqual(e["writer"], "b-mini/human")
+        self.assertEqual(e["sig"], {"kid": "kid", "value": "AQ"})
+
+    def test_a_scene_with_owners_is_attested_to_them(self):
+        e = probes.machine_event({**self.STEP, "owners": ["m-b"]}, "2026-10-27T18:00:00.000Z", "kid")
+        self.assertEqual(e["attest"]["owners"], ["m-b"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

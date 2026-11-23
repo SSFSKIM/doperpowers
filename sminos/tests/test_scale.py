@@ -1137,6 +1137,112 @@ class BenchChannels(unittest.TestCase):
         self.assertEqual(held["c4"], [])
 
 
+class BenchChannelReads(unittest.TestCase):
+    """What the bench says of its channel figures when it could not count
+    them, and the flags it refuses before it builds anything."""
+
+    def test_a_trace_without_the_hook_installed_is_unobserved(self):
+        import bench_scale
+        d = tempfile.mkdtemp(prefix="smr.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "reads.log")
+        self.assertIsNone(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), "no trace at all")
+        with open(path, "w") as f:
+            f.write("12.000 7\n")
+        self.assertIsNone(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), "reads, but no install line")
+        with open(path, "w") as f:
+            f.write("installed 5.000 7\ninstalled 5.000 8\n9.000 7\n12.000 7\n15.000 8\n21.000 7\n")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), 1, "its own, inside the window")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 9, 10.0, 20.0), None, "another process's install")
+        with open(path, "w") as f:
+            f.write("installed 5.000 7\n")
+        self.assertEqual(bench_scale.daemon_debt_reads(path, 7, 10.0, 20.0), 0, "installed and nothing read")
+
+    def test_the_flags_are_refused_before_anything(self):
+        for flags, said in ((["--held", "2"], "--held needs --channels"),
+                            (["--channels", "3", "--held", "4"], "0 <= H <= N"),
+                            (["--channels", "-1"], "0 <= H <= N")):
+            for mode in ("verbs", "run"):
+                r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), mode, SCRIPTS, *flags],
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 2, (mode, flags, r.stdout, r.stderr))
+                self.assertIn(said, r.stderr)
+                self.assertNotIn("built", r.stdout, "refused before the machine was built")
+
+
+class BenchUploadWindow(unittest.TestCase):
+    """The bench's hook, as the uplink runs it: the upload window counts its
+    log's turns of Link.upload_pass alone, and an end asked for in the
+    middle of a turn is carried out once that turn is counted."""
+
+    def setUp(self):
+        import bench_scale
+        d = tempfile.mkdtemp(prefix="smu.", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        self.out = os.path.join(d, "uplink.prof")
+        self.ns = {"__name__": "bench_hook"}
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+        meta = list(sys.meta_path)
+
+        def restore():
+            for sig, h in handlers.items():
+                signal.signal(sig, h)
+            sys.meta_path[:] = meta
+        self.addCleanup(restore)
+        with mock.patch.dict(os.environ, {"BENCH_PROFILE": self.out}), \
+                mock.patch.object(sys, "argv", ["sminos.py", "daemon", "uplink"]):
+            exec(bench_scale.HOOK, self.ns)
+        ns = self.ns
+
+        def work(i):
+            return i
+
+        class Link:
+            def upload_pass(self, hl, live=None, state=None):
+                if hl.ending:
+                    ns["end"]()   # SIGUSR2, landing inside the turn
+                return [work(i) for i in range(10)]
+
+        self.Link = Link
+        self.uplink = types.SimpleNamespace(Link=Link)
+        patcher = mock.patch.dict(sys.modules, {"sminos_uplink": self.uplink})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.env = mock.patch.dict(os.environ, {"BENCH_PROFILE": self.out})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def hl(self, log, ending=False):
+        return types.SimpleNamespace(project=types.SimpleNamespace(id=log), ending=ending)
+
+    def counted(self):
+        with open(self.out + ".upload") as f:
+            return json.load(f)
+
+    def test_an_end_inside_a_turn_publishes_that_turn_counted(self):
+        real = self.Link.upload_pass
+        with open(self.out + ".mode", "w") as f:
+            f.write("upload ch")
+        self.ns["begin"]()
+        link = self.Link()
+        link.upload_pass(self.hl("other"))
+        link.upload_pass(self.hl("ch"))
+        link.upload_pass(self.hl("ch", ending=True))
+        got = self.counted()
+        self.assertEqual(got["log"], "ch")
+        self.assertEqual(got["counted"][0], 2, "both of its turns, the one the end landed in too; none of another log's")
+        self.assertGreaterEqual(got["counted"][1], 22, "each turn's Python calls: itself and its ten")
+        self.assertIs(self.Link.upload_pass, real, "the counting is gone with the window")
+
+    def test_an_end_between_turns_publishes_at_once(self):
+        with open(self.out + ".mode", "w") as f:
+            f.write("upload ch")
+        self.ns["begin"]()
+        self.Link().upload_pass(self.hl("ch"))
+        self.ns["end"]()
+        self.assertEqual(self.counted()["counted"][0], 1)
+
+
 def processes():
     """{pid: (ppid, command)} of every live process on the machine (zombies left out)."""
     out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,stat=,command="], capture_output=True, text=True).stdout

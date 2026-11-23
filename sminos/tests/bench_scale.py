@@ -75,13 +75,20 @@ senders' memberships from their records and times the matched pairs:
 in the channels and by the same thread in none, a tagged `say` by a thread in
 them and by one in none (with N 0, the last two for a machine that knows no
 channel). `run` says the channel logs open on the stream, how many times a
-channel's log was read for a debt in the --pycalls window (the uplink's from
-its profile, `daemon run`'s from the hook), and, with channels held, runs the
-upload scenario: UPLOAD_MESSAGES untagged messages into the first channel
-from one sender, then one from each of as many senders, each in a window in
-which the hook counts that channel's turns of the upload pass, less as many
-idle turns (UPLOAD_IDLE seconds of them, counted first), a message. Without
---channels the bench is what the sminos-idle gate runs.
+channel's log was read for a debt in the --pycalls window, by its own bounds
+(the uplink's from its profile, `daemon run`'s from the hook's trace, begun
+when the hook is installed; "unobserved" where nothing could count, which is
+not 0), and, with channels held, runs the upload scenario: UPLOAD_MESSAGES
+untagged messages into the first channel from one sender, then one from each
+of as many senders, each in a window in which the hook counts that channel's
+turns of the upload pass alone, closed at a turn's boundary, less as many idle
+turns (UPLOAD_IDLE seconds of them, counted first), a message. A window that
+did not take every message up, or counted no turn, gives no cost: it is said
+FAILED, and so is the run. `run --channels 0` is the control: the stand-in
+lists the capabilities, nothing is staged, so beside the gate's run it reads
+the cost of `channels` and `reach` alone. --held without --channels, or
+outside 0..N, is refused before anything is built. Without --channels the
+bench is what the sminos-idle gate runs.
 - `opens` (the desk open-fast spec's A3): G of the live sessions in hub
   checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
   shapes one for bench_open.py) in place of their short one; the uplink
@@ -282,6 +289,8 @@ def patch(name, mod):
         # `daemon run`'s own reads of a channel's log for a debt (every one indexes the log it read by thread):
         # one line each. The uplink's are counted from its profile, so nothing is added to what it runs.
         real_index, reads = mod.addressed_threads, os.environ["BENCH_DEBT_READS"]
+        with open(reads, "a") as f:
+            f.write("installed %.3f %d\n" % (time.time(), os.getpid()))   # observed from here: a count, not none
 
         def addressed_threads(events):
             with open(reads, "a") as f:
@@ -341,39 +350,64 @@ def thread_ticks():
 if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
     import signal
     held = {}
-    UPLOAD = {}   # the upload window's (`<BENCH_PROFILE>.mode` reads "upload"): Link.upload_pass counted, by log
+    # The upload window's (`<BENCH_PROFILE>.mode` reads "upload <log id>"): that log's turns of Link.upload_pass,
+    # each under a cProfile of its own, [turns, Python calls, member_project_now's calls]. Installed for the window
+    # alone, so no other window's count holds its frame, and closed at a turn's boundary: an end asked for while a
+    # turn is counted is carried out when that turn's count is in.
+    UPLOAD = {}
+
+    def publish_upload():
+        if "real" not in UPLOAD:
+            return
+        sys.modules["sminos_uplink"].Link.upload_pass = UPLOAD.pop("real")
+        out = os.environ["BENCH_PROFILE"] + ".upload"
+        with open(out + ".tmp", "w") as f:
+            json.dump({"from": UPLOAD.pop("at"), "to": time.time(), "log": UPLOAD.pop("log"),
+                       "counted": UPLOAD.pop("counted")}, f)
+        os.replace(out + ".tmp", out)
+        UPLOAD.clear()
 
     def counted_upload(real):
         def upload_pass(self, hl, *args, **kwargs):
+            if hl.project.id != UPLOAD.get("log") or UPLOAD.get("closing"):
+                return real(self, hl, *args, **kwargs)
             import cProfile
             import pstats
+            UPLOAD["inflight"] = True
             pr = cProfile.Profile()
             try:
                 return pr.runcall(real, self, hl, *args, **kwargs)
             finally:
-                row = UPLOAD["by"].setdefault(hl.project.id, [0, 0, 0])   # turns, Python calls, member_project_now's
-                row[0] += 1
-                for (fn, _, name), (_, nc, _, _, _) in pstats.Stats(pr).stats.items():
-                    if fn != "~":
-                        row[1] += nc
-                    if name == "member_project_now":
-                        row[2] += nc
+                row = UPLOAD.get("counted")
+                if row is None:   # the window was published between this turn's check and its start: not counted
+                    UPLOAD.clear()
+                else:
+                    row[0] += 1
+                    for (fn, _, name), (_, nc, _, _, _) in pstats.Stats(pr).stats.items():
+                        if fn != "~":
+                            row[1] += nc
+                        if name == "member_project_now":
+                            row[2] += nc
+                    UPLOAD["inflight"] = False
+                    if UPLOAD.get("closing"):
+                        publish_upload()
         return upload_pass
 
-    def upload_mode():
+    def upload_log():
         try:
             with open(os.environ["BENCH_PROFILE"] + ".mode") as f:
-                return f.read().strip() == "upload"
+                mode, _, log = f.read().strip().partition(" ")
         except OSError:
-            return False
+            return None
+        return log if mode == "upload" and log else None
 
     def begin(*_):
         import cProfile
-        if upload_mode():
-            # Installed for the window alone, so no other window's count holds its frame.
+        log = upload_log()
+        if log is not None:
             link = sys.modules["sminos_uplink"].Link
             if "real" not in UPLOAD:
-                UPLOAD.update(real=link.upload_pass, by={}, at=time.time())
+                UPLOAD.update(real=link.upload_pass, log=log, counted=[0, 0, 0], at=time.time(), inflight=False)
                 link.upload_pass = counted_upload(UPLOAD["real"])
             return
         if "pr" not in held:
@@ -386,11 +420,10 @@ if os.environ.get("BENCH_PROFILE") and sys.argv[1:3] == ["daemon", "uplink"]:
 
     def end(*_):
         if "real" in UPLOAD:
-            sys.modules["sminos_uplink"].Link.upload_pass = UPLOAD.pop("real")
-            out = os.environ["BENCH_PROFILE"] + ".upload"
-            with open(out + ".tmp", "w") as f:
-                json.dump({"from": UPLOAD.pop("at"), "to": time.time(), "by": UPLOAD.pop("by")}, f)
-            os.replace(out + ".tmp", out)
+            if UPLOAD.get("inflight"):
+                UPLOAD["closing"] = True   # the turn being counted publishes when its count is in
+            else:
+                publish_upload()
             return
         pr = held.pop("pr", None)
         if pr is None:
@@ -1212,7 +1245,7 @@ def cmd_run(a, env):
             return 1
         rows = None
         if a.channels is not None:
-            rows = channels_staged(a, env)
+            rows = channels_staged(a, env) if a.channels else []   # 0: the capabilities alone, the control
         if a.profile_uplink:
             # Joined by a tick, then the uplink alone under cProfile.
             run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
@@ -1288,14 +1321,15 @@ def cmd_run(a, env):
         if a.strace:
             measures["strace"] = strace_window(env, up, a.strace)
             print_strace(measures["strace"])
+        upload_ok = True
         if a.pycalls:
-            p0 = time.time()
             measures["pycalls"] = pycalls_window(env, up, a.pycalls, a.pycalls_prof)
             print_pycalls(measures["pycalls"])
             if rows is not None:
-                measures["channels"] = channel_reads(env, ep, rows, measures["pycalls"], run.pid, p0, time.time())
+                measures["channels"] = channel_reads(env, ep, rows, measures["pycalls"], run.pid)
             if rows is not None and any(sids for _, _, sids in rows):
                 measures["upload"] = upload_scenario(a, env, ep, up, rows)
+                upload_ok = measures["upload"] is not None
         if subs:
             measures["subs"]["ended after the windows"] = subscription_states(ep, subs)["ended"]
         if a.nudges:
@@ -1336,6 +1370,10 @@ def cmd_run(a, env):
                       counted("its file calls", files, IDLE_GATE_FILE),
                       ("daemon.log without a failure", not failed,
                        "%d, the first: %s" % (len(failed), failed[0].strip()) if failed else "none")]
+        if "upload" in measures:
+            checks.append(("the upload scenario measured whole", upload_ok,
+                           "every message gone up, each window with a counted turn" if upload_ok else
+                           "an upload: line says what is missing"))
         for what, ok, said in checks:
             print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
         ok = all(c[1] for c in checks)
@@ -1359,8 +1397,6 @@ def channels_staged(a, env):
     registered, H of them with members (channel_plan), each placed by its
     own change; said in one line. named's rows."""
     held = a.channels if a.held is None else a.held
-    if not 0 <= held <= a.channels:
-        raise SystemExit("--held %d: between 0 and --channels %d" % (held, a.channels))
     joined(env, a.scripts)
     live = senders(env)
     rows = named(channel_plan(channel_ids(a.channels), held, [s["sid"] for s in live]))
@@ -1373,40 +1409,55 @@ def channels_staged(a, env):
     return rows
 
 
-def channel_reads(env, ep, rows, pc, daemon_pid, t0, t1):
+def daemon_debt_reads(path, pid, t0, t1):
+    """`daemon run`'s reads of a channel's log for a debt in [t0, t1], from
+    the hook's trace, or None where the trace does not show the hook
+    installed in that process by t0 (unobserved, which is not none)."""
+    installed, n = False, 0
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = line.split()
+                if parts[:1] == ["installed"]:
+                    installed |= int(parts[2]) == pid and float(parts[1]) <= t0
+                elif len(parts) == 2 and int(parts[1]) == pid and t0 <= float(parts[0]) <= t1:
+                    n += 1
+    except OSError:
+        return None
+    return n if installed else None
+
+
+def channel_reads(env, ep, rows, pc, daemon_pid):
     """The channels' logs as the stream holds them, and how many times a
-    channel's log was read for a debt in the profile's window: the uplink's
-    from its profile, `daemon run`'s from the hook's lines (sminos_channels'
-    addressed_threads, which indexes every log a debt is read from)."""
+    channel's log was read for a debt in the profile's window (its own
+    bounds): the uplink's from its profile, `daemon run`'s from the hook's
+    trace (sminos_channels' addressed_threads, which indexes every log a
+    debt is read from); either unobserved where nothing could count it."""
     opened = ep.ctl("opened").get("projects") or {}
     ids = {cid for cid, _, _ in rows}
     chans = {pid: o for pid, o in opened.items() if pid in ids}
-    try:
-        with open(env.env["BENCH_DEBT_READS"]) as f:
-            daemon_reads = sum(1 for line in f if line.split() and t0 <= float(line.split()[0]) <= t1
-                               and int(line.split()[1]) == daemon_pid)
-    except OSError:
-        daemon_reads = 0
     uplink_reads = (pc or {}).get("debt_reads")
+    daemon_reads = None if not pc else daemon_debt_reads(env.env["BENCH_DEBT_READS"], daemon_pid, pc["from"], pc["to"])
     print("channels on the stream: %d open, %d of them followed; reads of a channel's log for a debt in the profile's "
-          "window: %s in the uplink, %d in daemon run" % (
+          "window: %s in the uplink, %s in daemon run" % (
               len(chans), sum(1 for o in chans.values() if o.get("follow")),
-              "no profile" if uplink_reads is None else uplink_reads, daemon_reads))
+              "unobserved (no profile)" if uplink_reads is None else uplink_reads,
+              "unobserved (its hook never installed)" if daemon_reads is None else daemon_reads))
     return {"open": len(chans), "followed": sum(1 for o in chans.values() if o.get("follow")),
             "debt_reads": {"uplink": uplink_reads, "daemon run": daemon_reads}}
 
 
-def upload_window(env, pid, act, done, give_up=180.0, settle=3.0):
-    """The uplink's upload pass counted (the hook's upload mode, begun and
-    ended by signal) while `act` runs and until `done()` holds, then
-    `settle` seconds more: {"from", "to", "by": {log id: [turns, Python
-    calls, member_project_now's calls]}}, or None."""
+def upload_window(env, pid, log, act, done, give_up=180.0, settle=3.0):
+    """`log`'s turns of the uplink's upload pass counted (the hook's upload
+    mode, begun and ended by signal, closed at a turn's boundary) while
+    `act` runs and until `done()` holds, then `settle` seconds more:
+    {"from", "to", "log", "counted": [turns, Python calls,
+    member_project_now's calls]}, or None when no count came back."""
     out = env.env["BENCH_PROFILE"]
-    for path in (out + ".upload",):
-        if os.path.exists(path):
-            os.unlink(path)
+    if os.path.exists(out + ".upload"):
+        os.unlink(out + ".upload")
     with open(out + ".mode", "w") as f:
-        f.write("upload")
+        f.write("upload %s" % log)
     try:
         os.kill(pid, signal.SIGUSR1)
         time.sleep(0.5)
@@ -1450,10 +1501,11 @@ def upload_scenario(a, env, ep, up, rows):
                     raise RuntimeError("the upload scenario's say failed")
         return act
 
-    idle = upload_window(env, up, lambda: None, lambda: False, give_up=UPLOAD_IDLE, settle=0)
-    turns, calls, _ = (idle or {}).get("by", {}).get(cid, [0, 0, 0])
+    idle = upload_window(env, up, cid, lambda: None, lambda: False, give_up=UPLOAD_IDLE, settle=0)
+    turns, calls, _ = (idle or {}).get("counted") or [0, 0, 0]
     if not turns:
-        print("upload: no turn of %s's upload pass in %.0f s idle" % (name, UPLOAD_IDLE))
+        print("upload: FAILED: %s" % ("no count came back from the idle window" if idle is None else
+                                      "no turn of %s's upload pass in %.0f s idle" % (name, UPLOAD_IDLE)))
         return None
     per_turn = calls / turns
     print("upload: an idle turn of %s's upload pass, %.0f Python calls (%d turns in %.0f s)" % (
@@ -1461,9 +1513,15 @@ def upload_scenario(a, env, ep, up, rows):
     out = {"idle turn": per_turn}
     for label, who in (("from one sender", [sids[0]] * k), ("from %d senders" % k, sids[:k])):
         before = uploaded()
-        w = upload_window(env, up, say_from(who), lambda before=before: uploaded() >= before + k)
+        w = upload_window(env, up, cid, say_from(who), lambda before=before: uploaded() >= before + k)
         got = uploaded() - before
-        turns, calls, mpn = (w or {}).get("by", {}).get(cid, [0, 0, 0])
+        turns, calls, mpn = (w or {}).get("counted") or [0, 0, 0]
+        if got < k or not turns:
+            print("upload: %d messages %s: FAILED: %s" % (
+                k, label, "no count came back" if w is None else
+                "%d of them gone up, %d turns of %s's upload pass counted: no cost is given for a window that did "
+                "not hold them all" % (got, turns, name)))
+            return None
         beyond = calls - turns * per_turn
         print("upload: %d messages %s, %d of them gone up: %d turns of %s's upload pass, %.0f Python calls beyond "
               "as many idle turns, %.0f a message; member_project_now %d calls, %.1f a message" % (
@@ -1680,7 +1738,8 @@ def pycalls_window(env, pid, seconds, keep=None):
     ticks = (w.get("passes") or {}).get("Link.tick", {}).get("calls")
     return {"seconds": dt, "calls": total / dt, "python": python / dt,
             "file": {k: n / dt for k, n in sorted(files.items(), key=lambda kv: -kv[1])},
-            "ticks": ticks, "ticks_a_second": None if ticks is None else ticks / dt, "debt_reads": debt_reads}
+            "ticks": ticks, "ticks_a_second": None if ticks is None else ticks / dt, "debt_reads": debt_reads,
+            "from": w["from"], "to": w["to"]}
 
 
 def print_pycalls(s):
@@ -2208,6 +2267,10 @@ def main():
     for s in sub.choices.values():
         s.set_defaults(**PRESETS.get(preset, {}))
     a = p.parse_args()
+    if a.channels is None and a.held is not None:
+        p.error("--held needs --channels")
+    if a.channels is not None and not 0 <= (a.channels if a.held is None else a.held) <= a.channels:
+        p.error("--channels N and --held H: 0 <= H <= N")
     stop_on_signals()
     root = env = None
     status = 0

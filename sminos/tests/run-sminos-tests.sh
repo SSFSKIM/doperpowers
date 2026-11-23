@@ -496,6 +496,9 @@ run_suites_b() {
   else fail "message reach at the send boundary: reach? asked by the uplink alone for every peer push, refused-reach, owed, same owner, projectless (test_reach_gate.py)"; fi
   if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; else
     fail "an own writer of no session waits for its upstream's head on a new enrolment (test_heads.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_rl10_probes.py"; then
+    pass "what the rl10 replay checks in place of its probes: a position is its log's, a words? held to the log it names, a member any session staged here, an unattested scene (test_rl10_probes.py)"
+  else fail "what the rl10 replay checks in place of its probes: a position is its log's, a words? held to the log it names, a member any session staged here, an unattested scene (test_rl10_probes.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
   # (rl10_conformance.py): every line as written, its probes checked over the whole conversation instead.
   while IFS= read -r line; do

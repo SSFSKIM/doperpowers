@@ -40,8 +40,15 @@ declared channel's (CH1's M6, its case 13, staged by registering the
 channel under the fixture's id and name and placing S1 by its own change),
 and a channel's requests across machines (CH1's M7, case 14, the
 fifteenth, which CH1's review calls case 15, staged by narrowing S2 and
-then S1 to private before the request naming each arrives), and nothing is
-amended here.
+then S1 to private before the request naming each arrives), and a channel's
+messages (CH2's M7, cases 15 to 18: S7 and S8, S10 and S9 staged as live
+sessions of P, each but S7 placed in the channel by its own change and S10
+and S9 given their reach in one change of the record; the three writes made
+through sminos's own `say`, its clock held at the fixture's `ts`; a thread id
+the fixture names for a session of this machine bound to the one sminos
+minted for it, bind_threads), and nothing is amended here. What is checked
+over the whole conversation in place of the probes is rl10_probes.py's,
+built for a conversation of several logs.
 
 Prints one `ok` or `FAIL` line per line of the conversation it plays, for
 run-sminos-tests.sh to count, and exits 1 when one fails.
@@ -88,6 +95,7 @@ sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 
 import endpoint_standin  # noqa: E402 — its connection's reads and writes
+import rl10_probes as probes  # noqa: E402 — what is checked in place of the probes
 import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
@@ -414,6 +422,7 @@ def project(name, hub):
 
 
 SESSIONS = {}   # session → (its processes, its registry record's path)
+STAGED = []     # every session staged on this machine, in order, an ended one too: the members a words? may name
 
 
 def session(p, sid, alias):
@@ -430,6 +439,7 @@ def session(p, sid, alias):
         json.dump({"pid": proc.pid, "sessionId": sid, "name": alias, "nameSource": "user", "cwd": p.root,
                    "kind": "interactive", "status": "idle", "messagingSocketPath": sock}, f)
     SESSIONS[sid] = ((proc, inbox), path)
+    STAGED.append(sid)
 
 
 def end_session(sid):
@@ -653,13 +663,103 @@ def stage_private(name):
     return stage
 
 
+SAY = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+ts = sys.argv[2]
+sminos.now = lambda ms=False: ts
+sminos.main(sys.argv[3:])
+"""
+
+REACH = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+sid, access, member, grade = sys.argv[2:6]
+sminos.sibling_module("sminos_visibility").set_visibility(sid, access=access, share=(member, grade) if member else None,
+                                                          operator=True)
+"""
+
+
+def say_at(ts, args, sid=None):
+    """A `sminos say` through its own door, as a session (`sid`) or a person
+    at a terminal runs it, in a process of its own, sminos's clock held at
+    the fixture's `ts` for it (append_at's hold, for a verb)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+    if sid:
+        env["CLAUDE_CODE_SESSION_ID"] = sid
+    r = subprocess.run([sys.executable, "-B", "-c", SAY, SCRIPTS, ts, "say", *args], capture_output=True, text=True,
+                       cwd=P_.root, env=env)
+    if r.returncode:
+        raise RuntimeError("sminos say %r: %s" % (args, r.stderr.strip()))
+
+
+def stage_member(name, alias, placed=True, access=None, share=None):
+    """Cases 16 to 18: a live session of P (session()), joined as a thread,
+    placed in the channel by its own change when `placed`, then its reach
+    set in one change of the record (set_visibility, as the app's record
+    act sets it: one policyRev), when `access` is given."""
+    def stage():
+        sid = B["session:" + name]
+        session(P_, sid, alias)
+        sminos.forget_caches()
+        sminos.reconcile(P_)
+        if placed:
+            r = subprocess.run([sys.executable, "-B", "-c", PLACE, SCRIPTS, B["channel:C"], "desk-integration", "add",
+                                sid], capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError("%s's own add to the channel: %s" % (name, r.stderr.strip()))
+        if access:
+            member, grade = share or ("", "")
+            r = subprocess.run([sys.executable, "-B", "-c", REACH, SCRIPTS, sid, access, member, grade],
+                               capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError("%s's reach: %s" % (name, r.stderr.strip()))
+    return stage
+
+
+CARRY = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+import sminos
+sminos.channels_module().carry_words(sminos.known_project(sys.argv[2]))
+"""
+
+
+def stage_carried():
+    """The words the uplink kept for the channel's messages carried out, as
+    the daemon's channel pass carries them (sminos_channels.carry_words), in
+    a process of its own: the replay runs the uplink alone, and a writer's
+    next message to a thread is asked about only once its last is settled."""
+    r = subprocess.run([sys.executable, "-B", "-c", CARRY, SCRIPTS, B["channel:C"]], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("carrying out the channel's kept words: %s" % r.stderr.strip())
+
+
+def stage_both(*stages):
+    return lambda: [stage() for stage in stages]
+
+
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
          (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
          (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
          (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4"),
          (13, 0): stage_channel("add"), (13, 4): stage_channel("remove"),
-         (14, 3): stage_private("S2"), (14, 8): stage_private("S1")}
+         (14, 3): stage_private("S2"), (14, 8): stage_private("S1"),
+         (15, 0): stage_both(stage_member("S8", "integrator"), stage_member("S7", "scout", placed=False)),
+         (15, 2): lambda: say_at("2026-10-27T18:10:00.000Z",
+                                 ["--in", "desk-integration", "@integrator the fixture case is ready for review"],
+                                 B["session:S7"]),
+         (16, 4): stage_member("S10", "solo", access="private"),
+         (17, 0): stage_member("S9", "review", access="private", share=(B["member:B"], "converse")),
+         (17, 9): lambda: say_at("2026-10-27T18:11:00.000Z",
+                                 ["--in", "desk-integration", "@integrator pick up the channel's review"]),
+         (18, 0): stage_both(stage_carried,
+                             lambda: say_at("2026-10-27T18:12:00.000Z",
+                                            ["--notice", "ci-watch", "--in", "desk-integration",
+                                             "@integrator the integration build failed"]))}
 
 
 # The endpoint's scenes that bind what later lines name: another machine of
@@ -672,15 +772,54 @@ def scene_add_machine(step):
 
 
 def scene_machine_event(step):
+    B[step["binding"]] = probes.machine_event(step, iso(), B["kid:" + step["machine"]])
+
+
+def scene_device_words(step):
+    """A person's words written into a channel's log by one of member B's
+    devices, as the endpoint sends them down, owed to the scene's thread
+    when it names one (case 18). The device words of cases 7 and 11, in P's
+    log, are bound before the replay begins (stage_device_words)."""
+    if "project" not in step:
+        return
     at = iso()
-    B[step["binding"]] = {"ts": at, "created": at, "writer": "%s/%s" % (step["machine"], step["session"]),
-                          "seq": step["seq"], **step["body"],
-                          "attest": {"owners": step["owners"], "ownersProof": [], "origin": {"kind": "terminal"},
-                                     "stateVersion": 6},
-                          "sig": {"kid": B["kid:" + step["machine"]], "value": "AQ"}}
+    entry = {"session": step["session"], "alias": step["alias"], **({"thread": step["thread"]} if "thread" in step else {})}
+    B[step["binding"]] = {"ts": at, "writer": "hub/" + B["member:B"], "seq": step["seq"], "kind": "human",
+                          "from": "human", "member": B["member:B"], "to": [entry],
+                          "text": "@%s from %s, into the channel" % (step["alias"], step["device"]), "created": at,
+                          "sig": {"kid": B["kid:" + step["device"]], "value": "AQ"}}
 
 
-SCENES = {"add-machine": scene_add_machine, "machine-event": scene_machine_event}
+SCENES = {"add-machine": scene_add_machine, "machine-event": scene_machine_event, "device-words": scene_device_words}
+
+
+def bind_threads(x):
+    """A thread id the fixture names for a session of this machine (an entry
+    of `to`: its `session` and `thread`; an event: its `writer`'s session and
+    `thread`) stands for the one sminos minted for that session's thread, as
+    a `vary`'d `thread` does (IDS); another machine's literal stays as it is."""
+    if isinstance(x, list):
+        for v in x:
+            bind_threads(v)
+        return
+    if not isinstance(x, dict):
+        return
+    for v in x.values():
+        bind_threads(v)
+    lit = x.get("thread")
+    if not isinstance(lit, str) or "{{" in lit or lit in IDS:
+        return
+    ref = x.get("session")
+    if not isinstance(ref, str) and isinstance(x.get("writer"), str):
+        ref = x["writer"].rpartition("/")[2]
+    try:
+        sid = subst(ref) if isinstance(ref, str) else None
+    except KeyError:
+        return
+    if sid in STAGED:
+        t = sminos.threads_module().current_record(sid, fresh=True)
+        if t is not None:
+            IDS[lit] = t["thread"]
 
 
 # ------------------------------------------------------------- what sminos did with a down line
@@ -826,17 +965,27 @@ def words_lines():
     return [(c.number, f) for c in EP.accepted for f in c.frames if f.get("t") == "words?"]
 
 
+def uploads():
+    """(log id, event) of every event sminos uploaded, under the log its frame named."""
+    return [(f.get("project"), e) for c in EP.accepted for f in c.frames if f.get("t") == "events"
+            for e in f.get("events", [])]
+
+
 def upload_events():
-    return [e for c in EP.accepted for f in c.frames if f.get("t") == "events" for e in f.get("events", [])]
+    return [e for _, e in uploads()]
 
 
 def probe_one_body():
-    bodies = {}
-    for e in upload_events():
-        bodies.setdefault((e["writer"], e["seq"]), set()).add(json.dumps(e, sort_keys=True))
-    twice = [k for k, v in bodies.items() if len(v) > 1]
+    twice = probes.bodies_twice(uploads())
     return not twice, "every position sminos uploaded carries one body (%d positions)%s" % (
-        len(bodies), "; more than one at %r" % twice if twice else "")
+        len({(log, e["writer"], e["seq"]) for log, e in uploads()}), "; more than one at %r" % twice if twice else "")
+
+
+def logs_here():
+    """{log id: (writer, seq) → the event this machine stores there, or None}, every log known here."""
+    sminos.forget_caches()
+    return {p.id: (lambda w, s, p=p: next((e for e in held(p, w) if e["seq"] == s), None))
+            for p in sminos.known_logs()}
 
 
 def probe_no_created():
@@ -857,31 +1006,24 @@ def probe_addressed():
 
 
 def probe_as_stored():
-    wrong = []
-    for _, f in words_lines():
-        p = P_ if f.get("project") == P_.id else Q_
-        stored = next((e for e in held(p, f["event"]["writer"]) if e["seq"] == f["event"]["seq"]), None)
-        if stored is None or {k: v for k, v in stored.items() if k != "verified"} != f["event"]:
-            wrong.append(f["id"])
+    wrong = probes.not_as_stored([f for _, f in words_lines()], logs_here())
     return not wrong, "every words? carries its event exactly as stored, its verdict left out%s" % (
         ": not %r" % wrong if wrong else "")
 
 
 def probe_project():
-    out = [f["id"] for _, f in words_lines() if f.get("project") not in (P_.id, Q_.id)]
+    out = probes.not_in_its_log([f for _, f in words_lines()], logs_here())
     return not out, "every words? names the project whose log holds its event%s" % (": not %r" % out if out else "")
 
 
 def probe_members():
-    members = {B["session:S%d" % n] for n in range(1, 6)}
-    out = [f["id"] for _, f in words_lines() if f["session"] not in members]
+    out = probes.not_members([f for _, f in words_lines()], STAGED)
     return not out, "every words? names a member of this machine%s" % (": not %r" % out if out else "")
 
 
 def probe_revoked():
     restart = EP.accepted[-1].number
-    out = [f["id"] for n, f in words_lines() if n == restart and f["event"].get("seq") == 1
-           and f["event"]["writer"] == "hub/" + B["member:B"]]
+    out = probes.asked_again([f for n, f in words_lines() if n == restart], P_.id, "hub/" + B["member:B"], 1)
     return not out, "b1's words are never asked after its device is revoked%s" % (": %r" % out if out else "")
 
 
@@ -1079,12 +1221,14 @@ def replay():
                 if time.monotonic() - STARTED > DEADLINE:
                     say("FAIL", "the replay took more than %d s: stopped at %d.%d" % (DEADLINE, ci, si))
                     return
+                if (ci, si) in STAGE:
+                    STAGE[(ci, si)]()
+                bind_threads(step)
                 if "scene" in step or "quiet" in step:
                     if step.get("scene") in SCENES:
                         SCENES[step["scene"]](subst(step))
+                        PLANNED.update(planned_asks())   # an ask about the event the scene bound is the conversation's
                     continue
-                if (ci, si) in STAGE:
-                    STAGE[(ci, si)]()
                 name = name_of(ci, si, step)
                 if (ci, si) in PROBES:
                     continue   # said at the end, with what sminos does instead
