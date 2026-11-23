@@ -530,17 +530,21 @@ a host whose sminos is found and cut over records the notice once more with
 prompting no one, into the log of every declared channel whose pool holds
 the host (a thread of it is in the channel, or a member added the machine
 by hand), and `sminos chat <channel>` shows it from `devcloud@<name>`. The
-text there is the short one: the VM, its idle time and last activity (or
-its lease end), its lifetime and estimated cost; the channel's copy leaves
-out the checkouts with unpushed work and the `down` instruction, which the
-full text carries wherever the delivery above takes it (the owning thread,
-its project's live members, its log, or the journal and `wall`), and only
-the decision to down the VM is the owning thread's (one constant in
-`boot/devcloudlib/notices.py`, `CHANNEL_TEXT`, chooses the short text or
-the full one). The pool is the host's own copy
+text there is the notice's own, the one the delivery above carries: the
+VM, its idle time and last activity (or its lease end), its lifetime and
+estimated cost, the repositories with unpushed work by name, and the
+`down` instruction. Everyone who may read the channel's log reads it,
+threads of other projects and other repositories included, so a channel
+holds the names of the repositories on its VMs; the decision to down the
+VM is still the owning thread's alone (one constant in
+`boot/devcloudlib/notices.py`, `CHANNEL_TEXT`, chooses this full text, the
+owner's choice, or a short one without the repositories and the
+instruction). The pool is the host's own copy
 of the logs: a host that has not yet read a removal from a pool (it was
 cut off when the member removed it, or a thread of it left) still records
-there, and a hand-add by a member whose row the host may not read records
+there, so a channel it has left gets one more notice, naming the host's
+repositories with unpushed work, before the host reads the removal; and
+a hand-add by a member whose row the host may not read records
 nothing. A host's sminos that does not know `--pools` (exit 2) is said in
 the journal and the text is not sent again; any other failure is said and
 changes nothing of the delivery. A host built before this keeps its boot

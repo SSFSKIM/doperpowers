@@ -69,7 +69,8 @@ def read(path):
 
 
 def text(d, state, current, found, short=False):
-    """The idle notice; `short`, the form a channel's log records (EN.G2's M3): nothing of what is on the machine
+    """The idle notice; `short`, the form a channel's log records where notices.CHANNEL_TEXT is "short" (EN.G2's
+    M3; the full text otherwise, the owner's choice): nothing of what is on the machine
     (the repositories with unpushed work) and not the instruction that is the owning thread's alone."""
     from .lease import iso
     seconds = max(0, current - state["active_at"])

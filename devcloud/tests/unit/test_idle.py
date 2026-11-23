@@ -175,7 +175,9 @@ class DeliveryTest(IdleBase):
         def call(argv, **kw):
             calls.append((argv, kw))
             return results.pop(0), "", "refused"
-        with mock.patch.object(notices.sminos_host, "cli", return_value=pathlib.Path("/opt/sminos.py")):
+        # The chain alone: the channels' record after it (made with the full text since O6) is ChannelsTest's.
+        with mock.patch.object(notices.sminos_host, "cli", return_value=pathlib.Path("/opt/sminos.py")), \
+                mock.patch.object(notices, "record_in_channels"):
             notices.deliver(self.user, d, "idle notice", call=call, say=said.append)
         return calls, said
 
@@ -264,7 +266,7 @@ class ChannelsTest(IdleBase):
     """EN.G2's M3 (docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, Interfaces §5): after the
     chain, whichever way it ended, one call records the notice in every channel whose pool holds this host."""
 
-    POOLS = ["say", "--notice", "devcloud", "--pools", "short notice"]
+    POOLS = ["say", "--notice", "devcloud", "--pools", "idle notice"]   # the full text: the owner's O6
 
     def deliver(self, results, creator="@abcd1234", project="example", short="short notice", cli=True,
                 cut_over=True):
@@ -287,7 +289,7 @@ class ChannelsTest(IdleBase):
             notices.deliver(self.user, d, "idle notice", call=call, say=said.append, short=short)
         return calls, said
 
-    def test_the_fourth_call_carries_the_short_text_as_the_chains_steps_are_called(self):
+    def test_the_fourth_call_carries_the_full_text_as_the_chains_steps_are_called(self):
         calls, said = self.deliver([(0, "", ""), (0, "recorded beta:1 in desk\nrecorded beta:2 in ops\n", "")])
         (first, first_kw), (channels, kw) = calls
         self.assertEqual(first[-1], "@abcd1234 idle notice", "the chain's step keeps the full text")
@@ -340,18 +342,21 @@ class ChannelsTest(IdleBase):
                 calls, _ = self.deliver([(0, "", "")], **kwargs)
                 self.assertEqual([argv for argv, _ in calls], [["wall", "devcloud: idle notice"]])
 
-    def test_the_short_text_never_falls_back_to_the_full_one(self):
-        calls, _ = self.deliver([(0, "", "")], short=None)
-        self.assertEqual(len(calls), 1, "no short text given: no call")
-
-    def test_set_to_the_full_text_the_fourth_call_carries_it(self):
+    def test_the_full_text_is_the_channels_whether_or_not_a_short_one_is_given(self):
         from devcloudlib import notices
-        self.assertEqual(notices.CHANNEL_TEXT, "short", "O6's default, while the owner has not answered")
-        with mock.patch.object(notices, "CHANNEL_TEXT", "full"):
+        self.assertEqual(notices.CHANNEL_TEXT, "full", "the owner's answer to O6: the notice's own text")
+        for short in ("short notice", None):
+            with self.subTest(short=short):
+                calls, _ = self.deliver([(0, "", ""), (0, "", "")], short=short)
+                self.assertEqual(calls[-1][0][2:], self.POOLS)
+
+    def test_set_to_the_short_text_the_fourth_call_carries_it_and_never_falls_back_to_the_full_one(self):
+        from devcloudlib import notices
+        with mock.patch.object(notices, "CHANNEL_TEXT", "short"):
             calls, _ = self.deliver([(0, "", ""), (0, "", "")])
-            self.assertEqual(calls[-1][0][2:], [*self.POOLS[:-1], "idle notice"])
-            calls, _ = self.deliver([(0, "", ""), (0, "", "")], short=None)
-            self.assertEqual(calls[-1][0][2:], [*self.POOLS[:-1], "idle notice"])
+            self.assertEqual(calls[-1][0][2:], [*self.POOLS[:-1], "short notice"])
+            calls, _ = self.deliver([(0, "", "")], short=None)
+            self.assertEqual(len(calls), 1, "no short text given: no call")
 
     def test_the_short_idle_text_names_the_machine_its_idleness_and_lifetime_and_no_repository(self):
         d = descriptor.parse(BASE + f"DEVCLOUD_CREATED={NOW}\nDEVCLOUD_HOURLY_PRICE=0.25\nDEVCLOUD_CURRENCY=USD\n"

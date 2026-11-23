@@ -10,10 +10,11 @@ NOTICE = "devcloud"
 MARKED = ("--notice", NOTICE)
 HELD = 3      # `say --exit-held`: the thread that owns the host is held and not woken with it
 UNKNOWN = 2   # a usage error: a sminos that does not know the two flags (or, after the chain, --pools)
-# Which text the channels' record carries (EN.G2's O6, the owner's): "short", the one each notice composes for a
-# channel (the machine, what happened, its lifetime and cost, nothing of what is on it), or "full", the chain's.
-# Frozen on every host built from this file, and a text posted into a channel cannot be recalled.
-CHANNEL_TEXT = "short"
+# Which text the channels' record carries (EN.G2's O6, the owner's answer: the notice's own text): "full", the
+# chain's, the repositories with unpushed work included, read by everyone who may read the channel's log; or
+# "short", the one each notice composes for a channel (the machine, what happened, its lifetime and cost, nothing of
+# what is on it). Frozen on every host built from this file, and a text posted into a channel cannot be recalled.
+CHANNEL_TEXT = "full"
 
 
 def deliver(user, d, text, call=proc.call, say=print, short=None):
@@ -33,8 +34,8 @@ def deliver(user, d, text, call=proc.call, say=print, short=None):
 
     After that chain, whichever way it ended, and wherever the host's sminos
     is found and the host cut over: one `say --notice devcloud --pools` with
-    the channels' text (CHANNEL_TEXT; `short`, never the full text by
-    omission), which sminos records, untagged and prompting no one, in each
+    the channels' text (CHANNEL_TEXT: the full text; set to "short", the
+    short one, and none where none is given), which sminos records, untagged and prompting no one, in each
     channel whose pool holds this machine. Its outcome is said and changes
     nothing: no step is called again, and nothing is sent twice.
     """

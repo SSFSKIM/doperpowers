@@ -422,9 +422,8 @@ class WarningTest(LeaseBase):
         self.assertEqual(argv, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--exit-held",
                                 f"@build#4f2a {text}"])
         self.assertEqual(user, self.user)
-        # EN.G2's M3: then the channels' record, with the short text (O6's default).
-        self.assertEqual(channels, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--pools",
-                                    f"devcloud on dc-build-7f3a: lease ends at {lease.iso(NOW)}"])
+        # EN.G2's M3: then the channels' record, with the notice's own full text (the owner's answer to O6).
+        self.assertEqual(channels, ["/usr/bin/python3", str(self.cli), "say", "--notice", "devcloud", "--pools", text])
         self.assertEqual(channels_user, self.user)
 
     def test_the_short_warning_names_the_machine_and_the_end_and_no_repository(self):

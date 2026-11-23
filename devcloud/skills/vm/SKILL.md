@@ -130,14 +130,14 @@ channel whose pool it reads itself in (a thread of it is in the channel,
 or a member added the machine by hand; a channel its enrollment does not
 carry, or whose log it cannot write, is passed over): `sminos chat
 <channel>` shows it, addressed to no one, so it stands in for none of the
-deliveries above. That copy leaves out the repositories with unpushed
-work and the instruction to down the VM, because a channel is read
-beyond the owner's project: keep those names out of a channel when you
-act on the notice. On a Mac, `sminos channel show <channel>` shows what
-this Mac's devcloud has of each VM of the channel: who owns it, how long
-it has run and what it has cost (list price times age), with a line
-after the pool when devcloud could not be asked or did not cover an
-account. `devcloud vm lease <name>
+deliveries above. That copy is the notice's own text, the repositories
+with unpushed work and the instruction to down the VM included, and
+everyone who may read the channel reads it, beyond the owner's project;
+downing the VM is still the owning thread's decision alone. On a Mac,
+`sminos channel show <channel>` shows what this Mac's devcloud has of
+each VM of the channel: who owns it, how long it has run and what it has
+cost (list price times age), with a line after the pool when devcloud
+could not be asked or did not cover an account. `devcloud vm lease <name>
 <duration>` sets the end to now plus the duration, and `lease <name>
 keep` removes it. A change between kept and leased makes the host rejoin
 the tailnet under the same name, and `lease` waits until it is back.

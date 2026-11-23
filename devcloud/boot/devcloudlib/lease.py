@@ -299,7 +299,8 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
 # --- the warning -----------------------------------------------------------------
 
 def warning_text(name, expires, found, short=False):
-    """The lease warning; `short`, the form a channel's log records (EN.G2's M3), names no repository."""
+    """The lease warning; `short`, the form a channel's log records where notices.CHANNEL_TEXT is "short" (EN.G2's
+    M3; the full text otherwise, the owner's choice), names no repository."""
     said = f"devcloud on {name}: lease ends at {iso(expires)}"
     if short:
         return said
