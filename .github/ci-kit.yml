@@ -76,10 +76,10 @@ gates:
     paths: ["devcloud/driver/**"]
 
   # The declared channels' suites (CH1; SMINOS_PART=channels, disjoint from the two above). About twice the whole
-  # part's job (about 1m40s at CH1's end, 2m48s at CH2's M6), never under two minutes; set again when the part grows.
+  # part's job (about 1m40s at CH1's end, 3m15s green at CH2's M6), never under two minutes; set again when the part grows.
   - name: sminos-channels
     run: SMINOS_PART=channels bash sminos/tests/run-sminos-tests.sh
-    timeout: 6
+    timeout: 8
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The idle uplink's cost on a machine of the owner's MacBook's shape, judged by its calls a second under a profiler
