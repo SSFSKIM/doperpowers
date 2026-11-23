@@ -1829,7 +1829,8 @@ SELECTOR_BESIDE_IN = ('a selector picks the recipients itself, and --in %s names
 OPENS_NO_TAG = ("%s opens no tag (a tag's qualifier takes no #): nothing was recorded. Say it as sminos say --in %s "
                 "\"@<alias> …\", or qualify the tag with the channel's id")
 NO_DIRECTORYS = "%s is a channel, and no directory's project: say --in %s to speak in it"
-NOT_A_MEMBER = "you are not in %s: replies to this come to you directly, in %s. sminos channel add %s places you in it"
+NOT_A_MEMBER = "you are not in %s: replies to this come to you directly, in %s"
+SELF_ADD = ". sminos channel add %s places you in it"   # a thread's only: `channel add` refuses a caller that is none
 NO_HOME = ("you are not in %s, and this session's project cannot be told, so a reply would have nowhere to "
            "reach you: nothing was recorded")
 DROP_IN = "Drop --in to reach it in its own project"
@@ -2059,7 +2060,8 @@ def speak(channel, a, session, tags):
     fields = {"thread": thread} if kind == "say" and thread else {}
     if outsider:
         fields["from_project"] = home.id   # the sender's own project, where a reply finds it (C5)
-    said = Said(fields, outsider, NOT_A_MEMBER % (channel.name, home.name, channel.name) if outsider else "", rows)
+    said = Said(fields, outsider, NOT_A_MEMBER % (channel.name, home.name) + (SELF_ADD % channel.name if thread else "")
+                if outsider else "", rows)
     sminos.say_into(a, channel, home, session, sender, writer, kind, recipients, wake, raws, said=said)
 
 

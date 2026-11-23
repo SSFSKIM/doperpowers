@@ -533,6 +533,22 @@ class Outsider(Say):
         self.assertEqual(self.got(areceived, "a note from outside"), [])
         self.assertIsNone(channels.debt(self.chan(DESK), threads.get(otid)), "it is owed nothing there")
 
+    def test_a_session_that_is_no_thread_is_not_offered_the_self_add_it_cannot_make(self):
+        """A session MAWS launched (lane B) is no thread, and `channel add` refuses a caller that is none: its line
+        says where replies come, and offers no add (CH2's final reading, H10)."""
+        rtid, rsid, received = self.live("reader")
+        osid = str(uuidlib.uuid4())
+        _, oproc = self.session(root=self.app_root, sid=osid, kind="interactive", name="launched")
+        self.inbox(osid, oproc, "lb")
+        records.establish(osid, records.default_provenance())
+        records.set_controller(osid, "B")
+        self.reconcile(self.app)
+        self.assertEqual(threads.stamp(osid), "", "no thread")
+        code, out = self.as_session(osid, "say", "--in", "desk", "@reader from a launched session", cwd=self.app_root)
+        self.assertEqual(code, 0, out)
+        self.assertIn("you are not in desk: replies to this come to you directly, in app", out)
+        self.assertNotIn("places you in it", out)
+
     def test_its_event_carries_the_thread_the_rosters_sweep_gave_it(self):
         """A live session not yet a thread when it says: the roster's sweep over its project makes it one, and
         the event carries that thread."""
