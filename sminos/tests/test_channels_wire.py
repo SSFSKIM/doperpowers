@@ -2486,6 +2486,35 @@ class Messages(Delivering):
 
     # -- sending and the wire (M4's seam)
 
+    def test_a_projects_upload_reads_no_event_for_a_channels_message(self):
+        """The final reading (H8, B11): whether a batch carries a channel's message is asked of a channel's
+        upload alone; a project's upload looks at no event's kind for it, as at the merge base."""
+
+        class Counted(tuple):
+            asked = 0
+
+            def __contains__(self, kind):
+                Counted.asked += 1
+                return tuple.__contains__(self, kind)
+        link = self.link()
+        hl = link.logs[self.p.id] = hublog.HubLog(self.p, link.cred)
+        hl.have = {}
+        sminos.log_append(self.p, "%s/human" % sminos.host_name(), "human", **{"from": "human", "to": "*",
+                                                                             "text": "to the project"})
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "CHAT_KINDS", Counted(sminos.CHAT_KINDS)):
+            link.upload(hl)
+            self.assertEqual(Counted.asked, 0, "no kind read for a project's batch")
+            self.assertEqual([f["project"] for f in link.log_lane.sent if f.get("t") == "events"], [self.p.id])
+            chan = link.logs[DESK]
+            chan.have = {}
+            sminos.log_append(self.chan(DESK), "%s/human" % sminos.host_name(), "human", **{
+                "from": "human", "to": "*", "text": "into the channel"})
+            sminos.forget_caches()
+            link.upload(chan)
+        self.assertGreater(Counted.asked, 0, "a channel's batch is asked")
+        self.assertIn(DESK, [f["project"] for f in link.log_lane.sent if f.get("t") == "events"])
+
     def test_a_messages_upload_waits_for_its_senders_row_and_a_retired_senders_goes_with_no_frame(self):
         sender, rproc, tid = self.member(name="speaker")
         self.add(tid, sender, DESK)

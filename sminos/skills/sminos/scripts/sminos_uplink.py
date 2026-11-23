@@ -1742,7 +1742,8 @@ class Link:
             frame, reach = got
             try:
                 out = self.senders_before(hl.project, {sminos.writer_session(e["writer"]) for e in frame["events"]},
-                                          message=any(e.get("kind") in sminos.CHAT_KINDS for e in frame["events"]))
+                                          message=hl.project.id in self.channels   # a project's: not asked
+                                          and any(e.get("kind") in sminos.CHAT_KINDS for e in frame["events"]))
             except BaseException:
                 hl.undraw()
                 raise
