@@ -2241,6 +2241,29 @@ class Messages(Delivering):
                               if f.get("t") == "member" and f.get("session") == sender],
                       "the sender's frame under its project now first")
 
+    def test_a_withheld_says_notice_goes_to_its_thread_and_never_to_a_session_that_is_another_threads_now(self):
+        """The frontier review (F10): the notice of a say into a channel the hub withheld is the sending thread's:
+        shown to the session that goes on with that thread, never to the session that wrote it once that session
+        is another thread's (or none's)."""
+        tid, sid, proc, received = self.live_member()
+        writer = sminos.writer_id(sid)
+        e = sminos.log_append(self.chan(DESK), writer, "say", **{
+            "from": "handy", "to": [{"session": str(uuidlib.uuid4()), "alias": "ghost", "thread": str(uuidlib.uuid4())}],
+            "text": "the secret words", "thread": tid})
+        sminos.forget_caches()
+        hl = hublog.HubLog(self.chan(DESK), {"key": None, "machine": sminos.host_name()})
+        self.assertTrue(hl.withhold_own(writer, e["seq"]))
+        job, jproc = T1.Sessions.job(self, sid)
+        jreceived = self.inbox(job, jproc, "j")
+        self.reconcile()
+        sminos.forget_caches()
+        self.assertEqual(threads.get(tid)["current"], job, "the thread went on in another session")
+        hl.show_notices()
+        notice = "[sminos: your message to ghost was not delivered: not-reachable]"
+        self.assertEqual([f for f in self.received(received) if notice in f], [], "not the session that wrote it")
+        self.assertEqual(len([f for f in wait_for(lambda: self.received(jreceived), timeout=10) if notice in f]), 1,
+                         "the thread's session now")
+
     def test_a_recipient_the_plane_has_no_row_for_is_passed_by_and_asked_after_its_next_read(self):
         tid, sid, _ = self.live()
         self.message((sid, tid), text="to a new row")
