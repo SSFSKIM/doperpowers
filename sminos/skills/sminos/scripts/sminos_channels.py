@@ -77,6 +77,10 @@ project. What is here:
   (for_spawn), the placement once the launcher has returned the session,
   the thread's own add under one deadline, never a refusal (place_spawned),
   and what a spawn here prints of it (spawned_lines, placement_words).
+- A machine's notice in its pools' channels (EN.G2's M3, Interfaces §4):
+  `say --notice <program> --pools`, written through the door into every
+  channel whose pool, as this copy holds it, names this machine
+  (record_in_pools).
 """
 import contextlib
 import glob
