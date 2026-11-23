@@ -106,7 +106,7 @@ required: a red one does not block a merge. Still local only: the
 suites that call a model, board-api/integration (Docker and
 `$ARKHO_DIR`), and anything that tests the installed plugin cache.
 codex-companion is not gated in CI because it is discarded (owner,
-2026-10-16).
+2026-10-16); it now lives in `archive/codex-companion/` with its tests.
 
 ### 5. Self-hosted runner registration (external dependency)
 

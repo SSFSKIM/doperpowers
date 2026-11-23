@@ -37,23 +37,10 @@ since removed. For a project-only installation, use that project's
 `.codex/agents/` instead. Start a new Codex task to discover
 the installed roles.
 
-Disable the companion skill in `~/.codex/config.toml` (update an existing rule
-for this name if present):
-
-```toml
-[[skills.config]]
-name = "doperpowers:codex-companion"
-enabled = false
-```
-
-The name selector survives plugin cache/version changes. It affects Codex only;
-the companion files are still available to Claude and the benchmark baseline.
-
 ## Routing
 
-Replace any Codex instruction that requires the companion runtime with native
-dispatch: `agent_type = "doperpowers:reviewer-low"`, `reviewer-medium`, or
-`reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
+Reviews run through native dispatch: `agent_type =
+"doperpowers:reviewer-low"`, `reviewer-medium`, or `reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
 use `doperpowers:adversarial-reviewer`; design debates use `doperpowers:critique`.
 A milestone's review uses `doperpowers:task-reviewer`.
 
@@ -68,7 +55,7 @@ session's permissions still matter.
 This port registers roles, not Claude's `Workflow` tool. For a panel, the Codex
 controller orchestrates native agents using the stages and result contract in
 `skills/review-code/references/panel.md`, respecting the available concurrency.
-It does not execute the Claude workflow script or launch the companion runtime.
+It does not execute the Claude workflow script.
 
 ## Verify
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-case-workflow.sh — X1 bench adapter for the codex review PANEL
-# (skills/codex-companion/workflows/code-review.mjs on the `workflow` verb).
+# (archive/codex-companion/workflows/code-review.mjs on the `workflow` verb).
 #
 # Same contract as run-case.sh: one case -> one findings file the adjudication
 # flow reads like any other engine output. Materialization is identical (the
@@ -48,8 +48,8 @@ case_dir="$(cd "$case_dir" && pwd)"
 out="$(cd "$(dirname "$out")" && pwd)/$(basename "$out")"
 bench_root="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$bench_root/../.." && pwd)"
-runtime="$repo_root/skills/codex-companion/runtime/scripts/codex-companion.mjs"
-panel="$repo_root/skills/codex-companion/workflows/code-review.mjs"
+runtime="$repo_root/archive/codex-companion/runtime/scripts/codex-companion.mjs"
+panel="$repo_root/archive/codex-companion/workflows/code-review.mjs"
 case_name="$(basename "$case_dir")"
 
 command -v node >/dev/null || { echo "run-case-workflow: node is required" >&2; exit 2; }
