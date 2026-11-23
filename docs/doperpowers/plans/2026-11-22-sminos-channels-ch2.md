@@ -83,7 +83,7 @@ section lists them), proved as Concrete Steps maps it.
 - [x] (2026-11-22) M9 — What reads a session's exchanges reads a channel's. Built `558faa90`, `ba129c3a`, `81d66f16`; fixes `82a7019d`, `a823a3f9`, `f12f0b65`; three task reviews (the bound), round 3's fixes (`f12f0b65`) made after it and named to the frontier panel. Gates GREEN on `f12f0b65`; sminos-idle 32,756; sminos-channels 2m39s.
 - [ ] The review of M1 to M9 as one range (the holder's), and its fixes.
 - [x] (2026-11-23) M10 — What sessions are taught, and its evaluation. `3a8d7fcd`, fixes `dd8fe8c4`, `afc06877`, `bf9b277f`; three task reviews (the bound), the third approving the texts, its one item the holder's exception below. Evaluated by doperpowers:writing-skills: E1 0/5 to 5/5, E2 strict 0/5 to 2/5 (E2P 2/5 to 5/5), E3 4/5 to 5/5, E4 5/5 (the reply line stays), E5 5/5; the manager's scenarios five of six, the sixth the merge base's.
-- [ ] M11 — Older copies, what is written beside the code, the version, and the acceptance.
+- [x] (2026-11-23) M11 — Older copies, what is written beside the code, the version, and the acceptance. Part A `bad65e43` to `2999c0d6` (the older-copy suite with a 1.54.1 arm, 470 passed; `scripts/CLAUDE.md` read whole; the public face; TECH-DEBT), three task reviews, clean at the third; Part B `86dbdbb9` (sminos 1.55.0), `f7475aae`: the scene `--speak --show` 83 passed, B11's exchange byte for byte the merge base's. Gates GREEN 10 of 10 on `f7475aae`; sminos-idle 32,192; sminos-channels 3m32s.
 - [ ] The merge (the holder's).
 
 ## Words this document adds
@@ -4140,8 +4140,60 @@ them today.
   (the fourth's window no longer resolves; the controller accepted the
   narrowing): blocking items found 22 of 22 as in the recorded run, all
   items 62 of 72 against 63 of 72; one run, no equivalence claimed.
+- 2026-11-23 — **M11 as built.** The older-copy suite runs 1.27.10,
+  1.51.0, 1.52.0 and 1.54.1 (pinned `e678dfb7`) beside this code over a
+  store whose channel holds messages, a lead and a member with mail owed;
+  1.54.1's arm is enrolled and cut over, its channel mail comes down the
+  stand-in's live connection and is stored by its own uplink, its negative
+  checks wait on observed daemon passes (the tick mark moved twice), and
+  this code's pushes after it are settled durably and not repeated by a
+  fresh daemon on a new connection. `scripts/CLAUDE.md` read whole against
+  the tree (thirteen corrections, three contradictions; the channel-id rule
+  stated once with the cleanup retirement as its one lifecycle exception,
+  the sender's notice named as the consumer thread's one push). The wire's
+  comparison with the merge base normalises the plugin's version, which
+  the bump changes. The `sminos-channels` gate keeps its eight minutes
+  (green runs 2m39s to 3m38s). `bump-version.sh --since origin/main` flags
+  doperpowers only because `main` moved ahead of the merge base with
+  doperpowers-only commits; measured from the merge base only sminos
+  changed, and the `version-bump` gate passed.
 
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+CH2 built what the composite gave it: a thread speaks in a channel and is
+answered there, by the reply line its frame carries; a person's untagged
+post goes to the channel's lead; a session that is no member may say into
+a channel and is answered directly; a channel's debt is owed to threads by
+thread id, pushed and woken from the channel's log on this machine and
+across machines, asked about where the endpoint decides reach and carried
+out off the uplink's consumer thread; the readers of a session's exchanges
+read a channel's; and sessions are taught it. A session in no channel
+sends, reads and is taught what it was at the merge base where B11 holds it
+(its roster, its frames and reply lines, its project's calls), and the
+idle gate stayed under its limit throughout (32,192 on the final head).
+
+What it took: eleven milestones, each to the review bound; two whole
+readings of the range by the holder's panel (about forty and about
+forty-two merged findings), answered by two fix waves of thirty and sixteen
+items run in parallel worktrees, each fix from a test that failed before
+it; and one high-rung review of the second wave. Most of what the second
+reading confirmed was one of three classes, of which only the first was
+fixed: defects of the first wave's own code; states that change during a
+wait later than the checks the plan names; files whose permission changes
+under a warm cache. The other two are logged in TECH-DEBT as classes.
+
+Lessons. A fix to a shared function leaks into projects unless a
+project-side test pins the old call; the first wave was caught doing so
+and every later fix carried a `ProjectsAsBefore` pin. A check "after the
+last wait" has to be placed after the actual last wait, and three rounds
+found successively later ones. Evaluation scenarios need fixtures checked
+before the run (the manager's "cannot settle" scenario passed vacuously
+until its fixture was made unsettleable, and then failed on both arms).
+Parallel worktrees made two thirty-item waves tractable at the cost of one
+hand-merged paragraph each time.
+
+Left: the manager's digest does not query when its window cannot settle an
+item (the merge base's; the holder's ruling, a ticket of its own); the
+TECH-DEBT rows of section "sminos channels"; the final panel's reading of
+the range, which is the holder's.
