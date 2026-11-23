@@ -1121,6 +1121,43 @@ class Launch(Channel):
         self.assertEqual(self.launches(), 1)
         self.assertEqual(len(self.woken_got(sid, "reach changed at the line")), 1, "the next pass wakes it, once")
 
+    def at_the_line(self, meanwhile):
+        real, once = threads.wake_line, []
+
+        def wake_line(*a, **k):
+            # The wake waits on the record's lock to write its line; meanwhile() runs then.
+            if not once:
+                once.append(True)
+                meanwhile()
+            return real(*a, **k)
+        return mock.patch.object(threads, "wake_line", wake_line), once
+
+    def test_the_machine_turned_read_only_while_the_wake_writes_its_line_launches_nothing(self):
+        tid, sid = self.stopped()
+        e = self.message((sid, tid), text="read-only at the line")
+        patch, once = self.at_the_line(turn_read_only)
+        with patch:
+            self.deliver()
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 0, "the read-only policy read at the launch boundary")
+        self.assertIsNone((self.waking(tid, sid) or {}).get("line"), "its line taken back")
+        self.deliver()
+        self.assertEqual(self.settled(tid, W1), e["seq"], "refused by the next pass, as before a push")
+        self.assertEqual(self.launches(), 0)
+
+    def test_a_signer_revoked_while_the_wake_writes_its_line_launches_nothing(self):
+        tid, sid = self.stopped()
+        cut_over_to_an_endpoint()
+        e = self.message((sid, tid), text="revoked at the line")
+        patch, once = self.at_the_line(revoke_the_signer)
+        with patch:
+            self.deliver()
+        self.assertEqual(once, [True])
+        self.assertEqual(self.launches(), 0, "the revocation read at the launch boundary")
+        self.deliver()
+        self.assertEqual(self.settled(tid, W1), e["seq"], "marked by the next pass, never delivered")
+        self.assertEqual(self.launches(), 0)
+
     def test_a_session_turned_lane_b_while_the_wake_writes_its_line_launches_nothing(self):
         tid, sid = self.stopped()
         e = self.message((sid, tid), text="lane b at the line")

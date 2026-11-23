@@ -10340,8 +10340,15 @@ def wake_member(project, member, session, e, words=None, due=False, owing=None):
         if owing is not None and not channels_module().still_owed(owing, e, reach=True):
             raise PassLost()
 
-    # A channel's last check made again at the launch boundary itself, past the line's write (wake's `check`).
-    launch_check = {} if owing is None else {"check": checked}
+    def launch_checked():
+        # A channel's last check made again at the launch boundary itself, past the line's write (wake's `check`),
+        # reading what the planner's does (_planned_check): a refusal found there launches nothing, and the next
+        # pass refuses the event as it refuses one before a push.
+        try:
+            _planned_check(owing, e)
+        except _PlannedRefusal:
+            raise PassLost()
+    launch_check = {} if owing is None else {"check": launch_checked}
 
     def gone(outcome="recorded"):
         # What would settle `recorded` here (a stale mark, a seat vacated, the session another thread's or ended,
