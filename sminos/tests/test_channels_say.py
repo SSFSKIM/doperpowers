@@ -530,6 +530,41 @@ class Outsider(Say):
         [c] = [c for _, c in self.project_says(self.project_of(local)) if c.get("copy")]
         self.assertTrue(c["text"].endswith("listed now"), "known listed: its copy kept")
 
+    def test_an_audience_cache_unreadable_at_the_copy_or_an_entry_without_members_keeps_no_copy(self):
+        """An audiences file that cannot be read when the copy is weighed (the event recorded and delivered) is no
+        knowledge: no copy, today's warning, the say a success; nor is an entry that does not say `members`."""
+        self.au.keep_capabilities(["channels", "access"])
+        local = self.loose()
+        ftid, fsid = self.far("faraway")
+        otid, osid, _ = self.open_here("outside", local)
+        self.heard(osid)
+        self.assertTrue(self.au.keep_audience({"t": "audience", **endpoint_standin.audience_frame(fsid, ["m-far"])}))
+        path = self.au.audiences_path()
+        with open(path) as f:
+            kept = f.read()
+        real = sminos.record_copy
+
+        def unreadable_then_copy(home, delivered):
+            with open(path, "w") as f:
+                f.write("{not json")
+            return real(home, delivered)
+        warning = ("delivered; its copy is not kept in loose: the message is for a private session's audience alone, "
+                   "and loose's log is not filtered by audience")
+        with mock.patch.object(sminos, "record_copy", unreadable_then_copy):
+            code, out = self.as_session(osid, "say", "--in", "desk", "@faraway cache gone", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertIn(warning, out)
+        self.assertEqual(len([e for e in self.says() if e["text"].endswith("cache gone")]), 1, "recorded once")
+        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
+        d = json.loads(kept)
+        del d["sessions"][fsid]["members"]
+        with open(path, "w") as f:
+            json.dump(d, f)
+        code, out = self.as_session(osid, "say", "--in", "desk", "@faraway partial entry", cwd=local)
+        self.assertEqual(code, 0, out)
+        self.assertIn(warning, out)
+        self.assertEqual([c for _, c in self.project_says(self.project_of(local)) if c.get("copy")], [], "no copy")
+
     def private(self, sid):
         """The session private, its audience as the endpoint gave it at its record's policyRev."""
         records.set_policy(sid, lambda a, shares: ("private", shares))
