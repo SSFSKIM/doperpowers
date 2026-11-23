@@ -245,7 +245,9 @@ def audience_entry(frame):
     policyRev; its digest, when sent, must be its members'. A local
     session's frame may name `withdrawn`, the members its change at that
     policyRev withdrew (as the endpoint checks an `unlisted` notice), kept
-    with it when it names any (O18 M4)."""
+    with it when it names any (O18 M4). A frame that says nothing of
+    `members` is kept with none (every reader's None, as before), so it is
+    never taken for one that said `members: null` (known_listed)."""
     sid, owners, members, rev = frame.get("session"), frame.get("owners"), frame.get("members"), frame.get("policyRev")
     if not (sminos.UUID_RE.fullmatch(str(sid or "")) and isinstance(owners, list)
             and all(isinstance(o, str) and o for o in owners) and type(rev) is int and rev >= 0):
@@ -258,7 +260,7 @@ def audience_entry(frame):
             return None
     elif frame.get("digest") is not None:
         return None
-    entry = {"owners": sorted(set(owners)), "members": members, "policyRev": rev}
+    entry = {"owners": sorted(set(owners)), **({"members": members} if "members" in frame else {}), "policyRev": rev}
     withdrawn = frame.get("withdrawn")
     if withdrawn is not None:
         if not isinstance(withdrawn, list) or not all(isinstance(m, str) and m for m in withdrawn):
@@ -341,21 +343,31 @@ def audience_of(sid, held=None):
     return list(entry["members"]) if entry and entry.get("members") else None
 
 
-def known_listed(sid, held=None):
-    """Whether a session is known to be listed (or org-wide): a local one's
-    by its record (audience_of), a remote one's by the endpoint's word for
-    it alone. audience_of's None for a remote session with no word is not
-    that knowledge: a channel's copy in a log the hub does not filter asks
-    for it (sminos.record_copy). What cannot be told (an audiences file or
-    a record that cannot be read) is not known."""
+def known_listed(sids):
+    """Whether every session of `sids` is known to be listed (or
+    org-wide), from one read of the kept file: a local one's by its record
+    (audience_of), a remote one's by the endpoint's word for it alone,
+    under a current welcome that lists `access` and from a frame that said
+    `members` (audience_entry keeps no `members` for one that did not).
+    audience_of's None for a remote session with no word is not that
+    knowledge: a channel's copy in a log the hub does not filter asks for
+    it (sminos.record_copy). What cannot be told (an audiences file or a
+    record that cannot be read) is not known."""
     try:
-        held = held if held is not None else _read_audiences()
-        if is_local(sid):
-            return audience_of(sid, held) is None
+        held = _read_audiences()
+        for sid in sids:
+            if is_local(sid):
+                if audience_of(sid, held) is not None:
+                    return False
+                continue
+            entry = entry_of(sid, held)
+            if not ("access" in (held.get("capabilities") or []) and entry is not None and "members" in entry
+                    and entry["members"] is None):
+                return False
     except StreamUnknown:
         return False
-    entry = entry_of(sid, held)
-    return entry is not None and "members" in entry and entry["members"] is None
+    return True
+
 
 def owners_of(sid, held=None):
     """A session's owners, as member ids, as the endpoint resolved them; a

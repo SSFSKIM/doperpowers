@@ -235,6 +235,17 @@ class Streams(tw.Machine):
         link.welcomed_rl10({"t": "welcome", "capabilities": [], "policy": None})
         self.assertFalse(link.visibility or au.capable())
 
+    def test_a_frame_that_says_nothing_of_members_reads_as_a_listed_one_for_a_project(self):
+        """A frame with no `members` key is kept without one (CH2: no knowledge for a channel's copy), and every
+        reader of a project reads it as before: the whole org, its owners kept, a say to it plain."""
+        self.capable()
+        self.assertTrue(au.keep_audience({"t": "audience", "session": R, "owners": [B], "policyRev": 2}))
+        self.assertNotIn("members", au.entry_of(R))
+        self.assertIsNone(au.audience_of(R))
+        self.assertEqual(au.owners_of(R), [B])
+        self.assertEqual([(w, a) for w, a, _, _ in au.stream_for(self.p, None, [{"session": R, "alias": "r"}])],
+                         [(sminos.writer_id(None), None)])
+
     def test_the_hello_advertises_audience(self):
         import sminos_rl10 as rl10
         self.assertIn("audience", rl10.hello_frame("t" * 64, "1", None)["capabilities"])

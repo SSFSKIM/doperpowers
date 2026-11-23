@@ -10448,9 +10448,8 @@ UNHELD_LIVE = "live"
 def _copy_known_listed(delivered):
     """Whether every recipient the delivering events name is known to be
     listed (sminos_audience.known_listed)."""
-    au = audience_module()
-    return all(au.known_listed(r.get("session")) for _, e in delivered
-               if isinstance(e.get("to"), list) for r in e["to"] if isinstance(r, dict))
+    return audience_module().known_listed([r.get("session") for _, e in delivered if isinstance(e.get("to"), list)
+                                           for r in e["to"] if isinstance(r, dict)])
 
 
 def record_copy(home, delivered):
