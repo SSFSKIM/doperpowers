@@ -9564,14 +9564,17 @@ def ended_refusal(raw, m):
 
 
 BARE_NAME = "a bare name reaches only your project; %s reaches anyone"
+BARE_NAME_SHARED = "a bare name reaches your project and the channels you are in; %s reaches anyone"
 
 
-def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
+def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=(), shared=False):
     """Exit 4 for a name no member of `scope` answers to: what the scope still
     knows of it (unreachable_hint), then what the projects a bare name is
     read in as an id (`ids`: the org, the tier its live lookup read) know of
     it as one; else the members of other projects with that alias
-    (`elsewhere`), each as the name that reaches it; else plainly none."""
+    (`elsewhere`), each as the name that reaches it, and what a bare name
+    reaches (`shared`: a sender in channels, whose bare name reads them
+    too); else plainly none."""
     hint = unreachable_hint(raw, name, short, scope, at) or unreachable_hint(raw, name, short, ids, at, ids_only=True)
     if hint:
         die(hint, EXIT_UNKNOWN)
@@ -9583,7 +9586,8 @@ def no_member(raw, name, short, scope, elsewhere=(), at="@", ids=()):
         where += ", nor a session of that id in any project known here"
     if elsewhere:
         die("no member %s in %s; elsewhere: %s\n%s" % (raw, where, candidate_labels(elsewhere, True, at),
-                                                        BARE_NAME % ("@short" if at else "a session's short")),
+                                                        (BARE_NAME_SHARED if shared else BARE_NAME)
+                                                        % ("@short" if at else "a session's short")),
             EXIT_UNKNOWN)
     die("no member %s in %s" % (raw, where), EXIT_UNKNOWN)
 
@@ -9656,7 +9660,7 @@ def _resolve_tag(project, t):
         return one_member(raw, found, True)
     no_member(raw, name, short, [project],
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id],
-              ids=org_scope())
+              ids=org_scope(), shared=bool(rows))
 
 
 def _with_shared(name, project, rows):
@@ -20001,9 +20005,10 @@ def guide_text(session, launch, source="", title=""):
         " status nobody must act on goes here" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches your project and the channels you are in" % cli,
-        '  %s say --in <channel> "@<alias>|@all ..."   said in a channel, as is "@<channel>/<alias> ...";'
-        " untagged there prompts no one. A channel holds sessions of several projects on one piece of work:"
-        " `%s channel create <name>`, then `channel add <name> <project>/<alias>|<short>...`" % (cli, cli),
+        '  %s say --in <channel> "@<alias> ..."   said in a channel, as is "@<channel>/<alias> ...";'
+        " there @all reaches its live members, and untagged prompts no one. A channel holds sessions of several"
+        " projects on one piece of work: `%s channel create <name>`, then `%s channel add <name> <thread>...`,"
+        " each thread as <project>/<alias> or its short" % (cli, cli, cli),
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
         " same flags (they combine) but you" % cli,
         "  %s say - <<'EOF'   the text on stdin, as written: for text with backticks, quotes, $ or several lines"

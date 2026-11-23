@@ -265,6 +265,8 @@ class Bare(Names):
         self.assertEqual(code, sminos.EXIT_UNKNOWN, out)
         self.assertIn("no member @loner in project", out)
         self.assertIn("elsewhere: @app/loner#%s" % loner[:8], out)
+        self.assertIn("a bare name reaches your project and the channels you are in; @short reaches anyone", out,
+                      "the refusal names what a bare name reaches for a sender in a channel (CH2's M10)")
 
     def test_a_sender_in_no_channel_reads_no_roster(self):
         _, sid = self.sender()

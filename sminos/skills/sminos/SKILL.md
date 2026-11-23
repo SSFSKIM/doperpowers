@@ -20,10 +20,12 @@ unless it declares another with `join`. Every session in a project is a
 **member** from its start: the sessions your human partner opened and the
 ones sminos spawned alike. Members are siblings; the host is the human.
 
-Every member is a **thread**: an identity that outlives its process. A
+A member is a **thread**: an identity that outlives its process. A
 thread whose process ends is `stopped`, still a member, and a message
 addressed to it wakes it; it ends when retired or after three days
-stopped. A **seat** is the named position a background session sminos
+stopped. A session MAWS launched is the exception: a member but no
+thread, it ends with its process, sminos never wakes it, and it is in
+no channel. A **seat** is the named position a background session sminos
 spawned fills; a fill or a hand-off to a background job is the same
 thread under a new session id, and a `/clear` starts a new one.
 
@@ -32,9 +34,12 @@ its own: where sessions of several repositories that work on one thing
 talk (below). A project's log is the channel its own members share.
 
 What crosses sessions — a message, a message to the human, a join,
-an in-charge line — is an event in a log, which every enrolled machine
-reads: your project's, or a channel's. Git and board events are not
-copied in: name the commit, PR, or ticket.
+an in-charge line — is an event in a log. A channel's log holds only
+what is said in that channel, and only its members' machines read it;
+your project's holds the rest (what is said in the project, every message
+to the human, joins, in-charge lines), and every enrolled machine reads
+it. Git and board events are not copied in: name the commit, PR, or
+ticket.
 
 ## Who is here
 
@@ -169,13 +174,15 @@ record nobody is prompted for.
 A frame from a channel names it (`[sminos chat desk-integration …]`), and
 its reply line's tag, `@<channel id>/<short>`, names that channel and the
 sender's thread: run the line as given, with your text, and the reply
-stays in the channel. A reply by any other tag (`@<short>`, `@<alias>`)
-goes to the sender's project instead, out of the channel. A reply that
-holds code goes on stdin as any such text does, that same tag first.
+stays in the channel. A direct `@<short>` (or `@<alias>`) instead goes
+to the sender's project, out of the channel. If the sender has left the
+channel since, the line's tag reaches it directly, in its project, and
+says so. A reply that holds code goes on stdin as any such text does,
+that same tag first.
 
 A thread that is not in a channel may say into it, and only members hear
 it: your line then says you are not in it, and answers come to you
-directly, in your own project. Placing yourself in it (`channel add
+directly, in your own project. Placing yourself in it (`sminos channel add
 <channel>`) is for a thread that will work there.
 
 ## Your lines and your project

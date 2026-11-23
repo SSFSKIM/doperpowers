@@ -131,11 +131,13 @@ assert_contains "$first" "You are a thread: a member still when this process end
 assert_contains "$OUT" "a bare @alias reaches your project and the channels you are in" \
   "a bare tag is said to reach the project and the channels the session is in (CH2's M10)"
 assert_not_contains "$OUT" "reaches only your project" "never that a bare tag reaches only the project"
-assert_contains "$OUT" '  sminos say --in <channel> "@<alias>|@all ..."   said in a channel, as is "@<channel>/<alias> ..."' \
-  "it names the two ways to speak in a channel"
-assert_contains "$OUT" "untagged there prompts no one" "and that an untagged post there prompts no one"
-assert_contains "$OUT" '`sminos channel create <name>`, then `channel add <name> <project>/<alias>|<short>...`' \
-  "and how one is made"
+assert_contains "$OUT" '  sminos say --in <channel> "@<alias> ..."   said in a channel, as is "@<channel>/<alias> ..."' \
+  "it names the two ways to speak in a channel, each a whole command with one tag"
+assert_not_contains "$OUT" '@<alias>|' "no quoted body offers alternatives a copy would keep as an invalid tag"
+assert_contains "$OUT" "there @all reaches its live members, and untagged prompts no one" \
+  "the alternatives to one tag are told outside the quotes"
+assert_contains "$OUT" '`sminos channel create <name>`, then `sminos channel add <name> <thread>...`, each thread as <project>/<alias> or its short' \
+  "and how one is made, each command whole"
 assert_not_contains "$OUT" "Your thread is in the channel" "a thread in no channel is given no channel line"
 # A session MAWS launched (lane B: its record's origin) is a member and no thread: it is not told it is one.
 REC="$SMINOS_HOME/session-records/$S1.json"
