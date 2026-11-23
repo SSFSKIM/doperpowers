@@ -3805,6 +3805,22 @@ them today.
     session id another thread reuses), a writing machine's log kept open
     until its message has gone up (a follower leaves only after a day), and
     the read-only refusal after a launch.
+- 2026-11-22 — **The holder's rulings on M6 and the range review of M2 to
+  M6.** (1) The import of a relayed channel event on the uplink's consumer
+  thread (`HubLog.take` → `append_verbatim`, a log's writer locks with no
+  deadline) is the base's, as for a project's log and CH1's requests; the
+  consumer-thread constraint binds what this child adds there (the asks,
+  the answers, a message's upload). Its TECH-DEBT row stands, no deferral
+  is built, and the frontier's consumer-thread lens is told this path is
+  ruled out of scope. (2) The `sminos-channels` gate's timeout is 6
+  minutes from M6 on (`09139114`; 2m48s at M6, twice rounded up), said in
+  the pull request's body. (3) The range review of M2 to M6 ran on the
+  medium rung (the high rung's reviewer stopped on a gateway error) and is
+  accepted as that review; the frontier panel reads the range on the
+  frontier model. (4) Row D13, a writing machine's log kept open until its
+  message has gone up, and the read-only refusal after a launch are proved
+  by unit tests; if M11's scene has a writing machine that holds no member,
+  it shows that machine's log staying open until its message has gone up.
 
 
 ## Outcomes & Retrospective
