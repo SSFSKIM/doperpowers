@@ -820,6 +820,21 @@ class Refused(Say):
         self.refused(*self.as_session(ssid, "say", "@desk/%s hi" % gone_tid[:8]),
                      "@desk/%s was in desk and cannot be reached now (it has ended, or this machine may not read it): "
                      "nothing was recorded" % gone_tid[:8], 4, before)
+        code, out = self.as_session(ssid, "say", "--in", "desk", "@%s hi" % gone_tid)
+        self.refused(code, out, "@%s was in desk and cannot be reached now (it has ended, or this machine may not "
+                     "read it): nothing was recorded" % gone_tid, 4, before)
+        self.assertNotIn(channels.DROP_IN, out, "no row reaches it: dropping --in would not either")
+
+    def test_a_reply_line_to_a_thread_that_left_refused_by_say_tells_no_one_it_was_sent(self):
+        """The direct route says `sent to it directly` once its message is recorded, before the `recorded` line;
+        a refusal there (here: the thread that left is the sender's own) records nothing and says no such thing."""
+        stid, ssid, _ = self.live("writer")
+        self.live("reader")
+        self.removed(stid, ssid)
+        before = self.logs()
+        code, out = self.as_session(ssid, "say", "@desk/%s to myself" % stid[:8])
+        self.refused(code, out, "you cannot tag yourself", 2, before)
+        self.assertNotIn("sent to it directly", out)
 
     def test_the_enrollment_does_not_carry_the_channels_log(self):
         stid, ssid, _ = self.live("writer")

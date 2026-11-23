@@ -1995,12 +1995,13 @@ def speak(channel, a, session, tags):
                                       then=DROP_IN if via_in else "")
             raw = run[i] if i < len(run) else t["raw"]
             if where == "out":
-                if via_in:
-                    sminos.die(LEFT_WITH_IN % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
                 if m is None or p.id not in {q.id for q in sminos.org_scope()}:
                     # Ended, or in a project a short tag may not write into (retired in the org's directory, or
-                    # left this machine): the guard `@<short>` meets, before anything is appended or said.
+                    # left this machine): the guard `@<short>` meets, before anything is appended or said, with or
+                    # without --in (dropping it would reach nothing either).
                     sminos.die(CANNOT_REACH % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
+                if via_in:
+                    sminos.die(LEFT_WITH_IN % (t["raw"], channel.name), sminos.EXIT_UNKNOWN)
                 outs.setdefault(p.id, (p, []))[1].append((t, m, (i, raw)))
                 continue
             r = _entry_of(channel, p, m)
@@ -2028,16 +2029,16 @@ def speak(channel, a, session, tags):
         if outs:
             # Sent to the thread directly, in its own project, by a project's say (C5: a reply to a member that left).
             [(dest, got)] = outs.values()
-            direct, draws = [], []
+            direct, draws, told = [], [], []
             for t, m, place in got:
-                print(SENT_DIRECTLY % (t["raw"], channel.name, dest.name))
+                told.append(SENT_DIRECTLY % (t["raw"], channel.name, dest.name))
                 at = next((j for j, x in enumerate(direct) if x["session"] == m.session), None)
                 if at is None:
                     direct.append({"session": m.session, "alias": m.alias})
                     draws.append([])
                     at = len(direct) - 1
                 draws[at].append(place)
-            sminos.say_into(a, dest, home, session, sender, writer, kind, direct, False, draws)
+            sminos.say_into(a, dest, home, session, sender, writer, kind, direct, False, draws, told=told)
             return
         raws = held
     if not tags and not session and a.notice is None:

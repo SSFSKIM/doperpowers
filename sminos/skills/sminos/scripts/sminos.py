@@ -10811,7 +10811,7 @@ def cmd_say(a):
     say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws)
 
 
-def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None):
+def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None, told=()):
     """A tagged or untagged say's appends and deliveries, its destination
     and recipients resolved: one event per audience its recipients give
     (streams_for), a copy in the sender's own project where the message
@@ -10821,7 +10821,10 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
     `said` (a sminos_channels.Said) is given for a channel's log, and only
     then: the fields its events add (the sender's `thread`, an outsider's
     `from_project`), whether a copy is kept, the line said after the
-    `recorded` lines, and the roster's rows deliver_say reads."""
+    `recorded` lines, and the roster's rows deliver_say reads.
+    `told`: lines said once the first event is appended, before its
+    `recorded` line (a channel's reply rerouted to a thread that left it):
+    a refusal, or an append that fails, says none of them."""
     if sid:
         if wake:
             recipients = [r for r in recipients if r["session"] != sid]
@@ -10852,6 +10855,9 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
             e = log_append(dest, split_writer, kind, **fields)
         except OSError as err:
             die("say could not be recorded: %s" % err, 1)
+        for line in told:
+            print(line)
+        told = ()
         if e["seq"] is None:
             print(waits_line(dest, split_writer))
             continue
