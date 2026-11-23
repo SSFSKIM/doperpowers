@@ -729,11 +729,8 @@ class LastCheck(Channel):
 
 
 class Bracket(Channel):
-    """A home whose path holds a bracket, which the base's membership scan reads as a pattern
-    (_membership_in_effect's glob, behind last_project and member_project_now; a TECH-DEBT row). That scan
-    keeps a thread from being placed in a channel there at all (CH1's change answers `between`), so the record is
-    staged by hand and the Owing given: what is proved is that delivery's own last check reads by literal
-    paths."""
+    """A home whose path holds a bracket. The record is staged by hand and the Owing given: what is proved is that
+    delivery's own last check reads by literal paths (BracketMembership places a thread through the scan)."""
 
     def setUp(self):
         real = T1.tempfile.mkdtemp
@@ -756,6 +753,25 @@ class Bracket(Channel):
         self.assertEqual(self.deliver(), (1, [row.alias]), "the channel's own pass finds its row, as anywhere")
         self.assertEqual(len(self.got(received, "bracketed")), 1)
         self.assertEqual(self.settled(tid, W1), e["seq"])
+
+
+class BracketMembership(Bracket):
+    """The same home: a session's membership is found there (the scan's glob escapes the home), so a thread is
+    placed in a channel and pushed to as anywhere."""
+
+    def test_a_sessions_membership_is_found_and_its_thread_placed_in_a_channel_under_a_bracketed_home(self):
+        self.assertIn("[", os.environ["SMINOS_HOME"])
+        tid, sid, received = self.live()
+        sminos.forget_caches()
+        self.assertEqual(sminos.last_project(sid).id, self.p.id)
+        self.assertEqual(sminos.member_project_now(sid).id, self.p.id)
+        self.assertIn(DESK, threads.get(tid)["channels"])
+        e = self.message((sid, tid), text="placed")
+        self.deliver()
+        self.assertEqual(len(self.got(received, "placed")), 1)
+        self.assertEqual(self.settled(tid, W1), e["seq"])
+
+    test_the_last_check_holds_and_a_member_is_pushed_to_under_a_home_whose_path_holds_a_bracket = None
 
 
 # ------------------------------------------------------------ membership read in the thread's own project
