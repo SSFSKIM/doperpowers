@@ -154,33 +154,6 @@ PLAN
         echo "    got: $rp_explicit"
     fi
 
-    # --- SPEC_SINCE adds the spec's own changes since its approval ---
-    ( cd "$repo" \
-        && printf 'acceptance narrowed\n' >> plan-a.md \
-        && git add plan-a.md \
-        && git "${git_id[@]}" commit -qm "spec: acceptance narrowed" )
-    ( cd "$repo" && SPEC_SINCE=HEAD~1 "$SDD_SCRIPTS/review-package" plan-a.md HEAD~1 HEAD "$TEST_ROOT/since.diff" >/dev/null )
-    if grep -q '^## The spec since its approval' "$TEST_ROOT/since.diff" \
-        && grep -q 'spec: acceptance narrowed' "$TEST_ROOT/since.diff" \
-        && grep -q '{+acceptance narrowed+}' "$TEST_ROOT/since.diff"; then
-        pass "review-package with SPEC_SINCE carries the spec's changes since approval"
-    else
-        fail "review-package with SPEC_SINCE carries the spec's changes since approval"
-    fi
-    if ! grep -q '^## The spec since its approval' "$TEST_ROOT/explicit.diff"; then
-        pass "review-package without SPEC_SINCE adds no spec section"
-    else
-        fail "review-package without SPEC_SINCE adds no spec section"
-    fi
-    rc=0
-    (cd "$repo" && SPEC_SINCE=nosuchrev "$SDD_SCRIPTS/review-package" plan-a.md HEAD~1 HEAD "$TEST_ROOT/bad.diff" >/dev/null 2>&1) || rc=$?
-    if [[ "$rc" -eq 2 ]]; then
-        pass "review-package with a bad SPEC_SINCE errors with exit 2"
-    else
-        fail "review-package with a bad SPEC_SINCE errors with exit 2"
-        echo "    exit: $rc"
-    fi
-
     # --- Worktree isolation: a linked worktree resolves its own workspace ---
     local wt="$TEST_ROOT/wt"
     ( cd "$repo" && git worktree add -q "$wt" -b wt-feature )

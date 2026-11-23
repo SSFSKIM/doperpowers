@@ -253,9 +253,11 @@ are stated here once: in the milestone they belong to, or among the
 constraints when they span milestones. Its last section, `## For the
 composite's writer`, is state, like Progress: each sentence of the
 composite this child's work makes false or incomplete, with the replacement
-proposed. Until the writer rewrites the composite that list is what says
-which text governs, and an entry leaves it when the parent pin moves past
-the rewrite. The SDE loop reads the document like any spec.
+proposed. An advisory sentence the child overturns is replaced by the
+child's own text from then on; a binding one stands until the composite's
+writer rules, and the entry is the proposal. An entry leaves the list when
+the parent pin moves past the rewrite. The SDE loop reads the document like
+any spec.
 
 ## Where reasoning lives
 
@@ -274,12 +276,12 @@ review finding, a discovery, a gap resolved while building — rewrite every
 section the change touches so the document reads as if it had always said
 this: the rule and its reason, with nothing in it that a reader who never
 saw the earlier text could tell had changed. Who ruled, when, in whose
-words, and what the text said before go in the commit message. Every executor and reviewer
-reads the whole document, and a superseded statement left standing, or a
-sentence that tells its own history, is one more thing each of them must
-reconcile. A statement about the system's stages — what holds between two
-releases, what a later milestone builds, what the code on the branch still
-does — is design, not history, and stays.
+words, and what the text said before go in the commit message. Every
+executor and reviewer reads the whole document, and a superseded statement
+left standing, or a sentence that tells its own history, is one more thing
+each of them must reconcile. A statement about the system's stages — what
+holds between two releases, what a later milestone builds, what the code on
+the branch still does — is design, not history, and stays.
 
 What is learned while building is written where it bears:
 
@@ -299,12 +301,12 @@ A decision that code, tests, or another document cites carries an id
 (`C5`, `X8`); a rewrite keeps the id, and a withdrawn id is not reused.
 
 **History is git.** Commit a change of course apart from other work; its
-message is the only account of the change. The
-baseline is the commit your human partner approved: the spec's first
-commit, made as the approved design before any review or execution alters
-it, or the commit a Progress line names when approval came later. Read
-history at the grain these documents have: `git log -- <spec>` for the
-changes, `git log -L '/^### <heading>/,/^##/:<spec>'` for one section,
+message is the only account of the change. The baseline is the commit your
+human partner approved: the spec's first commit, made as the approved
+design before any review or execution alters it, or the commit a Progress
+line names when approval came later. Read history at the grain these
+documents have: `git log -- <spec>` for the changes,
+`git log -L '/^### <heading>/,/^##/:<spec>'` for one section,
 `git diff --word-diff <commit> -- <spec>` for everything since an approval
 or a pin.
 

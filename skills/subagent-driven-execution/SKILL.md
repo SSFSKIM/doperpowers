@@ -142,11 +142,16 @@ or brainstorm first.
    doperpowers:review-code against `<base>` at the rung the spec's
    verification names, or the level the branch warrants when none is
    named — a rung agent, or the panel for a large branch — with its own
-   package (`SPEC_SINCE=<the approved commit> scripts/review-package
-   SPEC_FILE MERGE_BASE HEAD`, MERGE_BASE = `git merge-base main HEAD`).
-   `SPEC_SINCE` adds the spec's own changes since approval: this reviewer
-   is the one reader placed to see an acceptance item reduced or a design
-   decision changed along the way.
+   package (`scripts/review-package SPEC_FILE MERGE_BASE HEAD`,
+   MERGE_BASE = `git merge-base main HEAD`). Its brief names the spec and
+   the commit your human partner approved — for a child of a composite,
+   the composite and the child's parent pin as well — and asks the
+   reviewer to read `git diff --word-diff <commit> <head> -- <file>` for
+   an acceptance item reduced or a design decision changed along the way:
+   a spec first committed on the branch shows in the branch diff only as
+   its final text. The panel takes no brief, so when the review is the
+   panel those facts go up with the pinned range to the session that
+   runs it.
    Then write the spec's `## Outcomes & Retrospective` entry, commit it,
    and integrate the branch ([isolated-workspace.md](isolated-workspace.md), "At finish").
 

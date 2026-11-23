@@ -5,8 +5,6 @@
 # tasks intact.
 #
 # Usage: review-package SPEC_FILE BASE HEAD [OUTFILE]
-# SPEC_SINCE=<commit> in the environment adds the spec's own changes from
-# that commit (its approval) to HEAD, for the whole-branch review.
 # Default OUTFILE: <repo-root>/.doperpowers/sde/<spec-basename>/review-<base7>..<head7>.diff
 # (named per range, so a re-review after fixes gets a distinct fresh file).
 set -euo pipefail
@@ -23,10 +21,6 @@ head=$3
 
 git rev-parse --verify --quiet "$base" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
 git rev-parse --verify --quiet "$head" >/dev/null || { echo "bad HEAD: $head" >&2; exit 2; }
-since=${SPEC_SINCE:-}
-if [ -n "$since" ]; then
-  git rev-parse --verify --quiet "$since" >/dev/null || { echo "bad SPEC_SINCE: $since" >&2; exit 2; }
-fi
 
 if [ $# -eq 4 ]; then
   out=$4
@@ -46,13 +40,6 @@ fi
   echo
   echo "## Diff"
   git diff -U10 "${base}..${head}"
-  if [ -n "$since" ]; then
-    echo
-    echo "## The spec since its approval (${since}): every change to it, word by word"
-    git log --format='- %h %s' "${since}..${head}" -- "$plan"
-    echo
-    git diff --word-diff "${since}..${head}" -- "$plan"
-  fi
 } > "$out"
 
 commits=$(git rev-list --count "${base}..${head}")

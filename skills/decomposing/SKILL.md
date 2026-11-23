@@ -139,7 +139,7 @@ outward-facing batch action — do not touch the board before approval.
 ## Upward Revision
 
 Children read the parent's current state at dispatch — the dispatch
-stamps `parent-pin:` (the parent, plus a hash of the parent's
+stamps `parent-pin:` (the parent's commit, plus a hash of the parent's
 body as the child received it) into the child
 so "what contract did this child execute" is always answerable. A child
 revises its own means freely — and overturning advisory inheritance is
@@ -153,8 +153,8 @@ binding content the child never edits). That session judges
 materiality, rewrites the parent, and tells affected in-flight
 children. Purpose changes and material acceptance reductions go to the
 human. At final recomposition it runs the lineage check:
-every child's pin against the final parent revision (`git diff <pin> --
-<composite>`, read against what the child built) — incorporated,
+every child's pin against the final parent revision (`git diff <the
+pin's commit> -- <composite>`, read against what the child built) — incorporated,
 explicitly irrelevant, or a corrective child.
 
 ## The Pipeline
@@ -227,7 +227,9 @@ share no design surface, so there was nothing to mature jointly; phases
    the child's retrospective and the Tracking Map points at it. What a
    leaf's residue rulings change in this document, its one writer rewrites
    into the child's section (below). As children land, the tracking map
-   and the sections their work touched stay current; when
+   and the sections their work touched stay current (a composite in the
+   earlier form continues its Decision Log and Surprises, as
+   living-spec.md says under "Keeping the spec current"); when
    the children are all in, close the parent by RECOMPOSITION — verify the
    parent's own acceptance, then write the retrospective; the Deferred
    section seeds the next cut.
