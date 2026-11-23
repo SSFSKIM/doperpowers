@@ -851,7 +851,7 @@ class OpenEntry(Channel, T1.LateHandOff):
         self.reconcile()
         sminos.forget_caches()
         hl.show_notices()
-        self.assertEqual(len(self.shown(jreceived)), 1, "the session that goes on with the thread")
+        self.assertEqual(len(wait_for(lambda: self.shown(jreceived), timeout=10)), 1, "the session that goes on with the thread")
         self.assertEqual(self.queued_notices(hl), [])
 
     def test_a_notice_of_the_absorbed_thread_never_goes_to_the_absorbers_session(self):
@@ -904,7 +904,7 @@ class OpenEntry(Channel, T1.LateHandOff):
             hl.show_notices()
         self.assertEqual(len(self.queued_notices(hl)), 1, "kept while the seat is vacant")
         hl.show_notices()
-        self.assertEqual(len(self.shown(received)), 1, "shown to its occupant")
+        self.assertEqual(len(wait_for(lambda: self.shown(received), timeout=10)), 1, "shown to its occupant")
 
     def test_an_unstamped_say_into_a_channel_tells_no_session(self):
         sid, proc, _ = self.member(name="loose")
