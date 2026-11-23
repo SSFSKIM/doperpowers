@@ -541,7 +541,7 @@ speak_machines() {
     until_true caps_kept || true
   done
   on pa alpha
-  sees_b() { (cd "$T/pa/app" && "$SMINOS" list --org 2>/dev/null) | grep -q "birch"; }
+  sees_b() { (cd "$T/pa/app" && "$SMINOS" list --org --all 2>/dev/null) | grep -q "birch"; }   # B stopped: shown by --all
   speak_pass sees_b || true
   TA="$(thread_of "$SA")"
 }
