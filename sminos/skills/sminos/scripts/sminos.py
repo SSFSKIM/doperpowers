@@ -8205,9 +8205,11 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     `due` as deliver_next's. The caller holds the session's delivery lock.
     With `owing` (a channel's log) the last check (sminos_channels.
     still_owed) is made first, for this event, again by the wake around
-    its launch, and again with the session's reach after the receipts'
-    planner, which may have waited for its lock (a kept word's binding,
-    CH2's M6): one that fails raises PassLost, nothing handed over; the
+    its launch, and again with the session's reach under the receipts'
+    lock, once the planner has waited for it and before it writes a
+    receipt (a kept word's binding, CH2's M6), so a push stopped there
+    leaves no receipt carrying its stale verdict: one that fails raises
+    PassLost, nothing handed over; the
     session's membership is read in the thread's own project. A push that
     comes back `recorded` is that stop too, unless it is an event for the
     live alone whose thread is stopped (stopped_for_the_live) or it follows
@@ -8241,11 +8243,8 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
             # A retry's process may have ended since holder_owed saw it: no pid,
             # and plan() leaves the receipt owed for a later launch.
             plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
-                                        words=words, **_th(owing))
-            if owing is not None and not channels_module().still_owed(owing, e, reach=True):
-                # The planner may have waited for the receipts' lock: the last check, the thread's session and
-                # its reach as the word was asked for among it (CH2's §4), made again before the text goes.
-                raise PassLost()
+                                        words=words, **_th(owing),
+                                        **({} if owing is None else {"check": lambda: _still_owed_or_lost(owing, e)}))
             outcome = holder_carry(plan, project, member, session, e, events, cursor, peer, **_kw(owing))
         if locks is None and owing is not None and outcome == "recorded" \
                 and not stopped_for_the_live(owing, e, session):
@@ -8264,6 +8263,13 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
         return outcome
     finally:
         unlock(locks or [])
+
+
+def _still_owed_or_lost(owing, e):
+    """The receipts' planner's check for a channel's push (holder_push):
+    the last check with the session's reach, raising PassLost when it fails."""
+    if not channels_module().still_owed(owing, e, reach=True):
+        raise PassLost()
 
 
 def woken_unpushed(session, outcome="recorded", owing=None, e=None):

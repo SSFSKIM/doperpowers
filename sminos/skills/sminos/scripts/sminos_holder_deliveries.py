@@ -601,7 +601,7 @@ def _attempt(n, proc, launch, body):
 
 
 def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False, prepare=True, thread=None,
-         lock_until=None):
+         lock_until=None, check=None):
     """What a deliverer does with the log event `e` owed to `session`, whose
     live process is `peer_pid` (None: none runs), as the module's contract
     says, preparing a receipt durably when it is to be pushed. The caller
@@ -614,10 +614,16 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
     by (key_hash) and kept in its key beside its session. `lock_until`:
     the receipts' lock is only tried until then (sminos.LockBusy past it),
     for a channel's choice of what to ask on the uplink's consumer thread
-    (CH2's M6); without it, waited for as always."""
+    (CH2's M6); without it, waited for as always. `check`: called once the
+    lock is held, before anything is read or written, and raises to stop:
+    a channel's last check made after the wait for the lock, so a push
+    that fails it leaves no receipt prepared for its stale verdict and an
+    earlier one as it was (CH2's M6)."""
     keyhash = key_hash(project_id, session, e["writer"], e["seq"], **_thread(thread))
     path = _receipt_path(keyhash)
     with _receipts_lock(lock_until):
+        if check is not None:
+            check()
         try:
             r = _read(path)
         except Unreadable as err:

@@ -2148,31 +2148,43 @@ class Messages(Delivering):
         self.assertEqual(len(self.got(received, "a late word")), 1, "delivered on the answer for the reach now")
 
     def test_a_change_of_access_while_the_receipts_are_planned_hands_nothing_over_on_that_word(self):
-        """Review round 1: the push may wait in the receipts' planner after the word was taken; the word's
-        binding (the reach among it) is checked again after that wait, before the text is handed over."""
-        tid, sid, proc, received = self.live_member()
-        self.message((sid, tid), text="planned meanwhile")
-        link = self.link()
-        self.ask_pass(link)
-        [ask] = self.asks(link)
-        self.answer(link, ask, "deliver")
+        """Review rounds 1 and 2: the push may wait for the receipts' lock after the word was taken; the word's
+        binding (the reach among it) is checked under that lock, before a receipt is written, so a process that
+        activated receipts (`gate`) is left no prepared receipt carrying the stale verdict, and a later ordinary
+        pass hands nothing over on it: the message is asked about again, for the reach as it is now."""
         hd = sminos.holder_module()
         real = hd.plan
+        for gate in (False, True):
+            for kind in ("say", "human"):
+                with self.subTest(gate=gate, kind=kind):
+                    tid, sid, proc, received = self.live_member(name="planned%d%s" % (gate, kind[0]))
+                    if gate:
+                        self.assertEqual(hd.activate(proc.pid, "launch-1", sid)["mode"], "gate")
+                    text = "planned meanwhile %s %s" % (gate, kind)
+                    writer = W1 if kind == "say" else "%s/human" % FAR
+                    self.message((sid, tid), writer=writer, kind=kind, text=text)
+                    link = self.link()
+                    self.ask_pass(link)
+                    [ask] = [f for f in self.asks(link) if f["event"].get("text") == text]
+                    self.assertEqual(ask["t"], "reach?" if kind == "say" else "words?")
+                    self.answer(link, ask, "deliver" if kind == "say" else "words")
 
-        def plan(*a, **k):
-            records.set_policy(sid, lambda access, shares: ("private", []))
-            sminos.forget_caches()
-            return real(*a, **k)
-        with mock.patch.object(hd, "plan", plan):
-            self.carry()
-        self.assertEqual(self.got(received, "planned meanwhile"), [], "nothing handed over on that word")
-        self.assertEqual(self.kept(), [])
-        self.assertEqual(self.owed_to(tid), [(W1, 1)], "still owed")
-        self.ask_pass(link)
-        [again] = [f for f in self.asks(link) if f["id"] != ask["id"]]
-        self.answer(link, again, "deliver")
-        self.carry()
-        self.assertEqual(len(self.got(received, "planned meanwhile")), 1, "delivered on the answer for the reach now")
+                    def plan(*a, real=real, sid=sid, **k):
+                        records.set_policy(sid, lambda access, shares: ("private", []))
+                        sminos.forget_caches()
+                        return real(*a, **k)
+                    with mock.patch.object(hd, "plan", plan):
+                        self.carry()
+                    self.assertEqual(self.got(received, text), [], "nothing handed over on that word")
+                    self.assertEqual(self.kept(), [])
+                    self.carry()   # an ordinary pass: no receipt the stopped attempt prepared stands for the word
+                    self.assertEqual(self.got(received, text), [], "nor by the next ordinary pass")
+                    self.assertEqual(self.owed_to(tid)[-1], (writer, self.owed_to(tid)[-1][1]), "still owed")
+                    self.ask_pass(link)
+                    [again] = [f for f in self.asks(link) if f["event"].get("text") == text and f["id"] != ask["id"]]
+                    self.answer(link, again, "deliver" if kind == "say" else "words")
+                    self.carry()
+                    self.assertEqual(len(self.got(received, text)), 1, "delivered on the answer for the reach now")
 
     def test_a_word_released_after_a_hand_off_is_dropped_and_the_message_asked_for_the_job(self):
         handed = {}
