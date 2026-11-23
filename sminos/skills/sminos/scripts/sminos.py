@@ -13303,10 +13303,21 @@ class ThreadTarget(Member):
     session is read to be in again."""
 
 
+class ThreadSeat(dict):
+    """A seat find_target answers for a name through a channel
+    (_through_channel): the seat's record, with `thread` (an attribute,
+    never a key, so nothing of it is written back) the thread the name
+    resolved, which _target's readers act on as ThreadTarget's."""
+
+    def __init__(self, seat, thread):
+        super().__init__(seat)
+        self.thread = thread
+
+
 def resolved_thread(m):
-    """The thread a verb's member target is bound to: a name through a channel's (ThreadTarget), else None (a
-    project's name: its session's thread, read where the verb acts)."""
-    return m.thread if isinstance(m, ThreadTarget) else None
+    """The thread a verb's target is bound to: a name through a channel's (ThreadTarget, ThreadSeat), else None
+    (a project's name: its session's thread, read where the verb acts)."""
+    return m.thread if isinstance(m, (ThreadTarget, ThreadSeat)) else None
 
 
 def _through_channel(q, channel, name, short, scope):
@@ -13333,7 +13344,7 @@ def _through_channel(q, channel, name, short, scope):
     # A name that matched the session, not the seat (its short, a session's id, an alias the session held before),
     # binds that session, as the lookup below binds one; a thread's id (a seat's is its own) does not.
     bound = how in ("short", "session", "former")
-    return ("seat", m.seat, m.session if bound else "") if m.seat else \
+    return ("seat", ThreadSeat(m.seat, got[0]), m.session if bound else "") if m.seat else \
         ("member", project, ThreadTarget(*m._replace(thread=got[0])))
 
 

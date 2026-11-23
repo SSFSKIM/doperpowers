@@ -725,6 +725,40 @@ class Frontier2(Names):
         t = channels._target("victim#%s" % s1[:8])
         self.assertEqual(t.thread, t2, "a project's name is its session's thread now, as at the merge base")
 
+    def test_g5_a_seat_through_a_channel_is_the_seats_thread_at_channel_add(self):
+        """Review of wave 2: the seat branch carries the thread resolved too. The seat's session becomes another
+        thread's current one after the lookup; `_target` (channel add, remove, lead) still names the seat."""
+        stid, ssid, _ = self.seat("keeper")
+        self.placed(stid, ssid, DESK)
+        t2, s2 = self.named(None, alias="bystander")
+        real = sminos.find_target
+
+        def taken(tid, cur):
+            def mutate(view, raw):
+                raw["current"] = cur
+                raw["sessions"] = list(dict.fromkeys(raw["sessions"] + [cur]))
+                return True
+            self.assertTrue(threads._change(tid, mutate))
+            sminos.forget_caches()
+
+        def found_then_moved(q):
+            got = real(q)
+            taken(t2, ssid)
+            return got
+        kind, seat, bound = sminos.find_target("desk/keeper#%s" % ssid[:8])
+        self.assertEqual((kind, seat["seat_id"], bound, sminos.resolved_thread(seat)), ("seat", stid, ssid, stid),
+                         "alias#short still binds the occupant")
+        kind, seat, bound = sminos.find_target("desk/keeper")
+        self.assertEqual((kind, bound, sminos.resolved_thread(seat)), ("seat", "", stid), "the alias binds the seat")
+        with mock.patch.object(sminos, "find_target", found_then_moved):
+            t = channels._target("desk/keeper")
+        self.assertEqual(t.thread, stid, "the seat named, not the thread its session is current in now")
+        kind, seat, bound = sminos.find_target("g/keeper")
+        self.assertEqual((kind, seat["seat_id"], sminos.resolved_thread(seat)), ("seat", stid, None),
+                         "a project's seat name binds no thread")
+        self.assertEqual(channels._target("g/keeper").thread, t2,
+                         "and reads its session's current record, as at the merge base")
+
     def test_g5_a_name_in_its_own_project_is_resolved_by_its_session_as_at_the_merge_base(self):
         """B11: the binding is the channel route's; a project's name hands retire_member no thread."""
         t1, s1 = self.named(None, alias="victim")
