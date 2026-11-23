@@ -379,6 +379,16 @@ class Framed(Channel):
         p_frame = sminos.frame_of(self.p, e, before + [e], sid, {})
         self.assertIn("| unread 1]", p_frame, "a project's count by the session, as before")
 
+    def test_a_projects_frames_count_by_the_sessions_own_cursor_and_a_channels_by_the_threads_key(self):
+        tid, sid, _ = self.live()
+        sminos.cursor_save(self.p, sid, {"w": 3})
+        self.assertEqual(sminos.delivery_cursor(self.p, sid), {"w": 3}, "a project's: the session's, as before")
+        chan = self.chan(DESK)
+        sminos.cursor_save(chan, tid, {"w": 5})   # an older copy's key, the bare id
+        sminos.cursor_save(chan, channels.THREAD_CURSOR % tid, {"w": 2})
+        o = channels.owing(chan, threads.get(tid), channels.own_row(threads.get(tid)))
+        self.assertEqual(sminos.delivery_cursor(chan, o.thread, o), {"w": 2}, "a channel's: the thread's own key")
+
 
 class HandOff(Channel):
     def handed(self, old, oproc):

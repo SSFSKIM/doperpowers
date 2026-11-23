@@ -3985,6 +3985,14 @@ def cursor_load(project, session_uuid):
     return {str(w): int(s) for w, s in d.items() if type(s) is int} if isinstance(d, dict) else {}
 
 
+def delivery_cursor(project, key, owing=None):
+    """The cursor a delivery's frames count unread by: a project's
+    reader's, under its session `key`, as before; a channel's thread's
+    under the key its chat keeps it by (sminos_channels.THREAD_CURSOR),
+    which no older copy writes."""
+    return cursor_load(project, key if owing is None else channels_module().THREAD_CURSOR % owing.thread)
+
+
 def cursor_save(project, session_uuid, cursor):
     """Advance a reader's cursor to `cursor`, merged per writer with what is
     persisted under the cursor's lock: overlapping reads never move it back."""
@@ -8016,7 +8024,7 @@ def deliver_next(project, member, due=False, owing=None):
         streams = {}
         for e in chosen:
             streams.setdefault(e["writer"], []).append(e)
-        cursor = cursor_load(project, key)
+        cursor = delivery_cursor(project, key, o)
         try:
             for writer, queue in streams.items():
                 outside = policy.outside_origin({"writer": writer}) if o is None else False
@@ -8772,7 +8780,7 @@ def deliver_verdict(project, member, event, verdict, owing=None, word=None):
         events, record, e = got
         outside = policy.outside_origin(e) if o is None else not channels_module().appended_here(project, e)
         noted = _delivery(record, e["writer"]).get("pushed")
-        cursor = cursor_load(project, key)
+        cursor = delivery_cursor(project, key, o)
         try:
             if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
                 raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included
@@ -9053,7 +9061,7 @@ def deliver_reach(project, member, event, verdict, reason=None, owing=None, word
         events, record, e = got
         outside = policy.outside_origin(e) if o is None else not channels_module().appended_here(project, e)
         noted = _delivery(record, e["writer"]).get("pushed")
-        cursor = cursor_load(project, key)
+        cursor = delivery_cursor(project, key, o)
         try:
             if o is not None and not channels_module().still_owed(o, e, reach=word is not None):
                 raise PassLost()   # before anything is decided of it, an earlier pass's receipt accepted included

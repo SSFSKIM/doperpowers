@@ -1068,7 +1068,7 @@ class Read(Say):
         self.assertIn("outside (not in desk) → @reader  @reader two", out)
         code, out = self.as_session(rsid, "chat", "desk")
         self.assertIn("(no new messages)", out, "its cursor moved")
-        self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", rtid + ".json")),
+        self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", "thread-%s.json" % rtid)),
                         "kept under its thread")
         code, out = self.at_terminal("chat", DESK, "-n", "1", "--json")
         self.assertEqual(json.loads(out.strip())["text"], "@reader two")
@@ -1110,7 +1110,7 @@ class Read(Say):
         self.assertIn("chat desk · 1 new", out)
         self.assertIn("from another thread", out)
         self.assertNotIn("said in its second session", out)
-        self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", tid + ".json")))
+        self.assertTrue(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", "thread-%s.json" % tid)))
 
     def test_chat_of_a_session_that_is_no_thread_keeps_its_cursor_apart_from_a_thread_of_its_id(self):
         """A seat's thread id is its first session's: that session, run again before it is any thread's, reads
@@ -1122,12 +1122,26 @@ class Read(Say):
         code, out = self.as_session(rtid, "chat", "desk")
         self.assertEqual(code, 0, out)
         self.assertIn("unread", out)
-        self.assertFalse(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", rtid + ".json")),
+        self.assertFalse(os.path.exists(os.path.join(self.chan(DESK).home, "cursors", "thread-%s.json" % rtid)),
                          "the thread's cursor untouched")
         code, out = self.as_session(rsid, "chat", "desk")
         self.assertIn("chat desk · 1 new", out, "the thread's message still unread to it")
         code, out = self.as_session(rtid, "chat", "desk")
         self.assertIn("(no new messages)", out, "the session's own cursor moved")
+
+    def test_an_older_copys_read_under_the_bare_id_moves_neither_the_threads_chat_nor_its_frames_count(self):
+        """An older copy keeps a reader's cursor under its bare session id, which a seat's thread id equals: what
+        it reads under that key leaves the thread's own cursor, its chat's and its frames' unread count, as was."""
+        rtid, rsid, received = self.live("reader")
+        wtid, wsid, _ = self.live("writer")
+        self.as_session(wsid, "say", "--in", "desk", "@reader one")
+        [e] = self.says()
+        sminos.cursor_save(self.chan(DESK), rtid, {e["writer"]: e["seq"]})   # an older copy's `chat`, by the bare id
+        self.as_session(wsid, "say", "--in", "desk", "@reader two")
+        [frame] = self.got(received, "two")
+        self.assertIn("| unread 1]", frame, "the frame counts the first as unread")
+        code, out = self.as_session(rsid, "chat", "desk")
+        self.assertIn("chat desk · 2 new", out, "both unread to the thread")
 
     def test_chat_over_an_older_copys_closed_join_changes_no_record_and_no_log_file(self):
         sid, proc, tid = self.member(name="olden")

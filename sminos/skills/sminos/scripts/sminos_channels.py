@@ -2058,6 +2058,7 @@ def owing_for(channel, thread):
 
 
 SESSION_CURSOR = "session-%s"   # a channel's chat cursor of a session that is no thread (chat)
+THREAD_CURSOR = "thread-%s"     # a thread's: its chat's and its frames' (sminos.delivery_cursor)
 
 
 def chat(channel, a, session):
@@ -2068,13 +2069,15 @@ def chat(channel, a, session):
     event carries `from_project` with the frame's clause after its sender;
     `--host` refused. Any reader that can read the log may: a channel bounds
     no one's reach. The reader is its thread (stamp): the cursor is kept
-    under it, as its delivery record is, so a hand-off carries nothing, and
-    the thread's own messages are not unread, whichever of its sessions
-    wrote them (sminos.frame_of's rule). A session that is no thread, and a
-    person at a terminal, read as in a project: the cursor the session's
-    (or the terminal's), its own writer's messages not unread. A session's
-    is kept apart from a thread's (`session-<id>`): a seat's thread id is
-    its first session's, which may read here when it is no thread."""
+    under it (`thread-<id>`, the key its frames count by too), so a
+    hand-off carries nothing, and the thread's own messages are not
+    unread, whichever of its sessions wrote them (sminos.frame_of's rule).
+    A session that is no thread, and a person at a terminal, read as in a
+    project: the cursor the session's (`session-<id>`) or the terminal's,
+    its own writer's messages not unread. Neither key is one an older copy
+    writes (a bare session id), nor are they each other's: a seat's thread
+    id is its first session's, which may read here, as a session that is
+    no thread or through an older copy."""
     if a.host:
         sminos.die(HOST_IS_PROJECTS % channel.name, 1)
     sminos.view_of(channel)
@@ -2083,7 +2086,8 @@ def chat(channel, a, session):
     pool = [e for e in events if e["kind"] in kinds]
     thread = sminos.threads_module().stamp(session) if session else ""
     me = sminos.writer_id(session or None)
-    sminos.chat_read(channel, a, events, pool, thread or (SESSION_CURSOR % session if session else ""),
+    sminos.chat_read(channel, a, events, pool,
+                     THREAD_CURSOR % thread if thread else SESSION_CURSOR % session if session else "",
                      (lambda e: e.get("thread") != thread) if thread else
                      (lambda e: sminos.writer_base(e["writer"]) != me),
                      lambda e, label: sminos.chat_line(
