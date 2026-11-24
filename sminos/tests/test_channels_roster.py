@@ -312,7 +312,7 @@ class Listing(Roster):
         code, out = self.cli("list", "--org")
         self.assertEqual(code, 0, out)
         self.assertNotIn("# desk", out, "its last member left")
-        code, out = self.cli("find", "app")
+        code, out = self.cli("list", "--org", "app")
         self.assertNotIn("#", out.replace(sid[:8], ""))
 
     def test_list_json_carries_channels_only_on_a_row_in_one(self):

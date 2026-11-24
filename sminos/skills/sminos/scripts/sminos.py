@@ -231,7 +231,12 @@ back by a fill.
     sminos channel  lead <channel> <thread|none>          # the owner's, at a terminal, confirmed there: a
                    message then said into the channel on this machine with no tag, no session and no
                    --notice (the owner's at a terminal, or a script's) is addressed to that thread; none clears it
-    sminos find     <words..>                             # list --org <words>: every session they match
+    sminos find     <question..> [--all] [--json]         # the sessions best placed to answer a question in
+                   plain words, live or stopped, in any project and on any enrolled machine, best first (five at
+                   most), each with why it fits, its summary and how to reach it, from one call to a small model
+                   (haiku, on this machine's own login) over every such session's line and summary; --all adds
+                   retired and ended ones; exit 4 when none fits, 1 when the call fails. The keyword filter is
+                   list --org <words>
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
                    was made by, as it is now: alias, project, machine, state, the session it went on as, its
@@ -19872,7 +19877,7 @@ def cmd_list(a):
         channels_module().section(rows)
     for n in notes:
         print("note: " + n)
-    if me and not a.find:
+    if me:
         print(self_line(me))
         line = subagent_summary_line(me["session"])
         if line:
@@ -19895,11 +19900,10 @@ def channel_sections(a, projects, words, me):
     with (§8), by name then id, each channel's roster rows with their
     projects. A bare list from a thread: the channels of its set
     (sminos_channels.channels_of), so a thread in no channel reads no
-    roster; --org (not find, a search whose rows are listed once): every
-    channel known here whose roster, narrowed by the other filters, is not
-    empty. Nothing for any other list."""
+    roster; --org: every channel known here whose roster, narrowed by the
+    other filters, is not empty. Nothing for any other list."""
     ch = channels_module()
-    if a.org and not a.find:
+    if a.org:
         scope = {p.id for p in projects}
         found = [(c, [(p, m) for p, m in ch.roster(c) if p.id in scope and row_matches(m, p, a, words)])
                  for c in known_channels()]
@@ -19913,10 +19917,213 @@ def channel_sections(a, projects, words, me):
     return [(c, ch.roster(c)) for c in sorted(held, key=lambda c: (c.name, c.id))]
 
 
+# `find "<question>"` (docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md, §3): one call to a
+# small model over a corpus of list --org's rows. Every interpolated field is free text some writer chose, so each
+# is normalized and capped; the budget is on the assembled prompt, a conservative character count well below the
+# model's context window, not a token guarantee.
+CORPUS_FIELD_MAX = 200          # the in-charge line, each summary line, the `why` read back
+CORPUS_NAME_MAX = 64            # an alias, kind, machine, project name, repository, branch, channel name
+CORPUS_CHANNELS_MAX = 10        # channel names an entry lists
+FIND_QUESTION_MAX = CORPUS_FIELD_MAX * 5
+FIND_PROMPT_MAX = 400_000
+FIND_MATCHES_MAX = 5
+FIND_PROMPT = (
+    "You are the directory of an organization of Claude Code sessions. Below are its sessions, then a question "
+    "one of them asks. Pick the sessions best placed to answer the question or to own what it asks about: at "
+    "most five, best first, judged by what each is in charge of, is doing, has made and is waiting on. A weak "
+    "match is worse than none: when no session fits, say so. Answer with one JSON object and nothing else:\n"
+    '{"matches": [{"short": "<the 8 characters in brackets>", "why": "<one line: what about it fits>"}], '
+    '"note": "<one line: why nothing fits, or what the asker should know; empty otherwise>"}\n\n'
+    "Sessions:\n\n%s\n\nQuestion: %s")
+
+
+class FindFailed(Exception):
+    """The model's answer is no answer find can read (§3c): no JSON object,
+    no `matches` list, or a non-empty one with no valid item."""
+
+
+def corpus_text(value, cap):
+    """Free text as the corpus carries it: control characters dropped,
+    whitespace runs one space, at most `cap` characters."""
+    text = "".join(c for c in str(value or "") if c.isprintable() or c.isspace())
+    return " ".join(text.split())[:cap]
+
+
+def find_corpus(caller_session, include_ended):
+    """[(project, member)] find may name (§3a): the rows list --org shows —
+    the projects known here but one that has left this machine, the rows
+    project_rows yields in each, so a session withdrawn from this machine's
+    view is none — whose state is live (FILLED) or held (HELD_STATES) and
+    that has not ended; with `include_ended`, the retired rows and the
+    project's ended threads too. One entry a session, the first project
+    (by name) that shows it, and never the caller: its session, the
+    sessions its thread has had, its thread's other rows."""
+    projects = sorted((p for p in known_projects() if not has_left(p)), key=lambda p: (p.name, p.id))
+    rows = []
+    for p in projects:
+        every = project_rows(p) + (list(view_of(p).ended) if include_ended else [])
+        rows += [(p, m) for m in every if m.session and m.short and (
+            (m.state in FILLED + HELD_STATES and not m.end) or (include_ended and m.state != "vacant"))]
+    mine = {caller_session} if caller_session else set()
+    threads = set()
+    for _, m in rows:
+        if caller_session and (m.session == caller_session or caller_session in m.former
+                               or caller_session in m.thread_sessions):
+            mine |= {m.session, *m.former, *m.thread_sessions}
+            threads |= {m.thread} - {""}
+    out, seen = [], set()
+    for p, m in rows:
+        if m.session in mine or (m.thread and m.thread in threads) or m.session in seen:
+            continue
+        seen.add(m.session)
+        out.append((p, m))
+    return out
+
+
+def summary_lines(m, indent="  "):
+    """A member's summary as who and find print it, with its age; [] for none."""
+    if not m.summary:
+        return []
+    age = " (%s)" % short_age(m.summary_age) if m.summary_age is not None else ""
+    return ["%sdoing%s: %s" % (indent, age, m.summary["doing"]), "%smade: %s" % (indent, m.summary["made"]),
+            "%snext: %s" % (indent, m.summary["next"])]
+
+
+def find_entry(project, m):
+    """One corpus block (§3a): who the member is and where, its state and
+    kind, repository and branch, how long since it was active, its in-charge
+    line, its summary, its channels by name; every field normalized and
+    capped (corpus_text)."""
+    name = lambda v: corpus_text(v, CORPUS_NAME_MAX)  # noqa: E731
+    field = lambda v: corpus_text(v, CORPUS_FIELD_MAX)  # noqa: E731
+    head = ["%s (%s)" % (name(m.state) or "?", name(m.kind) or "?")]
+    if m.repo:
+        head.append(name(m.repo) + ("@" + name(m.branch) if m.branch else ""))
+    if m.end:
+        head.append({"retire": "retired", "ended": "ended after it stopped",
+                     "machine": "its machine is retired"}.get(m.end, "ended"))
+    if m.active_age is not None:
+        head.append("active %s ago" % short_age(m.active_age))
+    lines = ["[%s] %s — %s on %s; %s" % (name(m.short), name(m.alias), name(project.name), name(m.machine),
+                                         "; ".join(head))]
+    if charge_shown(m):
+        age = " (%s)" % short_age(m.charge_age) if m.charge_age is not None else ""
+        lines.append("  in charge%s: %s" % (age, field(charge_shown(m))))
+    if m.summary:
+        age = " (%s)" % short_age(m.summary_age) if m.summary_age is not None else ""
+        lines += ["  doing%s: %s" % (age, field(m.summary["doing"])), "  made: %s" % field(m.summary["made"]),
+                  "  next: %s" % field(m.summary["next"])]
+    if m.channels and not has_ended(m):
+        names = [name(getattr(known_project(c), "name", "") or c) for c in m.channels[:CORPUS_CHANNELS_MAX]]
+        lines.append("  channels: %s" % ", ".join(names))
+    return "\n".join(lines)
+
+
+def find_prompt(entries, question):
+    """FIND_PROMPT over the corpus's blocks, the question last."""
+    return FIND_PROMPT % ("\n\n".join(entries), question)
+
+
+def first_json_object(text):
+    """The first JSON object in `text` (a code fence or words around it
+    are passed over), or None."""
+    decoder = json.JSONDecoder()
+    at = text.find("{")
+    while at != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, at)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            return obj
+        at = text.find("{", at + 1)
+    return None
+
+
+def parse_find(text):
+    """(matches [{short, why}], note) read from the model's answer (§3c):
+    each item an object with a string `short` kept, its `why` one line of
+    at most CORPUS_FIELD_MAX characters ("" when not a string); `note` one
+    line ("" when not a string). FindFailed for no JSON object, no `matches`
+    list, or a non-empty one none of whose items is valid: only a valid
+    empty list is "no match"."""
+    obj = first_json_object(str(text or ""))
+    if obj is None:
+        raise FindFailed("the model's answer holds no JSON object")
+    items = obj.get("matches")
+    if not isinstance(items, list):
+        raise FindFailed("the model's answer has no matches list")
+    matches = [{"short": it["short"], "why": corpus_text(it["why"], CORPUS_FIELD_MAX)
+                if isinstance(it.get("why"), str) else ""}
+               for it in items if isinstance(it, dict) and isinstance(it.get("short"), str)]
+    if items and not matches:
+        raise FindFailed("none of the model's %d matches names a session" % len(items))
+    note = obj.get("note")
+    return matches, " ".join(note.split()) if isinstance(note, str) else ""
+
+
+def find_lines(project, m, why):
+    """A match as find prints it (§3d): its list row with its project, why
+    it fits, its summary, how to reach it."""
+    cells, rest = row_cells(m, project)
+    return (["  ".join([c for c in cells if c] + rest)] + (["  why: " + why] if why else []) + summary_lines(m)
+            + reach_lines(project, m))
+
+
 def cmd_find(a):
-    """`find <words>`: list --org <words>."""
-    a.org = True
-    cmd_list(a)
+    """`find <question…> [--all] [--json]`: the sessions best placed to
+    answer a question in plain words, from one call to a small model over
+    the corpus (find_corpus, find_entry); each short the model names is
+    checked against the corpus (one it does not hold dropped and counted, a
+    repeat dropped), five at most, printed in the model's order with why,
+    its summary and how to reach it. Exit 0 with a match, 4 with none, 1
+    when the call or its answer fails or the prompt is over budget (§3e:
+    no keyword fallback; list --org <words> is the keyword filter)."""
+    question = corpus_text(" ".join(a.question), FIND_QUESTION_MAX)
+    if not question:
+        die("find: ask a question: sminos find <question...>")
+    corpus = find_corpus(os.environ.get("CLAUDE_CODE_SESSION_ID", ""), a.all)
+    entries = [find_entry(p, m) for p, m in corpus]
+    prompt = find_prompt(entries, question)
+    if len(prompt) > FIND_PROMPT_MAX:
+        die("find: the prompt is %d characters, over find's budget of %d; narrow it with list --org <words>"
+            % (len(prompt), FIND_PROMPT_MAX), 1)
+    fork = sibling_module("sminos_fork")
+    try:
+        answer = fork.ask_model(prompt, timeout=float(os.environ.get("SMINOS_FIND_TIMEOUT") or 120))
+        named, note = parse_find(answer.text)
+    except fork.ForkFailed as e:
+        die("find: %s" % e.reason, 1)
+    except FindFailed as e:
+        die("find: %s" % e, 1)
+    by_short = {}
+    for p, m in corpus:
+        by_short.setdefault(m.short, (p, m))
+    found, dropped, seen = [], 0, set()
+    for item in named:
+        short = item["short"].strip().strip("[]@").lower()
+        if short not in by_short:
+            dropped += 1
+        elif short not in seen:
+            seen.add(short)
+            found.append((*by_short[short], item["why"]))
+    found = found[:FIND_MATCHES_MAX]
+    if a.json:
+        print(json.dumps({"question": question, "corpus": entries,
+                          "matches": [{**member_json(m, p, private=False), "why": why} for p, m, why in found],
+                          "note": note, "dropped": dropped}, indent=2))
+    else:
+        for p, m, why in found:
+            print("\n".join(find_lines(p, m, why)))
+        if found and note:
+            print("note: " + note)
+        if dropped:
+            print("(the model named %d %s not in the directory; left out)"
+                  % (dropped, "session that is" if dropped == 1 else "sessions that are"))
+        if not found:
+            print("no session matches" + (": " + note if note else ""))
+    if not found:
+        sys.exit(EXIT_UNKNOWN)
 
 
 def live_members(projects):
@@ -21031,12 +21238,7 @@ def session_lines(p, m, how="", named=""):
         out.append("  (the line names it %s; it goes by %s now)" % (named, m.alias))
     if charge_shown(m):
         out.append("  in charge: %s" % charge_shown(m))
-    if m.summary:
-        age = " (%s)" % short_age(m.summary_age) if m.summary_age is not None else ""
-        out.append("  doing%s: %s" % (age, m.summary["doing"]))
-        out.append("  made: %s" % m.summary["made"])
-        out.append("  next: %s" % m.summary["next"])
-    return out + reach_lines(p, m)
+    return out + summary_lines(m) + reach_lines(p, m)
 
 
 def reach_lines(p, m):
@@ -21708,12 +21910,13 @@ def build_parser():
     ls.add_argument("--depth", type=int, default=None)
     ls.add_argument("--stall", type=float, default=None)
     ls.add_argument("--channel", action="append", default=[])
-    ls.set_defaults(fn=cmd_list, find=False)
+    ls.set_defaults(fn=cmd_list)
 
     fd = sub.add_parser("find", add_help=False)
-    fd.add_argument("args", nargs="+")
-    list_flags(fd)
-    fd.set_defaults(fn=cmd_find, find=True, subagents=None, done=None, channel=[])
+    fd.add_argument("question", nargs="+")
+    fd.add_argument("--all", action="store_true")
+    fd.add_argument("--json", action="store_true")
+    fd.set_defaults(fn=cmd_find)
 
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")

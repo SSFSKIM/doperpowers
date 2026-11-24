@@ -730,6 +730,18 @@ class UnlistingOnRl10(Base):
         return subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), *args], cwd=self.home, env=env,
                               capture_output=True, text=True, timeout=60)
 
+    def asked(self, env, question):
+        """The standard input `find <question>` gave the model: the `claude` stand-in (fake_claude.py) first on
+        PATH, answering no match."""
+        state = tempfile.mkdtemp(dir=self.home)
+        bindir = os.path.join(state, "bin")
+        os.makedirs(bindir)
+        os.symlink(str(HERE / "fake_claude.py"), os.path.join(bindir, "claude"))
+        got = self.ask({**env, "PATH": bindir + os.pathsep + env["PATH"], "FAKE_CLAUDE_STATE": state}, "find",
+                       question)
+        self.assertEqual(got.returncode, 4, got.stderr)
+        return Path(state, "find-prompt.txt").read_text()
+
     def listed(self, env):
         got = self.ask(env, "list", "--org", "--json")
         self.assertEqual(got.returncode, 0, got.stderr)
@@ -756,8 +768,7 @@ class UnlistingOnRl10(Base):
         env, got = self.reader("other")
         self.assertIn("unlisted", [e["kind"] for e in got], "the withdrawn member gets the notice")
         self.assertNotIn(self.sid, self.listed(env), "list --org")
-        found = self.ask(env, "find", "kept")
-        self.assertNotIn(self.sid[:8], found.stdout)
+        self.assertNotIn(self.sid[:8], self.asked(env, "kept"), "find: the model is never shown it")
         said = self.ask(env, "say", "--in", "work", "@%s hello" % self.sid[:8])
         self.assertNotEqual(said.returncode, 0, said.stdout)
         self.assertIn("no member", said.stderr)
@@ -767,7 +778,7 @@ class UnlistingOnRl10(Base):
         env, got = self.reader("third")
         self.assertNotIn("unlisted", [e["kind"] for e in got], "still in the audience: no notice")
         self.assertIn(self.sid, self.listed(env))
-        self.assertIn(self.sid[:8], self.ask(env, "find", "kept").stdout)
+        self.assertIn(self.sid[:8], self.asked(env, "kept"), "find: the model is shown it")
         said = self.ask(env, "say", "--in", "work", "@%s hello" % self.sid[:8])
         self.assertEqual(said.returncode, 0, said.stderr)
 

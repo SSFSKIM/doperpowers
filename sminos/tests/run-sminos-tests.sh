@@ -108,6 +108,7 @@ banner_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ [0-9a-f-]*\].
 # calls.log and assertion failures print that log, so a real credential in the
 # runner's shell must never reach it.
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
+unset ANTHROPIC_API_KEY ANTHROPIC_MODEL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_OAUTH_TOKEN CLODEX_SETTINGS GATEWAY_ONLY_KEY
 unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME MAWS_LANE MAWS_LAUNCHED_BY
 # The harness exports CLAUDE_CODE_SESSION_ID to Bash tools; sminos derives the
 # sender identity from it. The suite is "a real terminal" unless a case sets it.
@@ -228,6 +229,24 @@ open(sys.argv[1], 'a').write(json.dumps(
     {"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
 PY
 }
+
+# `-p` with no `--resume` (find's model call, a fresh internal process): the
+# find-env line records whether it was marked internal and the transport and
+# login variables it was given, its standard input is kept in
+# find-prompt.txt, and STUB_FIND_RESULT is its answer; it fails
+# (STUB_FORK_FAIL=1), crashes (STUB_FORK_CRASH=1) or is slow (STUB_FORK_SLEEP)
+# on the switches the fork reads.
+if [ "${1:-}" = "-p" ] && [ -z "$resume_uuid" ]; then
+  echo "find-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) base=${ANTHROPIC_BASE_URL:-} token=${ANTHROPIC_AUTH_TOKEN:-} key=${ANTHROPIC_API_KEY:-} model=${ANTHROPIC_MODEL:-} bedrock=${CLAUDE_CODE_USE_BEDROCK:-} gateway=${GATEWAY_ONLY_KEY:-} clodex=${CLODEX_SETTINGS:-} oauth=${CLAUDE_CODE_OAUTH_TOKEN:-} config=${CLAUDE_CONFIG_DIR:-} cwd=$PWD" >> "$STUB_STATE/log/calls.log"
+  cat > "$STUB_STATE/log/find-prompt.txt"
+  if [ "${STUB_FORK_CRASH:-0}" = "1" ]; then echo "stub: the engine crashed" >&2; exit 3; fi
+  [ -n "${STUB_FORK_SLEEP:-}" ] && sleep "$STUB_FORK_SLEEP"
+  is_error=false; [ "${STUB_FORK_FAIL:-0}" = "1" ] && is_error=true
+  python3 -c 'import json, sys; print(json.dumps({"type": "result", "is_error": sys.argv[2] == "true", "result": sys.argv[1], "session_id": sys.argv[3]}))' \
+    "${STUB_FIND_RESULT:-}" "$is_error" "$session_id"
+  [ "$is_error" = "true" ] && exit 1
+  exit 0
+fi
 
 # `-p --resume <id> --fork-session …` (derive's internal fork): a copy of the
 # parent's transcript as a new session, registered while it runs, the hook run
@@ -597,6 +616,8 @@ run_suites_c() {
     fail "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_summary.py"; then pass "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; else
     fail "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_find.py"; then pass "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; else
+    fail "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
@@ -4812,13 +4833,46 @@ assert_contains "$OUT" "quiet-seat" "--machine matches a machine by prefix"
 assert_contains "$OUT" "b-idler" "across every project"
 run "$SMINOS" list --machine elsewhere
 assert_not_contains "$OUT" "quiet-seat" "and a machine that is not this one lists none of its sessions"
-run "$SMINOS" find release gate
-assert_contains "$OUT" "ci-gate-keeper" "find matches the in-charge line"
+run "$SMINOS" list --org release gate
+assert_contains "$OUT" "ci-gate-keeper" "list --org <words> matches the in-charge line"
 assert_not_contains "$OUT" "b-idler" "every word"
-run "$SMINOS" find feature-x
-assert_contains "$OUT" "ci-gate-keeper" "find matches the branch"
+run "$SMINOS" list --org feature-x
+assert_contains "$OUT" "ci-gate-keeper" "list --org <words> matches the branch"
 assert_contains "$OUT" "b-idler" "for every session on it"
 assert_not_contains "$OUT" "quiet-seat" "and no other"
+
+# find "<question>" (the session-search design's §3): one internal model call
+# on the caller's first-party login, the corpus then the question on its
+# standard input; the shorts it names checked against the corpus.
+echo '{"env": {"GATEWAY_ONLY_KEY": "g", "ANTHROPIC_BASE_URL": "http://gateway.invalid"}}' > "$TEST_ROOT/gateway-settings.json"
+STUB_FIND_RESULT='{"matches": [{"short": "0d000003", "why": "tends the release gate"}, {"short": "0dffffff", "why": "x"}], "note": ""}' \
+  CLODEX_SETTINGS="$TEST_ROOT/gateway-settings.json" GATEWAY_ONLY_KEY=g ANTHROPIC_BASE_URL=http://gateway.invalid \
+  ANTHROPIC_AUTH_TOKEN=gwtok ANTHROPIC_API_KEY=apikey ANTHROPIC_MODEL=a-model CLAUDE_CODE_USE_BEDROCK=1 \
+  CLAUDE_CODE_OAUTH_TOKEN=first-party run "$SMINOS" find who tends the release gate
+assert_rc 0 "$RC" "find answers with a match"
+assert_contains "$OUT" "ci-gate-keeper [0d000003]" "find prints the session the model named, its list row"
+assert_contains "$OUT" "  why: tends the release gate" "with why it fits"
+assert_contains "$OUT" 'reach: sminos say "@0d000003 ..."' "and how to reach it"
+assert_contains "$OUT" "(the model named 1 session that is not in the directory; left out)" "a short the corpus does not hold is dropped and counted"
+FIND_CALL="$(grep -- '^-p --safe-mode' "$STUB_STATE/log/calls.log" | tail -1)"
+assert_contains "$FIND_CALL" "-p --safe-mode --no-session-persistence --session-id" "find's call: safe mode, persisting nothing"
+assert_contains "$FIND_CALL" "--model haiku --effort medium --tools  --output-format json" "haiku, no tools, a JSON result"
+assert_not_contains "$FIND_CALL" "--bare" "never bare (an API key's auth)"
+FIND_ENV="$(grep '^find-env:' "$STUB_STATE/log/calls.log" | tail -1)"
+assert_contains "$FIND_ENV" "internal=1 marker=yes" "an internal process, marked before it starts"
+assert_contains "$FIND_ENV" "base= token= key= model= bedrock= gateway= clodex= oauth=first-party" "no gateway, API key or provider switch reaches it; the first-party login does"
+assert_equals "$(tail -c 36 "$STUB_STATE/log/find-prompt.txt")" "Question: who tends the release gate" "the question last on its standard input"
+assert_contains "$(cat "$STUB_STATE/log/find-prompt.txt")" "[0d000003] ci-gate-keeper — odbeta on testhost" "after the corpus"
+STUB_FIND_RESULT='{"matches": [], "note": "nobody translates dictionaries"}' run "$SMINOS" find who is translating the Klingon dictionary
+assert_rc 4 "$RC" "find with no match exits 4"
+assert_contains "$OUT" "no session matches: nobody translates dictionaries" "and says so with the model's note"
+STUB_FORK_CRASH=1 run "$SMINOS" find anyone
+assert_rc 1 "$RC" "a crashed call exits 1"
+assert_contains "$OUT" "sminos: find: the model call failed (exit 3): stub: the engine crashed" "with its reason"
+STUB_FIND_RESULT='I found nobody.' run "$SMINOS" find anyone
+assert_rc 1 "$RC" "an answer with no JSON object exits 1"
+run "$SMINOS" find
+assert_rc 2 "$RC" "find with no question is a usage error"
 run "$SMINOS" list --org
 assert_contains "$OUT" "quiet-seat" "--org lists every project"
 assert_contains "$OUT" "b-idler" "both of them"
@@ -4930,8 +4984,8 @@ S._append(p, "elsewhere/" + sid, [
     {"kind": "titled", "session": sid, "title": "unique-remote-title"},
     {"kind": "in-charge", "session": sid, "text": "an explicit line", "source": "set"}])
 PY
-run_in "$ODA" "$SMINOS" find unique-remote-title
-assert_contains "$OUT" "far-one [0d000006]" "find matches a remote session's published title under a set line"
+run_in "$ODA" "$SMINOS" list --org unique-remote-title
+assert_contains "$OUT" "far-one [0d000006]" "list --org <words> matches a remote session's published title under a set line"
 assert_contains "$OUT" "in charge: an explicit line" "while its row shows the line that wins"
 
 # A socket that answers the probe and is gone before the frame: the record
