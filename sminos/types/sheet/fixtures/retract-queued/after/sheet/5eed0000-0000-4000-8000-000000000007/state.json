@@ -8,6 +8,9 @@
    "header": "Migration",
    "how": "answered",
    "key": "page-0701a005",
+   "places": [
+    2
+   ],
    "question": "Ship the migration today?",
    "receipt": "No",
    "revision": 1

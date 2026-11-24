@@ -2,12 +2,12 @@
  "calls": [],
  "closed": {
   "q1": {
-   "answer": "\"Which wording for message 1?\" → their text: \"Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and stop. Wording 1: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0001",
+   "places": [],
    "question": "Which wording for message 1?",
    "receipt": "Wording 1: say it plainly, once, and stop. Wording 1: say it plainly, once, and ",
    "revision": 1
@@ -19,6 +19,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0010",
+   "places": [],
    "question": "Which wording for message 10?",
    "receipt": "Wording 10: say it plainly, once, and stop. Wording 10: say it plainly, once, an",
    "revision": 1
@@ -30,6 +31,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0011",
+   "places": [],
    "question": "Which wording for message 11?",
    "receipt": "Wording 11: say it plainly, once, and stop. Wording 11: say it plainly, once, an",
    "revision": 1
@@ -41,6 +43,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0012",
+   "places": [],
    "question": "Which wording for message 12?",
    "receipt": "Wording 12: say it plainly, once, and stop. Wording 12: say it plainly, once, an",
    "revision": 1
@@ -52,6 +55,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0013",
+   "places": [],
    "question": "Which wording for message 13?",
    "receipt": "Wording 13: say it plainly, once, and stop. Wording 13: say it plainly, once, an",
    "revision": 1
@@ -63,6 +67,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0014",
+   "places": [],
    "question": "Which wording for message 14?",
    "receipt": "Wording 14: say it plainly, once, and stop. Wording 14: say it plainly, once, an",
    "revision": 1
@@ -74,6 +79,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0015",
+   "places": [],
    "question": "Which wording for message 15?",
    "receipt": "Wording 15: say it plainly, once, and stop. Wording 15: say it plainly, once, an",
    "revision": 1
@@ -85,6 +91,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0016",
+   "places": [],
    "question": "Which wording for message 16?",
    "receipt": "Wording 16: say it plainly, once, and stop. Wording 16: say it plainly, once, an",
    "revision": 1
@@ -96,6 +103,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0017",
+   "places": [],
    "question": "Which wording for message 17?",
    "receipt": "Wording 17: say it plainly, once, and stop. Wording 17: say it plainly, once, an",
    "revision": 1
@@ -107,6 +115,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0018",
+   "places": [],
    "question": "Which wording for message 18?",
    "receipt": "Wording 18: say it plainly, once, and stop. Wording 18: say it plainly, once, an",
    "revision": 1
@@ -118,17 +127,18 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0019",
+   "places": [],
    "question": "Which wording for message 19?",
    "receipt": "Wording 19: say it plainly, once, and stop. Wording 19: say it plainly, once, an",
    "revision": 1
   },
   "q2": {
-   "answer": "\"Which wording for message 2?\" → their text: \"Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and stop. Wording 2: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0002",
+   "places": [],
    "question": "Which wording for message 2?",
    "receipt": "Wording 2: say it plainly, once, and stop. Wording 2: say it plainly, once, and ",
    "revision": 1
@@ -140,6 +150,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0020",
+   "places": [],
    "question": "Which wording for message 20?",
    "receipt": "Wording 20: say it plainly, once, and stop. Wording 20: say it plainly, once, an",
    "revision": 1
@@ -151,6 +162,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0021",
+   "places": [],
    "question": "Which wording for message 21?",
    "receipt": "Wording 21: say it plainly, once, and stop. Wording 21: say it plainly, once, an",
    "revision": 1
@@ -162,6 +174,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0022",
+   "places": [],
    "question": "Which wording for message 22?",
    "receipt": "Wording 22: say it plainly, once, and stop. Wording 22: say it plainly, once, an",
    "revision": 1
@@ -172,6 +185,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0023",
+   "places": [],
    "question": "Which wording for message 23?",
    "receipt": "Wording 23: say it plainly, once, and stop. Wording 23: say it plainly, once, an",
    "revision": 1
@@ -182,6 +196,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0024",
+   "places": [],
    "question": "Which wording for message 24?",
    "receipt": "Wording 24: say it plainly, once, and stop. Wording 24: say it plainly, once, an",
    "revision": 1
@@ -192,6 +207,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0025",
+   "places": [],
    "question": "Which wording for message 25?",
    "receipt": "Wording 25: say it plainly, once, and stop. Wording 25: say it plainly, once, an",
    "revision": 1
@@ -202,6 +218,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0026",
+   "places": [],
    "question": "Which wording for message 26?",
    "receipt": "Wording 26: say it plainly, once, and stop. Wording 26: say it plainly, once, an",
    "revision": 1
@@ -212,6 +229,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0027",
+   "places": [],
    "question": "Which wording for message 27?",
    "receipt": "Wording 27: say it plainly, once, and stop. Wording 27: say it plainly, once, an",
    "revision": 1
@@ -222,6 +240,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0028",
+   "places": [],
    "question": "Which wording for message 28?",
    "receipt": "Wording 28: say it plainly, once, and stop. Wording 28: say it plainly, once, an",
    "revision": 1
@@ -232,17 +251,18 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0029",
+   "places": [],
    "question": "Which wording for message 29?",
    "receipt": "Wording 29: say it plainly, once, and stop. Wording 29: say it plainly, once, an",
    "revision": 1
   },
   "q3": {
-   "answer": "\"Which wording for message 3?\" → their text: \"Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and stop. Wording 3: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0003",
+   "places": [],
    "question": "Which wording for message 3?",
    "receipt": "Wording 3: say it plainly, once, and stop. Wording 3: say it plainly, once, and ",
    "revision": 1
@@ -253,6 +273,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0030",
+   "places": [],
    "question": "Which wording for message 30?",
    "receipt": "Wording 30: say it plainly, once, and stop. Wording 30: say it plainly, once, an",
    "revision": 1
@@ -263,6 +284,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0031",
+   "places": [],
    "question": "Which wording for message 31?",
    "receipt": "Wording 31: say it plainly, once, and stop. Wording 31: say it plainly, once, an",
    "revision": 1
@@ -273,6 +295,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0032",
+   "places": [],
    "question": "Which wording for message 32?",
    "receipt": "Wording 32: say it plainly, once, and stop. Wording 32: say it plainly, once, an",
    "revision": 1
@@ -283,6 +306,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0033",
+   "places": [],
    "question": "Which wording for message 33?",
    "receipt": "Wording 33: say it plainly, once, and stop. Wording 33: say it plainly, once, an",
    "revision": 1
@@ -293,6 +317,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0034",
+   "places": [],
    "question": "Which wording for message 34?",
    "receipt": "Wording 34: say it plainly, once, and stop. Wording 34: say it plainly, once, an",
    "revision": 1
@@ -303,6 +328,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0035",
+   "places": [],
    "question": "Which wording for message 35?",
    "receipt": "Wording 35: say it plainly, once, and stop. Wording 35: say it plainly, once, an",
    "revision": 1
@@ -313,6 +339,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0036",
+   "places": [],
    "question": "Which wording for message 36?",
    "receipt": "Wording 36: say it plainly, once, and stop. Wording 36: say it plainly, once, an",
    "revision": 1
@@ -323,6 +350,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0037",
+   "places": [],
    "question": "Which wording for message 37?",
    "receipt": "Wording 37: say it plainly, once, and stop. Wording 37: say it plainly, once, an",
    "revision": 1
@@ -333,6 +361,7 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0038",
+   "places": [],
    "question": "Which wording for message 38?",
    "receipt": "Wording 38: say it plainly, once, and stop. Wording 38: say it plainly, once, an",
    "revision": 1
@@ -343,17 +372,18 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0039",
+   "places": [],
    "question": "Which wording for message 39?",
    "receipt": "Wording 39: say it plainly, once, and stop. Wording 39: say it plainly, once, an",
    "revision": 1
   },
   "q4": {
-   "answer": "\"Which wording for message 4?\" → their text: \"Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and stop. Wording 4: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0004",
+   "places": [],
    "question": "Which wording for message 4?",
    "receipt": "Wording 4: say it plainly, once, and stop. Wording 4: say it plainly, once, and ",
    "revision": 1
@@ -364,50 +394,51 @@
    "at": "2026-11-23T10:00:01.000Z",
    "how": "answered",
    "key": "page-e6a0040",
+   "places": [],
    "question": "Which wording for message 40?",
    "receipt": "Wording 40: say it plainly, once, and stop. Wording 40: say it plainly, once, an",
    "revision": 1
   },
   "q5": {
-   "answer": "\"Which wording for message 5?\" → their text: \"Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and stop. Wording 5: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0005",
+   "places": [],
    "question": "Which wording for message 5?",
    "receipt": "Wording 5: say it plainly, once, and stop. Wording 5: say it plainly, once, and ",
    "revision": 1
   },
   "q6": {
-   "answer": "\"Which wording for message 6?\" → their text: \"Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and stop. Wording 6: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0006",
+   "places": [],
    "question": "Which wording for message 6?",
    "receipt": "Wording 6: say it plainly, once, and stop. Wording 6: say it plainly, once, and ",
    "revision": 1
   },
   "q7": {
-   "answer": "\"Which wording for message 7?\" → their text: \"Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and stop. Wording 7: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0007",
+   "places": [],
    "question": "Which wording for message 7?",
    "receipt": "Wording 7: say it plainly, once, and stop. Wording 7: say it plainly, once, and ",
    "revision": 1
   },
   "q8": {
-   "answer": "\"Which wording for message 8?\" → their text: \"Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and stop. Wording 8: say it p",
    "asker": "main",
    "at": "2026-11-23T10:00:01.000Z",
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0008",
+   "places": [],
    "question": "Which wording for message 8?",
    "receipt": "Wording 8: say it plainly, once, and stop. Wording 8: say it plainly, once, and ",
    "revision": 1
@@ -419,6 +450,7 @@
    "deliveredAt": "2026-11-23T10:00:05.000Z",
    "how": "answered",
    "key": "page-e6a0009",
+   "places": [],
    "question": "Which wording for message 9?",
    "receipt": "Wording 9: say it plainly, once, and stop. Wording 9: say it plainly, once, and ",
    "revision": 1

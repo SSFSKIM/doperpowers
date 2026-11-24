@@ -6,6 +6,9 @@
    "deliveredAt": "2026-11-23T10:00:00.000Z",
    "header": "Auth method",
    "how": "answered",
+   "places": [
+    1
+   ],
    "receipt": "OAuth",
    "revision": 1
   },
@@ -15,6 +18,9 @@
    "deliveredAt": "2026-11-23T09:35:00.000Z",
    "header": "Migration",
    "how": "answered",
+   "places": [
+    1
+   ],
    "receipt": "Yes",
    "revision": 1
   }

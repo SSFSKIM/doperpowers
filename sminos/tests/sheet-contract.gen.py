@@ -74,7 +74,7 @@ PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001
 T_TIME = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"}
 T_ID = {"type": "string", "pattern": "^q[1-9][0-9]*$"}
 T_KEY = {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}
-T_UPLOAD = {"type": "string", "pattern": "^uploads/[A-Za-z0-9._-]+\\.(png|jpg|jpeg|gif|webp)$"}
+T_UPLOAD = {"type": "string", "pattern": "^uploads/[A-Za-z0-9._-]{1,250}\\.(png|jpg|jpeg|gif|webp)$"}
 T_SHA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 T_BY = {"type": "string", "enum": ["page", "maws", "desk", "cli"]}
 T_INT0 = {"type": "integer", "minimum": 0}
@@ -89,10 +89,10 @@ def arr(items, **bounds):
     return {"type": "array", "items": items, **bounds}
 
 
+T_AGENT = {"type": "string", "minLength": 1, "maxLength": 128}     # the engine's agent id, never cut
 ASKER = {"oneOf": [{"type": "string", "const": "main"},
-                   obj({"agentId": {"type": "string", "minLength": 1}, "name": {"type": "string"}}, ["agentId", "name"])]}
-RECIPIENT = {"oneOf": [{"type": "string", "const": "main"},
-                       obj({"agentId": {"type": "string", "minLength": 1}}, ["agentId"])]}
+                   obj({"agentId": T_AGENT, "name": {"type": "string"}}, ["agentId", "name"])]}
+RECIPIENT = {"oneOf": [{"type": "string", "const": "main"}, obj({"agentId": T_AGENT}, ["agentId"])]}
 OPTION = obj({"label": {"type": "string"}, "description": {"type": "string"}, "preview": {"type": "string"},
               "recommended": {"type": "boolean"}}, ["label"])
 REFERENCE_PROPS = {
@@ -112,33 +112,72 @@ QUESTION_REQ = ["id", "revision", "asker", "question", "options", "multiSelect",
 SNAPSHOT = obj({"asker": {"$ref": "#/$defs/asker"}, "header": {"type": "string"}, "question": {"type": "string"},
                 "options": arr({"type": "string"}), "multiSelect": {"type": "boolean"},
                 "askedAt": {"$ref": "#/$defs/time"}}, ["asker", "question", "options", "multiSelect", "askedAt"])
-OUTCOME = {
-    "type": "object",
-    "properties": {
-        "key": {"$ref": "#/$defs/key"}, "kind": {"type": "string", "enum": ["answer", "dismiss"]},
-        "id": {"$ref": "#/$defs/id"}, "revision": T_INT1, "picks": arr({"type": "string"}),
-        "text": {"type": "string"}, "textFile": {"type": "string", "pattern": "^texts/[0-9a-f]{64}\\.txt$"},
-        "images": arr(T_UPLOAD), "by": T_BY, "at": {"$ref": "#/$defs/time"},
-        "acceptedAt": {"$ref": "#/$defs/time"}, "batch": {"$ref": "#/$defs/key"},
-        "recipient": {"$ref": "#/$defs/recipient"}, "taken": {"type": "boolean"}, "acrossStop": {"type": "boolean"},
-        "question": {"$ref": "#/$defs/snapshot"}},
-    "required": ["key", "kind", "id", "revision", "by", "at", "acceptedAt", "recipient", "taken", "acrossStop",
-                 "question"],
-    "additionalProperties": False,
-    "oneOf": [{"properties": {"kind": {"const": "answer"}}, "required": ["picks", "text", "images"]},
-              {"properties": {"kind": {"const": "dismiss"}}}]}
+def variants(common, required, shapes):
+    """A discriminated shape: one closed object for each variant, the variant's own fields beside the common ones,
+    so a field that belongs to another variant is refused."""
+    return {"oneOf": [obj({**common, **extra}, required + extra_req) for extra, extra_req in shapes]}
+
+
+OUTCOME_COMMON = {
+    "key": {"$ref": "#/$defs/key"}, "id": {"$ref": "#/$defs/id"}, "revision": T_INT1, "by": T_BY,
+    "at": {"$ref": "#/$defs/time"}, "acceptedAt": {"$ref": "#/$defs/time"}, "batch": {"$ref": "#/$defs/key"},
+    "recipient": {"$ref": "#/$defs/recipient"}, "taken": {"type": "boolean"}, "acrossStop": {"type": "boolean"},
+    "question": {"$ref": "#/$defs/snapshot"}}
+OUTCOME_REQ = ["key", "kind", "id", "revision", "by", "at", "acceptedAt", "recipient", "taken", "acrossStop",
+               "question"]
+ANSWER_FIELDS = {"kind": {"type": "string", "const": "answer"}, "picks": arr({"type": "string"}),
+                 "text": {"type": "string"}, "textFile": {"type": "string", "pattern": "^texts/[0-9a-f]{64}\\.txt$"},
+                 "images": arr(T_UPLOAD)}
+DISMISS_FIELDS = {"kind": {"type": "string", "const": "dismiss"}}
+OUTCOME = variants(OUTCOME_COMMON, OUTCOME_REQ, [(ANSWER_FIELDS, ["picks", "text", "images"]), (DISMISS_FIELDS, [])])
+# show's pending outcome: an answer's picks also as places, and in the keyed form a text cut to 500 (I4)
+SHOW_OUTCOME = variants(OUTCOME_COMMON, OUTCOME_REQ, [
+    ({**ANSWER_FIELDS, "places": arr(T_INT1), "textCut": {"type": "boolean", "const": True}},
+     ["picks", "text", "images", "places"]), (DISMISS_FIELDS, [])])
 HOW = {"type": "string", "enum": ["answered", "dismissed", "withdrawn"]}
-CLOSED = obj({"how": HOW, "at": {"$ref": "#/$defs/time"}, "revision": T_INT1, "asker": {"$ref": "#/$defs/asker"},
-              "header": {"type": "string"}, "question": {"type": "string"}, "receipt": {"type": "string"},
-              "key": {"$ref": "#/$defs/key"}, "deliveredAt": {"$ref": "#/$defs/time"},
-              "answer": {"type": "string"}}, ["how", "at", "revision", "asker", "question"])
-VERDICT_PROPS = {
-    "verdict": {"type": "string", "enum": ["applied", "stale", "closed", "retracted", "too-late"]},
-    "kind": {"type": "string", "enum": ["answer", "dismiss", "retract", "delivered", "unseen"]},
-    "at": {"$ref": "#/$defs/time"}, "id": {"$ref": "#/$defs/id"}, "current": T_INT1,
-    "how": {"type": "string", "enum": ["answered", "dismissed", "withdrawn", "unknown"]},
-    "target": {"$ref": "#/$defs/key"}, "by": {"$ref": "#/$defs/key"}}
-VERDICT = obj(VERDICT_PROPS, ["verdict", "kind", "at"])
+CLOSED_COMMON = {"at": {"$ref": "#/$defs/time"}, "revision": T_INT1, "asker": {"$ref": "#/$defs/asker"},
+                 "header": {"type": "string"}, "question": {"type": "string"}, "deliveredAt": {"$ref": "#/$defs/time"}}
+CLOSED = variants(CLOSED_COMMON, ["how", "at", "revision", "asker", "question"], [
+    ({"how": {"type": "string", "const": "answered"}, "receipt": {"type": "string"}, "places": arr(T_INT1),
+      "key": {"$ref": "#/$defs/key"}, "answer": {"type": "string"}}, ["receipt", "places", "key"]),
+    ({"how": {"type": "string", "const": "dismissed"}, "key": {"$ref": "#/$defs/key"}}, ["key"]),
+    ({"how": {"type": "string", "const": "withdrawn"}}, [])])
+SHOW_CLOSED = variants({k: v for k, v in CLOSED_COMMON.items() if k != "question"}, ["how", "at", "revision", "asker"], [
+    ({"how": {"type": "string", "const": "answered"}, "receipt": {"type": "string"}, "places": arr(T_INT1)},
+     ["receipt", "places"]),
+    ({"how": {"type": "string", "enum": ["dismissed", "withdrawn"]}}, [])])
+
+
+def verdict_shapes(extra=None, states=None):
+    """The verdicts, one closed shape for each (verdict, kind) pair, its own fields required (I2): what a reader is
+    owed for each refusal. `extra` adds fields to every shape; `states` maps a verdict to what `sent` reads."""
+    one = lambda v, kinds, own, req: (  # noqa: E731
+        {"verdict": {"type": "string", "const": v},
+         "kind": {"type": "string", "enum": kinds} if len(kinds) > 1 else {"type": "string", "const": kinds[0]},
+         **own, **({} if extra is None else extra), **({} if states is None else {"state": states[v]})}, req)
+    ID, KEYREF = {"id": {"$ref": "#/$defs/id"}}, {"$ref": "#/$defs/key"}
+    return [one("applied", ["answer", "dismiss"], ID, ["id"]),
+            one("applied", ["delivered"], {}, []),
+            one("stale", ["answer"], {**ID, "current": T_INT1}, ["id", "current"]),
+            one("closed", ["answer", "dismiss"],
+                {**ID, "how": {"type": "string", "enum": ["answered", "dismissed", "withdrawn", "unknown"]}},
+                ["id", "how"]),
+            one("retracted", ["answer", "dismiss"], ID, ["id"]),
+            one("retracted", ["retract"], {"target": KEYREF}, ["target"]),
+            one("retracted", ["unseen"], {"by": KEYREF}, ["by"]),
+            one("too-late", ["retract"], {"target": KEYREF}, ["target"])]
+
+
+VERDICT = variants({"at": {"$ref": "#/$defs/time"}}, ["verdict", "kind", "at"], verdict_shapes())
+SENT = variants({"key": {"$ref": "#/$defs/key"}}, ["key", "kind", "state"], [
+    ({"kind": {"type": "string", "enum": ["answer", "dismiss", "retract", "delivered"]}, "id": {"$ref": "#/$defs/id"},
+      "target": {"$ref": "#/$defs/key"}, "state": {"type": "string", "const": "queued"},
+      "cancelled": {"type": "boolean", "const": True}}, [])]
+    + [(shape, req + ["verdict", "at"]) for shape, req in verdict_shapes(
+        {"at": {"$ref": "#/$defs/time"}},
+        {"applied": {"type": "string", "enum": ["accepted", "delivered"]},
+         **{v: {"type": "string", "const": v} for v in ("stale", "closed", "retracted", "too-late")}})])
+
 COMMON_DEFS = {"time": T_TIME, "id": T_ID, "key": T_KEY, "asker": ASKER, "recipient": RECIPIENT, "option": OPTION,
                "snapshot": SNAPSHOT}
 
@@ -149,8 +188,6 @@ def schema(title, body, defs):
 
 REFERENCE_KINDS = [{"properties": {"kind": {"const": "text"}}, "required": ["startLine", "numLines", "totalLines"]},
                    {"properties": {"kind": {"const": "image"}}, "required": ["mediaType"]}]
-VERDICT_KINDS = [{"properties": {"kind": {"const": "unseen"}}, "required": ["by"]},
-                 {"properties": {"kind": {"enum": ["answer", "dismiss", "retract", "delivered"]}}}]
 STATE_SCHEMA = schema(
     "state.json: one session's sheet (plan I2). Structure, not the tool input's bounds.",
     obj({
@@ -179,7 +216,7 @@ STATE_SCHEMA = schema(
          "import"]),
     {**COMMON_DEFS, "reference": {**obj(REFERENCE_PROPS, REFERENCE_REQ), "oneOf": REFERENCE_KINDS},
      "question": obj(QUESTION_PROPS, QUESTION_REQ), "outcome": OUTCOME, "closed": CLOSED,
-     "verdict": {**VERDICT, "oneOf": VERDICT_KINDS}})
+     "verdict": VERDICT})
 
 LINE_PROPS = {
     "v": {"type": "integer", "const": 1}, "key": {"$ref": "#/$defs/key"},
@@ -217,19 +254,12 @@ SHOW_SCHEMA = schema(
                          "handle": {"type": "string", "pattern": "^q[1-9][0-9]*(@[1-9][0-9]*)?$"},
                          "queued": {"$ref": "#/$defs/queued"}}, QUESTION_REQ + ["handle"])),
         "hidden": arr(obj({"id": {"$ref": "#/$defs/id"}, "key": {"$ref": "#/$defs/key"}}, ["id", "key"])),
-        "sent": arr(obj({**VERDICT_PROPS, "key": {"$ref": "#/$defs/key"},
-                         "state": {"type": "string", "enum": ["queued", "accepted", "delivered", "stale", "closed",
-                                                               "retracted", "too-late"]},
-                         "cancelled": {"type": "boolean", "const": True}}, ["key", "kind", "state"])
-                    | {"oneOf": VERDICT_KINDS}),
+        "sent": arr({"$ref": "#/$defs/sent"}),
         "pending": arr({"$ref": "#/$defs/outcome"}),
-        "closed": {"type": "object", "additionalProperties": obj(
-            {"how": HOW, "at": {"$ref": "#/$defs/time"}, "revision": T_INT1, "asker": {"$ref": "#/$defs/asker"},
-             "header": {"type": "string"}, "receipt": {"type": "string"}, "deliveredAt": {"$ref": "#/$defs/time"}},
-            ["how", "at", "revision", "asker"])}},
+        "closed": {"type": "object", "additionalProperties": {"$ref": "#/$defs/closed"}}},
         ["v", "session", "seq", "sent", "pending"]),
-    {**COMMON_DEFS, "reference": SHOW_REFERENCE, "queued": QUEUED,
-     "outcome": {**OUTCOME, "properties": {**OUTCOME["properties"], "textCut": {"type": "boolean", "const": True}}}})
+    {**COMMON_DEFS, "reference": SHOW_REFERENCE, "queued": QUEUED, "outcome": SHOW_OUTCOME, "closed": SHOW_CLOSED,
+     "sent": SENT})
 
 DELIVERY_SCHEMA = schema(
     "The <sheet-delivery> block (plan I7): the last line of an envelope, terminal form and steer form alike.",
@@ -345,9 +375,10 @@ def said(qn, picks, text):
 
 def closed_answered(qn, line, at):
     picks, text = line.get("picks", []), line.get("text", "")
+    labels = [o["label"] for o in qn["options"]]
     c = {"how": "answered", "at": at, "revision": line["revision"], "asker": qn["asker"],
-         "question": qn["question"][:200], "receipt": ", ".join(picks) if picks else text[:80], "key": line["key"],
-         "answer": said(qn, picks, text)[:2000]}
+         "question": qn["question"][:200], "receipt": ", ".join(picks) if picks else text[:80],
+         "places": [labels.index(p) + 1 for p in picks], "key": line["key"], "answer": said(qn, picks, text)[:2000]}
     if "header" in qn:
         c["header"] = qn["header"]
     return c
@@ -449,14 +480,24 @@ def v_sent(key, state, verdict):
 
 
 def shown_closed(c):
-    return {k: c[k] for k in ("how", "at", "revision", "asker", "header", "receipt", "deliveredAt") if k in c}
+    return {k: c[k] for k in ("how", "at", "revision", "asker", "header", "receipt", "places", "deliveredAt") if k in c}
+
+
+def shown_pending(o):
+    """A pending outcome as show prints it: an answer's picks also as places; each string under its cut (I4), which
+    none of the fixtures' outcomes reaches."""
+    s = dict(o)
+    if o["kind"] == "answer":
+        s["places"] = [o["question"]["options"].index(p) + 1 for p in o["picks"]]
+    return s
 
 
 def show(sess, seq, open_=(), hidden=(), sent=(), pending=(), closed=None):
     return {"v": 1, "session": sess, "seq": seq, "open": list(open_), "hidden": list(hidden),
             "sent": sorted([s for s in sent if s["state"] != "queued"], key=lambda s: s["key"])
             + [s for s in sent if s["state"] == "queued"],
-            "pending": list(pending), "closed": {k: shown_closed(v) for k, v in (closed or {}).items()}}
+            "pending": [shown_pending(o) for o in pending],
+            "closed": {k: shown_closed(v) for k, v in (closed or {}).items()}}
 
 
 CASES = []
@@ -1065,17 +1106,18 @@ example("more", 3, "main", rec, {}, "\n".join([
 
 # imported: a pick of an imported question's 201-character label
 S = "5eed0000-0000-4000-8000-0000000000e4"
+TWIN_LABEL = LEGACY_LABEL[:200] + ", and a second look"     # shares its first 200 characters with LEGACY_LABEL
 qi = question("q1", "Which rollout gate?", ASK_AT, ASK_CALL,
-              [opt("No gate", "Ship to everyone at once."), opt(LEGACY_LABEL, "Every gate the note lists.")], "Gate",
-              imported={"callId": ASK_CALL, "index": 0})
-li = L("page-e4a00001", "answer", "page", "2026-11-23T10:00:00.000Z", id="q1", revision=1, picks=[LEGACY_LABEL])
+              [opt("No gate", "Ship to everyone at once."), opt(LEGACY_LABEL, "Every gate the note lists."),
+               opt(TWIN_LABEL, "Every gate, then a review.")], "Gate", imported={"callId": ASK_CALL, "index": 0})
+li = L("page-e4a00001", "answer", "page", "2026-11-23T10:00:00.000Z", id="q1", revision=1, picks=[TWIN_LABEL])
 AC = "2026-11-23T10:00:01.000Z"
 rec = record(S, 3, 2, 0, [], [answer_out(li, qi, AC)], {"q1": closed_answered(qi, li, AC)},
              {li["key"]: V("applied", "answer", AC, id="q1")}, 3, imports={ASK_CALL: ["q1"]})
 example("imported", 4, "main", rec, {}, "\n".join([
     "[sheet v1] The human answered questions on your sheet.",
-    'q1 "Which rollout gate?" → %s….' % LEGACY_LABEL[:200],
-    block({"v": 1, "keys": [li["key"]], "answered": [{"id": "q1", "revision": 1, "picks": [2], "text": "",
+    'q1 "Which rollout gate?" → %s….' % TWIN_LABEL[:200],
+    block({"v": 1, "keys": [li["key"]], "answered": [{"id": "q1", "revision": 1, "picks": [3], "text": "",
                                                      "images": []}], "dismissed": []})]))
 
 # subagent: one answer for a running subagent, taken; the main conversation's own outcome is not its
@@ -1114,6 +1156,8 @@ AC, LANDED = "2026-11-23T10:00:01.000Z", "2026-11-23T10:00:05.000Z"
 outs = [answer_out(ls[i], qs[i], AC) for i in range(40)]
 vs = {x["key"]: V("applied", "answer", AC, id=x["id"]) for x in ls}
 cl = {"q%d" % (i + 1): closed_answered(qs[i], ls[i], AC) for i in range(40)}
+for i in range(8):                    # the 32 answered last keep their answer's line (I2): one replace accepted all 40
+    del cl["q%d" % (i + 1)]["answer"]
 rec = record(S, 2, 41, 0, [], outs, cl, vs, 81)
 landed = record(S, 3, 41, 0, [], outs[SPLIT_FIRST:],
                 {k: dict(c, deliveredAt=LANDED) if int(k[1:]) <= SPLIT_FIRST else c for k, c in cl.items()}, vs, 81)
@@ -1298,7 +1342,11 @@ ruling of the composite's writer, and raises `version` in `MANIFEST.json`.
 
 The schemas are JSON Schema 2020-12 held to `type`, `properties`, `required`, `additionalProperties`, `enum`,
 `const`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`, `pattern`, `oneOf` and `$ref` into
-the same file's `$defs` (lengths in code points); any validator takes them.
+the same file's `$defs` (lengths in code points); any validator takes them. A `pattern` is ECMA-262, as JSON Schema
+says, with no flags: each is anchored `^...$` and `$` is the end of input, so a string with a newline after it does
+not match. A Python reader matches the whole string (`re.fullmatch`, or `\\Z` for `$`). A verdict, an outcome and
+a closed question are discriminated shapes: each variant is a closed object with its own fields required, so a field
+that belongs to another variant is refused.
 
 ## Reading the fixtures
 
@@ -1340,12 +1388,28 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   does.
 - **`sent`** (I4) lists the keys with a verdict, sorted by key, then the queued lines in inbox order. A queued
   retract carries its `target`. A `delivered` line's own key reads `delivered` (verdict `applied`, never pending).
-- **A line a reader drops** (I4) is one a drain skips (U2): it fails the line's schema, or it answers an open
-  question at its current revision with a pick that is no label of it.
+- **A line a reader drops** (I4) is one a drain skips (U2): it is not JSON (NaN and the infinities are not), it
+  fails the line's schema, a string in it holds a lone UTF-16 surrogate, or it answers an open question at its
+  current revision with a pick that is no label of it, or with two picks on a single-select question.
+- **The door** (I3) refuses each of those it can see, exit 2 with nothing appended. An upload's name is at most 250
+  characters. Its one `write`, should it come back short, is completed while the lock is held; a write the file
+  refuses is cut back to the file's length before the call, and the door exits 1 with nothing appended.
+- **Picks by place** (I2, I4). A closed answered question keeps `places`, its picks as integers from 1 among the
+  options of the answered revision, as the block carries them. `show --json` carries `places` on each pending answer
+  too, read from the whole snapshot before any label is cut: two imported labels can share their first 200
+  characters (the `imported` example's do). The cut labels stay beside them for display; the inbox line keeps
+  labels.
+- **A reader that cannot pair** (I4). The reader reads `state.json`, the inbox, `state.json` again, at most four
+  times; if `seq` moved every time it returns nothing unverified: `sminos sheet show` exits 75, and a reader reads
+  again.
+- **Cuts in `show`'s pending outcomes** (I4), in both forms: the question at 2,000 characters, its header at 60,
+  each label and each pick at 200, a subagent's name at 200. An agent id is the engine's, at most 128 characters,
+  never cut.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
-- **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome's `text` as its
-  first 500 characters, with `textCut: true` when it was longer and the record's `textFile` where it has one: a
-  hook reads it through a process call that returns at most 4 MiB. The unkeyed form carries texts whole.
+- **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome under the cuts
+  above and its `text` as its first 500 characters, with `textCut: true` when it was longer and the record's
+  `textFile` where it has one: every string it carries is bounded, and a hook reads it through a process call that
+  returns at most 4 MiB. The unkeyed form carries texts whole.
 - **A start's asks** (I5), inline or staged: `{callId, askedAt, questions}`, `questions` today's tool's objects as
   it held them.
 - **The input schema** (I6) states neither the call's two rules nor an entry's own (U14): a preview on a

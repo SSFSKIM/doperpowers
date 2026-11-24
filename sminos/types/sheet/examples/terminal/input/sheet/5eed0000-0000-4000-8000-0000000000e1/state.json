@@ -20,6 +20,9 @@
    "header": "Migration",
    "how": "answered",
    "key": "cli-20c41d07",
+   "places": [
+    1
+   ],
    "question": "Ship the migration today?",
    "receipt": "Yes",
    "revision": 1
@@ -31,6 +34,10 @@
    "header": "Auth method",
    "how": "answered",
    "key": "page-7f3a91c2",
+   "places": [
+    1,
+    2
+   ],
    "question": "Which auth method should the login use?",
    "receipt": "OAuth, Passkeys",
    "revision": 2
@@ -42,6 +49,7 @@
    "header": "Empty state",
    "how": "answered",
    "key": "page-7f3a91c3",
+   "places": [],
    "question": "What should the empty state say?",
    "receipt": "Nothing waiting for you.",
    "revision": 1

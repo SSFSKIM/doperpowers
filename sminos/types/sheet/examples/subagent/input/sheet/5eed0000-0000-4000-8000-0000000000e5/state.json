@@ -11,6 +11,9 @@
    "header": "Cache key",
    "how": "answered",
    "key": "page-e5a00003",
+   "places": [
+    1
+   ],
    "question": "Should the cache key include the locale?",
    "receipt": "Yes",
    "revision": 1
@@ -22,6 +25,9 @@
    "header": "Migration",
    "how": "answered",
    "key": "page-e5a00004",
+   "places": [
+    2
+   ],
    "question": "Ship the migration today?",
    "receipt": "No",
    "revision": 1

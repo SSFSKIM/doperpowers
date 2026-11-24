@@ -8,6 +8,9 @@
    "header": "Migration",
    "how": "answered",
    "key": "cli-1901a001",
+   "places": [
+    1
+   ],
    "question": "Ship the migration today?",
    "receipt": "Yes",
    "revision": 1

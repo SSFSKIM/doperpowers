@@ -8,6 +8,7 @@
    "header": "Guide 1",
    "how": "answered",
    "key": "page-e2a00001",
+   "places": [],
    "question": "What should section 1 of the guide cover?",
    "receipt": "Answer 1, about alpha: the whole of it matters, every part of this text. Answer ",
    "revision": 1
@@ -19,6 +20,7 @@
    "header": "Guide 2",
    "how": "answered",
    "key": "page-e2a00002",
+   "places": [],
    "question": "What should section 2 of the guide cover?",
    "receipt": "Answer 2, about bravo: the whole of it matters, every part of this text. Answer ",
    "revision": 1
@@ -30,6 +32,7 @@
    "header": "Guide 3",
    "how": "answered",
    "key": "page-e2a00003",
+   "places": [],
    "question": "What should section 3 of the guide cover?",
    "receipt": "Answer 3, about charlie: the whole of it matters, every part of this text. Answe",
    "revision": 1
@@ -41,6 +44,7 @@
    "header": "Guide 4",
    "how": "answered",
    "key": "page-e2a00004",
+   "places": [],
    "question": "What should section 4 of the guide cover?",
    "receipt": "Answer 4, about delta: the whole of it matters, every part of this text. Answer ",
    "revision": 1

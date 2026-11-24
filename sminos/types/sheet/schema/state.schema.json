@@ -10,6 +10,7 @@
      "additionalProperties": false,
      "properties": {
       "agentId": {
+       "maxLength": 128,
        "minLength": 1,
        "type": "string"
       },
@@ -26,53 +27,139 @@
    ]
   },
   "closed": {
-   "additionalProperties": false,
-   "properties": {
-    "answer": {
-     "type": "string"
-    },
-    "asker": {
-     "$ref": "#/$defs/asker"
-    },
-    "at": {
-     "$ref": "#/$defs/time"
-    },
-    "deliveredAt": {
-     "$ref": "#/$defs/time"
-    },
-    "header": {
-     "type": "string"
-    },
-    "how": {
-     "enum": [
-      "answered",
-      "dismissed",
-      "withdrawn"
+   "oneOf": [
+    {
+     "additionalProperties": false,
+     "properties": {
+      "answer": {
+       "type": "string"
+      },
+      "asker": {
+       "$ref": "#/$defs/asker"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "deliveredAt": {
+       "$ref": "#/$defs/time"
+      },
+      "header": {
+       "type": "string"
+      },
+      "how": {
+       "const": "answered",
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/key"
+      },
+      "places": {
+       "items": {
+        "minimum": 1,
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "question": {
+       "type": "string"
+      },
+      "receipt": {
+       "type": "string"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "how",
+      "at",
+      "revision",
+      "asker",
+      "question",
+      "receipt",
+      "places",
+      "key"
      ],
-     "type": "string"
+     "type": "object"
     },
-    "key": {
-     "$ref": "#/$defs/key"
+    {
+     "additionalProperties": false,
+     "properties": {
+      "asker": {
+       "$ref": "#/$defs/asker"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "deliveredAt": {
+       "$ref": "#/$defs/time"
+      },
+      "header": {
+       "type": "string"
+      },
+      "how": {
+       "const": "dismissed",
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/key"
+      },
+      "question": {
+       "type": "string"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "how",
+      "at",
+      "revision",
+      "asker",
+      "question",
+      "key"
+     ],
+     "type": "object"
     },
-    "question": {
-     "type": "string"
-    },
-    "receipt": {
-     "type": "string"
-    },
-    "revision": {
-     "minimum": 1,
-     "type": "integer"
+    {
+     "additionalProperties": false,
+     "properties": {
+      "asker": {
+       "$ref": "#/$defs/asker"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "deliveredAt": {
+       "$ref": "#/$defs/time"
+      },
+      "header": {
+       "type": "string"
+      },
+      "how": {
+       "const": "withdrawn",
+       "type": "string"
+      },
+      "question": {
+       "type": "string"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "how",
+      "at",
+      "revision",
+      "asker",
+      "question"
+     ],
+     "type": "object"
     }
-   },
-   "required": [
-    "how",
-    "at",
-    "revision",
-    "asker",
-    "question"
-   ],
-   "type": "object"
+   ]
   },
   "id": {
    "pattern": "^q[1-9][0-9]*$",
@@ -104,111 +191,157 @@
    "type": "object"
   },
   "outcome": {
-   "additionalProperties": false,
    "oneOf": [
     {
+     "additionalProperties": false,
      "properties": {
+      "acceptedAt": {
+       "$ref": "#/$defs/time"
+      },
+      "acrossStop": {
+       "type": "boolean"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "batch": {
+       "$ref": "#/$defs/key"
+      },
+      "by": {
+       "enum": [
+        "page",
+        "maws",
+        "desk",
+        "cli"
+       ],
+       "type": "string"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
+      "images": {
+       "items": {
+        "pattern": "^uploads/[A-Za-z0-9._-]{1,250}\\.(png|jpg|jpeg|gif|webp)$",
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "key": {
+       "$ref": "#/$defs/key"
+      },
       "kind": {
-       "const": "answer"
+       "const": "answer",
+       "type": "string"
+      },
+      "picks": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "question": {
+       "$ref": "#/$defs/snapshot"
+      },
+      "recipient": {
+       "$ref": "#/$defs/recipient"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "taken": {
+       "type": "boolean"
+      },
+      "text": {
+       "type": "string"
+      },
+      "textFile": {
+       "pattern": "^texts/[0-9a-f]{64}\\.txt$",
+       "type": "string"
       }
      },
      "required": [
+      "key",
+      "kind",
+      "id",
+      "revision",
+      "by",
+      "at",
+      "acceptedAt",
+      "recipient",
+      "taken",
+      "acrossStop",
+      "question",
       "picks",
       "text",
       "images"
-     ]
+     ],
+     "type": "object"
     },
     {
+     "additionalProperties": false,
      "properties": {
+      "acceptedAt": {
+       "$ref": "#/$defs/time"
+      },
+      "acrossStop": {
+       "type": "boolean"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "batch": {
+       "$ref": "#/$defs/key"
+      },
+      "by": {
+       "enum": [
+        "page",
+        "maws",
+        "desk",
+        "cli"
+       ],
+       "type": "string"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
+      "key": {
+       "$ref": "#/$defs/key"
+      },
       "kind": {
-       "const": "dismiss"
+       "const": "dismiss",
+       "type": "string"
+      },
+      "question": {
+       "$ref": "#/$defs/snapshot"
+      },
+      "recipient": {
+       "$ref": "#/$defs/recipient"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "taken": {
+       "type": "boolean"
       }
-     }
-    }
-   ],
-   "properties": {
-    "acceptedAt": {
-     "$ref": "#/$defs/time"
-    },
-    "acrossStop": {
-     "type": "boolean"
-    },
-    "at": {
-     "$ref": "#/$defs/time"
-    },
-    "batch": {
-     "$ref": "#/$defs/key"
-    },
-    "by": {
-     "enum": [
-      "page",
-      "maws",
-      "desk",
-      "cli"
-     ],
-     "type": "string"
-    },
-    "id": {
-     "$ref": "#/$defs/id"
-    },
-    "images": {
-     "items": {
-      "pattern": "^uploads/[A-Za-z0-9._-]+\\.(png|jpg|jpeg|gif|webp)$",
-      "type": "string"
      },
-     "type": "array"
-    },
-    "key": {
-     "$ref": "#/$defs/key"
-    },
-    "kind": {
-     "enum": [
-      "answer",
-      "dismiss"
+     "required": [
+      "key",
+      "kind",
+      "id",
+      "revision",
+      "by",
+      "at",
+      "acceptedAt",
+      "recipient",
+      "taken",
+      "acrossStop",
+      "question"
      ],
-     "type": "string"
-    },
-    "picks": {
-     "items": {
-      "type": "string"
-     },
-     "type": "array"
-    },
-    "question": {
-     "$ref": "#/$defs/snapshot"
-    },
-    "recipient": {
-     "$ref": "#/$defs/recipient"
-    },
-    "revision": {
-     "minimum": 1,
-     "type": "integer"
-    },
-    "taken": {
-     "type": "boolean"
-    },
-    "text": {
-     "type": "string"
-    },
-    "textFile": {
-     "pattern": "^texts/[0-9a-f]{64}\\.txt$",
-     "type": "string"
+     "type": "object"
     }
-   },
-   "required": [
-    "key",
-    "kind",
-    "id",
-    "revision",
-    "by",
-    "at",
-    "acceptedAt",
-    "recipient",
-    "taken",
-    "acrossStop",
-    "question"
-   ],
-   "type": "object"
+   ]
   },
   "question": {
    "additionalProperties": false,
@@ -296,6 +429,7 @@
      "additionalProperties": false,
      "properties": {
       "agentId": {
+       "maxLength": 128,
        "minLength": 1,
        "type": "string"
       }
@@ -440,84 +574,236 @@
    "type": "string"
   },
   "verdict": {
-   "additionalProperties": false,
    "oneOf": [
     {
+     "additionalProperties": false,
      "properties": {
-      "kind": {
-       "const": "unseen"
-      }
-     },
-     "required": [
-      "by"
-     ]
-    },
-    {
-     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
       "kind": {
        "enum": [
         "answer",
-        "dismiss",
-        "retract",
-        "delivered"
-       ]
+        "dismiss"
+       ],
+       "type": "string"
+      },
+      "verdict": {
+       "const": "applied",
+       "type": "string"
       }
-     }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "id"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "kind": {
+       "const": "delivered",
+       "type": "string"
+      },
+      "verdict": {
+       "const": "applied",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "current": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
+      "kind": {
+       "const": "answer",
+       "type": "string"
+      },
+      "verdict": {
+       "const": "stale",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "id",
+      "current"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "how": {
+       "enum": [
+        "answered",
+        "dismissed",
+        "withdrawn",
+        "unknown"
+       ],
+       "type": "string"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
+      "kind": {
+       "enum": [
+        "answer",
+        "dismiss"
+       ],
+       "type": "string"
+      },
+      "verdict": {
+       "const": "closed",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "id",
+      "how"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "id": {
+       "$ref": "#/$defs/id"
+      },
+      "kind": {
+       "enum": [
+        "answer",
+        "dismiss"
+       ],
+       "type": "string"
+      },
+      "verdict": {
+       "const": "retracted",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "id"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "kind": {
+       "const": "retract",
+       "type": "string"
+      },
+      "target": {
+       "$ref": "#/$defs/key"
+      },
+      "verdict": {
+       "const": "retracted",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "target"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "by": {
+       "$ref": "#/$defs/key"
+      },
+      "kind": {
+       "const": "unseen",
+       "type": "string"
+      },
+      "verdict": {
+       "const": "retracted",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "by"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "kind": {
+       "const": "retract",
+       "type": "string"
+      },
+      "target": {
+       "$ref": "#/$defs/key"
+      },
+      "verdict": {
+       "const": "too-late",
+       "type": "string"
+      }
+     },
+     "required": [
+      "verdict",
+      "kind",
+      "at",
+      "target"
+     ],
+     "type": "object"
     }
-   ],
-   "properties": {
-    "at": {
-     "$ref": "#/$defs/time"
-    },
-    "by": {
-     "$ref": "#/$defs/key"
-    },
-    "current": {
-     "minimum": 1,
-     "type": "integer"
-    },
-    "how": {
-     "enum": [
-      "answered",
-      "dismissed",
-      "withdrawn",
-      "unknown"
-     ],
-     "type": "string"
-    },
-    "id": {
-     "$ref": "#/$defs/id"
-    },
-    "kind": {
-     "enum": [
-      "answer",
-      "dismiss",
-      "retract",
-      "delivered",
-      "unseen"
-     ],
-     "type": "string"
-    },
-    "target": {
-     "$ref": "#/$defs/key"
-    },
-    "verdict": {
-     "enum": [
-      "applied",
-      "stale",
-      "closed",
-      "retracted",
-      "too-late"
-     ],
-     "type": "string"
-    }
-   },
-   "required": [
-    "verdict",
-    "kind",
-    "at"
-   ],
-   "type": "object"
+   ]
   }
  },
  "$schema": "https://json-schema.org/draft/2020-12/schema",

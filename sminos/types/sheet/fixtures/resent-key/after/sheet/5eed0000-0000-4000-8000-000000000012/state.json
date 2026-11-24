@@ -8,6 +8,9 @@
    "header": "Auth method",
    "how": "answered",
    "key": "page-1201a001",
+   "places": [
+    2
+   ],
    "question": "Which auth method should the login use?",
    "receipt": "Passkeys",
    "revision": 1

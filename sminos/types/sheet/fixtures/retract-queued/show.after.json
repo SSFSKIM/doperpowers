@@ -5,6 +5,9 @@
    "at": "2026-11-23T10:00:00.000Z",
    "header": "Migration",
    "how": "answered",
+   "places": [
+    2
+   ],
    "receipt": "No",
    "revision": 1
   }
@@ -50,6 +53,9 @@
    "kind": "answer",
    "picks": [
     "No"
+   ],
+   "places": [
+    2
    ],
    "question": {
     "askedAt": "2026-11-23T09:02:00.000Z",

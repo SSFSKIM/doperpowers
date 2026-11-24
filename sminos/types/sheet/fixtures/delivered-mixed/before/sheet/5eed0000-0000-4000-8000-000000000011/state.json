@@ -8,6 +8,9 @@
    "header": "Auth method",
    "how": "answered",
    "key": "page-1101a001",
+   "places": [
+    1
+   ],
    "question": "Which auth method should the login use?",
    "receipt": "OAuth",
    "revision": 1
@@ -20,6 +23,9 @@
    "header": "Migration",
    "how": "answered",
    "key": "page-1101a002",
+   "places": [
+    1
+   ],
    "question": "Ship the migration today?",
    "receipt": "Yes",
    "revision": 1

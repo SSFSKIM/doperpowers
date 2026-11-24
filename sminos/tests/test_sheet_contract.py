@@ -211,6 +211,34 @@ class TheSet(unittest.TestCase):
         for lines in ([0, 3], [9, 2]):
             self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], {"ask": [
                 {"question": "x?", "references": [{"path": "a.ts", "lines": lines}]}]}), [])
+        D = SCHEMA["state"]["$defs"]
+        T = "2026-11-23T10:00:00.000Z"
+        bad_verdicts = {
+            "stale without current": {"verdict": "stale", "kind": "answer", "at": T, "id": "q1"},
+            "closed without how": {"verdict": "closed", "kind": "answer", "at": T, "id": "q1"},
+            "a retract's without target": {"verdict": "too-late", "kind": "retract", "at": T},
+            "unseen applied": {"verdict": "applied", "kind": "unseen", "at": T, "by": "page-0901r001"},
+            "unseen with an id": dict(unseen, id="q1"),
+            "applied answer without id": {"verdict": "applied", "kind": "answer", "at": T},
+            "stale on a dismissal": {"verdict": "stale", "kind": "dismiss", "at": T, "id": "q1", "current": 2}}
+        for why, v in bad_verdicts.items():
+            self.assertNotEqual(sheet_schema.errors(verdict, v), [], why)
+        outcome = {"$ref": "#/$defs/outcome", "$defs": D}
+        after = load(glob.glob(os.path.join(SET, "fixtures", "batch", "after", "sheet", "*", "state.json"))[0])
+        dismissal = next(o for o in after["pending"] if o["kind"] == "dismiss")
+        self.assertEqual(sheet_schema.errors(outcome, dismissal), [])
+        for f, v in (("picks", []), ("text", ""), ("images", [])):
+            self.assertNotEqual(sheet_schema.errors(outcome, dict(dismissal, **{f: v})), [], "a dismissal with " + f)
+        closed = {"$ref": "#/$defs/closed", "$defs": D}
+        withdrawn = load(glob.glob(os.path.join(SET, "fixtures", "closed-withdrawn", "before", "sheet", "*",
+                                                "state.json"))[0])["closed"]["q2"]
+        self.assertEqual(sheet_schema.errors(closed, withdrawn), [])
+        self.assertNotEqual(sheet_schema.errors(closed, dict(withdrawn, receipt="Yes")), [])
+        answered = after["closed"]["q1"]
+        self.assertNotEqual(sheet_schema.errors(closed, {k: v for k, v in answered.items() if k != "places"}), [])
+        # Patterns end at the end of input (ECMA-262): a key with a newline after it is no key.
+        self.assertNotEqual(sheet_schema.errors(SCHEMA["inbox-line"], {"v": 1, "key": "test-key-1\n",
+                                                                     "kind": "dismiss", "id": "q1", "by": "cli"}), [])
         line = {"v": 1, "key": "page-00000001", "kind": "answer", "id": "q1", "revision": 1, "picks": [""], "by": "page"}
         self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], line), [], "a pick of an empty label")
         self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], dict(line, revision=1.0)), [], "1.0 is 1")
@@ -280,7 +308,7 @@ class TheReader(unittest.TestCase):
         self.assertNotIn("at", m["open"][0]["queued"])
         self.assertEqual(sheet_schema.errors(SCHEMA["show"], m), [])
 
-    def test_a_seq_that_keeps_moving_reads_the_last_state_with_its_own_tail(self):
+    def test_a_seq_that_keeps_moving_is_read_again(self):
         home("retract-unseen-late", "before")
         s = load(os.path.join(SET, "fixtures", "retract-unseen-late", "case.json"))["session"]
         real, n = sheet._read_json, [0]
@@ -288,17 +316,30 @@ class TheReader(unittest.TestCase):
         def moving(path):
             got = real(path)
             n[0] += 1
-            if n[0] == 8:          # the last read: a step has applied the whole tail meanwhile
-                got["inbox"]["offset"] = os.path.getsize(os.path.join(os.path.dirname(path), "inbox.jsonl"))
             got["seq"] = n[0]
             return got
         sheet._read_json = moving
         try:
-            m = sheet.model(s)
+            with self.assertRaises(sheet.Busy):
+                sheet.model(s)
         finally:
             sheet._read_json = real
-        self.assertEqual(m["seq"], 8)
-        self.assertEqual([x for x in m["sent"] if x["state"] == "queued"], [], "no line past the last state's offset")
+        self.assertEqual(n[0], 8, "state, inbox, state again, four times; no pair it did not verify")
+
+    def test_a_bad_line_does_not_stop_the_reader(self):
+        h = home("references", "before")
+        s = load(os.path.join(SET, "fixtures", "references", "case.json"))["session"]
+        good = '{"v":1,"key":"maws-00000002","kind":"answer","id":"q2","revision":1,"picks":["No"],"by":"maws"}\n'
+        bad = ['{"v":1e999,"key":"maws-00000001","kind":"dismiss","id":"q1","by":"maws"}\n',
+               '{"v":1,"key":"maws-00000003","kind":"dismiss","id":"q1","by":"maws","text":NaN}\n',
+               '{"v":1,"key":"maws-00000004","kind":"answer","id":"q2","revision":1,"text":"\\ud83d","by":"maws"}\n',
+               '{"v":1,"key":"maws-0000005\\n","kind":"dismiss","id":"q1","by":"maws"}\n',
+               '{"v":1,"key":"maws-00000006","kind":"answer","id":"q2","revision":1,"picks":["Yes","No"],"by":"maws"}\n']
+        write(os.path.join(h, "sheet", s, "inbox.jsonl"), "".join(bad) + good)
+        m = sheet.model(s)
+        self.assertEqual([x["key"] for x in m["sent"]], ["maws-00000002"], "each bad line skipped (U2), the good read")
+        self.assertEqual(m["open"][1]["queued"]["key"], "maws-00000002")
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], m), [])
 
     def test_show_keys(self):
         c = load(os.path.join(SET, "fixtures", "batch", "case.json"))
@@ -328,6 +369,18 @@ class TheReader(unittest.TestCase):
         rc, out, err = run(["sheet", "show", "--session", c["session"], "--json", "--keys", keys])
         self.assertEqual(rc, 0, err)
         self.assertLess(len(out.encode()), 4 * 1024 * 1024 // 2, "far under what a hook's process call returns")
+        # An imported question has no input bounds: a pick, a header, a label and an asker's name at absurd lengths.
+        huge = "\U0001F600" * 87000
+        big = dict(big, text="short", picks=[huge + "1"], question=dict(
+            big["question"], header=huge, options=[huge + "1", huge + "2"], asker={"agentId": "a1b2c3", "name": huge}))
+        rec["pending"] = [dict(big, key="page-%08d" % n) for n in range(50)]
+        write(path, json.dumps(rec, ensure_ascii=False))
+        rc, out, err = run(["sheet", "show", "--session", c["session"], "--json", "--keys", keys])
+        self.assertEqual(rc, 0, err)
+        self.assertLess(len(out.encode()), 4 * 1024 * 1024 // 2)
+        o = json.loads(out)["pending"][0]
+        self.assertEqual((o["places"], len(o["picks"][0]), len(o["question"]["header"]),
+                          len(o["question"]["options"][1]), len(o["question"]["asker"]["name"])), ([1], 200, 60, 200, 200))
 
     def test_a_pending_question_is_bounded(self):
         h = home("answer-applied", "after")
@@ -494,6 +547,9 @@ class TheEnvelopes(unittest.TestCase):
         self.assertNotIn("more", then)
         self.assertTrue(envelope("split").split("\n")[0].endswith(" More follows."))
         self.assertFalse(envelope("split/then").split("\n")[0].endswith(" More follows."))
+        answered_last = [k for k, c in rec["closed"].items() if "answer" in c]
+        self.assertEqual(sorted(answered_last, key=lambda k: int(k[1:])), ["q%d" % n for n in range(9, 41)],
+                         "the 32 answered last keep their answer's line")
         landed = example_record("split/then")
         self.assertEqual([o["key"] for o in landed["pending"]], then["keys"])
         for o in rec["pending"]:
@@ -506,10 +562,23 @@ class TheEnvelopes(unittest.TestCase):
 
     def test_the_imported_label_is_cut_in_the_prose_only(self):
         text, rec = envelope("imported"), example_record("imported")
-        label = rec["pending"][0]["picks"][0]
-        self.assertEqual(len(label), 201)
+        label, options = rec["pending"][0]["picks"][0], rec["pending"][0]["question"]["options"]
+        self.assertGreater(len(label), 200)
+        self.assertEqual(options[1][:200], options[2][:200], "two labels share their first 200 characters")
         self.assertIn("→ %s…." % label[:200], text)
-        self.assertEqual(block(text)["answered"][0]["picks"], [2])
+        self.assertEqual(block(text)["answered"][0]["picks"], [3])
+        # The reader's model names the pick by its place too, read before any label is cut.
+        os.environ["SMINOS_HOME"] = os.path.dirname(glob.glob(os.path.join(SET, "examples", "imported", "input",
+                                                                         "sheet"))[0])
+        try:
+            m = sheet.model(rec["session"])
+        finally:
+            os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+        o = m["pending"][0]
+        self.assertEqual(o["places"], [3])
+        self.assertEqual(o["question"]["options"][1], o["question"]["options"][2], "cut alike")
+        self.assertEqual(m["closed"]["q1"]["places"], [3])
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], m), [])
 
     def test_the_subagent_envelope_opens_with_whose_it_is(self):
         text = envelope("subagent")
@@ -629,6 +698,58 @@ class TheDoor(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         got = self.added()[0]
         self.assertEqual((got["text"], got["revision"], type(got["revision"])), ("a\u2028b\u2029c\u0085d", 1, int))
+
+    def test_lines_no_other_reader_could_read_are_refused(self):
+        for why, data in (
+                ("an infinity", '{"v":1e999,"key":"cli-test0001","kind":"dismiss","id":"q2","by":"cli"}'),
+                ("NaN", '{"v":1,"key":"cli-test0001","kind":"answer","id":"q2","revision":NaN,"text":"x","by":"cli"}'),
+                ("a lone surrogate", '{"v":1,"key":"cli-test0001","kind":"answer","id":"q2","revision":1,'
+                                     '"text":"half \\ud83d","by":"cli"}'),
+                ("a key ending in a newline", '{"v":1,"key":"test-key-1\\n","kind":"dismiss","id":"q2","by":"cli"}'),
+                ("an upload name past 250", '{"v":1,"key":"cli-test0001","kind":"answer","id":"q1","revision":1,'
+                                            '"text":"x","images":["uploads/%s.png"],"by":"cli"}' % ("a" * 251))):
+            with self.subTest(why):
+                rc, _, err = run(["sheet", "put", "--session", self.s, "--no-wait"], (data + "\n").encode())
+                self.assertEqual(rc, 2, err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual(raw_bytes(self.inbox), self.was)
+
+    def test_a_short_write_is_completed_under_the_lock(self):
+        real, calls = os.write, []
+
+        def short(fd, data):
+            calls.append(len(data))
+            return real(fd, bytes(data)[:max(1, len(data) // 3)])
+        lines = [answer("cli-test0001", "q2", picks=["Yes"]), answer("cli-test0002", "q1", picks=["OAuth"])]
+        os.write = short
+        try:
+            sheet.append(self.s, lines)
+        finally:
+            os.write = real
+        self.assertGreater(len(calls), 1, "the write came back short")
+        self.assertEqual([x["key"] for x in self.added()], ["cli-test0001", "cli-test0002"], "and was completed")
+
+    def test_a_write_that_fails_leaves_nothing(self):
+        import contextlib
+        import io
+        real, calls = os.write, []
+
+        def failing(fd, data):
+            calls.append(1)
+            if len(calls) == 1:
+                return real(fd, bytes(data)[:40])
+            raise OSError(28, "No space left on device")
+        os.write = failing
+        err = io.StringIO()
+        try:
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(err):
+                sheet.append(self.s, [answer("cli-test0001", "q2", picks=["Yes"]),
+                                      answer("cli-test0002", "q1", picks=["OAuth"])])
+        finally:
+            os.write = real
+        self.assertEqual(e.exception.code, 1)
+        self.assertIn("nothing appended", err.getvalue())
+        self.assertEqual(raw_bytes(self.inbox), self.was, "cut back to its length before the call")
 
     def test_no_record_exits_3(self):
         rc, _, err = run(["sheet", "put", "--session", "5eed0000-0000-4000-8000-0000000000ff"],

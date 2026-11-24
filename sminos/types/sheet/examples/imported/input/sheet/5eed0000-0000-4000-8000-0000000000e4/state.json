@@ -8,8 +8,11 @@
    "header": "Gate",
    "how": "answered",
    "key": "page-e4a00001",
+   "places": [
+    3
+   ],
    "question": "Which rollout gate?",
-   "receipt": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n",
+   "receipt": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look",
    "revision": 1
   }
  },
@@ -44,7 +47,7 @@
    "key": "page-e4a00001",
    "kind": "answer",
    "picks": [
-    "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n"
+    "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look"
    ],
    "question": {
     "askedAt": "2026-11-22T18:00:00.000Z",
@@ -53,7 +56,8 @@
     "multiSelect": false,
     "options": [
      "No gate",
-     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n"
+     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n",
+     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look"
     ],
     "question": "Which rollout gate?"
    },

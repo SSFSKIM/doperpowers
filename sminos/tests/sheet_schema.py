@@ -2,7 +2,8 @@
 2020-12 to the keywords the plan's I1 names: type, properties, required, additionalProperties, enum, const, items,
 minItems, maxItems, minLength, maxLength, minimum, pattern, oneOf, and $ref into the same file's $defs. The suite's
 runners have no schema library. A keyword outside that set is an error of the schema, so a schema that grows past
-what another repository's validator is promised fails here first. Lengths count code points (K5).
+what another repository's validator is promised fails here first. Lengths count code points (K5); a pattern is
+read as ECMA-262 reads it (`$` is the end of input).
 
     errors(schema, instance) -> [str]      empty when the instance is valid
 """
@@ -21,6 +22,12 @@ TYPES = {
     "boolean": lambda v: isinstance(v, bool),
     "null": lambda v: v is None,
 }
+
+
+def ecma(pattern):
+    """A pattern as ECMA-262 reads it, for Python's `re`: `$` with no flags is the end of input there, where Python's
+    also matches before a last newline. The published patterns use `$` only as their last character."""
+    return pattern[:-1] + r"\Z" if pattern.endswith("$") and not pattern.endswith("\\$") else pattern
 
 
 def _equal(a, b):
@@ -58,7 +65,7 @@ def errors(schema, instance, root=None, path="$"):
             out.append("%s: shorter than %d" % (path, schema["minLength"]))
         if "maxLength" in schema and len(instance) > schema["maxLength"]:
             out.append("%s: longer than %d" % (path, schema["maxLength"]))
-        if "pattern" in schema and not re.search(schema["pattern"], instance):
+        if "pattern" in schema and not re.search(ecma(schema["pattern"]), instance):
             out.append("%s: does not match %s" % (path, schema["pattern"]))
     if TYPES["number"](instance) and "minimum" in schema and instance < schema["minimum"]:
         out.append("%s: below %s" % (path, schema["minimum"]))

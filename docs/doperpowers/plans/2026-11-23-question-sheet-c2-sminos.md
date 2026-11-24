@@ -458,9 +458,11 @@ in the last section.
   it is set aside and the verdict stands as written, `kind` included. A
   second retract of the same target finds a key with a verdict and reads
   `too-late`.
-- U2 (taken) · A line that is not JSON, has no key, fails the line's
-  schema, or picks a label the question does not have at an equal
-  revision is skipped: no verdict, `inbox.skipped` raised by one, and the
+- U2 (taken) · A line that is not JSON (NaN and the infinities are not),
+  has no key, fails the line's schema, holds a lone UTF-16 surrogate in a
+  string, picks a label the question does not have at an equal revision,
+  or makes two picks on a single-select question at an equal revision, is
+  skipped: no verdict, `inbox.skipped` raised by one, and the
   step's effects say so for the mod's debug log. The door refuses each of
   these it can see, so such a line did not come through the door.
 - U3 (taken) · An answer or dismissal naming an id the record never
@@ -577,8 +579,13 @@ Python's `json.dumps(obj, sort_keys=True, indent=1, ensure_ascii=False)`
 and a newline, and a step's output is compared after the same
 serialization; an inbox line is compact JSON, its keys in its writer's
 order. A side of a fixture with no record has no directory, and its
-`show.*.json` is `null`. The set's `README.md` lists these readings with
-the ones below, in the same words.
+`show.*.json` is `null`. A schema's `pattern` is ECMA-262 with no flags:
+each is anchored `^...$` and `$` is the end of input, so a string with a
+newline after it does not match; a Python reader matches the whole string
+(`re.fullmatch`). A verdict, an outcome and a closed question are
+discriminated shapes: each variant a closed object with its own fields
+required. The set's `README.md` lists these readings with the ones below,
+in the same words.
 
 **Published at one revision** means: M1's pull request merged to `main`.
 The revision is that merge commit; M1's Progress line records it with the
@@ -632,8 +639,9 @@ fails here first.
 
     Closed  = { "how": "answered" | "dismissed" | "withdrawn", "at": "…", "revision": 2,
                 "asker": …, "header": "…", "question": "<its first 200 characters>",
-                "receipt": "OAuth, Passkeys", "key": "…", "deliveredAt": "…", "answer": "…" }
+                "receipt": "OAuth, Passkeys", "places": [1, 2], "key": "…", "deliveredAt": "…", "answer": "…" }
               // receipt: the picks joined by ", ", else the text's first 80 characters; none for withdrawn;
+              // places: an answered question's picks as integers from 1 among the answered revision's options;
               // answer: I7's line after the id, at most 2,000 characters, kept on the 32 questions answered last (I13)
 
     Verdict = { "verdict": "applied" | "stale" | "closed" | "retracted" | "too-late",
@@ -688,13 +696,15 @@ fails here first.
   that closed it.
 - A `delivered` line sets `closed[id].deliveredAt` for each key it takes
   out of `pending`, as `landed` does.
+- An agent id (an asker's, a recipient's) is the engine's, at most 128
+  characters, and is never cut.
 
 ### I3 · The inbox line, the door, the command
 
 The line is §4.1's. The schema adds only bounds: `key` 8 to 128 of
 `[A-Za-z0-9._:-]`; `text` at most 20,000 characters; `picks` at most 12;
-`images` at most 8, each `uploads/<name>` with a name of `[A-Za-z0-9._-]`
-ending in `png`, `jpg`, `jpeg`, `gif` or `webp`; a `delivered` line's
+`images` at most 8, each `uploads/<name>` with a name of 1 to 250 of
+`[A-Za-z0-9._-]` and then the extension `png`, `jpg`, `jpeg`, `gif` or `webp`; a `delivered` line's
 `keys` at most 200; a call of the door at most 50 lines. Required: `v`,
 `key`, `kind`, `by`; with `answer`, `id`, `revision` and one of `picks`
 and `text` non-empty; with `dismiss`, `id`; with `retract`, `target`; with
@@ -709,9 +719,14 @@ every line must pass the schema, name images that exist under `uploads/`
 as regular files, and, where it answers an open question at its current
 revision, pick only that question's labels, one unless it is multi-select
 (else exit 2, the reason on stderr, nothing appended: a call is appended
-whole or not at all); a file that does not end in a newline gets one
+whole or not at all). It also refuses, exit 2, what no other reader could
+read: NaN or an infinity, and a lone UTF-16 surrogate in any string; such
+a line that did not come through the door is skipped (U2); a file that does not end in a newline gets one
 first, which turns what an unfinished write left into a line of its own
-(the drain's rule decides it); then one `write` of all the lines, synced. After the lock: unless
+(the drain's rule decides it); then one `write` of all the lines, synced. Should the write come back
+short, the rest is written while the lock is still held, so no drain sees
+part of the call; should the file refuse more, it is cut back to its
+length before the call and the door exits 1, nothing appended. After the lock: unless
 `--no-wait`, it tells the session's bridge (`POST /command` on
 `$SMINOS_HOME/bridge/<session>.sock`, `{"op": "sheet", "keys": [...]}`,
 waiting 10 s) and prints what came back. Output, one JSON object:
@@ -768,7 +783,8 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
 
 1. Read `state.json`, then the inbox from `inbox.offset` to its last
    newline, then `state.json` again; if `seq` moved, start over (three
-   times at most, then keep the last pair). Bytes after the last newline
+   times at most; then the reader returns no pair it did not verify:
+   `show` exits 75, and a reader reads again). Bytes after the last newline
    are a write that did not finish: a reader takes none of them, on every
    filesystem and whatever a probe observed, and so does a drain, so the
    two never disagree on where the inbox ends. C0's P4 saw no partial
@@ -798,8 +814,12 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
    `Withdrawn`): a withdrawal never passed through the inbox, and a
    delivered answer is in `pending` no longer.
 7. A pending outcome carries its question as the record's snapshot has
-   it, the question cut at 2,000 characters and each label at 200 (cuts
-   only an imported question can need): what a deliverer needs to tell a
+   it, the question cut at 2,000 characters, its header at 60, each label
+   at 200 and a subagent's name at 200, and an answer's picks cut at 200
+   with `places` beside them, the picks as integers from 1 read from the
+   whole snapshot before any label is cut (two imported labels can share
+   their first 200 characters); a closed answered question carries the
+   record's `places` (cuts only an imported question can need): what a deliverer needs to tell a
    conversation that does not hold the question what was asked and which
    option a place names (§5.4).
 
@@ -824,9 +844,10 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
 and `sent` held to those keys and `open`, `hidden` and `closed` left out,
 and each pending outcome's `text` held to its first 500 characters, with
 `textCut: true` when it was longer and the record's `textFile` where it
-has one (the block's rule, I7): about 20 KB an outcome at every bound of
-the line and the question, so fifty keys stay far under the 4 MiB a hook
-takes through `$.process.run`. The unkeyed form, read by processes and
+has one (the block's rule, I7), every other string under the cuts of
+step 7: about 20 KB an outcome whatever an imported question holds, so
+fifty keys stay far under the 4 MiB a hook takes through
+`$.process.run`. The unkeyed form, read by processes and
 not hooks, carries texts whole.
 
 ### I5 · The step

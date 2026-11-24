@@ -1,3 +1,3 @@
 [sheet v1] The human answered questions on your sheet.
 q1 "Which rollout gate?" → Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and ….
-<sheet-delivery>{"v":1,"keys":["page-e4a00001"],"answered":[{"id":"q1","revision":1,"picks":[2],"text":"","images":[]}],"dismissed":[]}</sheet-delivery>
+<sheet-delivery>{"v":1,"keys":["page-e4a00001"],"answered":[{"id":"q1","revision":1,"picks":[3],"text":"","images":[]}],"dismissed":[]}</sheet-delivery>

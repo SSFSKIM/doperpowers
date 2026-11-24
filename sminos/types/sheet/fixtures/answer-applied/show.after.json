@@ -5,6 +5,9 @@
    "at": "2026-11-23T10:00:00.000Z",
    "header": "Auth method",
    "how": "answered",
+   "places": [
+    1
+   ],
    "receipt": "OAuth",
    "revision": 1
   }
@@ -47,6 +50,9 @@
    "kind": "answer",
    "picks": [
     "OAuth"
+   ],
+   "places": [
+    1
    ],
    "question": {
     "askedAt": "2026-11-23T09:01:00.000Z",

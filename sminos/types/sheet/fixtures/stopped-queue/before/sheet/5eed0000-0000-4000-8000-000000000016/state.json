@@ -16,6 +16,9 @@
    "header": "Cache key",
    "how": "answered",
    "key": "page-1601a000",
+   "places": [
+    1
+   ],
    "question": "Should the cache key include the locale?",
    "receipt": "Yes",
    "revision": 1

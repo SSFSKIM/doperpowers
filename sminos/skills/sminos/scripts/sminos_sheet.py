@@ -20,6 +20,7 @@ contract both are held to.
 import errno
 import fcntl
 import json
+import math
 import os
 import re
 import stat
@@ -34,13 +35,16 @@ EXIT_NO_SHEET = 3
 EXIT_BUSY = 75
 DOOR_LINES = 50
 KEYS_MAX = 50
+# What a pending outcome carries in either form of `show --json`, each string at most (I4): an imported question
+# has no input bounds, and the keyed form goes through a hook's process call.
+CUT_QUESTION, CUT_LABEL, CUT_HEADER, CUT_NAME = 2000, 200, 60, 200
 NUDGE_WAIT_MS = 10000
 KEYED_TEXT = 500
 
 KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ID_RE = re.compile(r"^q[1-9][0-9]*$")
 TIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$")
-UPLOAD_RE = re.compile(r"^uploads/[A-Za-z0-9._-]+\.(png|jpg|jpeg|gif|webp)$")
+UPLOAD_RE = re.compile(r"^uploads/[A-Za-z0-9._-]{1,250}\.(png|jpg|jpeg|gif|webp)$")
 KINDS = ("answer", "dismiss", "retract", "delivered")
 BYS = ("page", "maws", "desk", "cli")
 FIELDS = ("v", "key", "kind", "id", "revision", "picks", "text", "images", "target", "keys", "batch", "by", "at")
@@ -100,14 +104,39 @@ class Lock:
 
 
 def _count(v, least):
-    """A JSON integer at least `least`: 1.0 is the integer 1, as JSON Schema counts it; a boolean is none."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == int(v) and v >= least
+    """A JSON integer at least `least`: 1.0 is the integer 1, as JSON Schema counts it; a boolean, an infinity and
+    NaN are none."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return (isinstance(v, int) or (math.isfinite(v) and v == int(v))) and v >= least
+
+
+def _no_constant(name):
+    raise ValueError("%s is not JSON" % name)
+
+
+def loads(text):
+    """JSON as a line is read: NaN and the infinities, which Python's decoder takes, are refused."""
+    return json.loads(text, parse_constant=_no_constant)
+
+
+def _surrogate(v):
+    """Whether a decoded JSON value holds a lone UTF-16 surrogate (an escape like \\ud83d without its pair)."""
+    if isinstance(v, str):
+        return any("\ud800" <= c <= "\udfff" for c in v)
+    if isinstance(v, list):
+        return any(_surrogate(x) for x in v)
+    if isinstance(v, dict):
+        return any(_surrogate(k) or _surrogate(x) for k, x in v.items())
+    return False
 
 
 def line_error(line):
     """Why an inbox line fails its schema (inbox-line.schema.json), or None."""
     if not isinstance(line, dict):
         return "a line is a JSON object"
+    if _surrogate(line):
+        return "a string holds a lone UTF-16 surrogate"
     extra = sorted(set(line) - set(FIELDS))
     if extra:
         return "unknown field %s" % extra[0]
@@ -116,15 +145,15 @@ def line_error(line):
     for f in ("key", "kind", "by"):
         if f not in line:
             return "%s is required" % f
-    if not isinstance(line["key"], str) or not KEY_RE.match(line["key"]):
+    if not isinstance(line["key"], str) or not KEY_RE.fullmatch(line["key"]):
         return "key is 8 to 128 of [A-Za-z0-9._:-]"
     if line["kind"] not in KINDS:
         return "kind is one of %s" % ", ".join(KINDS)
     if line["by"] not in BYS:
         return "by is one of %s" % ", ".join(BYS)
-    if "at" in line and not (isinstance(line["at"], str) and TIME_RE.match(line["at"])):
+    if "at" in line and not (isinstance(line["at"], str) and TIME_RE.fullmatch(line["at"])):
         return "at is a UTC time with milliseconds"
-    if "id" in line and not (isinstance(line["id"], str) and ID_RE.match(line["id"])):
+    if "id" in line and not (isinstance(line["id"], str) and ID_RE.fullmatch(line["id"])):
         return "id is q<n>"
     if "revision" in line and not _count(line["revision"], 1):
         return "revision is an integer from 1"
@@ -134,13 +163,13 @@ def line_error(line):
     if "text" in line and not (isinstance(line["text"], str) and len(line["text"]) <= 20000):
         return "text is at most 20,000 characters"
     if "images" in line and not (isinstance(line["images"], list) and len(line["images"]) <= 8
-                                 and all(isinstance(i, str) and UPLOAD_RE.match(i) for i in line["images"])):
-        return "images are at most 8 uploads/<name>.png|jpg|jpeg|gif|webp"
+                                 and all(isinstance(i, str) and UPLOAD_RE.fullmatch(i) for i in line["images"])):
+        return "images are at most 8 uploads/<name>.png|jpg|jpeg|gif|webp, a name of at most 250 characters"
     for f in ("target", "batch"):
-        if f in line and not (isinstance(line[f], str) and KEY_RE.match(line[f])):
+        if f in line and not (isinstance(line[f], str) and KEY_RE.fullmatch(line[f])):
             return "%s is a key" % f
     if "keys" in line and not (isinstance(line["keys"], list) and 1 <= len(line["keys"]) <= 200
-                               and all(isinstance(k, str) and KEY_RE.match(k) for k in line["keys"])):
+                               and all(isinstance(k, str) and KEY_RE.fullmatch(k) for k in line["keys"])):
         return "keys are 1 to 200 keys"
     kind = line["kind"]
     if kind == "answer":
@@ -157,9 +186,9 @@ def line_error(line):
     return None
 
 
-def pick_error(line, questions, door=False):
-    """Why an answer's picks are no labels of the question it answers at its current revision (U2), or None. The
-    door also refuses more than one pick on a single-select question."""
+def pick_error(line, questions):
+    """Why an answer's picks are no labels of the question it answers at its current revision, or more than one
+    on a single-select question (U2), or None."""
     if line.get("kind") != "answer":
         return None
     q = next((q for q in questions if q.get("id") == line.get("id")), None)
@@ -170,7 +199,7 @@ def pick_error(line, questions, door=False):
         if p not in labels:
             return "%s has no option %s at revision %d" % (q["id"], json.dumps(p, ensure_ascii=False)[:210],
                                                           q["revision"])
-    if door and len(line.get("picks") or []) > 1 and not q.get("multiSelect"):
+    if len(line.get("picks") or []) > 1 and not q.get("multiSelect"):
         return "%s takes one pick" % q["id"]
     return None
 
@@ -196,8 +225,8 @@ def _tail(rec, offset):
 
 
 def snapshot(session):
-    """(state, tail lines) read as one: state, inbox, state again, over while seq moved (three times at most).
-    None when the session has no record."""
+    """(state, tail lines) read as one: state, inbox, state again, over while seq moved, three times at most;
+    past that it raises Busy (the caller reads again). None when the session has no record."""
     rec = record_dir(session)
     path = os.path.join(rec, "state.json")
     state = tail = None
@@ -213,7 +242,7 @@ def snapshot(session):
             return None
         if state.get("seq") == first.get("seq"):
             return state, tail
-    return state, _tail(rec, int(state["inbox"]["offset"]))
+    raise Busy()
 
 
 def queued_lines(state, tail):
@@ -221,7 +250,7 @@ def queued_lines(state, tail):
     seen, out = set(state.get("verdicts") or {}), []
     for raw in tail:
         try:
-            line = json.loads(raw.decode("utf-8"))
+            line = loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             continue
         if line_error(line) or pick_error(line, state.get("questions") or []):
@@ -241,11 +270,26 @@ def changed(ref):
     return st.st_size != ref.get("size") or st.st_mtime_ns // 1000000 != ref.get("mtimeMs")
 
 
+def _asker(a):
+    return dict(a, name=str(a.get("name", ""))[:CUT_NAME]) if isinstance(a, dict) else a
+
+
 def bounded(outcome):
+    """A pending outcome as `show --json` carries it (I4): an answer's picks also as `places`, integers from 1
+    among the options of the answered revision, read from the whole snapshot before any label is cut, since two
+    labels can share their first 200 characters; then each string cut, the question at 2,000, its header at 60,
+    each label and each pick at 200, a subagent's name at 200."""
     o = dict(outcome)
     q = dict(o.get("question") or {})
-    q["question"] = str(q.get("question", ""))[:2000]
-    q["options"] = [str(label)[:200] for label in q.get("options") or []]
+    labels = [str(x) for x in q.get("options") or []]
+    if o.get("kind") == "answer":
+        o["places"] = [labels.index(p) + 1 for p in o.get("picks") or [] if p in labels]
+        o["picks"] = [str(p)[:CUT_LABEL] for p in o.get("picks") or []]
+    q["question"] = str(q.get("question", ""))[:CUT_QUESTION]
+    if "header" in q:
+        q["header"] = str(q["header"])[:CUT_HEADER]
+    q["options"] = [x[:CUT_LABEL] for x in labels]
+    q["asker"] = _asker(q.get("asker"))
     o["question"] = q
     return o
 
@@ -317,7 +361,8 @@ def model(session, keys=None):
             if "at" in ans:
                 s["queued"]["at"] = ans["at"]
         open_.append(s)
-    closed = {k: {f: c[f] for f in ("how", "at", "revision", "asker", "header", "receipt", "deliveredAt") if f in c}
+    closed = {k: {f: c[f] for f in ("how", "at", "revision", "asker", "header", "receipt", "places", "deliveredAt")
+                  if f in c}
               for k, c in (state.get("closed") or {}).items()}
     out.update({"open": open_, "hidden": hidden, "sent": sent, "pending": pending, "closed": closed})
     return out
@@ -374,7 +419,7 @@ def read_lines(data):
         if not chunk.strip():
             continue
         try:
-            lines.append(json.loads(chunk))
+            lines.append(loads(chunk))
         except ValueError as e:
             S.die("sheet put: line %d is not JSON: %s" % (n, e))
     if not lines:
@@ -415,7 +460,7 @@ def append(session, lines):
                 S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             uploads = os.path.join(rec, "uploads")
             for n, line in enumerate(stamped, 1):
-                why = pick_error(line, state.get("questions") or [], door=True)
+                why = pick_error(line, state.get("questions") or [])
                 if why is None and line.get("images") and os.path.islink(uploads):
                     why = "uploads/ is not a directory of the record"
                 for img in line.get("images") or []:
@@ -432,11 +477,21 @@ def append(session, lines):
                         f.seek(size - 1)
                         if f.read(1) != b"\n":
                             data = b"\n" + data       # what an unfinished write left becomes a line of its own
-                wrote = os.write(fd, data)
-                os.fsync(fd)
-                if wrote != len(data):
-                    S.die("sheet put: the inbox took %d of %d bytes (%s); send again under the same keys"
-                          % (wrote, len(data), session), 1)
+                # One write; should it come back short, the rest follows while the lock is still held, so no drain
+                # sees part of the call. Should the file refuse more, it is cut back to its length before the call:
+                # nothing of the call stays, and the caller is told so.
+                done = 0
+                try:
+                    while done < len(data):
+                        n = os.write(fd, data[done:])
+                        if n <= 0:
+                            raise OSError(errno.EIO, "the inbox took no more bytes")
+                        done += n
+                    os.fsync(fd)
+                except OSError as e:
+                    os.ftruncate(fd, size)
+                    os.fsync(fd)
+                    S.die("sheet put: the inbox could not be written (%s); nothing appended" % e, 1)
             finally:
                 os.close(fd)
     except Busy:
@@ -507,9 +562,12 @@ def cmd_sheet(a):
             if not a.json:
                 S.die("sheet show: --keys goes with --json")
             keys = [k for k in a.keys.split(",") if k]
-            if not keys or len(keys) > KEYS_MAX or not all(KEY_RE.match(k) for k in keys):
+            if not keys or len(keys) > KEYS_MAX or not all(KEY_RE.fullmatch(k) for k in keys):
                 S.die("sheet show: --keys takes 1 to %d keys, comma-separated" % KEYS_MAX)
-        m = model(session, keys)
+        try:
+            m = model(session, keys)
+        except Busy:
+            S.die("sheet show: %s's record kept changing while it was read; read again" % session, EXIT_BUSY)
         if m is None:
             S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
         print(json.dumps(m, ensure_ascii=False) if a.json else text(m))
