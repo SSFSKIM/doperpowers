@@ -447,6 +447,27 @@ let raised = 0
  * built-in while it does), cleared should the tool not be registered.
  */
 let isServing = false
+/**
+ * The question sheet serves this session (sheet.tsx, I11): set by the sheet's
+ * session.start before this mod's runs. Yielded, the ask registers no tool,
+ * describes and withdraws nothing, holds and delivers nothing, and draws no
+ * band and no open ask; its row hooks still draw a stored call of today's form
+ * and pass the sheet's on. The module's own variable: a reload starts
+ * unyielded, and the kept choice yields it again.
+ */
+let isYielded = false
+
+/** The sheet takes this session's questions: the ask stands aside (I11). */
+export function yieldAsk() {
+  isYielded = true
+}
+
+/** Whether the ask has yielded to the sheet. */
+export const isAskYielded = () => isYielded
+
+/** A stored call's result in the sheet's form: its first line is one of I6's three. */
+const SHEET_RESULT = /^(?:(?:Added|Revised|Withdrew) q[1-9]|Nothing done\.|Outcome not known yet\.)/
+
 /** What the built-in's tool.describe last answered: withdrawn or not; undefined before it was described. */
 let wasWithdrawn: boolean | undefined
 /** A blocking ask was declined without feedback in the running turn: its later model calls are refused. */
@@ -519,6 +540,7 @@ export function resetAsk() {
   answeredCount = 0
   external = undefined
   keep = undefined
+  isYielded = false
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -1451,6 +1473,9 @@ export function openCount(open: readonly OpenAsk[]): string {
  */
 export function registerAskBand(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const inner = await next(e)
     const open = asks.filter((ask) => ask.status === 'open')
     const oldest = open[0]
@@ -1535,7 +1560,7 @@ export function registerAsk(on: On) {
   // whatever decides when the tool would otherwise register.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
-    if (maws !== undefined && maws !== '') {
+    if (isYielded || (maws !== undefined && maws !== '')) {
       return next(e)
     }
     isServing = true
@@ -1567,6 +1592,9 @@ export function registerAsk(on: On) {
   // copy's from the conversation it copied; a cleared one has none, and a
   // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
     if (e.source !== 'compact') {
       forgetAsyncAsks()
@@ -1663,7 +1691,7 @@ export function registerAsk(on: On) {
   // open async ask with its `[ answer ]`; its result row draws nothing beside
   // it. A resumed session's rows may name the tool under either plugin.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (!ASK_TOOLS.includes(e.props.tool)) {
+    if (!ASK_TOOLS.includes(e.props.tool) || (isYielded && !(isRecord(e.props.input) && 'questions' in e.props.input))) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
@@ -1712,7 +1740,7 @@ export function registerAsk(on: On) {
     )
   })
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (!ASK_TOOLS.includes(e.props.tool)) {
+    if (!ASK_TOOLS.includes(e.props.tool) || (isYielded && SHEET_RESULT.test(textOf(e.props.output)))) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
@@ -1743,6 +1771,9 @@ export function registerAsk(on: On) {
   // described the built-in; the built-in waits behind tool search, its name
   // alone in view.
   on('tool.describe', { tool: 'mcp__sminos__AskUserQuestion' }, async (_, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const described = await next(e)
     isDescribed = true
     describedFrom = builtinDescription
@@ -1750,6 +1781,9 @@ export function registerAsk(on: On) {
     return { ...described, description, isDeferred: false } as ToolDescribeResult
   })
   on('tool.describe', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const described = await next(e)
     if (builtinDescription !== described.description) {
       $.ui.log(`ask: the built-in's description read (${described.description.length} characters)`, { to: 'debug' })

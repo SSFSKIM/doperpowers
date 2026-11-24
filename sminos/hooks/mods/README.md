@@ -1,8 +1,8 @@
 # mods
 
 Function hooks of the sminos plugin: one module (`register.tsx`, named by
-`hooks/hooks.json` under `modules`) that registers the bridge, the backtick guard, the ask,
-the address and the name, in that order. The engine loads it only where
+`hooks/hooks.json` under `modules`) that registers the bridge, the backtick guard, the
+ask's band, the question sheet, the ask, the address and the name, in that order. The engine loads it only where
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and ignores it elsewhere; the
 shell hooks beside this folder (`smns-record.sh`, `smns-guide.sh`) run
 everywhere.
@@ -579,12 +579,38 @@ one that throws is skipped and the call runs too. Registered right after the bri
 bridge reports the refusal as the session saw it (a denied call's trace
 gives the bridge's place rule no verdict). Tests `tests/mods/backticks.test.ts`.
 
+## question sheet (`sheet.tsx`, `sheet-model.tsx`)
+
+Being built (plan `docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md`;
+M7 writes this section whole). At `session.start` the mod chooses how the
+session asks (the plan's I8): the sheet, today's ask, or none, kept in
+`$.state` (`{plugin: 'sminos', key: 'sheet'}`, `SheetKept` in
+`types/sminos.d.ts`) so a reload and a `/clear` keep it. Under the sheet it
+registers `mcp__sminos__AskUserQuestion` with C1's description
+(`tests/output-styles/question-sheet/description-v3.md`) and the published
+schema (`types/sheet/schema/tool-input.schema.json`, C1's descriptions on
+its properties), the ask yields (`yieldAsk`: no band, no tool, a stored call
+of the sheet's form passed on) and the built-in is withdrawn. A call is
+validated whole, each entry checked and its references read through the
+engine's own Read (`$.tool.check`, then `$.tool.call`), staged under
+`$SMINOS_HOME/sheet/.staging/<session>/<call>/` and ordered as one
+`sminos sheet step`; the step's answer is the model's result. A step with
+no answer is settled, up to three times, then answered `Outcome not known
+yet.` and settled later. The check of K4 (a 5 s timer and every hook
+dispatch, never awaited) orders a start still owed, settles, and drains when
+the inbox grew; the bridge's `sheet` op is a drain naming the door's keys.
+`sheet-model.tsx` holds what takes no `$` (the schema and its validation,
+the start choice, the result texts, the floor of a conversation's ids);
+`sheet.tsx` the hooks. Tests `tests/mods/sheet-model.test.ts`,
+`tests/mods/sheet.test.ts`, and `tests/mods/test-sheet-step.sh` against the
+real step; live check `tests/mods/live-sheet-check.py`.
+
 ## Developing
 
 ```
 claude --plugin-dir sminos --debug                      # the plugin from this checkout, hot reload on save
 claude plugin validate sminos/.claude-plugin/plugin.json
-sminos/tests/mods/run.sh                                # the mods' tests, then the ask's search run for real
+sminos/tests/mods/run.sh                                # the mods' tests, then the ask's search and the sheet's step run for real
 bash sminos/tests/run-sminos-tests.sh                   # the CLI's suite, the shell hooks' among it
 tests/mods/typecheck.sh                                 # every plugin's mods and tests, typechecked (from the repository root)
 ```

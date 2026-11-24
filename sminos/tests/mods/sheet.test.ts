@@ -1,0 +1,703 @@
+import { describe, expect, test, tier } from 'claude-code/testing'
+import type { EngineInterface, On } from 'claude-code'
+
+import { ASYNC_RESULT, registerAsk, registerAskBand, resetAsk } from '../../hooks/mods/ask'
+import { DESCRIPTION, INPUT_SCHEMA, NOT_KNOWN, SHEET_TOOL, WITHDRAWN } from '../../hooks/mods/sheet-model'
+import type { Probe, View } from '../../hooks/mods/sheet-model'
+import { TICK_MS, registerSheet, resetSheet, sheetNotices, sheetNudge, sheetView } from '../../hooks/mods/sheet'
+
+tier('user')
+
+type Handler = (...args: unknown[]) => unknown
+type Matcher = Record<string, unknown> | undefined
+type Origin = { plugin: string; tier: string }
+
+const MODEL: Origin = { plugin: 'engine', tier: 'core' }
+const HOME = '/home/sm'
+const COMMAND = '/plug/skills/sminos/scripts/sminos'
+const S1 = '5eed0000-0000-4000-8000-0000000000c1'
+const S2 = '5eed0000-0000-4000-8000-0000000000c2'
+const ALIVE: Probe = { record: false, open: 0, pending: 0, queued: 0, surface: { name: 'standin', url: 'http://sheet.localhost:47590', reach: 'local' }, surfaces: 1 }
+
+const view = (over: Partial<View> = {}): View => ({
+  seq: 1,
+  offset: 0,
+  nextId: 1,
+  open: [],
+  pending: [],
+  pendingCount: 0,
+  owedAcrossStop: 0,
+  closed: {},
+  answered: [],
+  answeredCount: 0,
+  ready: [],
+  surface: ALIVE.surface,
+  surfaces: 1,
+  ...over,
+})
+
+/** A step's answer, as the command prints it. */
+const ok = (seq: number, effects: Record<string, unknown> = {}, over: Partial<View> = {}) =>
+  JSON.stringify({ ok: true, seq, view: view({ seq, ...over }), effects: { applied: [], skipped: 0, verdicts: {}, owed: 0, ...effects } })
+
+type StepEvent = Record<string, unknown> & { event: string; call?: { callId: string; floor?: number }; start?: Record<string, unknown>; acked?: string[]; agents?: unknown }
+/** What a scripted step does: print `stdout`, or reject (the process did not start or ran out of time). */
+type StepScript = (event: StepEvent, n: number) => string | Promise<string>
+
+/**
+ * A registrar that keeps the hooks of register.tsx's order (the ask's band,
+ * the sheet, the ask), and an engine of plain records whose process runs are
+ * the command answering as each test scripts it.
+ */
+function harness(
+  options: {
+    env?: Record<string, string>
+    isInteractive?: boolean
+    session?: string
+    kept?: Map<string, unknown>
+    probe?: Probe
+    /** A record's state.json there: the choice probes it. */
+    record?: boolean
+    step?: StepScript
+    /** What `$.tool.check` answers for a Read of a path; allow otherwise. */
+    checks?: Record<string, unknown>
+    /** What `$.tool.call` answers for a Read of a path; a one-line text otherwise. */
+    reads?: Record<string, unknown>
+    agents?: { id: string; description: string; type: string; status: string }[]
+    /** The conversation the engine holds; rejects when absent (C0's P5). */
+    messages?: { rows: { role: string; text: string; toolUses: { tool: string; text?: string }[] }[]; api: { role: string; content: unknown }[] }
+    files?: Record<string, string>
+    remove?: number
+  } = {},
+) {
+  const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
+  const on = ((event: string, ...rest: unknown[]) => {
+    const handler = rest[rest.length - 1] as Handler
+    const matcher = rest.length > 1 ? (rest[0] as Matcher) : undefined
+    const hook: (typeof hooks)[number] = { event, matcher, handler }
+    hooks.push(hook)
+    return { catch: (onFailure: Handler) => void (hook.onFailure = onFailure) }
+  }) as unknown as On
+  const calls: { op: string; args: unknown }[] = []
+  const steps: StepEvent[] = []
+  const files = new Map(Object.entries(options.files ?? {}))
+  const kept = options.kept ?? new Map<string, unknown>()
+  let conversation = options.messages
+  const timers: (() => void)[] = []
+  let session = options.session ?? S1
+  const env: Record<string, string> = { SMINOS_HOME: HOME, ...options.env }
+  const $ = {
+    plugin: { root: '/plug', name: 'sminos' },
+    env: { get: async (name: string) => env[name] },
+    session: {
+      id: async () => session,
+      cwd: async () => '/work',
+      messages: async (opts?: { as?: string }) => {
+        calls.push({ op: 'session.messages', args: opts })
+        if (conversation === undefined) throw new Error('not available in this mode: no session is bound in this process')
+        return opts?.as === 'api' ? conversation.api : conversation.rows
+      },
+    },
+    state: {
+      get: async (ref: { plugin: string; key: string }) => ({ value: kept.get(`${ref.plugin}.${ref.key}`), version: 0 }),
+      set: async (ref: { plugin: string; key: string }, value: unknown) => (kept.set(`${ref.plugin}.${ref.key}`, JSON.parse(JSON.stringify(value))), { isSet: true }),
+    },
+    fs: {
+      write: async (path: string, text: string) => {
+        calls.push({ op: 'fs.write', args: { path, bytes: new TextEncoder().encode(text).length } })
+        files.set(path, text)
+      },
+      read: async (path: string) => {
+        const text = files.get(path)
+        if (text === undefined) throw new Error(`ENOENT: ${path}`)
+        return text
+      },
+      exists: async (path: string) => files.has(path) || (options.record === true && path === `${HOME}/sheet/${session}/state.json`),
+      stat: async (path: string, opts?: { resolve?: boolean }) => {
+        calls.push({ op: 'fs.stat', args: path })
+        const text = files.get(path)
+        return { kind: 'file', size: text === undefined ? 5 : new TextEncoder().encode(text).length, mtimeMs: 1763900000000, isLink: false, ...(opts?.resolve === true && { realPath: `/real${path}` }) }
+      },
+    },
+    process: {
+      run: async (argv: readonly string[], init?: { stdin?: string }) => {
+        calls.push({ op: 'process.run', args: argv })
+        if (argv[0] !== COMMAND) throw new Error(`no such command ${argv[0]}`)
+        const [verb, op] = [argv[1], argv[2]]
+        if (verb === 'sheet' && op === 'probe') {
+          return { exitCode: 0, stdout: JSON.stringify(options.probe ?? { ...ALIVE, surface: null, surfaces: 0 }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        }
+        if (verb === 'sheet' && op === 'remove') {
+          return { exitCode: options.remove ?? 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        }
+        if (verb === 'sheet' && op === 'step') {
+          const event = JSON.parse(init?.stdin ?? '{}') as StepEvent
+          steps.push(event)
+          const stdout = await (options.step ?? defaultStep)(event, steps.length)
+          return { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        }
+        throw new Error(`unscripted: ${argv.join(' ')}`)
+      },
+    },
+    tool: {
+      list: async () => [{ name: 'AskUserQuestion', description: 'The built-in.', mcp: false }],
+      register: async (spec: unknown) => (calls.push({ op: 'tool.register', args: spec }), { tool: SHEET_TOOL }),
+      check: async ({ input }: { input: { file_path: string } }) => {
+        calls.push({ op: 'tool.check', args: input })
+        return options.checks?.[input.file_path] ?? { decision: 'allow' }
+      },
+      call: async (args: { tool: string; file_path: string }) => {
+        calls.push({ op: 'tool.call', args })
+        return (
+          options.reads?.[args.file_path] ?? {
+            result: { type: 'text', file: { filePath: args.file_path, content: `content of ${args.file_path}\n`, numLines: 1, startLine: 1, totalLines: 1 } },
+            text: '1\tcontent',
+          }
+        )
+      },
+    },
+    agent: { list: async () => (calls.push({ op: 'agent.list', args: undefined }), options.agents ?? []) },
+    ui: {
+      log: (text: string) => calls.push({ op: 'ui.log', args: text }),
+      toast: (text: string) => calls.push({ op: 'ui.toast', args: text }),
+      notify: async (text: string) => (calls.push({ op: 'ui.notify', args: text }), { isSent: true }),
+      invalidate: (event: string) => calls.push({ op: 'ui.invalidate', args: event }),
+      resolve: () => {
+        throw new Error('drew')
+      },
+    },
+    clock: {
+      every: (_ms: number, fn: () => void) => (timers.push(fn), { cancel: () => {} }),
+      after: (_ms: number, fn: () => void) => (timers.push(fn), { cancel: () => {} }),
+    },
+  }
+  resetAsk()
+  resetSheet()
+  registerAskBand(on)
+  registerSheet(on)
+  registerAsk(on)
+
+  const matches = (matcher: Matcher, e: Record<string, unknown>) =>
+    Object.entries(matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v))
+  const dispatch = (event: string, e: Record<string, unknown>, origin: Origin, bottom: (e: Record<string, unknown>) => unknown) => {
+    const chain = hooks.filter((h) => h.event === event && matches(h.matcher, e))
+    const at = async (i: number, input: Record<string, unknown>): Promise<unknown> => {
+      const hook = chain[i]
+      if (hook === undefined) return bottom(input)
+      let called = false
+      const next = Object.assign(async (inner: Record<string, unknown>) => ((called = true), at(i + 1, inner)), { origin, signal: new AbortController().signal })
+      try {
+        return await hook.handler($, input, next)
+      } catch (error) {
+        if (hook.onFailure === undefined) throw error
+        return hook.onFailure($, input, Object.assign(next, { called, error: { kind: 'threw', message: String(error) } }))
+      }
+    }
+    return at(0, e)
+  }
+  // Microtask turns, so work a hook only triggered runs to its end.
+  const settle = async () => {
+    for (let i = 0; i < 200; i++) await Promise.resolve()
+  }
+
+  const start = (isInteractive = options.isInteractive ?? true) =>
+    dispatch('session.start', { cwd: '/work', surface: isInteractive ? 'terminal' : null, isInteractive }, MODEL, async () => ({ cwd: '/work' }))
+  const classicStart = (source: string, id = session) => {
+    session = id
+    return dispatch('classic.SessionStart', { hook_event_name: 'SessionStart', source, session_id: id, transcript_path: `/t/${id}.jsonl`, cwd: '/work' }, MODEL, async () => ({}))
+  }
+  const sessionEnd = (reason: string) => dispatch('session.end', { reason, sessionId: session, resume: {} }, MODEL, async () => ({ sessionId: session }))
+  /** A call of `tool` from the model (or a subagent); what reached beneath, if anything. */
+  const call = async (tool: string, args: Record<string, unknown>, agentId?: string, origin = MODEL) => {
+    const ran: Record<string, unknown>[] = []
+    const e = { tool, tool_use_id: `toolu_${steps.length}_${calls.length}`, ...args, ...(agentId !== undefined && { agentId }) }
+    const result = await dispatch('tool.call', e, origin, async (inner) => (ran.push(inner), { ref: 9, result: 'ran', text: 'ran' }))
+    return { result: result as { result?: unknown; deny?: string }, ran, id: e.tool_use_id }
+  }
+  const ask = (args: Record<string, unknown>, agentId?: string) => call(SHEET_TOOL, args, agentId)
+  const describe = (tool: string, description: string) =>
+    dispatch('tool.describe', { tool, description, isDeferred: true, provider: MODEL }, MODEL, async (e) => ({ description: e.description, isDeferred: e.isDeferred }))
+  const render = (component: string, props: Record<string, unknown>) => dispatch('ui.render', { component, props, surface: 'terminal' }, MODEL, async () => 'beneath')
+  const tick = async () => {
+    timers.forEach((fn) => fn())
+    await settle()
+  }
+  const registered = () => calls.filter((c) => c.op === 'tool.register').map((c) => c.args as { name: string; description: string; inputSchema: unknown })
+  const runs = () => calls.filter((c) => c.op === 'process.run').map((c) => (c.args as string[]).slice(1).join(' '))
+  const writes = () => calls.filter((c) => c.op === 'fs.write').map((c) => c.args as { path: string; bytes: number })
+  const logs = () => calls.filter((c) => c.op === 'ui.log').map((c) => c.args as string)
+  const staged = (path: string) => JSON.parse(files.get(path) ?? 'null') as Record<string, unknown>
+
+  /** A session under the sheet whose start has answered. */
+  const ready = async (source = 'startup') => {
+    await start()
+    await classicStart(source)
+    await settle()
+  }
+  return { calls, steps, files, kept, timers, start, classicStart, sessionEnd, call, ask, describe, render, tick, settle, registered, runs, writes, logs, staged, ready, engine: $ as unknown as EngineInterface, dispatch: (event: string, e: Record<string, unknown>) => dispatch(event, e, MODEL, async () => ({})), converse: (held: typeof conversation) => (conversation = held) }
+}
+
+/** The command's step for a test that scripts none: a start, a drain, a call that adds one, all at seq n. */
+const defaultStep: StepScript = (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q1.' }, { nextId: 2 }) : ok(n))
+
+const SHEET_ON = { SMINOS_QUESTION_SHEET: '1' }
+const sheetOn = (over: Parameters<typeof harness>[0] = {}) => harness({ env: SHEET_ON, probe: ALIVE, ...over, ...(over.env !== undefined && { env: { ...SHEET_ON, ...over.env } }) })
+
+describe('the start choice, at session.start (I8)', () => {
+  test('the setting on and a surface alive: the tool under the sheet\'s description and schema, the ask registering nothing', async () => {
+    const h = sheetOn()
+    await h.start()
+    expect(h.registered()).toEqual([{ name: 'AskUserQuestion', description: DESCRIPTION, inputSchema: INPUT_SCHEMA }])
+    expect(h.kept.get('sminos.sheet')).toEqual({ shape: 1, choice: 'sheet', runner: 'terminal', session: S1 })
+    expect(h.kept.get('sminos.ask')).toBeUndefined()
+    expect(h.timers).toHaveLength(1)
+  })
+
+  test("the setting off, no surface, or SSH with a local one only: today's tool, as the ask registers it", async () => {
+    for (const h of [harness({ probe: ALIVE }), sheetOn({ probe: { ...ALIVE, surface: null, surfaces: 0 } }), sheetOn({ env: { SSH_CONNECTION: '1 2 3 4' }, probe: { ...ALIVE, surface: null } })]) {
+      await h.start()
+      expect(h.registered().map((r) => (r.inputSchema as { required: string[] }).required)).toEqual([['questions']])
+      expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('today')
+      expect(h.timers).toHaveLength(0)
+    }
+    const remote = sheetOn({ env: { SSH_CONNECTION: '1 2 3 4' }, probe: { ...ALIVE, surface: null } })
+    await remote.start()
+    expect(remote.runs()).toEqual([`sheet probe --session ${S1} --remote`])
+  })
+
+  test('with the setting off and no record, the choice runs no process', async () => {
+    const h = harness({ probe: ALIVE })
+    await h.start()
+    expect(h.runs()).toEqual([])
+  })
+
+  test('a sheet with a question open: the sheet, the setting off', async () => {
+    const h = harness({ record: true, probe: { ...ALIVE, surface: null, surfaces: 0, record: true, open: 2 } })
+    await h.start()
+    expect(h.registered().map((r) => r.inputSchema)).toEqual([INPUT_SCHEMA])
+  })
+
+  test("not interactive, an internal session, MAWS serving its own ask: none, and the sheet's hooks pass on", async () => {
+    for (const h of [sheetOn({ isInteractive: false }), sheetOn({ env: { SMNS_INTERNAL: '1' } }), sheetOn({ env: { MAWS_NATIVE_TO_HUMAN: '1' } })]) {
+      await h.start()
+      expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('none')
+      expect(h.registered().filter((r) => r.inputSchema === INPUT_SCHEMA)).toEqual([])
+    }
+  })
+
+  test("MAWS's proof: its variable naming this session is the sheet run by MAWS; a nested claude -p with another's id is not, said in the debug log", async () => {
+    const maws = harness({ env: { MAWS_QUESTION_SHEET: S1, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
+    await maws.start(false)
+    expect(maws.kept.get('sminos.sheet')).toEqual({ shape: 1, choice: 'sheet', runner: 'maws', session: S1 })
+    expect(maws.registered().map((r) => r.inputSchema)).toEqual([INPUT_SCHEMA])
+    const nested = harness({ env: { MAWS_QUESTION_SHEET: S2, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
+    await nested.start(false)
+    expect(nested.registered()).toEqual([])
+    expect(nested.logs()).toContain(`sheet: MAWS_QUESTION_SHEET is set and names another session (${S2}, not ${S1}): not taken as MAWS's proof`)
+  })
+
+  test('the choice is kept across a reload, whatever the setting says then; a kept ask snapshot with no choice kept is today', async () => {
+    const first = sheetOn()
+    await first.ready()
+    const reloaded = harness({ kept: first.kept, probe: { ...ALIVE, surface: null } })
+    await reloaded.start()
+    expect(reloaded.registered().map((r) => r.inputSchema)).toEqual([INPUT_SCHEMA])
+    // The reload drains for a view (E13), its start having answered before.
+    await reloaded.settle()
+    expect(reloaded.steps.map((s) => s.event)).toEqual(['drain'])
+    const older = sheetOn({ kept: new Map([['sminos.ask', { shape: 2, asks: [], undelivered: [], isTurnRunning: false, isDialogUp: false, answered: 0 }]]) })
+    await older.start()
+    expect((older.kept.get('sminos.sheet') as { choice: string }).choice).toBe('today')
+    expect(older.runs()).toEqual([])
+  })
+
+  test('a reload before the start answered orders that start, under its nonce', async () => {
+    const first = sheetOn({ step: () => Promise.reject(new Error('the command did not start')) })
+    await first.start()
+    await first.classicStart('resume')
+    const nonce = (first.kept.get('sminos.sheet') as { starting: { nonce: string } }).starting.nonce
+    const reloaded = harness({ kept: first.kept })
+    await reloaded.start()
+    await reloaded.settle()
+    expect(reloaded.steps[0]).toMatchObject({ event: 'start', start: { source: 'resume', nonce } })
+    expect((reloaded.kept.get('sminos.sheet') as { started?: string }).started).toBe(S1)
+  })
+})
+
+describe('the ask yields (I11)', () => {
+  test("yielded, it describes nothing and draws no band; the sheet's description stands and the built-in is withdrawn", async () => {
+    const h = sheetOn()
+    await h.start()
+    expect(await h.describe(SHEET_TOOL, 'from the registration')).toEqual({ description: DESCRIPTION, isDeferred: false })
+    expect(await h.describe('AskUserQuestion', 'The built-in.')).toEqual({ description: WITHDRAWN, isDeferred: true })
+    expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
+  })
+
+  test("yielded, a stored call of the sheet's form is the engine's to draw; one of today's form is still the ask's", async () => {
+    const h = sheetOn()
+    await h.start()
+    expect(await h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't1', input: { ask: [{ question: 'a' }] }, output: 'Added q1.', isRunning: false, isErrored: false })).toBe('beneath')
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't1', output: 'Added q1.\nNot done: entry 2, multiSelect needs options.', isErrored: false })).toBe('beneath')
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't2', output: 'Outcome not known yet.\nThe sheet did not answer.', isErrored: false })).toBe('beneath')
+    // Today's form, answered: the ask draws it (its row reaches for the renderer).
+    const today = { questions: [{ question: 'Which?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] }
+    const drawn = h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't3', input: today, output: 'User has answered your questions: "Which?"="A". You can now continue with these answers in mind.', isRunning: false, isErrored: false })
+    await expect(drawn).rejects.toThrow('drew')
+  })
+
+  test("not yielded (today), the sheet's hooks pass every call on: today's tool answers", async () => {
+    const h = harness()
+    await h.start()
+    const { result } = await h.ask({ questions: [{ question: 'Which?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] })
+    expect(result).toEqual({ result: ASYNC_RESULT })
+    expect(h.steps).toEqual([])
+  })
+
+  test("the built-in's call from the model is refused with the sheet's sentence; another plugin's passes", async () => {
+    const h = sheetOn()
+    await h.start()
+    expect((await h.call('AskUserQuestion', { questions: [] })).result).toEqual({ deny: WITHDRAWN })
+    expect((await h.call('AskUserQuestion', { questions: [] }, undefined, { plugin: 'cua', tier: 'user' })).ran).toHaveLength(1)
+  })
+})
+
+describe('a call (I6)', () => {
+  test("a whole-call refusal is a denial in today's words, reaching no step and staging nothing", async () => {
+    const h = sheetOn()
+    await h.ready()
+    const before = h.steps.length
+    for (const args of [{}, { ask: [{ question: 'a', id: 'q1' }], withdraw: ['q1'] }, { ask: [{ question: 'x'.repeat(2001) }] }, { ask: [{ question: 'a', extra: 1 }] }]) {
+      const { result } = await h.ask(args)
+      expect(result.deny?.startsWith('InputValidationError: AskUserQuestion failed due to the following issue')).toBe(true)
+    }
+    expect(h.steps.length).toBe(before)
+    expect(h.writes()).toEqual([])
+  })
+
+  test("each entry's own refusal is staged as its clause, the others staged whole, and the step's result answered", async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q1 (entry 2).\nNot done: entry 1, two options share the label "X".' }) : ok(n)) })
+    await h.ready()
+    const entries = [
+      { question: 'Dup?', options: [{ label: 'X' }, { label: 'X' }] },
+      { question: 'Fine?', options: [{ label: 'A' }] },
+      { question: 'Multi preview?', multiSelect: true, options: [{ label: 'A', preview: 'p' }] },
+      { question: 'Multi bare?', multiSelect: true },
+      { question: 'Lines?', references: [{ path: 'a.ts', lines: [9, 2] }] },
+    ]
+    const { result, id } = await h.ask({ ask: entries })
+    expect(result).toEqual({ result: 'Added q1 (entry 2).\nNot done: entry 1, two options share the label "X".' })
+    const dir = `${HOME}/sheet/.staging/${S1}/${id}`
+    expect(h.staged(`${dir}/call.json`)).toEqual({
+      asker: 'main',
+      entries: [
+        { refused: 'two options share the label "X"' },
+        { file: 'entry-2.json', captures: [] },
+        { refused: "an option's preview needs a single-select question" },
+        { refused: 'multiSelect needs options' },
+        { refused: 'lines must be [a, b] with 1 <= a <= b' },
+      ],
+      withdraw: [],
+    })
+    expect(h.staged(`${dir}/entry-2.json`)).toEqual(entries[1] as Record<string, unknown>)
+    expect(h.steps.at(-1)).toMatchObject({ event: 'call', call: { callId: id }, runner: 'terminal', remote: false })
+    expect(h.calls.filter((c) => c.op === 'ui.notify').map((c) => c.args)).toEqual(['Fine?'])
+  })
+
+  test("a reference is captured through Read: checked, read, then where it lands; its body staged beside the entry", async () => {
+    const h = sheetOn()
+    await h.ready()
+    const { id } = await h.ask({ ask: [{ question: 'Auth?', references: [{ path: 'src/auth.ts', lines: [40, 80] }, { path: '/abs/logo.png' }] }] })
+    expect(h.calls.filter((c) => c.op === 'tool.check').map((c) => c.args)).toEqual([{ file_path: '/work/src/auth.ts', offset: 40, limit: 41 }, { file_path: '/abs/logo.png' }])
+    expect(h.calls.filter((c) => c.op === 'tool.call').map((c) => c.args)).toEqual([
+      { tool: 'Read', file_path: '/work/src/auth.ts', offset: 40, limit: 41 },
+      { tool: 'Read', file_path: '/abs/logo.png' },
+    ])
+    const dir = `${HOME}/sheet/.staging/${S1}/${id}`
+    expect(h.staged(`${dir}/call.json`).entries).toEqual([
+      {
+        file: 'entry-1.json',
+        captures: [
+          { ok: true, kind: 'text', startLine: 1, numLines: 1, totalLines: 1, abs: '/real/work/src/auth.ts', size: 5, mtimeMs: 1763900000000, file: 'ref-1-1' },
+          { ok: true, kind: 'text', startLine: 1, numLines: 1, totalLines: 1, abs: '/real/abs/logo.png', size: 5, mtimeMs: 1763900000000, file: 'ref-1-2' },
+        ],
+      },
+    ])
+    expect(h.files.get(`${dir}/ref-1-1`)).toBe('content of /work/src/auth.ts\n')
+  })
+
+  test('an image is staged as its base64, with its media type', async () => {
+    const h = sheetOn({ reads: { '/w/logo.png': { result: { type: 'image', file: { base64: 'iVBORw0KGgo=', type: 'image/png', originalSize: 9 } }, text: '' } } })
+    await h.ready()
+    const { id } = await h.ask({ ask: [{ question: 'Logo?', references: [{ path: '/w/logo.png' }] }] })
+    const dir = `${HOME}/sheet/.staging/${S1}/${id}`
+    expect((h.staged(`${dir}/call.json`).entries as { captures: unknown[] }[])[0]?.captures).toEqual([
+      { ok: true, kind: 'image', mediaType: 'image/png', abs: '/real/w/logo.png', size: 5, mtimeMs: 1763900000000, file: 'ref-1-1' },
+    ])
+    expect(h.files.get(`${dir}/ref-1-1`)).toBe('iVBORw0KGgo=')
+  })
+
+  test("a capture refused by the check (a deny rule, a guard, the ask of a path outside the working directories), by a failing Read, and by the stub: the entry refused with the engine's reason, nothing of the file staged", async () => {
+    const outside = "Claude requested permissions to read from /etc/hosts, but you haven't granted it yet."
+    const h = sheetOn({
+      checks: {
+        '/work/.env': { decision: 'deny', reason: 'Permission to read /work/.env has been denied.', rule: 'Read(**/.env)' },
+        '/work/secrets.txt': { decision: 'deny', reason: 'SECRETS GUARD: a secrets file' },
+        '/etc/hosts': { decision: 'ask', reason: outside },
+      },
+      reads: {
+        '/work/gone.ts': { isError: true, result: 'x', text: 'File does not exist. Note: your current working directory is /work.' },
+        '/work/big.log': { isError: true, result: 'x', text: 'File content (1.4MB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions.' },
+        '/work/same.ts': { result: { type: 'file_unchanged', file: { filePath: '/work/same.ts' } }, text: 'File unchanged since last read.' },
+      },
+    })
+    await h.ready()
+    const paths = ['.env', 'secrets.txt', '/etc/hosts', 'gone.ts', 'big.log', 'same.ts']
+    const { id } = await h.ask({ ask: paths.map((path) => ({ question: `About ${path}?`, references: [{ path: 'fine.ts' }, { path }] })) })
+    const dir = `${HOME}/sheet/.staging/${S1}/${id}`
+    expect(h.staged(`${dir}/call.json`).entries).toEqual([
+      { refused: 'the reference .env could not be read: Permission to read /work/.env has been denied.' },
+      { refused: 'the reference secrets.txt could not be read: SECRETS GUARD: a secrets file' },
+      { refused: `the reference /etc/hosts could not be read: ${outside}` },
+      { refused: 'the reference gone.ts could not be read: File does not exist. Note: your current working directory is /work.' },
+      { refused: 'the reference big.log could not be read: File content (1.4MB) exceeds maximum allowed size (256KB). Use offset and limit parameters to read specific portions.' },
+      { refused: 'the reference same.ts could not be read: File unchanged since last read.' },
+    ])
+    // Neither the refused file nor the entry's other reference, read before it, is staged.
+    expect(h.writes().map((w) => w.path)).toEqual([`${dir}/call.json`])
+    // A file the check refused is never read.
+    expect(h.calls.filter((c) => c.op === 'tool.call').map((c) => (c.args as { file_path: string }).file_path)).not.toContain('/work/.env')
+  })
+
+  test('a call that only withdraws is staged and ordered', async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Withdrew q2.' }) : ok(n)) })
+    await h.ready()
+    const { result, id } = await h.ask({ withdraw: ['q2'] })
+    expect(result).toEqual({ result: 'Withdrew q2.' })
+    expect(h.staged(`${HOME}/sheet/.staging/${S1}/${id}/call.json`)).toEqual({ asker: 'main', entries: [], withdraw: ['q2'] })
+    expect(h.calls.filter((c) => c.op === 'ui.notify')).toEqual([])
+  })
+
+  test("a subagent's call: its asker by its agent's description, else its type; the running agents with the step", async () => {
+    const agents = [
+      { id: 'a1', description: 'reviewer', type: 'general-purpose', status: 'running' },
+      { id: 'a2', description: '', type: 'Explore', status: 'running' },
+      { id: 'a3', description: 'done', type: 'x', status: 'completed' },
+    ]
+    const h = sheetOn({ agents })
+    await h.ready()
+    const one = await h.ask({ ask: [{ question: 'Mine?' }] }, 'a1')
+    expect(h.staged(`${HOME}/sheet/.staging/${S1}/${one.id}/call.json`).asker).toEqual({ agentId: 'a1', name: 'reviewer' })
+    expect(h.steps.at(-1)).toMatchObject({ agents: { running: ['a1', 'a2'], direct: true } })
+    const two = await h.ask({ ask: [{ question: 'Mine too?' }] }, 'a2')
+    expect(h.staged(`${HOME}/sheet/.staging/${S1}/${two.id}/call.json`).asker).toEqual({ agentId: 'a2', name: 'Explore' })
+  })
+
+  test('a call before the session\'s start has answered changes nothing and says so', async () => {
+    const h = sheetOn()
+    await h.start()
+    const { result } = await h.ask({ ask: [{ question: 'Early?' }] })
+    expect(result).toEqual({ result: 'Nothing done.\nNot done: the sheet could not be written (the sheet is still starting); call again.' })
+    expect(h.steps).toEqual([])
+  })
+
+  test('a call at every bound of the schema stages no file over 4 MiB', async () => {
+    const big = (n: number) => '\u{10FFFF}'.repeat(n)
+    const entry = (i: number) => ({
+      question: big(2000),
+      header: big(60),
+      context: big(8000),
+      options: Array.from({ length: 12 }, (_, k) => ({ label: `${String.fromCharCode(65 + k)}${big(199)}`, description: big(500), preview: big(8000) })),
+      references: Array.from({ length: 8 }, (_, k) => ({ path: `f${i}-${k}.txt` })),
+    })
+    const huge = 'x'.repeat(256 * 1024)
+    const reads = Object.fromEntries(
+      Array.from({ length: 20 }, (_, i) => Array.from({ length: 8 }, (_, k) => [`/work/f${i}-${k}.txt`, { result: { type: 'text', file: { content: huge, numLines: 1, startLine: 1, totalLines: 1 } } }])).flat(),
+    )
+    const h = sheetOn({ reads })
+    await h.ready()
+    const { result } = await h.ask({ ask: Array.from({ length: 20 }, (_, i) => entry(i)) })
+    expect(result).toEqual({ result: 'Added q1.' })
+    const sizes = h.writes().map((w) => w.bytes)
+    expect(sizes.length).toBe(20 * 8 + 20 + 1)
+    expect(Math.max(...sizes)).toBeLessThan(4 * 1024 * 1024)
+  })
+})
+
+describe('a call with no answer from its step (I5)', () => {
+  test('a step that committed and whose answer was lost: settled, the recorded result answered once, then acknowledged', async () => {
+    const h = sheetOn({
+      step: (event, n) => {
+        if (event.event === 'call') return 'Traceback: the answer was lost'
+        if (event.event === 'settle') return ok(n, { result: 'Added q1.' })
+        return ok(n)
+      },
+    })
+    await h.ready()
+    const { result, id } = await h.ask({ ask: [{ question: 'Lost?' }] })
+    expect(result).toEqual({ result: 'Added q1.' })
+    expect(h.steps.slice(-2).map((s) => s.event)).toEqual(['call', 'settle'])
+    // The acknowledgement rides the next step, and only that one.
+    await sheetNudge([])
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', acked: [id] })
+    await sheetNudge([])
+    expect(h.steps.at(-1)?.acked).toBeUndefined()
+  })
+
+  test("a step that never ran: the settle forecloses it, and the model reads Nothing done with the clause", async () => {
+    const h = sheetOn({
+      step: (event, n) => {
+        if (event.event === 'call') throw new Error('the lock was not had in 10 s')
+        if (event.event === 'settle') return ok(n, { foreclosed: true })
+        return ok(n)
+      },
+    })
+    await h.ready()
+    const { result } = await h.ask({ ask: [{ question: 'Never?' }] })
+    expect(result).toEqual({ result: 'Nothing done.\nNot done: the sheet could not be written (the lock was not had in 10 s); call again.' })
+  })
+
+  test('three settles unanswered: Outcome not known yet; a later settle that answers becomes one notice, and the call is acknowledged', async () => {
+    let isDown = true
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' || (event.event === 'settle' && isDown) ? Promise.reject(new Error('timed out')) : event.event === 'settle' ? ok(n, { result: 'Added q1, q2.' }) : ok(n)) })
+    await h.ready()
+    const { result, id } = await h.ask({ ask: [{ question: 'A?' }, { question: 'B?' }] })
+    expect(result).toEqual({ result: NOT_KNOWN })
+    expect(h.steps.slice(-4).map((s) => s.event)).toEqual(['call', 'settle', 'settle', 'settle'])
+    await h.tick()
+    expect(sheetNotices()).toEqual([])
+    isDown = false
+    await h.tick()
+    expect(sheetNotices()).toEqual([`[sheet v1] Your earlier call (${id}) did change the sheet: Added q1, q2.`])
+    await h.tick()
+    expect(sheetNotices()).toHaveLength(1)
+    await sheetNudge([])
+    await sheetNudge([])
+    expect(h.steps.filter((s) => s.acked?.includes(id))).toHaveLength(1)
+  })
+})
+
+describe('views and drains', () => {
+  test("an answer of an older seq arriving after a newer one changes no view; its own result is still returned", async () => {
+    let release: (stdout: string) => void = () => {}
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? new Promise<string>((r) => (release = r)) : ok(n + 10)) })
+    await h.ready()
+    const asking = h.ask({ ask: [{ question: 'Slow?' }] })
+    await h.settle()
+    // A drain the check orders answers a newer record while the call waits.
+    await h.tick()
+    const newer = sheetView()?.seq
+    release(ok(2, { result: 'Added q1.' }, { nextId: 2 }))
+    expect((await asking).result).toEqual({ result: 'Added q1.' })
+    expect(sheetView()?.seq).toBe(newer as number)
+  })
+
+  test('a second drain asked for while one runs is one more step, not two; a hook that only triggers a drain returns before the step does', async () => {
+    const pending: ((stdout: string) => void)[] = []
+    const h = sheetOn({ step: (event, n) => (event.event === 'drain' ? new Promise<string>((r) => pending.push(() => r(ok(n)))) : ok(n)) })
+    await h.ready()
+    const before = h.steps.length
+    const nudges = [sheetNudge(['k1']), sheetNudge(['k2']), sheetNudge(['k3'])]
+    await h.settle()
+    expect(h.steps.length - before).toBe(1)
+    // The check's hooks return while the drain waits.
+    const { ran } = await h.call('Bash', { command: 'ls' })
+    expect(ran).toHaveLength(1)
+    pending.shift()?.(ok(0))
+    await h.settle()
+    expect(h.steps.length - before).toBe(2)
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', keys: ['k2', 'k3'] })
+    pending.shift()?.(ok(0))
+    await Promise.all(nudges)
+    expect(h.steps.length - before).toBe(2)
+  })
+
+  test("the bridge's nudge answers the verdicts of its keys from the drain's effects", async () => {
+    const verdict = { verdict: 'stale', kind: 'answer', at: '2026-11-24T10:00:00.000Z', id: 'q2', current: 2 }
+    const h = sheetOn({ step: (event, n) => (event.event === 'drain' ? ok(n, { verdicts: { 'page-1': verdict } }) : ok(n)) })
+    await h.ready()
+    expect(await sheetNudge(['page-1', 'page-2'])).toEqual({ ok: true, result: { verdicts: { 'page-1': verdict } } })
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', keys: ['page-1', 'page-2'] })
+  })
+
+  test('the check drains when the inbox is longer than the view says, once for a write that did not finish', async () => {
+    const h = sheetOn({ files: { [`${HOME}/sheet/${S1}/inbox.jsonl`]: '' } })
+    await h.ready()
+    const drains = () => h.steps.filter((s) => s.event === 'drain').length
+    await h.tick()
+    expect(drains()).toBe(0)
+    h.files.set(`${HOME}/sheet/${S1}/inbox.jsonl`, '{"v":1,"key":"page-0001"')
+    await h.tick()
+    await h.tick()
+    expect(drains()).toBe(1)
+  })
+
+  test("a bridge hello and a tick before a fork's start order nothing; the fork's start carries the floor its conversation holds", async () => {
+    const h = sheetOn({ messages: { rows: [{ role: 'assistant', text: '', toolUses: [{ tool: SHEET_TOOL, text: 'Added q7, q8.' }] }], api: [] } })
+    await h.start()
+    expect(await sheetNudge([])).toMatchObject({ ok: false, code: 'no-sheet' })
+    await h.tick()
+    expect(h.steps).toEqual([])
+    await h.classicStart('fork', S2)
+    expect(h.steps).toHaveLength(1)
+    expect(h.steps[0]).toMatchObject({ event: 'start', start: { source: 'fork', floor: 8 } })
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ session: S2, started: S2 })
+  })
+
+  test("every call carries the floor while the view assigns q1 next; past it, none; a conversation not readable at the start is read at the call", async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q5.' }, { nextId: 6 }) : ok(n)) })
+    await h.start()
+    await h.classicStart('fork', S2)
+    expect(h.steps[0]?.start).not.toHaveProperty('floor')
+    h.converse({ rows: [], api: [{ role: 'user', content: '[sheet v1] Your question sheet, after a resume.\nNew ids continue from q5.' }] })
+    await h.ask({ ask: [{ question: 'First?' }] })
+    expect(h.steps.at(-1)?.call).toMatchObject({ floor: 4 })
+    await h.ask({ ask: [{ question: 'Second?' }] })
+    expect(h.steps.at(-1)?.call).not.toHaveProperty('floor')
+  })
+})
+
+describe('the other triggers (E12, E14)', () => {
+  test("a compaction drains with the context named, and starts nothing; a subagent's stop drains", async () => {
+    const h = sheetOn()
+    await h.ready()
+    await h.classicStart('compact')
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', context: 'compact' })
+    expect(h.steps.filter((s) => s.event === 'start')).toHaveLength(1)
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain' })
+    expect(h.steps.at(-1)).not.toHaveProperty('context')
+    expect(h.steps).toHaveLength(3)
+  })
+})
+
+describe('a /clear (E15)', () => {
+  test("the record it leaves is removed at the session's end; the new session's start, removing nothing more, then answers", async () => {
+    const h = sheetOn()
+    await h.ready()
+    await h.sessionEnd('clear')
+    await h.settle()
+    expect(h.runs()).toContain(`sheet remove --session ${S1} --cleared`)
+    await h.classicStart('clear', S2)
+    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared`)).toHaveLength(1)
+    expect(h.steps.at(-1)).toMatchObject({ event: 'start', start: { source: 'clear', floor: 0 } })
+    expect(h.kept.get('sminos.sheet')).toEqual({ shape: 1, choice: 'sheet', runner: 'terminal', session: S2, started: S2 })
+  })
+
+  test('a removal the end could not make is made at the start', async () => {
+    let fails = true
+    const h = sheetOn()
+    await h.ready()
+    const engine = h.engine as unknown as { process: { run: (argv: string[], init?: unknown) => Promise<unknown> } }
+    const run = engine.process.run
+    engine.process.run = async (argv, init) =>
+      argv[2] === 'remove' && fails ? (h.calls.push({ op: 'process.run', args: argv }), { exitCode: 1, stdout: '', stderr: 'busy', isStdoutTruncated: false, isStderrTruncated: false }) : run(argv, init)
+    await h.sessionEnd('clear')
+    await h.settle()
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ left: S1 })
+    fails = false
+    await h.classicStart('clear', S2)
+    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared`)).toHaveLength(2)
+    expect(h.kept.get('sminos.sheet')).not.toHaveProperty('left')
+  })
+})

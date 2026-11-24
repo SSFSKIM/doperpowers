@@ -41,6 +41,29 @@ export type AskSnapshot = {
 }
 
 /**
+ * `sheet`: the question sheet's start choice (hooks/mods/sheet.tsx; the plan
+ * docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I8), made at
+ * the process's first `session.start` and kept, so a reload of the module and
+ * a /clear keep the process's choice: `sheet` (the tool under the sheet's
+ * schema, its `runner` a terminal or MAWS), `today` (today's ask) or `none`.
+ * `session` is the session the process is in; `started` the session whose
+ * `start` step has answered, before which no other step is ordered for it;
+ * `starting` the start step owed for `session` (its nonce, which every retry
+ * repeats, its source and the conversation's floor), until it answers;
+ * `left` the session a /clear left, whose record is removed. Only sminos
+ * writes or reads it.
+ */
+export type SheetKept = {
+  shape: 1
+  choice: 'sheet' | 'today' | 'none'
+  runner?: 'terminal' | 'maws'
+  session: string
+  started?: string
+  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number }
+  left?: string
+}
+
+/**
  * `bridgeAsk`: the session manager's questions this session's bridge answered
  * `started` (hooks/mods/bridge-ask.tsx), each its op id and its fork's agent
  * id, until the bridge's child took its end, so that the module that loads
@@ -167,6 +190,6 @@ export type StoppedReceipt = { session: string; id: string; attempt: number; bod
  */
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept; bridgeSeat: Tier }
+    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept; bridgeSeat: Tier; sheet: SheetKept }
   }
 }
