@@ -750,12 +750,15 @@ class Remote(Verbs):
         self.assertIn("no message from here reaches it: elsewhere admits nothing from another machine, and refuses "
                       "it there", out)
         self.assertNotIn("leave it a message", out)
+        # Held for having no conversation there: a message waits, and there is nothing to resume (the
+        # session-search design's §3d).
         out = self.hint(self.remote("held", "transcript"))
-        self.assertIn("or leave it a message, held until a process of it runs (%s)" % WORDS["transcript"], out)
+        self.assertIn("\n  leave it a message, held until a process of it runs (%s)" % WORDS["transcript"], out)
+        self.assertNotIn("claude --resume", out)
         sid = self.remote("held", "transcript")
         sminos.log_append(self.p, "elsewhere/%s" % sid, "state", session=sid, state="gone", machine="elsewhere",
                           wake="held", why="transcript")
-        self.assertIn("or leave it a message, held until a process of it runs (%s)" % WORDS["transcript"],
+        self.assertIn("\n  leave it a message, held until a process of it runs (%s)" % WORDS["transcript"],
                       self.hint(sid), "published on `gone`")
         self.assertIn("or message it, which wakes it", self.hint(self.remote("woken")))
         tid, sid = self.human_thread()

@@ -55,6 +55,8 @@ Not taken at first: counting compactions (every third) instead of the six-hour s
 
 ### 5. Amendment, 2026-11-18: every third compaction
 
+Replaced on 2026-11-23 by §2 of `docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md`: every compaction derives again, with the session's summary, and nothing is counted.
+
 The human chose, having heard the cost argument above, to derive at every third compaction since the member's last derived line rather than at each. `compaction_due` counts each `--compacted` run in `$SMINOS_HOME/compactions/<session>` (swept by `derive --all` after 30 days) and lets the derive through at the third (`DERIVE_COMPACTIONS`, overridden by `SMINOS_DERIVE_COMPACTIONS`); any recorded derived line, the daemon's six-hour refresh included, removes the count. A count that cannot be kept derives, as every compaction did before. The status line is still cleared at every compaction: that costs no fork, and a status from before a compaction is stale whether or not the line is re-derived. A set line now stands until the third compaction after it (the count runs from the last derived line, so it may be sooner).
 
 ### 6. Amendment, 2026-11-18: the line is derived, never written by the session

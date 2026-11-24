@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A machine the org's directory retires (board #171): its sessions read
-`gone` in list, find, chart and --json, folded behind `+N hidden` and shown
+`gone` in list (its keyword filter too), chart and --json, folded behind `+N hidden` and shown
 by --all; `machines` says `retired`; and on a machine cut over to its endpoint
 (RL10), which carries no presence, `machines` and the directory's age line say
 only what RL10 does. The events are fabricated in this process; every reading
@@ -123,8 +123,8 @@ class Rows:
         self.assertIsNotNone(self.row(chosen, "vm-idler"), chosen)
         self.assertIsNone(self.row(chosen, "offliner"), chosen)
         self.assertEqual(self.states(), {"vm-idler": "gone", "vm-busy": "gone", "offliner": "idle"})
-        self.assertIsNone(self.row(self.cli("find", "vm-idler"), "vm-idler"))
-        self.assertIsNotNone(self.row(self.cli("find", "vm-idler", "--all"), "vm-idler"))
+        self.assertIsNone(self.row(self.cli("list", "--org", "vm-idler"), "vm-idler"))
+        self.assertIsNotNone(self.row(self.cli("list", "--org", "vm-idler", "--all"), "vm-idler"))
         chart = self.cli("chart", "pg")
         self.assertNotIn("vm-idler", chart)
         self.assertIn("offliner", chart)

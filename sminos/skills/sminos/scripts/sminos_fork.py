@@ -22,8 +22,14 @@ A bridge op subscribes to the session's stream first, posts the op, and waits
 for its end by the op's id. A silence past the timeout leaves the fork to
 finish on its own: stopping it through the bridge would leave a note in the
 session's conversation.
+
+Beside the forks, `find` asks a model afresh (ask_model: no session behind
+it; docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md, §3b).
+It and the headless fork are both internal processes, started and cleaned
+up by one helper (run_internal).
 """
 
+import glob
 import json
 import os
 import queue
@@ -241,14 +247,109 @@ def fork_failure(obj, err):
     return text[:S.DERIVE_WHY_MAX]
 
 
+# The gate an internal process starts behind: the shell waits on fd N for the
+# release line and execs the engine only after a successful read, so a parent
+# that died or failed before marking it (end of file on the gate) starts nothing.
+GATE = 'read -r _ <&%d || exit 1; exec %d<&-; exec "$@"'
+
+
+def _stop(proc):
+    """Kill and reap a child the gate still holds."""
+    proc.kill()
+    proc.communicate()
+
+
+def run_internal(args, *, cwd, env, timeout, stdin_text=None, cleanup=None, what="fork"):
+    """Run `args` (a `claude -p … --output-format json` call) as an internal
+    process: started behind GATE, its pid marked internal under
+    $SMINOS_HOME/internal/ before the release, so the record hook
+    (SMNS_INTERNAL in `env`) and reconciliation never take it for a member;
+    then run to its end or `timeout`, `stdin_text` on its standard input
+    (none: /dev/null). Any failure between the start and the release kills
+    and reaps the child before ForkFailed. Its JSON result, read from the
+    last `{` line of its stdout, is returned when it exited 0, reported no
+    error and answered something; ForkFailed otherwise, `what` naming it in
+    the reason. Whatever the outcome, `cleanup(result or None)` removes
+    what the engine wrote anyway (the caller knows where: a transcript under
+    the id it minted), and the marker is removed after it, even when the
+    cleanup raises."""
+    gate_r, gate_w = os.pipe()
+    marker = ""
+    out = err = ""
+    obj = None
+    try:
+        try:
+            proc = subprocess.Popen(["/bin/sh", "-c", GATE % (gate_r, gate_r), "sh"] + list(args), cwd=cwd, env=env,
+                                    stdin=subprocess.DEVNULL if stdin_text is None else subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(gate_r,))
+        except OSError as e:
+            raise ForkFailed("the %s did not start: %s" % (what, e))
+        finally:
+            os.close(gate_r)
+        try:
+            os.makedirs(os.path.join(S.root(), "internal"), mode=0o700, exist_ok=True)
+            marker = os.path.join(S.root(), "internal", str(proc.pid))
+            open(marker, "w").close()
+            os.write(gate_w, b"\n")
+        except BaseException as e:
+            _stop(proc)
+            if isinstance(e, Exception):
+                raise ForkFailed("its %s could not be marked internal: %s" % (what, e)) from e
+            raise
+        os.close(gate_w)
+        gate_w = -1
+        try:
+            out, err = proc.communicate(input=stdin_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            why = fork_failure(None, err)
+            raise ForkFailed("the %s timed out after %ds%s" % (what, timeout, ": " + why if why else ""), err,
+                             code="timeout")
+        except BaseException:
+            # An interrupt (or anything) mid-wait: the engine is stopped and reaped before its transcript and
+            # its marker are removed, never left running unmarked.
+            proc.kill()
+            proc.wait()
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            raise
+        for raw in reversed((out or "").splitlines()):
+            if raw.strip().startswith("{"):
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    obj = d
+                    break
+        if proc.returncode != 0 or obj is None or obj.get("is_error"):
+            why = fork_failure(obj, err)
+            raise ForkFailed("the %s failed (exit %d)%s" % (what, proc.returncode, ": " + why if why else ""), err)
+        if not str(obj.get("result") or "").strip():
+            raise ForkFailed("the %s answered nothing" % what, err, code="empty-reply")
+        return obj
+    finally:
+        if gate_w != -1:
+            os.close(gate_w)
+        try:
+            if cleanup is not None:
+                cleanup(obj)
+        finally:
+            if marker:
+                try:
+                    os.unlink(marker)
+                except FileNotFoundError:
+                    pass
+
+
 def headless_fork(project, m, prompt, *, tools, cache, timeout):
-    """Fork member `m`'s session headless and ask it `prompt`. The fork
-    starts behind a gate: its pid is marked internal before it can register
-    (SMNS_INTERNAL keeps the hook from recording it). It starts in safe mode
-    and persists nothing; its session id is minted here (`--session-id`) all
-    the same, so a transcript an engine wrote anyway is known and deleted
-    whatever the outcome (an answer, a crash, a timeout), and so is the
-    marker. `tools` False offers it none (`--tools ""`), True the read-only
+    """Fork member `m`'s session headless and ask it `prompt`, as an
+    internal process (run_internal). It starts in safe mode and persists
+    nothing; its session id is minted here (`--session-id`) all the same, so
+    a transcript an engine wrote anyway is known and deleted whatever the
+    outcome. `tools` False offers it none (`--tools ""`), True the read-only
     set under auto mode; `cache` False sends it uncached
     (DISABLE_PROMPT_CACHING). The prompt comes last: `--tools` takes several
     values and would swallow a prompt right after it."""
@@ -262,64 +363,75 @@ def headless_fork(project, m, prompt, *, tools, cache, timeout):
             "--no-session-persistence"]
     args += ["--permission-mode", "auto", "--tools", HEADLESS_TOOLS] if tools else ["--tools", ""]
     args += ["--output-format", "json", prompt]
-    gate_r, gate_w = os.pipe()
-    marker = ""
-    out = err = ""
-    obj = None
-    try:
-        try:
-            proc = subprocess.Popen(["/bin/sh", "-c", 'read -r _ <&%d; exec %d<&-; exec "$@"' % (gate_r, gate_r), "sh"]
-                                    + args, cwd=S.member_cwd(project, m), env=env,
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, pass_fds=(gate_r,))
-        except OSError as e:
-            raise ForkFailed("the fork did not start: %s" % e)
-        finally:
-            os.close(gate_r)
-        os.makedirs(os.path.join(S.root(), "internal"), mode=0o700, exist_ok=True)
-        marker = os.path.join(S.root(), "internal", str(proc.pid))
-        try:
-            open(marker, "w").close()
-        except OSError as e:
-            proc.kill()
-            proc.communicate()
-            raise ForkFailed("its fork could not be marked internal: %s" % e)
-        os.write(gate_w, b"\n")
-        os.close(gate_w)
-        gate_w = -1
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            why = fork_failure(None, err)
-            raise ForkFailed("the fork timed out after %ds%s" % (timeout, ": " + why if why else ""), err,
-                             code="timeout")
-        for raw in reversed((out or "").splitlines()):
-            if raw.strip().startswith("{"):
-                try:
-                    d = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(d, dict):
-                    obj = d
-                    break
-        if proc.returncode != 0 or obj is None or obj.get("is_error"):
-            why = fork_failure(obj, err)
-            raise ForkFailed("the fork failed (exit %d)%s" % (proc.returncode, ": " + why if why else ""), err)
-        answer = str(obj.get("result") or "")
-        if not answer.strip():
-            raise ForkFailed("the fork answered nothing", err, code="empty-reply")
-        return ForkAnswer(answer, "headless fork", _result_usage(obj.get("usage")), False)
-    finally:
-        if gate_w != -1:
-            os.close(gate_w)
+
+    def cleanup(obj):
+        # The minted id, and the one its result names (an engine that ignored --session-id), looked up as the
+        # machine's transcripts are; never the session it resumed.
         for sid in {fork, str((obj or {}).get("session_id") or "")}:
             path = S.transcript_now(sid) if S.UUID_RE.fullmatch(sid) and sid != m.session else ""
             if path:
                 os.unlink(path)
-        if marker:
+    obj = run_internal(args, cwd=S.member_cwd(project, m), env=env, timeout=timeout, cleanup=cleanup)
+    return ForkAnswer(str(obj.get("result") or ""), "headless fork", _result_usage(obj.get("usage")), False)
+
+
+# ------------------------------------------------------------------ a model, asked afresh
+
+# What would carry a call, or the prompt, off the owner's first-party login
+# (§3b of docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md):
+# the gateway's settings, a subagent model override, telemetry that can
+# export the prompt; and by prefix (OFF_LOGIN_PREFIXES) every ANTHROPIC_*
+# variable (base URL, auth token, API key, model aliases), every provider
+# switch (CLAUDE_CODE_USE_*, those to come included) and every OpenTelemetry
+# setting (OTEL_*); and every key the gateway settings file names.
+OFF_LOGIN = ("CLAUDE_CODE_SUBAGENT_MODEL", "CLODEX_SETTINGS", "CLAUDE_CODE_ENABLE_TELEMETRY")
+OFF_LOGIN_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "OTEL_")
+# What stays whatever a gateway settings file names: how the engine is found, and the first-party login itself.
+LOGIN_KEPT = ("PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
+
+
+def model_env():
+    """The environment of a fresh model call: the caller's, less what
+    launch_env drops for a plain-route launch (the launch-only markers and
+    the gateway settings' keys) and everything that routes off the
+    first-party login or exports the prompt (OFF_LOGIN, OFF_LOGIN_PREFIXES),
+    marked internal."""
+    env = S.launch_env("")
+    for k in list(env):
+        if k not in LOGIN_KEPT and (k.startswith(OFF_LOGIN_PREFIXES) or k in OFF_LOGIN):
+            del env[k]
+    for k in LOGIN_KEPT:
+        if k in os.environ:
+            env[k] = os.environ[k]
+    env["SMNS_INTERNAL"] = "1"
+    return env
+
+
+def ask_model(prompt, *, model="haiku", effort="medium", timeout=120):
+    """One fresh, tool-less `claude -p` call of `model`, `prompt` on its
+    standard input, as an internal process (run_internal) on the caller's
+    own first-party login (model_env: no gateway, API key or provider
+    inherited from the caller's environment); its working
+    directory $SMINOS_HOME, never a protected folder or a project's. Safe
+    mode: no plugins, hooks, MCP servers or CLAUDE.md, the machine's own
+    login (bare mode would read an API key alone). Its session id is minted
+    only so a transcript the engine wrote despite --no-session-persistence
+    is found and deleted: that id alone, under the config dir the child ran
+    under (its CLAUDE_CONFIG_DIR, else the default), never an id its result
+    names, which could be any session's. ForkFailed as headless_fork raises
+    it."""
+    minted = str(uuidlib.uuid4())
+    env = model_env()
+
+    def cleanup(_obj):
+        for path in glob.glob(os.path.join(glob.escape(S.config_dir(env)), "projects", "*", minted + ".jsonl")):
             try:
-                os.unlink(marker)
+                os.unlink(path)
             except FileNotFoundError:
                 pass
+    args = ["claude", "-p", "--safe-mode", "--no-session-persistence", "--session-id", minted, "--model", model,
+            "--effort", effort, "--tools", "", "--output-format", "json"]
+    os.makedirs(S.root(), exist_ok=True)
+    obj = run_internal(args, cwd=S.root(), env=env, timeout=timeout, stdin_text=prompt, cleanup=cleanup,
+                       what="model call")
+    return ForkAnswer(str(obj.get("result") or ""), "model", _result_usage(obj.get("usage")), False)

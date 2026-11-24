@@ -48,8 +48,11 @@ the commit, PR, or ticket.
     sminos list --stopped           # also show stopped members, in the same scope
     sminos list --here              # this machine, every project
     sminos list --org               # every session in the org
-    sminos find <words..>           # every session the words match: alias, short, project, repo, branch, in-charge line
+    sminos find "<question>"        # the sessions best placed to answer it, live or stopped, in any project or machine:
+                                    # why each fits, its summary, how to reach it (one call to a small model; exit 4: none)
+    sminos list --org <words..>     # every session the words match: alias, short, project, repo, branch, in-charge line
     sminos who <commit|PR>          # the session its Sminos-Session line names, as it is now, and how to reach it
+    sminos who @<short|alias>       # the same of a session a message would tag, its summary included
     sminos list --machine mini --state waiting   # filters combine, comma lists; any filter widens to the org first
     sminos projects | machines      # the org's projects and machines
 
@@ -223,7 +226,9 @@ directly, in your own project. Placing yourself in it (`sminos channel add
     sminos join --cwd | sminos join           # back to your launch directory's project | where you are, and why
 
 The in-charge line is what others choose you by. sminos derives it from
-your conversation in the background, so you never write it. `join` is for a session
+your conversation in the background, so you never write it, and with it
+a summary — `doing:`, `made:` and `next:` — refreshed at every
+compaction; `sminos who @<short>` shows another session's. `join` is for a session
 whose directory files it in the wrong project — a scratch copy, a
 session that owns work in another repository. Join the project of your
 standing responsibility once; reading or editing other repositories
