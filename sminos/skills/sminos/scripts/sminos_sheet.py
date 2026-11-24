@@ -637,7 +637,10 @@ def suiting(regs, remote):
 STAGED_AGE_S = 86400
 CALL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 EVENT_KEYS = 200
-RECEIPT = ".start-receipt.json"       # in the session's staging: the last start's answer, for its retry
+RECEIPT = ".start-receipt.json"       # in the session's staging: what the last start found, for its retry
+REMOVED = ".removed-"                 # in sheet/: a removed sheet detached, `.removed-<epoch s>-<uuid>`
+REMOVED_AGE_S = 60                    # past this, a detached sheet no removal is deleting is deleted by the next
+CALL_ENTRIES = 20                     # the tool's own limit (tool-input.schema.json), for a shell's inline call
 GONE = ".gone-"                       # a staging directory made unavailable, deleted after the replace
 
 
@@ -782,6 +785,8 @@ def _call_body(call, base):
     if not isinstance(entries, list) or not isinstance(withdraw, list) \
             or not all(isinstance(i, str) and ID_RE.fullmatch(i) for i in withdraw):
         raise ValueError("a call's entries are a list, its withdraw a list of ids")
+    if len(entries) > CALL_ENTRIES:
+        raise ValueError("a call has at most %d entries" % CALL_ENTRIES)
     return {"asker": call["asker"], "entries": [_entry(x, base) for x in entries], "withdraw": withdraw}
 
 
@@ -815,8 +820,9 @@ def _event_error(e):
     if e["event"] == "start":
         s = e.get("start")
         if not (isinstance(s, dict) and s.get("source") in STEP_.SOURCES
-                and (s.get("floor") is None or _count(s["floor"], 0))):
-            return "start is {source, floor?, today?}"
+                and (s.get("floor") is None or _count(s["floor"], 0))
+                and ("nonce" not in s or _call_id_ok(s["nonce"]))):
+            return "start is {source, floor?, nonce?, today?}"
         t = s.get("today", {})
         if not (isinstance(t, dict) and isinstance(t.get("definite", False), bool)
                 and isinstance(t.get("asks", []), list)):
@@ -886,7 +892,7 @@ def _bounded(out):
         elif v["answered"]:
             parts = [v["answered"]]
         else:
-            break                         # nothing of the view is left to cut; the effects are bounded by the event
+            break
         part = parts[0]
         while over > 0 and part:
             if isinstance(part, dict):
@@ -895,6 +901,9 @@ def _bounded(out):
             else:
                 over -= len(_dumps(part.pop()).encode())
         size = len(_dumps(out).encode())
+    # With the view gone, what is left has a hard maximum far under the bound: a call's result (RESULT_MAX), the
+    # context (I7's budget), at most 200 keys in `before` and in `verdicts`, and what one drain applied.
+    assert size <= ANSWER_MAX, "the effects alone are %d bytes" % size
     return out
 
 
@@ -916,18 +925,17 @@ def run_step(session, raw, now=None, tz=None):
         return _bad("busy", "the sheet's lock was not had in %d s" % LOCK_WAIT_S)
 
 
-def _receipt(stage, state, event):
-    """The last start's answer, when this start is that start ordered again: the record is as that start left it (its
-    seq), and the source and floor are the same. Any other step removes the receipt."""
+def _receipt(stage, event):
+    """What the last start found that the record cannot give again (an empty sheet, what it imported), when this start
+    is that start ordered again: its nonce is the receipt's. A start with no nonce (a shell's) is always new."""
+    nonce = event["start"].get("nonce")
+    if nonce is None:
+        return None
     try:
         r = _read_json(os.path.join(stage, RECEIPT))
     except (OSError, ValueError):
         return None
-    s_ = event["start"]
-    if not isinstance(r, dict) or state is None or r.get("seq") != state["seq"] \
-            or r.get("source") != s_["source"] or r.get("floor") != s_.get("floor"):
-        return None
-    return r
+    return r if isinstance(r, dict) and r.get("nonce") == nonce else None
 
 
 def _hide(stage, name):
@@ -940,7 +948,10 @@ def _hide(stage, name):
 
 def _start_dirs(norm):
     """The start-<nonce> directories this start's asks were staged in: kept for its retry until the next start."""
-    return {x.split("/", 1)[0] for x in norm["start"].get("files", [])}
+    keep = {x.split("/", 1)[0] for x in norm["start"].get("files", [])}
+    if "nonce" in norm["start"]:
+        keep.add("start-" + norm["start"]["nonce"])
+    return keep
 
 
 def _step_locked(session, event, now, tz):
@@ -963,7 +974,7 @@ def _step_locked(session, event, now, tz):
     except (OSError, ValueError) as e:
         return _bad("bad-event", str(e))
     if name == "start":
-        again = _receipt(stage, state, event)
+        again = _receipt(stage, event)
         if again is not None:
             norm["start"]["again"] = again
     data = b""
@@ -1008,16 +1019,15 @@ def _step_locked(session, event, now, tz):
         for n in listed:
             if n != RECEIPT and not n.startswith(GONE) and n not in keep:
                 _hide(stage, n)
-        os.makedirs(stage, mode=0o700, exist_ok=True)
-        _write_file(stage, RECEIPT, _dumps({"seq": new["seq"], "source": norm["start"]["source"],
-                                            "floor": norm["start"].get("floor"),
-                                            **{k: fx["start"][k] for k in ("empty", "before", "beforeCount",
-                                                                           "imported")}}).encode())
-    else:
-        try:
-            os.unlink(os.path.join(stage, RECEIPT))
-        except FileNotFoundError:
-            pass
+        if "nonce" in norm["start"]:
+            os.makedirs(stage, mode=0o700, exist_ok=True)
+            _write_file(stage, RECEIPT, _dumps({"nonce": norm["start"]["nonce"], "empty": fx["start"]["empty"],
+                                                "imported": fx["start"]["imported"]}).encode())
+        else:
+            try:
+                os.unlink(os.path.join(stage, RECEIPT))
+            except FileNotFoundError:
+                pass
 
     if state is None:
         os.makedirs(rec, mode=0o700, exist_ok=True)
@@ -1153,13 +1163,32 @@ def _send(session, lines):
     print(json.dumps(put(session, data), ensure_ascii=False))
 
 
+def _removed_leftovers(now_s):
+    """Detached sheets an earlier removal left (it died, or could not delete them): deleted once older than a minute,
+    so a removal in progress elsewhere keeps its own."""
+    root = sheet_root()
+    try:
+        names = os.listdir(root)
+    except FileNotFoundError:
+        return
+    for n in names:
+        if n.startswith(REMOVED):
+            try:
+                at = int(n[len(REMOVED):].split("-", 1)[0])
+            except ValueError:
+                at = 0
+            if now_s - at > REMOVED_AGE_S:
+                shutil.rmtree(os.path.join(root, n), ignore_errors=True)
+
+
 def remove(session, cleared=False):
     """A stopped session's record and its staging (I1, M2). Liveness is checked before the lock and again under it (a
-    session resumed while this waited); under the lock the record and the staging are detached, each by one rename
-    inside sheet/, so no reader or step sees part of a removal; then they are deleted, and what could not be is said.
-    The lock file stays."""
+    session resumed while this waited); under the lock the staging, then the record, are detached, each by one rename
+    inside sheet/, so no reader or step sees part of a removal, and a record that cannot be detached gets its staging
+    back; then they are deleted, and what could not be is said (the next removal deletes it). The lock file stays."""
     if not cleared and S.session_running(session):
         S.die("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)" % session, 2)
+    _removed_leftovers(int(time.time()))
     detached = []
     try:
         with Lock(session):
@@ -1168,24 +1197,27 @@ def remove(session, cleared=False):
                 S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 S.die("sheet remove: %s started while this waited; its sheet stays" % session, 2)
-            for d in (rec, staging_dir(session)):
+            for d in (staging_dir(session), rec):
                 if os.path.exists(d):
-                    to = os.path.join(sheet_root(), ".removed-" + uuid.uuid4().hex)
+                    to = os.path.join(sheet_root(), "%s%d-%s" % (REMOVED, int(time.time()), uuid.uuid4().hex))
                     try:
                         os.rename(d, to)
                     except OSError as e:
-                        S.die("sheet remove: %s could not be detached (%s); it is still there" % (d, e), 1)
-                    detached.append(to)
+                        for back, was in reversed(detached):
+                            os.rename(was, back)
+                        S.die("sheet remove: %s could not be detached (%s); the sheet is still there" % (d, e), 1)
+                    detached.append((d, to))
     except Busy:
         S.die("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
     left = []
-    for d in detached:
+    for _, d in detached:
         try:
             shutil.rmtree(d)
         except OSError as e:
             left.append("%s (%s)" % (d, e))
     if left:
-        S.die("sheet remove: %s's sheet is removed, but these could not be deleted: %s" % (session, "; ".join(left)), 1)
+        S.die("sheet remove: %s's sheet is removed, but these could not be deleted (the next removal deletes them): "
+              "%s" % (session, "; ".join(left)), 1)
 
 
 def resolve(a, verb):

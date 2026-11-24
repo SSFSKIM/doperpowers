@@ -1,14 +1,5 @@
 {
  "after": {
-  "sheet/.staging/5eed0000-0000-4000-8000-000000000126/.start-receipt.json": {
-   "before": [],
-   "beforeCount": 0,
-   "empty": null,
-   "floor": 5,
-   "imported": [],
-   "seq": 2,
-   "source": "resume"
-  },
   "sheet/5eed0000-0000-4000-8000-000000000126/inbox.jsonl": "",
   "sheet/5eed0000-0000-4000-8000-000000000126/state.json": {
    "calls": [],
@@ -94,7 +85,7 @@
    "v": 1
   }
  },
- "covers": "a start whose read of today's asks was not definite: nothing imported and nothing recorded, so the next start reads again; the floor raises a record that has assigned no id",
+ "covers": "a start whose read of today's asks was not definite: nothing imported and nothing recorded, so the next start reads again; the floor raises a record that has assigned no id; a start with no nonce (a shell's) is always new and leaves no receipt",
  "event": {
   "acked": [],
   "event": "start",

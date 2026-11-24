@@ -1,10 +1,7 @@
 {
  "after": {
   "sheet/.staging/5eed0000-0000-4000-8000-000000000125/.start-receipt.json": {
-   "before": [],
-   "beforeCount": 0,
    "empty": null,
-   "floor": null,
    "imported": [
     {
      "callId": "toolu_B",
@@ -14,8 +11,7 @@
      ]
     }
    ],
-   "seq": 4,
-   "source": "resume"
+   "nonce": "0002"
   },
   "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-1.json": {
    "askedAt": "2026-11-22T18:00:00.000Z",
@@ -283,6 +279,7 @@
   "remote": false,
   "runner": "terminal",
   "start": {
+   "nonce": "0002",
    "source": "resume",
    "today": {
     "asks": [

@@ -36,6 +36,7 @@ step_module = sminos.sibling_module("sminos_sheet_step")
 UTC = datetime.timezone.utc
 REAL_REPLACE, REAL_WRITE = os.replace, os.write    # a death is a patched os call, restored after each test
 REAL_RMTREE, REAL_SHUTIL_RMTREE = sheet._rmtree, shutil.rmtree
+REAL_RENAME = os.rename
 
 
 def load(path):
@@ -197,6 +198,12 @@ def inline_call(call_id, entries=(), withdraw=(), asker="main", floor=None):
     if floor is not None:
         c["floor"] = floor
     return ev("call", call=c)
+
+
+def ask_all(prefix, entries):
+    """Entries asked through calls of at most 20 (the tool's own limit), in order."""
+    for n in range(0, len(entries), 20):
+        assert step(inline_call("%s%d" % (prefix, n), entries[n:n + 20]))["ok"]
 
 
 def line(key, kind, by="page", at="2026-11-24T09:59:00.000Z", **f):
@@ -941,7 +948,7 @@ class AtOnce(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
         h = scratch()
         step(ev("start", start={"source": "startup"}))
-        step(inline_call("toolu_c", [{"question": "Q%d?" % i, "options": opts("Yes", "No")} for i in range(1, 151)]))
+        ask_all("toolu_c", [{"question": "Q%d?" % i, "options": opts("Yes", "No")} for i in range(1, 151)])
         path = os.path.join(h, "sheet", SESSION, "state.json")
         stop, seen, bad, failed = threading.Event(), [], [], []
 
@@ -1128,8 +1135,9 @@ class AStartOrderedAgain(unittest.TestCase):
     def test_a_later_start_is_not_the_first_one_again(self):
         v, h = vector_home("start-lost")
         sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
-        step(ev("drain"), session=v["session"])
-        later = sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        later = json.loads(json.dumps(v["event"]))
+        later["start"]["nonce"] = "0002"
+        later = sheet.run_step(v["session"], json.dumps(later).encode(), now=v["now"], tz=UTC)
         self.assertEqual((later["effects"]["start"]["empty"], later["effects"]["context"]), (None, ""))
 
     def test_a_staged_ask_that_is_missing_is_no_evidence(self):
@@ -1310,7 +1318,7 @@ class ClosingOrder(unittest.TestCase):
     def test_a_batch_in_reverse_id_order(self):
         scratch()
         step(ev("start", start={"source": "startup"}))
-        step(inline_call("toolu_r", [{"question": "Q%d?" % i} for i in range(1, 42)]))
+        ask_all("toolu_r", [{"question": "Q%d?" % i} for i in range(1, 42)])
         put_raw(SESSION, answers(range(40, 0, -1), lambda i: "a%d" % i, batch="page-b00000rv"))
         out = step(ev("drain"))
         kept = [i for i, c in state_of()["closed"].items() if "answer" in c]
@@ -1364,6 +1372,203 @@ class QueuedEntriesByKind(unittest.TestCase):
             "page-0000000c": ["key", "kind", "state", "target"], "page-0000000d": ["key", "kind", "state"]})
         self.assertEqual(sheet_schema.errors(load(os.path.join(SET, "schema", "show.schema.json")), m), [])
 
+
+
+# ------------------------------------------------------------------ fix wave 2
+
+
+def stage_ask(nonce, n, ask, session=SESSION):
+    d = os.path.join(os.environ["SMINOS_HOME"], "sheet", ".staging", session, "start-" + nonce)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "ask-%d.json" % n), "w") as f:
+        json.dump(ask, f)
+    return {"file": "start-%s/ask-%d.json" % (nonce, n)}
+
+
+def an_ask(call_id, question):
+    return {"callId": call_id, "askedAt": "2026-11-24T09:00:00.000Z",
+            "questions": [{"question": question, "options": [], "multiSelect": False}]}
+
+
+def a_start(nonce=None, source="resume", floor=None, asks=None):
+    s = {"source": source, "today": {"definite": asks is not None, "asks": asks or []}}
+    if floor is not None:
+        s["floor"] = floor
+    if nonce is not None:
+        s["nonce"] = nonce
+    return ev("start", start=s)
+
+
+class AStartIsKnownByItsNonce(unittest.TestCase):
+    """Fix wave 2: a retry is the start whose nonce is the receipt's; every other start is new, and `before` is
+    always what is pending ahead of this step's drain."""
+
+    def setUp(self):
+        scratch()
+        step(a_start("s0", source="startup", floor=1))
+        self.assertTrue(step(inline_call("toolu_n1", [{"question": "Ship?"}]))["ok"])
+        put_raw(SESSION, [line("page-0000n001", "answer", id="q2", revision=1, text="yes")])
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_starts_at_one_floor_each_name_what_is_pending(self):
+        first = step(a_start("r1", floor=1))
+        self.assertEqual((first["effects"]["start"]["before"], first["effects"]["applied"]), ([], ["page-0000n001"]))
+        second = step(a_start("r2", floor=1))
+        self.assertEqual(second["effects"]["start"]["before"], ["page-0000n001"])
+        self.assertEqual(second["effects"]["start"]["beforeCount"], 1)
+
+    def test_a_retry_lists_what_its_first_attempt_applied(self):
+        e = a_start("r1", floor=1)
+        step(e)
+        self.assertEqual(step(e)["effects"]["start"]["before"], ["page-0000n001"], "a harmless superset")
+
+    def test_a_second_definite_import_reports_its_own(self):
+        a = stage_ask("r1", 1, an_ask("toolu_A", "Gate?"))
+        one = step(a_start("r1", floor=1, asks=[a]))
+        self.assertEqual(one["effects"]["start"]["imported"], [{"callId": "toolu_A", "ids": ["q3"]}])
+        a2, b2 = stage_ask("r2", 1, an_ask("toolu_A", "Gate?")), stage_ask("r2", 2, an_ask("toolu_B", "Layout?"))
+        two = step(a_start("r2", floor=1, asks=[a2, b2]))
+        self.assertEqual(two["effects"]["start"]["imported"], [{"callId": "toolu_B", "ids": ["q4"]}])
+        self.assertIn('q4 "Layout?"', two["effects"]["context"])
+        self.assertNotIn('q3 "Gate?" (call', two["effects"]["context"])
+
+    def test_the_same_nonce_twice_answers_the_same(self):
+        e = a_start("r1", floor=1, asks=[stage_ask("r1", 1, an_ask("toolu_A", "Gate?"))])
+        one = step(e)
+        step(ev("drain"))                                 # a step between: the nonce still names the same start
+        two = step(e)
+        pick = lambda o: (o["effects"]["start"]["empty"], o["effects"]["start"]["imported"], o["effects"]["context"])
+        self.assertEqual(pick(two), pick(one))
+        self.assertEqual(one["effects"]["start"]["imported"], [{"callId": "toolu_A", "ids": ["q3"]}])
+
+    def test_a_start_with_no_nonce_is_new(self):
+        scratch()
+        one = step(a_start(source="fork", floor=3))
+        two = step(a_start(source="fork", floor=3))
+        self.assertEqual((one["effects"]["start"]["empty"], two["effects"]["start"]["empty"]), ("fork", None))
+        self.assertFalse(os.path.exists(os.path.join(sheet.staging_dir(SESSION), sheet.RECEIPT)))
+
+    def test_a_nonce_is_a_name(self):
+        self.assertEqual(step(a_start("../x", floor=1))["code"], "bad-event")
+
+
+class TheImportsBudgetByLessThanAnItem(unittest.TestCase):
+    """Fix wave 2: a summary over its budget by less than its last item stops before it."""
+
+    def test_twenty_three_questions_of_two_hundred(self):
+        qs = [{"id": "q%d" % i, "question": "x" * 200, "importedFrom": {"callId": "toolu_%03d" % i, "index": 0}}
+              for i in range(1, 24)]
+        old = step_module.IMPORT_BUDGET
+        try:
+            step_module.IMPORT_BUDGET = 10 ** 9
+            whole = step_module.units(step_module.moved(qs, SESSION))
+            step_module.IMPORT_BUDGET = whole - 5           # over by less than the last item
+            s = step_module.moved(qs, SESSION)
+        finally:
+            step_module.IMPORT_BUDGET = old
+        self.assertRegex(s, r", and \d+ more, q\d+(?: to q23)?: sminos sheet show --session %s prints them\.$"
+                         % SESSION)
+        self.assertLessEqual(step_module.units(s), whole - 5)
+
+
+class TheResultIsBoundedAtItsSource(unittest.TestCase):
+    """Fix wave 2: every clause's free text is cut, so a call's result has a hard maximum."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def worst(self):
+        scratch()
+        step(a_start("s0", source="startup"))
+        big = "p" * 100000
+        entries = [{"entry": {"question": "Q?", "references": [{"path": big}]},
+                    "captures": [{"ok": False, "reason": "r" * 1000000}]} for _ in range(10)]
+        entries += [{"refused": "the mod's clause " + "m" * 1000000} for _ in range(10)]
+        asker = {"agentId": "a" * 128, "name": "n" * 100000}
+        return inline_call("toolu_w1", entries, withdraw=["q%d" % i for i in range(1, 501)], asker=asker)
+
+    def test_the_worst_call_has_a_small_answer(self):
+        out = step(self.worst())
+        r = out["effects"]["result"]
+        self.assertLessEqual(len(r), step_module.RESULT_MAX)
+        self.assertLessEqual(len(sheet._dumps(out).encode()), 64 * 1024)
+        self.assertIn("p" * 200 + "…", r)
+        self.assertNotIn("p" * 201, r)
+        self.assertIn("r" * 500 + "…", r)
+        self.assertNotIn("m" * 501, r)
+        self.assertEqual(state_of()["calls"][0]["result"], r, "settle repeats the bounded text")
+
+    def test_more_than_twenty_entries_is_a_bad_event(self):
+        scratch()
+        step(a_start("s0", source="startup"))
+        out = step(inline_call("toolu_w2", [{"question": "Q%d?" % i} for i in range(21)]))
+        self.assertEqual(out["code"], "bad-event")
+
+    def test_withdrawals_past_any_open_question_are_counted_not_listed(self):
+        scratch()
+        step(a_start("s0", source="startup"))
+        out = step(inline_call("toolu_w3", withdraw=["q%d" % i for i in range(1, 100001)]))
+        r = out["effects"]["result"]
+        self.assertLessEqual(len(r), step_module.RESULT_MAX)
+        not_done = next(x for x in r.splitlines() if x.startswith("Not done: "))
+        self.assertRegex(not_done, r"\. And \d+ more withdrawals not done\.$")
+
+    def test_an_empty_view_leaves_the_answer_under_its_bound(self):
+        out = step(self.worst())
+        out["view"] = {"ready": [], "closed": {}, "open": [], "answered": []}
+        self.assertLessEqual(len(sheet._dumps(sheet._bounded(out)).encode()), sheet.ANSWER_MAX)
+
+
+class RemoveDetachesTheStagingFirst(unittest.TestCase):
+    """Fix wave 2: a rename that fails leaves the sheet whole; what a removal left is deleted by the next one."""
+
+    def setUp(self):
+        self.home = scratch()
+        step(a_start("s0", source="startup"))
+        os.makedirs(os.path.join(sheet.staging_dir(SESSION), "toolu_x"))
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+        os.rename = REAL_RENAME
+
+    def failing_for(self, path):
+        def rename(src, dst):
+            if os.path.abspath(src) == os.path.abspath(path):
+                raise OSError(1, "operation not permitted")
+            return REAL_RENAME(src, dst)
+        os.rename = rename
+
+    def leftovers(self):
+        return [n for n in os.listdir(os.path.join(self.home, "sheet")) if n.startswith(".removed-")]
+
+    def test_a_staging_that_cannot_be_detached(self):
+        self.failing_for(sheet.staging_dir(SESSION))
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+            sheet.remove(SESSION, cleared=True)
+        self.assertEqual(e.exception.code, 1)
+        self.assertIsNotNone(sheet.model(SESSION), "the record stays")
+        self.assertTrue(os.path.isdir(os.path.join(sheet.staging_dir(SESSION), "toolu_x")))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_record_that_cannot_be_detached(self):
+        self.failing_for(sheet.record_dir(SESSION))
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+            sheet.remove(SESSION, cleared=True)
+        self.assertEqual(e.exception.code, 1)
+        self.assertIsNotNone(sheet.model(SESSION))
+        self.assertTrue(os.path.isdir(os.path.join(sheet.staging_dir(SESSION), "toolu_x")), "the staging is back")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_the_next_remove_deletes_what_an_earlier_one_left(self):
+        root = os.path.join(self.home, "sheet")
+        old = os.path.join(root, ".removed-%d-%s" % (int(datetime.datetime.now().timestamp()) - 120, "a" * 32))
+        fresh = os.path.join(root, ".removed-%d-%s" % (int(datetime.datetime.now().timestamp()), "b" * 32))
+        os.makedirs(os.path.join(old, "texts"))
+        os.makedirs(fresh)
+        sheet.remove(SESSION, cleared=True)
+        self.assertEqual(self.leftovers(), [os.path.basename(fresh)], "one in progress elsewhere is left to it")
 
 if __name__ == "__main__":
     try:

@@ -36,6 +36,9 @@ VIEW_PENDING, VIEW_CLOSED, VIEW_READY = 200, 500, 4
 BEFORE_KEYS = 200             # effects.start.before: the first of what was pending, beside its count
 IMPORT_BUDGET = 10000         # the context's import summary, in UTF-16 units, inside the context's own budget
 CUT_VIEW_QUESTION, CUT_VIEW_HEADER, CUT_VIEW_RECEIPT = 300, 60, 200
+CLAUSE_PATH, CLAUSE_REASON, CLAUSE_MOD = 200, 500, 500     # a refusal clause's free text: a path, a reason, the mod's
+NOT_DONE_MAX = 32000          # a result's `Not done:` line: every entry's clause, then the withdrawals' while they fit
+RESULT_MAX = 40000            # what that makes a call's result at most, in characters (I6): 20 entries, 500 withdrawn
 CONTEXT_QUESTION, CONTEXT_LABEL = 300, 80
 EVENTS = ("start", "drain", "call", "settle", "landed", "reroute")
 SOURCES = ("startup", "resume", "fork", "clear")
@@ -382,7 +385,8 @@ def capture_error(c):
 
 
 def asker_name(a):
-    return "the main conversation" if a == "main" else "the subagent %s" % a.get("name", a.get("agentId"))
+    return "the main conversation" if a == "main" else "the subagent %s" % mark(a.get("name", a.get("agentId")),
+                                                                              PROSE_CUT)
 
 
 def not_open(st, id_, tz):
@@ -422,13 +426,14 @@ def run_call(st, call, now, session, surface, tz, fx, writes):
     call_id, asker = call["callId"], call["asker"]
     if not st["questions"] and not st["closed"] and call.get("floor") is not None:
         st["nextId"] = max(st["nextId"], call["floor"] + 1)     # the conversation's ids are not used again
-    added, revised, withdrew, clauses = [], [], [], []
+    added, revised, withdrew, clauses, refusals = [], [], [], [], []
     for n, item in enumerate(call["entries"], 1):
         if "refused" in item:
-            clauses.append("entry %d, %s" % (n, item["refused"]))
+            clauses.append("entry %d, %s" % (n, mark(item["refused"], CLAUSE_MOD)))
             continue
         e, caps = item["entry"], item["captures"]
-        why = entry_problem(e) or next(("the reference %s could not be read: %s" % (r["path"], c["reason"])
+        why = entry_problem(e) or next(("the reference %s could not be read: %s"
+                                        % (mark(r["path"], CLAUSE_PATH), mark(c["reason"], CLAUSE_REASON))
                                         for r, c in zip(e.get("references") or [], caps) if c.get("ok") is False),
                                        None)
         if why is None and "id" in e:
@@ -457,16 +462,16 @@ def run_call(st, call, now, session, surface, tz, fx, writes):
     for id_ in call.get("withdraw") or []:
         q = find_open(st, id_)
         if q is None:
-            clauses.append(not_open(st, id_, tz))
+            refusals.append(not_open(st, id_, tz))
         elif not (same(q["asker"], asker) or asker == "main"):
-            clauses.append("%s was asked by %s; only its asker or the main conversation withdraws it"
-                           % (id_, asker_name(q["asker"])))
+            refusals.append("%s was asked by %s; only its asker or the main conversation withdraws it"
+                            % (id_, asker_name(q["asker"])))
         else:
             st["questions"].remove(q)
             st["closed"][id_] = closed_base(q, "withdrawn", now)
             owe_closing(st, session, id_, "withdrawn")
             withdrew.append(id_)
-    numbered = bool(clauses)
+    numbered = bool(clauses or refusals)
     sentences = []
     if added:
         sentences.append("Added %s." % ", ".join(i + (" (entry %d)" % n if numbered else "") for i, n in added))
@@ -476,8 +481,16 @@ def run_call(st, call, now, session, surface, tz, fx, writes):
     if withdrew:
         sentences.append("Withdrew %s." % ", ".join(withdrew))
     lines = [" ".join(sentences) or "Nothing done."]
-    if clauses:
-        lines.append("Not done: " + " ".join(c + "." for c in clauses))
+    if clauses or refusals:
+        # Every entry's clause, each bounded; then the withdrawals' while the line holds, and how many more.
+        line = "Not done: " + " ".join(c + "." for c in clauses)
+        k = 0
+        while k < len(refusals) and len(line) + 2 + len(refusals[k]) <= NOT_DONE_MAX:
+            line += (" " if clauses or k else "") + refusals[k] + "."
+            k += 1
+        if k < len(refusals):
+            line += " And %d more withdrawals not done." % (len(refusals) - k)
+        lines.append(line)
     if surface is None:
         lines.append(NO_SURFACE)
     result = "\n".join(lines)
@@ -540,9 +553,13 @@ def run_start(st, start, new, session, fx):
         import_asks(st, today.get("asks") or [], session, fx)
     again = start.get("again")
     if again is not None:
-        # The same start, ordered again after its answer was lost: the record is as the first left it, so the first's
-        # answer is the evidence of what it found (an empty sheet, what it imported, what was pending before it).
-        fx["start"].update({k: again[k] for k in ("empty", "before", "beforeCount", "imported")})
+        # The same start ordered again (its nonce is the receipt's): what the record cannot say again comes from the
+        # receipt, the empty sheet the first found and what it imported, where the record still holds those ids.
+        # What this attempt imported itself (the first's replace never landed) stands; `before` is never the receipt's.
+        fx["start"]["empty"] = again["empty"]
+        mine = {x["callId"] for x in fx["start"]["imported"]}
+        fx["start"]["imported"] += [x for x in again["imported"] if x["callId"] not in mine
+                                    and st["import"]["calls"].get(x["callId"]) == x["ids"]]
 
 
 # ------------------------------------------------------------------ the step
@@ -816,8 +833,8 @@ def moved(qs, session):
         span = left[0]["id"] if len(left) == 1 else "%s to %s" % (left[0]["id"], left[-1]["id"])
         return "and %d more, %s: sminos sheet show --session %s prints them." % (len(left), span, session)
 
-    k, used = 0, units(lead)
-    while k < len(items) and used + units(items[k]) + 2 + units(rest(k + 1)) <= IMPORT_BUDGET:
+    k, used = 0, units(lead)             # the whole did not fit, so the last item never ends the list: something is left
+    while k + 1 < len(items) and used + units(items[k]) + 2 + units(rest(k + 1)) <= IMPORT_BUDGET:
         used += units(items[k]) + 2
         k += 1
     return lead + "".join(x + ", " for x in items[:k]) + rest(k)

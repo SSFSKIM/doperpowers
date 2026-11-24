@@ -1,13 +1,9 @@
 {
  "after": {
   "sheet/.staging/5eed0000-0000-4000-8000-000000000123/.start-receipt.json": {
-   "before": [],
-   "beforeCount": 0,
    "empty": "fork",
-   "floor": 11,
    "imported": [],
-   "seq": 1,
-   "source": "fork"
+   "nonce": "0001"
   },
   "sheet/.staging/5eed0000-0000-4000-8000-000000000123/start-0001/ask-1.json": {
    "askedAt": "2026-11-24T09:00:00.000Z",
@@ -119,6 +115,7 @@
   "runner": "terminal",
   "start": {
    "floor": 11,
+   "nonce": "0001",
    "source": "fork",
    "today": {
     "asks": [
