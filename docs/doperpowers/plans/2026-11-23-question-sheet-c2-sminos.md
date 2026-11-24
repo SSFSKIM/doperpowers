@@ -87,8 +87,13 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   Critical and seven Important, then one Critical and four Important,
   then one, one (a regression of the previous fix) and clean. 1,003 mod
   tests; gates GREEN; live, every M4 case passing.
-- [ ] M5 — The terminal's drawing, and the import of today's asks. Blocked
-  by: M3.
+- [x] (2026-11-24) M5 — The terminal's drawing, and the import of
+  today's asks. Commits `43a2f66f8`, `989f3f836`, fix waves `9e16956d3`,
+  `b65335160`, `61394a6e3`, `69d0590f2`. Task review: six Important and
+  one Minor, then one Important and two Minor, then two Important, the
+  last fix verified by the controller. The question line's sentence
+  follows the composite's writer's one definition. 1,038 mod tests; gates
+  GREEN (run 45456729517); live band, rows, import and fork passing.
 - [ ] M6 — The other readers, and the sheet's end of life. Blocked by: M4.
 - [ ] M7 — The description, what is written beside the code, the
   acceptance (G2, G3). Blocked by: M5, M6; C1.
@@ -2361,6 +2366,49 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   start under the sheet sends no asks: the step records `import.never`.
   Each ask is staged as a file of its own.
 - An imported ask's own row stays as `ask.tsx` draws a stored call.
+
+**As built (M5).**
+
+- *The band.* Singular forms (`1 open question`); drawn for the terminal
+  runner once the session's start has answered (it redraws when that
+  flips); the answers' count is `owedAcrossStop`. Between steps the timer
+  re-reads the registrations every third tick, only while a line is
+  drawn, and such an age-only read never overwrites a newer step's view.
+  The unreachable form's `sminos sheet show <first 8>` works for any
+  session with a record: a `sheet` verb's `<who>` that matches no member
+  resolves a unique prefix (8 to 35 characters) of a record under
+  `sheet/`, two records sharing it exit 4.
+- *Rows.* The engine's own head with the sheet's lines under it; the
+  result row hidden; ctrl+o, running, errored and interrupted calls
+  drawn as the engine draws them. In a session whose choice is 'today',
+  `ask.tsx`'s row hooks pass a stored sheet-form call on to `next`. A
+  receipt read from a delivery block is its labels by place from the
+  call's own input, or the text's first 80 characters; blocks are read in
+  the conversation's order, a steer's (a user row opening with an
+  envelope head) included, for drawing only; a dismissal read from
+  blocks cannot tell revisions apart, so every row of a dismissed
+  question reads `Dismissed` (accepted by the composite's writer). The
+  one `$.session.messages` read happens when a row first needs it,
+  retried once after a turn starts.
+- *The import.* The sheet's start reads today's asks itself
+  (`readTodayAsks`, with its own hook's `$`), so `session.start` awaits
+  the start as in M4; `SheetKept.preparing` (nonce, source, transcript)
+  is kept before the first await, so a reload during the read or the
+  staging resumes the same start. An imported ask's `askedAt` is its call
+  row's timestamp, else the start's time. A start answered `bad-event`
+  while carrying asks is retried once without them. Fork, startup and
+  clear send no asks.
+- *The floor's search* (M3's sources, now in the perl pass as well): it
+  applies the floor's rules itself and prints one line, `{"floor": n}`,
+  however large the history (8.3 MB of matching rows give 14 bytes);
+  each row is decoded as the TypeScript reader decodes it (malformed
+  UTF-8 and a lone surrogate's escape as U+FFFD), and a parity test holds
+  the perl and TS readers equal on every test transcript. With the floor
+  unknown (the search failed or timed out) and the asks' read definite,
+  the start sends the asks with `today.floorUnknown: true`; the step
+  imports them only into a record whose `nextId` is past 1, else imports
+  and records nothing for the next start. No published event carries the
+  flag.
 
 **Does not touch.** Today's band and rows in a session whose choice is
 'today'.
