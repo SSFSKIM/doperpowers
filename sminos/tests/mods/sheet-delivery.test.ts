@@ -607,4 +607,27 @@ describe('subagents (§6, I9)', () => {
     ])
     expect(contextOf(await h.call('Read', {}))).toEqual([])
   })
+
+  test('the notice is ready at the stop itself: a prompt that enters before the stop\'s drain answers carries it', async () => {
+    // A background agent's completion reaches the main conversation as a prompt a few milliseconds after its
+    // SubagentStop, well before a step answers (2.1.331, the live check).
+    const open = [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    let hold: (() => void) | undefined
+    const h = await started(rec, {
+      agents: [A1],
+      step: (event, n) => (event.event === 'drain' ? new Promise((resolve) => (hold = () => resolve(rec.script(event, n) as string))) : rec.script(event, n)),
+    })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    const entered = (await h.prompt('<task-notification>done</task-notification>')) as { context?: string[] }
+    expect(entered.context).toEqual([
+      '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.',
+    ])
+    await h.settle()
+    expect(hold).toBeDefined()
+    hold?.()
+    await h.settle()
+    await h.turnStart('t1')
+    expect(contextOf(await h.call('Read', {}))).toEqual([])
+  })
 })

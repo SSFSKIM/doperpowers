@@ -77,6 +77,12 @@ SUBAGENT_OPENING = "From the human, through the question tool, not from your coo
 BLOCK = re.compile(r"^<sheet-delivery>(.*)</sheet-delivery>$")
 
 
+def envelope_head(text):
+    """An envelope's first line: a plugin prompt's row opens with the engine's frame first."""
+    lines = text.split("\n")
+    return lines[1] if lines[0] == "The sminos plugin sent a message:" and len(lines) > 1 else lines[0]
+
+
 def blocks(text):
     """The <sheet-delivery> blocks a text holds, each a whole line (I7): (keys, answered ids, dismissed ids, more)."""
     out = []
@@ -479,7 +485,7 @@ class Sheet(LB.Live):
         self.check("fork (--fork-session): the copy's sheet starts empty and its next id is past every id it holds",
                    copy != sid and m.get("open") == [] and added and int(added.group(1)) > floor,
                    "copy %s; open %s; floor q%d; result %r" % (copy, m.get("open"), floor, result))
-        said = self.contexts(copy, "SessionStart")
+        said = self.first_contexts(copy)
         self.check("fork (--fork-session): the copy's first context says its sheet starts empty",
                    any(t.startswith("[sheet v1] This conversation is a copy") for t in said), [t[:100] for t in said])
         self.close("forked")
@@ -495,7 +501,7 @@ class Sheet(LB.Live):
         self.check("fork (/branch): the copy's sheet starts empty and its next id is past every id it holds",
                    m.get("open") == [] and added and int(added.group(1)) > floor,
                    "branch %s; open %s; floor q%d; result %r" % (branch, m.get("open"), floor, result))
-        said = self.contexts(branch, "SessionStart")
+        said = self.first_contexts(branch)
         self.check("fork (/branch): the copy's first context says its sheet starts empty",
                    any(t.startswith("[sheet v1] This conversation is a copy") for t in said), [t[:100] for t in said])
 
@@ -520,6 +526,10 @@ class Sheet(LB.Live):
 
     def contexts(self, sid, kind):
         return [t for _, k, t, _ in self.envelopes(sid) if k == kind]
+
+    def first_contexts(self, sid):
+        """A start's context: on its SessionStart, or on the first route when the start had no session yet."""
+        return [t for _, k, t, _ in self.envelopes(sid) if k in ("SessionStart", "prompt.submit", "tool.call")]
 
     def carrying(self, sid, key, sub=False):
         """The envelope rows that deliver `key`: [(kind, text, keys)]."""
@@ -730,23 +740,31 @@ class Sheet(LB.Live):
             self.check("both: one put answers the main agent's question and a running subagent's; each conversation holds its own key only",
                        keys[0] in sub_text and keys[1] not in sub_text and keys[1] in main_keys and keys[0] not in main_keys,
                        "sub %s; main %s" % ([k in sub_text for k in keys], [k in main_keys for k in keys]))
-        # A subagent asks and ends: the main agent's next tool result names its open question; the answer given after
+        # A subagent asks and ends: the main conversation's next route names its open question; the answer given after
         # it ended goes to the main conversation, naming it, and does not resume it.
         inner = call_prompt({"ask": [{"question": "Sub-B: which metal?", "options": [{"label": "Gold"}, {"label": "Iron"}]}]})
-        self.say(name, "Use the Agent tool once (subagent_type general-purpose, description metal-asker) with this as its whole prompt: %s "
-                       "Then reply with only: asked." % json.dumps(inner))
+        # The engine runs the main loop's Agent in the background (2.1.331 launches it async even when asked
+        # run_in_background false): the main turn ends first, and the agent's completion enters as a prompt a few
+        # milliseconds after its SubagentStop, the next route to open. No answer is put until the notice is out.
+        self.say(name, "Use the Agent tool once (subagent_type general-purpose, description metal-asker) with this as its "
+                       "whole prompt: %s Then reply with only: asked." % json.dumps(inner))
         q = None
         try:
             q = wait_for("the second subagent's question", 180, lambda: self.subagent_q(sid, "Sub-B"))
         except TimeoutError:
             pass
+        ended = lambda: [(k, t) for _, k, t, _ in self.envelopes(sid) if "ended with questions still open" in t]
+        try:
+            wait_for("the ended notice", 180, ended)
+        except TimeoutError:
+            pass
         self.idle(sid, 240)
-        self.say(name, "Read notes.txt with the Read tool once, then reply with only: done.")
-        self.idle(sid)
-        noticed = [t for t in self.contexts(sid, "tool.call") if "ended with questions still open" in t]
+        noticed = ended()
         if self.wants("agent-open"):
-            self.check("agent-open: a subagent that ends with a question open is named on the main agent's next tool result",
-                       q and noticed and q["id"] in noticed[-1], "question %s; notices %r" % (q and q["id"], [t[:160] for t in noticed]))
+            self.check("agent-open: a subagent that ends with a question open is named on the main conversation's next "
+                       "route (its completion's prompt, or a tool result), once",
+                       q and len(noticed) == 1 and noticed[0][0] in ("prompt.submit", "tool.call") and q["id"] in noticed[0][1],
+                       "question %s; notices %r" % (q and q["id"], [(k, t[:160]) for k, t in noticed]))
         if q is None:
             return
         sub_files = self.sub_files(sid)
@@ -822,7 +840,7 @@ class Sheet(LB.Live):
                    "each text in full or by its head and a file that exists, every key landed, each but the last saying more follows",
                    done and sorted(carried) == sorted(keys) and all(len(b[0]) <= 200 for _, _, b in rows) and files_ok
                    and full + heads == 50 and mores == [True] * (len(rows) - 1) + [False]
-                   and all("More follows." in t.split("\n")[0] for _, t, b in rows if b[3]),
+                   and all("More follows." in envelope_head(t) for _, t, b in rows if b[3]),
                    "landed %s; envelopes %d (%s); in full %d, by file %d; files exist %s" % (
                        done, len(rows), [(k, len(b[0]), b[3]) for k, _, b in rows], full, heads, files_ok))
         self.close(name)

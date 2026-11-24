@@ -745,7 +745,7 @@ async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
   }
 }
 
-/** A subagent stopped with questions open (E14): named to the main conversation once, from the view the drain answered. */
+/** A subagent stopped with questions open (E14): named to the main conversation once per question, from the view held. */
 function noticeEnded(gen: Gen, agentId: string) {
   const open = (gen.held?.open ?? []).filter((q) => q.asker !== 'main' && q.asker.agentId === agentId)
   if (open.length === 0 || open.every((q) => gen.named.has(q.id))) {
@@ -1441,6 +1441,11 @@ export function registerSheet(on: On) {
       sheet.stopped.add(e.agent_id)
     }
     if (sheet.port !== undefined && isStarted(gen)) {
+      // Named from the view held now, so the route that opens next carries
+      // it: a background agent's completion enters as a prompt a few
+      // milliseconds after its stop, before any step could answer (2.1.331).
+      // The drain's view names a question the held one did not have yet.
+      noticeEnded(gen, e.agent_id)
       void drain(sheet.port, gen).then(() => noticeEnded(gen, e.agent_id))
     }
     return next(e)
