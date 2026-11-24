@@ -1,7 +1,7 @@
 {
- "digest": "550b09dce06dc54dd3c6413a5360a37fc87ab12819cac46c65e5ec732f9dddd4",
+ "digest": "594200ae4e539c0688c67b511968861d8ebf03c87d1c45b512903a538326e277",
  "files": {
-  "README.md": "dfe947827a95c625cb5182d5e6cc79641d91c19c2f9f946976336c60b1c766dd",
+  "README.md": "8e4822bdba1387b213cea42a9a56ea7ecc374c83e32f3dbd5ca1d062f6eab6e7",
   "examples/imported/case.json": "f973ced83a6f05b2491530faf0cf70349c299880de8bcad3b42c40d5a234d6d8",
   "examples/imported/envelope.txt": "96934b5677f3aa63b3c3a5ef642473cf6408c8fa60a83b6a23f6592e4618ad1f",
   "examples/imported/input/sheet/5eed0000-0000-4000-8000-0000000000e4/state.json": "359fefd5353fa8f4aed1036224cd2a32ed82f9415d5b5a97febf411a91e86c6e",
@@ -186,7 +186,7 @@
   "grammar/result.md": "18d63baf0dacf6a36e70a6a60cb62f7ec1ba36b2f4721c115bd9ddeae61c9934",
   "schema/delivery.schema.json": "2ccd398d97793a3d3466b729d6dd309355a1ca8db1c986b82a848a81f8f930d8",
   "schema/inbox-line.schema.json": "e9625a75548e42e87930d6aa92710fd3a3dae72944f6bc9a3b42a1124ff2e674",
-  "schema/show.schema.json": "b7ad4441d89ca26fc5d351092a51f2fdbfb169327e80cfb1e73f8eceeb562ab5",
+  "schema/show.schema.json": "94ddfb987f007e5ec295a74a116b87e59687115dc2a4ec47ec4fdb3bc5ffc8e3",
   "schema/state.schema.json": "63547459e834a06575a834d7c153dec1d04a51f8c2d5d609e63c9009bb507abb",
   "schema/surface.schema.json": "22e1095ce9b0c200405a07c2f327385c31c69ad4b4195949025967be8635bcb6",
   "schema/tool-input.schema.json": "1821bd4d308e36e858d69a5bb7215c00512a83c4e98e986ee68962374f25bf7b"

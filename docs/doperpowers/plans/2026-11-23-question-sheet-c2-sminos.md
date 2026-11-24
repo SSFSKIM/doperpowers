@@ -495,7 +495,8 @@ in the last section.
   no provenance is built beyond what the engine offers.
 - U14 · An entry whose own content breaks a rule the schema cannot state
   (two options with one label, a preview on a multi-select question,
-  `multiSelect` without options, a line range out of order) is refused
+  `multiSelect` without options, a line range out of order, a string
+  holding a lone UTF-16 surrogate) is refused
   alone, with the reason, and the others apply (§2.1: past the schema
   each entry stands alone).
 
@@ -582,7 +583,10 @@ order. A side of a fixture with no record has no directory, and its
 `show.*.json` is `null`. A schema's `pattern` is ECMA-262 with no flags:
 each is anchored `^...$` and `$` is the end of input, so a string with a
 newline after it does not match; a Python reader matches the whole string
-(`re.fullmatch`). A verdict, an outcome and a closed question are
+(`re.fullmatch`). A Python JSON Schema validator that reads `$` as
+Python does lets such a string through; that is a known limit
+(`docs/doperpowers/TECH-DEBT.md` #38): the README states the dialect, the
+second implementer is TypeScript, and the door checks strictly. A verdict, an outcome and a closed question are
 discriminated shapes: each variant a closed object with its own fields
 required. The set's `README.md` lists these readings with the ones below,
 in the same words.
@@ -706,8 +710,8 @@ fails here first.
 
 The line is §4.1's. The schema adds only bounds: `key` 8 to 128 of
 `[A-Za-z0-9._:-]`; `text` at most 20,000 characters; `picks` at most 12;
-`images` at most 8, each `uploads/<name>` with a name of 1 to 250 of
-`[A-Za-z0-9._-]` and then the extension `png`, `jpg`, `jpeg`, `gif` or `webp`; a `delivered` line's
+`images` at most 8, each `uploads/<name>` with a stem (the name before its
+final dot) of 1 to 250 of `[A-Za-z0-9._-]` and then the extension `png`, `jpg`, `jpeg`, `gif` or `webp`; a `delivered` line's
 `keys` at most 200; a call of the door at most 50 lines. Required: `v`,
 `key`, `kind`, `by`; with `answer`, `id`, `revision` and one of `picks`
 and `text` non-empty; with `dismiss`, `id`; with `retract`, `target`; with
@@ -728,7 +732,11 @@ a line that did not come through the door is skipped (U2); a file that does not 
 first, which turns what an unfinished write left into a line of its own
 (the drain's rule decides it); then one `write` of all the lines, synced. Should the write come back
 short, the rest is written while the lock is still held, so no drain sees
-part of the call; should the file refuse more, it is cut back to its
+part of the call (a reader holds no lock, and can list the call's first
+lines in the instant between a short write and the rest or a rollback:
+a known limit, `docs/doperpowers/TECH-DEBT.md` #37, since a short write
+of a small local append is itself rare and what it shows is a queued
+line gone at the next read); should the file refuse more, it is cut back to its
 length before the call and the door exits 1, nothing appended. After the lock: unless
 `--no-wait`, it tells the session's bridge (`POST /command` on
 `$SMINOS_HOME/bridge/<session>.sock`, `{"op": "sheet", "keys": [...]}`,
@@ -840,6 +848,16 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
   own key reads `delivered`.
 - A line a reader drops in step 2 is one a drain skips: every case U2
   lists, and nothing else.
+- A reader never fails on a record's strings: a lone UTF-16 surrogate in
+  anything `show` prints is written as U+FFFD. A writer keeps them out:
+  `put` refuses them in a line (I3), the step refuses an entry whose
+  strings hold one (an entry's own refusal, U14), and an import replaces
+  each with U+FFFD (M2).
+- The show schema states step 7's cuts and the keyed form's; the state
+  schema bounds none of the record's strings. A queued `sent` entry is
+  discriminated by kind: an answer or dismissal carries its `id`, a
+  retract its `target`, a `delivered` line neither. A handle's pattern
+  bounds the question's id, not its revision.
 - A session with no record: `show` exits 3, `no sheet`.
 
 `show --json --keys <k1,k2,…>` (at most 50) prints the same with `pending`
@@ -1681,7 +1699,8 @@ Consumes M1's.
 - `start`'s import (I2's `import`): with `today.definite`, each ask whose
   call id is not in `import.calls` becomes one question for each of its
   questions (asker `main`, revision 1, `importedFrom`, every field as
-  today's tool held it, whatever its length), and its ids are recorded
+  today's tool held it, whatever its length, a lone UTF-16 surrogate in
+  any string replaced with U+FFFD), and its ids are recorded
   under the call id; with `definite` false nothing is imported and
   nothing recorded, so the next start tries again; with `import.never`,
   set when a new record's first `start` has source `fork`, nothing ever.
@@ -2072,7 +2091,9 @@ descriptions); `H/README.md` (a section "sheet" beside "ask"),
 reload's double delivery; an answer to a subagent's question reaching
 the main conversation as well across a process death; a captured file
 attached to the model's context after a compaction; a rewind after a
-delivery).
+delivery; and, logged at M1 as #37 and #38, a lock-free reader seeing a
+short write's first lines before its rollback, and a Python validator's
+looser `$`).
 
 **Decisions.**
 

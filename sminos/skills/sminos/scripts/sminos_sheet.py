@@ -166,7 +166,7 @@ def line_error(line):
         return "text is at most 20,000 characters"
     if "images" in line and not (isinstance(line["images"], list) and len(line["images"]) <= 8
                                  and all(isinstance(i, str) and UPLOAD_RE.fullmatch(i) for i in line["images"])):
-        return "images are at most 8 uploads/<name>.png|jpg|jpeg|gif|webp, a name of at most 250 characters"
+        return "images are at most 8 uploads/<name>.png|jpg|jpeg|gif|webp, its name before the final dot 1 to 250 characters"
     for f in ("target", "batch"):
         if f in line and not (isinstance(line[f], str) and KEY_RE.fullmatch(line[f])):
             return "%s is a key" % f
@@ -372,6 +372,18 @@ def model(session, keys=None):
     return out
 
 
+def printable(v):
+    """A value as the reader prints it: a lone UTF-16 surrogate in any string written as U+FFFD, so a record's string
+    never makes `show` fail (I4)."""
+    if isinstance(v, str):
+        return "".join("\ufffd" if "\ud800" <= c <= "\udfff" else c for c in v) if _surrogate(v) else v
+    if isinstance(v, list):
+        return [printable(x) for x in v]
+    if isinstance(v, dict):
+        return {printable(k): printable(x) for k, x in v.items()}
+    return v
+
+
 def text(m):
     """`show` without --json: a question a block, then what is hidden and what waits for delivery."""
     lines = []
@@ -574,6 +586,7 @@ def cmd_sheet(a):
             S.die("sheet show: %s's record kept changing while it was read; read again" % session, EXIT_BUSY)
         if m is None:
             S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
+        m = printable(m)
         print(json.dumps(m, ensure_ascii=False) if a.json else text(m))
         return
     S.die("usage: sminos sheet put|show (<member> | --session <id>) ...")

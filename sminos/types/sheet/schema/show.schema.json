@@ -135,6 +135,33 @@
     }
    ]
   },
+  "cutAsker": {
+   "oneOf": [
+    {
+     "const": "main",
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "agentId": {
+       "maxLength": 128,
+       "minLength": 1,
+       "type": "string"
+      },
+      "name": {
+       "maxLength": 200,
+       "type": "string"
+      }
+     },
+     "required": [
+      "agentId",
+      "name"
+     ],
+     "type": "object"
+    }
+   ]
+  },
   "id": {
    "pattern": "^q[1-9][0-9]{0,8}$",
    "type": "string"
@@ -209,6 +236,7 @@
       },
       "picks": {
        "items": {
+        "maxLength": 200,
         "type": "string"
        },
        "type": "array"
@@ -234,6 +262,7 @@
        "type": "boolean"
       },
       "text": {
+       "maxLength": 20000,
        "type": "string"
       },
       "textCut": {
@@ -524,10 +553,31 @@
       "kind": {
        "enum": [
         "answer",
-        "dismiss",
-        "retract",
-        "delivered"
+        "dismiss"
        ],
+       "type": "string"
+      },
+      "state": {
+       "const": "queued",
+       "type": "string"
+      }
+     },
+     "required": [
+      "key",
+      "kind",
+      "state",
+      "id"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "key": {
+       "$ref": "#/$defs/key"
+      },
+      "kind": {
+       "const": "retract",
        "type": "string"
       },
       "state": {
@@ -536,6 +586,29 @@
       },
       "target": {
        "$ref": "#/$defs/key"
+      }
+     },
+     "required": [
+      "key",
+      "kind",
+      "state",
+      "target"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "key": {
+       "$ref": "#/$defs/key"
+      },
+      "kind": {
+       "const": "delivered",
+       "type": "string"
+      },
+      "state": {
+       "const": "queued",
+       "type": "string"
       }
      },
      "required": [
@@ -857,9 +930,10 @@
      "$ref": "#/$defs/time"
     },
     "asker": {
-     "$ref": "#/$defs/asker"
+     "$ref": "#/$defs/cutAsker"
     },
     "header": {
+     "maxLength": 60,
      "type": "string"
     },
     "multiSelect": {
@@ -867,11 +941,13 @@
     },
     "options": {
      "items": {
+      "maxLength": 200,
       "type": "string"
      },
      "type": "array"
     },
     "question": {
+     "maxLength": 2000,
      "type": "string"
     }
    },
@@ -935,7 +1011,7 @@
       "type": "string"
      },
      "handle": {
-      "pattern": "^q[1-9][0-9]{0,8}(@[1-9][0-9]{0,8})?$",
+      "pattern": "^q[1-9][0-9]{0,8}(@[1-9][0-9]*)?$",
       "type": "string"
      },
      "header": {

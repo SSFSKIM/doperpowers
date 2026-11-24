@@ -28,7 +28,9 @@ The schemas are JSON Schema 2020-12 held to `type`, `properties`, `required`, `a
 `const`, `items`, `minItems`, `maxItems`, `minLength`, `maxLength`, `minimum`, `pattern`, `oneOf` and `$ref` into
 the same file's `$defs` (lengths in code points); any validator takes them. A `pattern` is ECMA-262, as JSON Schema
 says, with no flags: each is anchored `^...$` and `$` is the end of input, so a string with a newline after it does
-not match. A Python reader matches the whole string (`re.fullmatch`, or `\Z` for `$`). A verdict, an outcome and
+not match. A Python reader matches the whole string (`re.fullmatch`, or `\Z` for `$`); a Python JSON Schema
+validator that reads `$` as Python does lets a value with a newline after it through (a known limit: the door checks
+strictly). A verdict, an outcome and
 a closed question are discriminated shapes: each variant is a closed object with its own fields required, so a field
 that belongs to another variant is refused.
 
@@ -75,8 +77,10 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
 - **A line a reader drops** (I4) is one a drain skips (U2): it is not JSON (NaN and the infinities are not), it
   fails the line's schema, a string in it holds a lone UTF-16 surrogate, or it answers an open question at its
   current revision with a pick that is no label of it, or with two picks on a single-select question.
-- **The door** (I3) refuses each of those it can see, exit 2 with nothing appended. An upload's name is at most 250
-  characters. Its one `write`, should it come back short, is completed while the lock is held; a write the file
+- **The door** (I3) refuses each of those it can see, exit 2 with nothing appended. An upload's name has a stem, the
+  part before its final dot, of 1 to 250 characters. Its one `write`, should it come back short, is completed while
+  the lock is held (a reader that takes no lock can see the call's first lines in the instant between a short write
+  and the rest, or a rollback: a known limit); a write the file
   refuses is cut back to the file's length before the call, and the door exits 1 with nothing appended.
 - **Picks by place** (I2, I4). A closed answered question keeps `places`, its picks as integers from 1 among the
   options of the answered revision, as the block carries them. `show --json` carries `places` on each pending answer
@@ -90,6 +94,13 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   each label and each pick at 200, a subagent's name at 200. An agent id is at most 128 characters, a bound of this
   contract (the engine's ids are far shorter), and is never cut; nor is a question's id, which is at most
   `q999999999`.
+- **A reader never fails on a record's strings** (I4). A lone UTF-16 surrogate in anything `show` prints is written
+  as U+FFFD. A writer keeps them out: the door refuses them in a line (I3), the step refuses an entry whose strings
+  hold one (its own refusal, U14) and an import replaces each with U+FFFD.
+- **`show`'s own limits** (I4). The show schema states the cuts the reader makes (a pending outcome's question,
+  header, labels, picks and asker's name); the state schema keeps the record's strings unbounded. A queued `sent`
+  entry is discriminated by kind: an answer or dismissal carries its `id`, a retract its `target`, a `delivered` line
+  neither. A handle's pattern bounds the question's id, not its revision.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
 - **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome under the cuts
   above and its `text` as its first 500 characters, with `textCut: true` when it was longer and the record's

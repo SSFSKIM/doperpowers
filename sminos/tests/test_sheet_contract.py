@@ -240,6 +240,27 @@ class TheSet(unittest.TestCase):
         own = {"key": "maws-1101d003", "state": "delivered", "verdict": "applied", "kind": "delivered", "at": T}
         self.assertEqual(sheet_schema.errors(sent, own), [])
         self.assertNotEqual(sheet_schema.errors(sent, dict(own, state="accepted")), [], "never pending itself")
+        q = {"key": "page-0701r002", "kind": "retract", "state": "queued", "target": "page-0701a001"}
+        self.assertEqual(sheet_schema.errors(sent, q), [])
+        for bad in (dict(q, id="q1"), dict(q, cancelled=True), {k: v for k, v in q.items() if k != "target"},
+                    {"key": "page-0701a001", "kind": "answer", "state": "queued", "target": "page-0701r002", "id": "q1"},
+                    {"key": "maws-1101d003", "kind": "delivered", "state": "queued", "id": "q1"}):
+            self.assertNotEqual(sheet_schema.errors(sent, bad), [], bad)
+        shown = load(os.path.join(SET, "fixtures", "batch", "show.after.json"))
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], shown), [])
+        for path, value in ((("question", "header"), "x" * 61), (("question", "question"), "x" * 2001),
+                            (("picks",), ["x" * 201])):
+            o = json.loads(json.dumps(shown["pending"][0]))
+            target = o
+            for k in path[:-1]:
+                target = target[k]
+            target[path[-1]] = value
+            self.assertNotEqual(sheet_schema.errors(SCHEMA["show"], dict(shown, pending=[o])), [], path)
+        self.assertEqual(sheet_schema.errors({"$ref": "#/$defs/question", "$defs": D},
+                                             dict(after["questions"][0] if after["questions"] else
+                                                  load(glob.glob(os.path.join(SET, "fixtures", "imported-legacy",
+                                                       "after", "sheet", "*", "state.json"))[0])["questions"][0])), [],
+                         "the record's strings unbounded")
         self.assertNotEqual(sheet_schema.errors(SCHEMA["inbox-line"], {"v": 1, "key": "page-00000001", "kind": "dismiss",
                                                                      "id": "q1234567890", "by": "page"}), [])
         answered = after["closed"]["q1"]
@@ -305,6 +326,18 @@ class TheReader(unittest.TestCase):
                                                                      "sheet", "*", "inbox.jsonl"))[0]).splitlines()]
         self.assertNotEqual(lines[0]["at"], lines[1]["at"])
         self.assertEqual(rec["pending"][0]["at"], lines[0]["at"])
+
+    def test_a_lone_surrogate_in_the_record_is_printed_as_a_replacement(self):
+        h = home("references", "before")
+        s = load(os.path.join(SET, "fixtures", "references", "case.json"))["session"]
+        path = os.path.join(h, "sheet", s, "state.json")
+        write(path, raw_bytes(path).decode().replace('"label": "No"', '"label": "N\\ud83do"', 1))
+        for args in (["--json"], []):
+            rc, out, err = run(["sheet", "show", "--session", s] + args)
+            self.assertEqual(rc, 0, err)
+            self.assertIn("N\ufffdo", out)
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], json.loads(run(["sheet", "show", "--session", s,
+                                                                             "--json"])[1])), [])
 
     def test_a_queued_line_without_its_time(self):
         h = home("references", "before")
