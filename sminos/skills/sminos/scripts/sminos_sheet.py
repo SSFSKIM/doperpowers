@@ -1145,6 +1145,16 @@ def _read_state(rec):
         return None
 
 
+def record_identity(rec):
+    """The record directory's (st_dev, st_ino), or None: which record a path names, so a projection, or a /clear's
+    note, acts on the record it began from and never on one made at the same path since. Not in state.json."""
+    try:
+        st = os.lstat(rec)
+    except FileNotFoundError:
+        return None
+    return st.st_dev, st.st_ino
+
+
 def project_log(session, here=None, closing=False, rec=None):
     """The projection (I12): what the record at `rec` (the session's own by default; a removal's, detached) owes the
     project log, appended under the session's writer through append_host, whose (kind, src) rule appends nothing
@@ -1157,13 +1167,15 @@ def project_log(session, here=None, closing=False, rec=None):
     not known here any more is then a debt (LogFailed), where otherwise it waits. The lock is held to read and to
     replace, never while the log is written. Returns {written, owed}, None for no record; raises LogFailed when the
     log refused a project's events (the others are taken, after the replace) or the session's place could not be
-    read."""
+    read. Each reread under the lock is of the record the projection began from (its directory's identity): one
+    removed meanwhile, and one made at its path since, are changed in nothing."""
     here_of = here or (lambda s: S.held_member(s))
     rec = rec or record_dir(session)
     with Lock(session):
         why = _log_problem(rec)
         if why:
             raise LogFailed(why)
+        began = record_identity(rec)
         state = _read_state(rec)
         if state is None:
             return None
@@ -1189,7 +1201,7 @@ def project_log(session, here=None, closing=False, rec=None):
     unplaced = [id_of(e) for e in owed if e["kind"] == "question" and id_of(e) not in projects]
     if unplaced and now() is not None:
         with Lock(session):
-            state = _read_state(rec)
+            state = _read_state(rec) if record_identity(rec) == began else None
             if state is None:
                 return None
             kept = state["log"]["projects"]
@@ -1233,7 +1245,7 @@ def project_log(session, here=None, closing=False, rec=None):
     left = len([e for e in owed if "n" in e])
     if written:
         with Lock(session):
-            state = _read_state(rec)
+            state = _read_state(rec) if record_identity(rec) == began else None
             if state is not None:
                 log = state["log"]
                 log["owed"] = [e for e in log["owed"] if e["n"] not in written]
@@ -1380,22 +1392,34 @@ def finish_removed(now_s=None):
 
 
 def _project_detached(path):
-    """A detached record's log written (project_log with `closing`), or why not; None also for what is no record."""
-    if not path or _log_problem(path) is not None:
+    """A detached record's log written (project_log with `closing`), or why not, so it stays. None, to be deleted:
+    no path, a staging or a record with no state.json (nothing it holds is owed), one whose state.json is a link
+    (no state the sheet wrote). A state.json that cannot be read, or reads as no record's, is a why: a record whose
+    debts cannot be known stays. Whatever else fails stays too, said; it fails for this one alone."""
+    if not path:
         return None
     try:
+        if _log_problem(path) is not None:
+            return None
+    except OSError as e:
+        return "it could not be looked at: %s" % e
+    try:
         state = _read_state(path)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        return "its state.json could not be read: %s" % e
+    if state is None:
         return None
     session = state.get("session") if isinstance(state, dict) else None
     if not isinstance(session, str) or not S.UUID_RE.fullmatch(session):
-        return None
+        return "its state.json names no session"
     try:
         project_log(session, closing=True, rec=path)
     except LogFailed as e:
         return str(e)
     except Busy:
         return "its sheet's lock was busy"
+    except Exception as e:  # noqa: BLE001 — one leftover's failure is not the others'
+        return "%s: %s" % (type(e).__name__, e)
     return None
 
 
@@ -1415,7 +1439,7 @@ def remove(session, cleared=False):
         S.die(str(e), e.code)
 
 
-def remove_record(session, cleared=False):
+def remove_record(session, cleared=False, witnessed=None):
     """A stopped session's record and its staging (I1, M2), and its log (I12, M6). Liveness is checked before the lock
     and again under it (a session resumed while this waited; not with `cleared`, the session a /clear left); under
     the lock the staging, then the record, are detached, each by one rename inside sheet/, so no reader or step sees
@@ -1423,7 +1447,8 @@ def remove_record(session, cleared=False):
     the detached record's log projected: what it still owes, then a closing for each question still open; a refusal
     before it publishes nothing. A record whose log could not all be written stays detached (Refused, 1) and the next
     removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
-    said. The lock file stays."""
+    said. `witnessed` (the daemon's, from a /clear's note): the record directory's (st_dev, st_ino) the removal rests
+    on, looked at again under the lock; another record there is refused (2). The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
                       % session, 2)
@@ -1445,6 +1470,8 @@ def remove_record(session, cleared=False):
                 raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
+            if witnessed is not None and record_identity(rec) != tuple(witnessed):
+                raise Refused("sheet remove: %s's sheet is not the record the /clear left; it stays" % session, 2)
             for d in (staging_dir(session), rec):
                 if os.path.exists(d):
                     to = os.path.join(sheet_root(), "%s%d-%s" % (REMOVED, int(time.time()), uuid.uuid4().hex))

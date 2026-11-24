@@ -14860,30 +14860,34 @@ def transcripts_now():
 
 def transcript_confirmed_gone(session_id):
     """Whether a session's transcript is known to be gone from this machine,
-    for a removal that rests on its absence (the question sheet's sweep):
-    the path its launch cache named is missing, and no project directory of
-    any config dir sminos knows holds `<session>.jsonl`, each listed and
-    stat'd now, never through the index (whose listing that fails reads as
-    empty). A listing or a stat that fails for any reason but absence is no
-    answer: False."""
+    for a removal that rests on its absence (the question sheet's sweep),
+    never through the index (whose listing that fails reads as empty): the
+    transcript's own path, as its launch cache names it
+    (`<config dir>/projects/<dir>/<session>.jsonl`), is stat'd missing now,
+    and no project directory of its config dir, nor of any other config dir
+    sminos knows, holds `<session>.jsonl` (the engine moved it), each listed
+    now. Where that path is not known (no launch cache, or one naming no
+    transcript of that shape), or a read, a listing or a stat fails for any
+    reason but absence, absence is not established: False."""
     def missing(path):
         try:
             os.stat(path)
         except (FileNotFoundError, NotADirectoryError):
             return True
         return False
+    name = session_id + ".jsonl"
     try:
-        cached = json_at(launch_cache_path(session_id))
-    except FileNotFoundError:
-        cached = None
-    except (OSError, ValueError):
+        own = json_at(launch_cache_path(session_id)).get("transcript")
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(own, str) or not os.path.isabs(own) or os.path.basename(own) != name \
+            or os.path.basename(os.path.dirname(os.path.dirname(own))) != "projects":
         return False
     try:
-        if isinstance(cached, dict) and isinstance(cached.get("transcript"), str) and cached["transcript"] \
-                and not missing(cached["transcript"]):
+        if not missing(own):
             return False
-        name = session_id + ".jsonl"
-        for cfg in dict.fromkeys([session_config_dir(session_id), config_dir({}), *engine_dirs(fresh=True)]):
+        own_cfg = os.path.dirname(os.path.dirname(os.path.dirname(own)))
+        for cfg in dict.fromkeys([own_cfg, session_config_dir(session_id), config_dir({}), *engine_dirs(fresh=True)]):
             base = os.path.join(cfg, "projects")
             try:
                 subs = os.listdir(base)

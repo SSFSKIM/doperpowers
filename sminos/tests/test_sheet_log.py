@@ -18,6 +18,7 @@ Run: python3 -B sminos/tests/test_sheet_log.py   (ends `test_sheet_log: N passed
 import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import contextlib
+import errno
 import json
 import os
 import subprocess
@@ -30,7 +31,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 
 from test_threads import sminos  # noqa: E402
-from test_threads_stopped import Rig  # noqa: E402
+from test_threads_stopped import HOOK, Rig  # noqa: E402
 
 sheet = sminos.sibling_module("sminos_sheet")
 
@@ -262,6 +263,29 @@ class Projection(Log):
         self.assertEqual(self.logged(sid, "question", other), [], "never in the second project")
         self.assertEqual(self.state(sid)["log"], {"next": 2, "owed": [], "projects": {"q1": self.p.id}})
 
+    def test_a_projection_that_outlives_its_record_changes_nothing_in_the_one_made_after_it(self):
+        sid, proc = self.opened()
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Old one?"), entry("Old two?")])
+        real, again = sminos.append_host, []
+
+        def append(project, session, events):
+            if not again:
+                # Paused at its append: meanwhile the record is removed (its own closings written) and the session's
+                # sheet made again, owing two questions of its own.
+                again.append(1)
+                sheet.remove_record(sid, cleared=True)
+                self.start(sid)
+                self.ask(sid, "toolu_2", [entry("New one?"), entry("New two?")])
+                again.append(self.state(sid))
+            return real(project, session, events)
+        with mock.patch.object(sminos, "append_host", side_effect=append):
+            self.project(sid)
+        made = again[1]
+        self.assertEqual(self.state(sid)["log"], made["log"], "the new record still owes its own")
+        self.assertEqual(self.state(sid)["seq"], made["seq"])
+        self.assertEqual([e["text"] for e in made["log"]["owed"]], [["New one?"], ["New two?"]])
+
     def test_two_sessions_of_one_project_each_keep_their_own_q1(self):
         a, _ = self.opened()
         b, _ = self.opened(name="beta", charge="")
@@ -411,6 +435,61 @@ class Removal(Log):
         self.assertEqual(self.aside(), [], "written, then deleted")
         self.assertEqual(self.answers(sid), [(self.src(sid, "q1"), sheet.LOG_REMOVED, "removed")])
 
+    def test_a_detached_record_whose_state_cannot_be_read_is_kept_and_said(self):
+        sid, proc = self.opened()
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Open?")])
+        self.end(proc)
+        sminos.forget_caches()
+        real = sheet._read_json
+
+        def eio(path):
+            if os.path.basename(os.path.dirname(path)).startswith(sheet.REMOVED):
+                raise OSError(errno.EIO, "input/output error")
+            return real(path)
+        with mock.patch.object(sheet, "_read_json", side_effect=eio):
+            with self.assertRaises(sheet.Refused) as e:
+                sheet.remove_record(sid)
+            self.assertEqual(e.exception.code, 1)
+            self.assertIn("input/output error", str(e.exception))
+            self.assertEqual(len(self.aside()), 1, "kept aside, not deleted")
+            why = sheet.finish_removed(time.time() + 120)
+            self.assertEqual(len(why), 1, why)
+            self.assertIn("input/output error", why[0])
+            self.assertEqual(len(self.aside()), 1, "still kept")
+        sminos.forget_caches()
+        self.assertEqual(sheet.finish_removed(time.time() + 120), [])
+        self.assertEqual(self.aside(), [])
+        self.assertEqual(self.answers(sid), [(self.src(sid, "q1"), sheet.LOG_REMOVED, "removed")])
+
+    def test_a_leftover_that_fails_keeps_its_failure_to_itself(self):
+        sids = []
+        for name in ("alpha", "beta"):
+            sid, proc = self.opened(name=name)
+            self.start(sid)
+            self.ask(sid, "toolu_1", [entry("Open?")])
+            self.end(proc)
+            sids.append(sid)
+        sminos.forget_caches()
+        with mock.patch.object(sminos, "append_host", side_effect=sminos.LogWriteFailed("the log refused")):
+            for sid in sids:
+                with self.assertRaises(sheet.Refused):
+                    sheet.remove_record(sid)
+        self.assertEqual(len(self.aside()), 2)
+        real = sheet.project_log
+
+        def first_fails(session, **k):
+            if session == sids[0]:
+                raise RuntimeError("something unforeseen")
+            return real(session, **k)
+        sminos.forget_caches()
+        with mock.patch.object(sheet, "project_log", side_effect=first_fails):
+            why = sheet.finish_removed(time.time() + 120)
+        self.assertEqual(len(why), 1, why)
+        self.assertIn("something unforeseen", why[0])
+        self.assertEqual(len(self.aside()), 1, "the other written and deleted")
+        self.assertEqual(self.answers(sids[1]), [(self.src(sids[1], "q1"), sheet.LOG_REMOVED, "removed")])
+
     def test_a_removal_refused_under_the_lock_publishes_no_closing(self):
         sid, proc = self.opened()
         self.start(sid)
@@ -520,14 +599,20 @@ class Sweep(Log):
         self.assertEqual(self.answers(sid), [])
 
     def note(self, sid, age=0):
+        """The engine's SessionEnd of a /clear that left `sid`, through the hook, `age` seconds ago."""
         _, proc = self.session(name="beta")
-        note = os.path.join(sminos.root(), sminos.CLEARED, "%d.json" % proc.pid)
-        os.makedirs(os.path.dirname(note), exist_ok=True)
-        with open(note, "w") as f:
-            json.dump({"session_id": sid, "reason": "clear", "hook_event_name": "SessionEnd"}, f)
+        got = subprocess.run([HOOK], input=json.dumps({"session_id": sid, "reason": "clear",
+                                                       "hook_event_name": "SessionEnd"}),
+                             text=True, capture_output=True, env={**os.environ, "CLAUDE_PID": str(proc.pid)})
+        self.assertEqual((got.returncode, got.stdout, got.stderr), (0, "", ""))
+        note = sminos.cleared_note_path(proc.pid)
         t = time.time() - age
         os.utime(note, (t, t))
         return note, proc
+
+    def witnessed(self, note):
+        with open(os.path.splitext(note)[0] + ".sheet") as f:
+            return f.read()
 
     def test_a_clears_note_stays_until_the_sheet_it_names_is_removed(self):
         sid = self.asked_and_stopped()
@@ -566,14 +651,99 @@ class Sweep(Log):
 
     def test_a_record_a_clears_note_names_goes_at_once(self):
         sid = self.asked_and_stopped()
-        _, proc = self.session(name="beta")
-        note = os.path.join(sminos.root(), sminos.CLEARED, "%d.json" % proc.pid)
-        os.makedirs(os.path.dirname(note), exist_ok=True)
-        with open(note, "w") as f:
-            json.dump({"session_id": sid, "reason": "clear", "hook_event_name": "SessionEnd"}, f)
+        note, _ = self.note(sid)
+        st = os.stat(sheet.record_dir(sid))
+        self.assertEqual(self.witnessed(note), "%d:%d\n" % (st.st_dev, st.st_ino), "the record the note witnessed")
         self.sweep()
         self.assertFalse(self.exists(sid), "transcript there, touched now: a /clear's note is enough")
         self.assertEqual(self.answers(sid), [(self.src(sid, "q1"), sheet.LOG_REMOVED, "removed")])
+
+    def test_a_note_binds_the_record_it_witnessed_and_no_other(self):
+        sid = self.asked_and_stopped()
+        note, proc = self.note(sid, age=2)
+        # Removed, and the session's sheet made again (a resume that stopped): within the note's allowance, and
+        # untouched since, but not the record the note saw.
+        sheet.remove_record(sid, cleared=True)
+        self.start(sid)
+        self.ask(sid, "toolu_2", [entry("Made after the note?")])
+        self.sweep()
+        self.assertTrue(self.exists(sid), "a replacement record is not the note's")
+        self.end(proc)
+        self.daemon.sweep_cleared()
+        self.assertEqual(os.listdir(os.path.dirname(note)), [])
+        self.assertFalse(os.path.exists(note), "the note names no record it witnessed: it goes once its process is")
+
+    def test_a_note_that_witnessed_no_record_authorizes_nothing(self):
+        sid, proc = self.opened()
+        note, _ = self.note(sid)     # the /clear before the session asked anything: no record then
+        self.assertFalse(os.path.exists(os.path.splitext(note)[0] + ".sheet"))
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Asked after?")])
+        self.end(proc)
+        self.sweep()
+        self.assertTrue(self.exists(sid))
+
+    def test_notes_that_disagree_on_the_record_authorize_nothing(self):
+        sid = self.asked_and_stopped()
+        self.note(sid)
+        other, _ = self.note(sid)
+        with open(os.path.splitext(other)[0] + ".sheet", "w") as f:
+            f.write("1:2\n")
+        self.sweep()
+        self.assertTrue(self.exists(sid))
+
+    def test_a_sweep_without_the_transcripts_own_path_keeps_the_record(self):
+        sid = self.asked_and_stopped()
+        self.transcript_gone(sid)
+        self.aged(sid, 3700)
+        os.unlink(sminos.launch_cache_path(sid))
+        self.sweep()
+        self.assertTrue(self.exists(sid), "where its transcript was is not known: absence is not established")
+
+    def in_config_dir(self, sid):
+        """The session's transcript under a config dir of its own, recorded for it (config-dirs/), as its
+        launch record names it."""
+        cfg = os.path.join(self.home, "cfg-other")
+        d = os.path.join(cfg, "projects", "p-work")
+        os.makedirs(d)
+        to = os.path.join(d, sid + ".jsonl")
+        os.rename(sminos.transcript_path(sid), to)
+        for path, value in ((sminos.config_dir_path(sid), {"configDir": cfg}),
+                            (sminos.launch_cache_path(sid), {"transcript": to, "size": os.path.getsize(to),
+                                                             "launch": self.root})):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(value, f)
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        sminos.forget_caches()
+        self.assertEqual(sminos.transcript_path(sid, fresh=True), to)
+        return cfg, to
+
+    def test_the_duty_keeps_a_sheet_whose_transcript_one_listing_missed_in_its_own_config_dir(self):
+        sid = self.asked_and_stopped()
+        cfg, to = self.in_config_dir(sid)
+        self.aged(sid, 3700)
+        real = os.scandir
+        projects = os.path.realpath(os.path.join(cfg, "projects"))
+
+        def failing(path=".", *a, **k):
+            if os.path.realpath(str(path)) == projects:
+                raise OSError(5, "input/output error")
+            return real(path, *a, **k)
+        for _ in range(2):   # the hour of the miss, and the one after
+            sminos._TINDEX.at = None
+            sminos._TINDEXES.clear()
+            sminos.forget_caches()
+            with mock.patch.object(os, "scandir", side_effect=failing), \
+                    mock.patch.object(self.daemon, "_OVERRIDES_SWEPT", 0.0):
+                self.daemon.override_duty()
+            self.assertTrue(self.exists(sid), "its transcript is on disk")
+            self.assertTrue(os.path.isfile(sminos.launch_cache_path(sid)), "where it is stays known while the sheet does")
+            self.assertTrue(os.path.isfile(sminos.config_dir_path(sid)))
+        with open(to) as f:
+            self.assertIn(sid, f.read())
+        self.assertEqual(self.answers(sid), [])
 
     def test_a_record_touched_after_its_clears_note_is_the_sessions_again(self):
         sid = self.asked_and_stopped()
