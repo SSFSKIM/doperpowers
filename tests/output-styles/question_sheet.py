@@ -456,6 +456,9 @@ the files.
 
 The repository's files: {listing}
 
+The branch's history (git log --oneline):
+{log}
+
 {named}
 Command line:
 {command}"""
@@ -465,7 +468,7 @@ Command line:
         named = [p for p in self.fs.files if self.fs.rel(p) in command or p in command]
         files = "".join(f"--- {self.fs.rel(p)} ---\n{self.fs.files[p][:6000]}\n" for p in named[:4])
         earlier = "".join(f"\n$ {x['command']}\n{x.get('output', '')[:1500]}\n" for x in self.simulated[-6:])
-        prompt = self.SIM.format(cwd=CWD, facts=facts, command=command,
+        prompt = self.SIM.format(cwd=CWD, facts=facts, command=command, log=self.git_log,
                                  earlier=("\nEarlier outputs of this shell:" + earlier) if earlier else "",
                                  listing=", ".join(self.fs.rel(p) for p in sorted(self.fs.files) if p.startswith(CWD)),
                                  named=("Files the command names, as they are now:\n" + files) if files else "")
@@ -478,7 +481,9 @@ Command line:
             out, resp = NO_OUTPUT, None
             self.simulated.append({"command": command, "error": repr(e)})
             return out
-        self.simulated.append({"command": command, "output": out})
+        u = getattr(resp, "usage", None)
+        self.simulated.append({"command": command, "output": out,
+                               "usage": {"input": u.input_tokens, "output": u.output_tokens} if u else None})
         return out or NO_OUTPUT
 
     def mark_committed(self):
@@ -551,6 +556,8 @@ Command line:
                 self.fs.files[self.fs.resolve(path.strip("'\""))] = m.group(4) + "\n"
             command = command[:m.start()] + "\n" + command[m.end():]
         command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
+        if self.simulator and re.search(r"(^|[;&|\n]\s*)(for|while|until|if|case|function)\b|\$\(", command):
+            return self.simulate(command.strip())  # a compound command is answered whole
         for words in simple_commands(command):
             out = self.shell_one(words)
             if out is None:  # a command the canned shell cannot answer goes to the simulator
@@ -894,10 +901,18 @@ def notes_before(steps, step_index):
     return "\n\n".join(out)
 
 
+JUDGE_USAGE = {"calls": 0, "input": 0, "output": 0}
+
+
 def judge(client, prompt, effort="low", model="claude-opus-5-5"):
-    """One judge's JSON verdict, in the gateway's request shape."""
+    """One judge's JSON verdict, in the gateway's request shape; its tokens are added to JUDGE_USAGE."""
     resp = client.beta.messages.create(model=model, max_tokens=8000, output_config={"effort": effort},
                                        system=CC_SYSTEM, betas=[CC_BETA], messages=[{"role": "user", "content": prompt}])
+    u = getattr(resp, "usage", None)
+    JUDGE_USAGE["calls"] += 1
+    if u is not None:
+        JUDGE_USAGE["input"] += u.input_tokens
+        JUDGE_USAGE["output"] += u.output_tokens
     out = "".join(b.text for b in resp.content if b.type == "text")
     m = re.search(r"\{.*\}", out, re.S)
     if m is None:

@@ -104,11 +104,13 @@ READER_SAMPLES = 3
 RANK = {"no": 0, "partly": 1, "yes": 2}
 
 
-def judge_card(card_text, matter_keys, effort):
-    """The facts judge once, the reader READER_SAMPLES times: a reader's verdict on a card near the line flips
-    between yes and partly from one sample to the next, so the median is the card's."""
+def judge_card(card_text, matter_keys, effort, counted=None):
+    """The facts judge once, then the reader READER_SAMPLES times (a reader's verdict on a card near the line flips
+    between yes and partly from one sample to the next, so the median is the card's), or once for a card whose
+    matter is not among `counted`, which no pass rate includes."""
     facts = qs.judge(client, FACTS.replace("{card}", card_text).replace("{matters}", matters_text(matter_keys)), effort)
-    readers = [qs.judge(client, READER.replace("{card}", card_text), effort) for _ in range(READER_SAMPLES)]
+    n = READER_SAMPLES if counted is None or facts.get("matter") in counted else 1
+    readers = [qs.judge(client, READER.replace("{card}", card_text), effort) for _ in range(n)]
     verdicts = sorted((r.get("could_decide") for r in readers), key=lambda v: RANK.get(v, -1))
     reader = dict(readers[0], could_decide=verdicts[len(verdicts) // 2], samples=verdicts)
     m = ss.MATTERS.get(facts.get("matter"))
@@ -140,10 +142,11 @@ def run(job, args, arms):
 def judge_run(x, effort):
     keys = ss.E2_TRIGGERS[x["scenario"]]["matters"]
     for c in x["cards"]:
-        c["alone"] = judge_card(c["card"], list(ss.MATTERS), effort)
+        c["alone"] = judge_card(c["card"], list(ss.MATTERS), effort, counted=keys)
         captured = c["card"] + ("\n\n**The agent's notes when it asked** (captured automatically)\n\n" + c["notes"]
                                 if c["notes"] else "")
-        c["with_capture"] = judge_card(captured, list(ss.MATTERS), effort) if c["notes"] else c["alone"]
+        c["with_capture"] = (judge_card(captured, list(ss.MATTERS), effort, counted=keys)
+                             if c["notes"] and c["alone"]["matter"] in keys else c["alone"])
     x["matters_asked"] = sorted({c["alone"]["matter"] for c in x["cards"]} & set(keys))
     return x
 
@@ -238,7 +241,11 @@ if __name__ == "__main__":
         out = [x if "error" in x else y for x, y in zip(out, pool.map(lambda x: x if "error" in x else safe(x), out))]
     out.sort(key=lambda x: (x.get("arm", ""), x.get("scenario", ""), x.get("history", ""), x.get("rep", 0)))
     usage = qs.usage_total(out)
-    Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage,
+    sim = [y["usage"] for x in out for y in x.get("simulated", []) if y.get("usage")]
+    side = {"judge": dict(qs.JUDGE_USAGE), "shell_simulator": {"calls": len(sim), "input": sum(y["input"] for y in sim),
+                                                                "output": sum(y["output"] for y in sim)}}
+    print("judges", side["judge"], "shell simulator", side["shell_simulator"])
+    Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage, "side_usage": side,
                                           "runs": out}, indent=1, ensure_ascii=False, default=str))
     print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, "
           f"{sum('judge_error' in x for x in out)} judge errors; usage {usage}, about ${qs.cost(usage, args.model)} "

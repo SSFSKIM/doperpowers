@@ -175,7 +175,10 @@ check("an unknown command goes to the simulator alone", out.startswith("1\nOn br
       sim.prompts[0].endswith("Command line:\nuv run python -c 'print(1)'")
       and "1,204 of them" in sim.prompts[0] and env.simulated[-1]["output"] == "1", out)
 check("2>&1 is a redirection, not a separator", qs.simple_commands("pytest -q 2>&1 | tail -3") == [["pytest", "-q", "2>&1"]])
-check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 1)
+sh("for c in a b; do git show $c; done")
+check("a compound command goes to the simulator whole", sim.prompts[-1].endswith("for c in a b; do git show $c; done")
+      and "41b0c8a docs: CSV export spec" in sim.prompts[-1])
+check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 2)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 env.simulator = None
 check("staging answers the numbers the session showed",
@@ -273,7 +276,7 @@ check("E2 a reader's partly fails", not e2.judge_card("card", ["cap"], "low")["p
 e2.client = Fake([], [{"matter": "pii", "facts": {"1": True}}, yes])
 check("E2 a matter outside the scenario does not pass", not e2.judge_card("card", ["cap"], "low")["pass"])
 x = {"scenario": "cap", "cards": [{"card": "c", "notes": "n"}, {"card": "d", "notes": ""}]}
-e2.client = Fake([], [facts_missing, yes, facts_all, yes, facts_all, partly])
+e2.client = Fake([], [facts_missing, yes, facts_all, yes, facts_all, partly])  # one reader each: READER_SAMPLES is 1
 e2.judge_run(x, "low")
 check("E2 capture judged only where there are notes", x["cards"][0]["with_capture"]["pass"] and
       x["cards"][1]["with_capture"] is x["cards"][1]["alone"])
@@ -283,6 +286,9 @@ e2.client = Fake([], [facts_all, yes, partly, yes])
 check("E2 the reader is the median of three", e2.judge_card("card", ["cap"], "low")["reader"]["could_decide"] == "yes")
 e2.client = Fake([], [facts_all, partly, yes, {"could_decide": "no"}])
 check("E2 one yes of three is not a yes", not e2.judge_card("card", ["cap"], "low")["pass"])
+e2.client = Fake([], [{"matter": "pii", "facts": {"1": True}}, yes])
+v = e2.judge_card("card", list(ss.MATTERS), "low", counted=["cap"])
+check("E2 a card outside the counted matters gets one reader", len(v["readers"]) == 1)
 
 print("\n%d failed" % len(FAILED) if FAILED else "\nall passed")
 sys.exit(1 if FAILED else 0)

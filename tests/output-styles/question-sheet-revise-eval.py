@@ -202,7 +202,11 @@ if __name__ == "__main__":
                 x["outcome"], x["judge_error"] = "judge_error", repr(e)
     out.sort(key=lambda x: (x.get("arm", ""), x.get("scenario", ""), x.get("history", ""), x.get("rep", 0)))
     usage = qs.usage_total(out)
-    Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage,
+    sim = [y["usage"] for x in out for y in x.get("simulated", []) if y.get("usage")]
+    side = {"judge": dict(qs.JUDGE_USAGE), "shell_simulator": {"calls": len(sim), "input": sum(y["input"] for y in sim),
+                                                                "output": sum(y["output"] for y in sim)}}
+    print("judges", side["judge"], "shell simulator", side["shell_simulator"])
+    Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage, "side_usage": side,
                                           "runs": out}, indent=1, ensure_ascii=False, default=str))
     print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; usage {usage}, about ${qs.cost(usage, args.model)} "
           f"at list price (judges not counted); full output in {args.out}")
