@@ -44,13 +44,17 @@ Why these three: `made:` is what lets a question name an artifact ("who touched 
 
 ### 1b. Read from the answer
 
-`answer_summary(text)` reads the answer (through `answer_text`, as `answer_line` and `answer_name` do, so a `<message>` mark from the session's output style is stripped): the first line beginning, after optional whitespace, with each of `doing:`, `made:` and `next:` (case-insensitive), its text after the label trimmed of whitespace, backticks and quotes at its ends, and cut to `SUMMARY_LINE_MAX` (200) characters. It returns `{"doing": …, "made": …, "next": …}` when all three labels are present with non-empty text, else `None`. Three are required, not some: a partial summary would show as if whole, and the ask tells the session to write `next:` even when nothing is pending.
+An answer can arrive marked: a session under the to-human output style wraps what it says in `<message>` spans (`extract_marks`), and today `answer_text` keeps only the first span. With four or five lines to read, a model may split them across spans, mark only some of them, or wrap commentary around them, so one reader, `answer_fields(text) -> AnswerFields(line, name, summary)`, replaces the reading in `answer_line`, `answer_name` and the new summary, and those three become its fields:
 
-`answer_line` skips the summary's label lines as it already skips `name:` lines (`SUMMARY_LINE_RE` beside `NAME_LINE_RE`), so the in-charge line is the first line that is neither, whatever order the model answers in.
+- **Labelled fields** — `name:`, `doing:`, `made:`, `next:` (a line beginning, after optional whitespace, with the label and a colon, case-insensitive; `NAME_LINE_RE` and a new `SUMMARY_LINE_RE`): each is the first such line in the marked text (every span, in order), else in the unmarked text. Its value is the text after the label, trimmed of whitespace and of backticks and quotes at its ends; `name` is then read as `answer_name` reads it today (lowercased, one trailing period dropped); each summary value is cut to `SUMMARY_LINE_MAX` (200) characters.
+- **The line** — the first non-empty line that carries no label, taken from the marked text when any span holds one, else from the unmarked text; cut to `DERIVE_LINE_MAX` (120) as today. Commentary outside the marks never becomes the line while a mark holds one, which is today's behavior for an answer whose first span is the line.
+- **The summary** — `{"doing": …, "made": …, "next": …}` when all three labels are present with non-empty values, else `None`. Three are required, not some: a partial summary would show as if whole, and the ask tells the session to write `next:` even when nothing is pending.
+
+An unmarked answer reads exactly as today: the line is its first unlabelled line, the name its first `name:` line.
 
 ### 1c. Recorded on the line's event
 
-`derive_member` records the summary on the event it already writes: `lifecycle(project, m.session, "in-charge", text=line, source="derived", name=…, summary={…})`, the `summary` field only when `answer_summary` gave one. An answer without a summary records the line alone, as today: the summary never fails a derive.
+`derive_member` records the summary on the event it already writes: `lifecycle(project, m.session, "in-charge", text=line, source="derived", name=…, summary={…})`, the `summary` field only when `answer_fields` gave one. An answer without a summary records the line alone, as today: the summary never fails a derive.
 
 Event shape (one JSON line in the project's log, as every event):
 
@@ -72,6 +76,8 @@ A field on the existing event, not a new event kind: the `in-charge` event is al
 
 Why: the summary is state, and a compaction marks the most state change a session goes through, so a summary refreshed only every third compaction would describe work two compactions old. The counter existed to save forks; the compaction derive asks through the session's warm cache (`btw`, about 7k tokens read and 460 written per ask in the logs), which is small against a compaction's own cost. The line is unaffected in practice: `DERIVE_KEEP` keeps it unchanged unless it is wrong. `--compacted` still clears the member's `now:` status (`clear_status`) and waives only the pacing rules it waives today; the six-hour daemon path is unchanged and asks for the summary too, since it is the same `derive_member`.
 
+Two derives of one member that overlap (a compaction's and the daemon's) record in the order they finish, so the older answer can win until the next derive. That holds for the line today as well, the window is one derive, and the next one corrects it: known and accepted, not handled here.
+
 ## 3. `sminos find "<question>"`
 
 `find` becomes the search. Its old meaning, `list --org <words>` (a keyword filter), stays available under that name; `find` keeps its slot in `READING_VERBS`.
@@ -82,9 +88,11 @@ The words after `find` are joined with spaces into the question, so `sminos find
 
 ### 3a. The corpus
 
-Every member of every project known here (`known_projects`, as `list --org` takes them) whose state is live (`FILLED`: busy, idle, waiting) or held (`HELD_STATES`: stopped, gone) and that has not ended (`m.end` empty), each session once (a member that shows in several projects' rows, as a channel's roster does, is one entry), minus the caller: the session `CLAUDE_CODE_SESSION_ID` names, with the sessions of its thread. `--all` adds retired and ended members, the ones `list --all` shows. The owner chose live and stopped: a stopped session still holds the context of work it did, and an addressed message wakes it (or is held for it, its row says why), so it is a session one can ask.
+The corpus is `list --org`'s own scope and rows, never a wider read: the projects `list_scope` returns under `--org` (every project known here but one that has left this machine, `has_left`, whose retained log no longer updates), and in each the rows `project_rows` yields, keeping those with a session whose state is live (`FILLED`: busy, idle, waiting) or held (`HELD_STATES`: stopped, gone) and that has not ended (`m.end` empty). Each session is one entry (a member that shows in several projects' rows, as a channel's roster does, is one), and the caller is left out: the session `CLAUDE_CODE_SESSION_ID` names, with the sessions of its thread. `--all` adds the retired rows and, as `cmd_list` does under `--all`, the ended threads `view_of(p).ended` holds. The owner chose live and stopped: a stopped session still holds the context of work it did, and an addressed message wakes it (or is held for it, its reach line says why), so it is a session one can ask.
 
-`find` shows nothing `list --org --all --json` would not; the summary it adds is in the same project logs every enrolled machine already reads. `list` applies no per-session visibility of its own (a session's `access` and `shares` govern who may message it, `sminos_visibility`), so neither does `find`.
+Because it is built from `project_rows`, `find` sees what `list --org` sees and nothing more. That includes per-session visibility: a session whose owner withdrew this machine's view of it (`unlisted`, `sminos_visibility`) is out of `project_rows` here, so out of `list --org` and out of the corpus, and its summary never reaches the model. The summary it adds is in the same project logs every enrolled machine already reads.
+
+Every field an entry draws is free text some writer chose — a set line or a spawn's brief can be any length, and a summary written by another machine's sminos is only known to be non-empty — so `find_entry` normalizes each (control characters dropped, whitespace runs collapsed to one space) and caps it: the in-charge line and each summary line at `CORPUS_FIELD_MAX` (200) characters, the alias at 64, at most ten channel names. A corpus over `FIND_CORPUS_MAX` (400,000 characters, about 100k tokens, well inside the small model's context window) is refused before any call: `sminos: find: the directory is <n> characters, over find's budget of 400000; narrow it with list --org <words>`, exit 1. Splitting is not built (Delegated unknowns).
 
 Each entry is a block of plain text:
 
@@ -99,7 +107,11 @@ the summary's three lines only when it has one, `channels:` only when it is in a
 
 ### 3b. The call
 
-One call through a new `sminos_fork.ask_model(prompt, *, model, effort, timeout)`: `claude -p --safe-mode --no-session-persistence --session-id <minted> --model haiku --effort medium --tools "" --output-format json`, the prompt on standard input, the working directory `$SMINOS_HOME`, started as an internal process. `ask_model` shares `headless_fork`'s machinery — the start gate, the internal marker, the `SMNS_INTERNAL` environment, the timeout, the JSON result read from the last `{` line of stdout, the cleanup of a transcript the engine wrote anyway under the minted id and of the marker — by extracting that machinery into one helper both call, so the two never drift. `headless_fork`'s behavior and its tests do not change.
+One call through a new `sminos_fork.ask_model(prompt, *, model, effort, timeout)`: `claude -p --safe-mode --no-session-persistence --session-id <minted> --model haiku --effort medium --tools "" --output-format json`, the prompt on standard input, the working directory `$SMINOS_HOME`, started as an internal process. `ask_model` shares `headless_fork`'s machinery — the start gate, the internal marker, the `SMNS_INTERNAL` environment, the timeout, the JSON result read from the last `{` line of stdout, the cleanup of a transcript the engine wrote anyway under the minted id and of the marker — by extracting that machinery into one helper both call, `run_internal`, so the two never drift.
+
+The start gate is fixed in the extraction. Today `headless_fork` starts `/bin/sh -c 'read -r _ <&N; exec N<&-; exec "$@"'` and writes the internal marker before releasing the gate with a newline; but a failed `read` (end of file: the parent died, or failed before writing the marker and closed the pipe) falls through to `exec` all the same, so the engine starts unmarked and the record hook and reconciliation see a member that is none. `run_internal`'s gate execs only after a successful read (`read -r _ <&N || exit 1`), and on any failure between the start and the release (the marker not written, an exception) it kills and reaps the child before raising `ForkFailed`. Derive's headless fork runs through the same helper, so its path is fixed too; its other behavior and its existing tests do not change.
+
+The call's environment is the subscription route, built for it, never the caller's as it stands: the corpus is the whole org's directory and goes nowhere but the owner's own login. A caller can run inside a gateway-routed session whose settings exported a base URL, an auth token and model aliases into its environment (`gateway_env_keys`, which `launch_env` drops for a plain-route launch), or carry an API key. `ask_model` starts from `os.environ` and drops every key `gateway_env_keys()` names, every variable whose name starts with `ANTHROPIC_` (base URL, auth token, API key, model overrides), `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_SUBAGENT_MODEL` and `CLODEX_SETTINGS`, and the launch-only markers `launch_env` drops; it sets `SMNS_INTERNAL=1`. `PATH`, `HOME` and `CLAUDE_CONFIG_DIR` stay: they are how the binary and the login are found. Derive's fork keeps its environment as today: it resumes a session on that session's own route.
 
 - `--safe-mode`, not `--bare`: `claude --help` says bare's auth is "strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read)", so a bare call bills an API key instead of the owner's subscription, and fails where there is none. Safe mode starts with no plugins, hooks, MCP servers or CLAUDE.md and uses the machine's own login; `skills/query-transcript/scripts/query_transcript.py` runs haiku this way.
 - Standard input, not an argument: the corpus is tens of kilobytes and grows with the org.
@@ -119,11 +131,28 @@ The prompt, `FIND_PROMPT`, puts the instructions first, the corpus after, and th
 
 ### 3c. The answer, checked
 
-`parse_find(text)` reads the first JSON object in the model's result text (a code fence around it is tolerated) into `(matches, note)`: `matches` a list of `{short, why}` with `short` a string and `why` cut to one line of 200 characters. Every `short` is checked against the corpus; one the corpus does not hold is dropped and counted. This is the boundary between the model and a message: a short the model made up would otherwise be offered as an address. A result with no parseable JSON object is a failure (§3e), not an empty answer.
+`parse_find(text)` reads the first JSON object in the model's result text (a code fence around it is tolerated) into `(matches, note)`. The object must have `matches` as a list; each item that is an object with a string `short` is kept, `why` (a string, else empty) cut to one line of 200 characters; `note` a string, else empty. An object without a `matches` list (`{}`, `{"matches": null}`) is a failure (§3e), as is a result with no parseable JSON object; only a valid empty list is "no match".
+
+Then, in order: every `short` is checked against the corpus, one the corpus does not hold dropped and counted; repeats of a short are dropped; and the first five that remain are kept. This is the boundary between the model and a message: a short the model made up would otherwise be offered as an address.
 
 ### 3d. Output
 
-For each match, in the model's order: the member's `list` row (`row_cells`, as `list --org` draws it, with its project), then `why:`, the summary's lines with the summary's age when it has one, and the lines that say how to reach it — the same lines `who` prints, which `who_lines` and `find` share through one function, `reach_lines(project, member)`, extracted from `who_lines` (a live session's `sminos say "@<short> …"`; a stopped one that its machine wakes, "message it, which wakes it"; one it holds, why, and that the message waits; one that cannot be reached from here, why).
+For each match, in the model's order: the member's `list` row (`row_cells`, as `list --org` draws it, with its project), then `why:`, the summary's lines with the summary's age when it has one, and the lines that say how to reach it — the same lines `who` prints, which `who_lines` and `find` share through one function, `reach_lines(project, member)`, extracted from `who_lines`. Its outcomes, each case's words reused from where the CLI already says them:
+
+| The member | Reach lines |
+|---|---|
+| live | `reach: sminos say "@<short> ..."` (today's) |
+| a stopped seat, not retired | today's: resumed, or held and why (`hold_for`, `hold_words`) |
+| a stopped or gone thread its machine wakes | the resume command, and "message it, which wakes it" (today's) |
+| held by its machine | the resume command, and that a message waits, with why (today's) |
+| its machine admits nothing from here (`read-only`) | today's refusal line |
+| another machine's, with no wake published | the resume command there, and an untagged note in its project (today's) |
+| a local `gone` member with no seat (today's `who_lines` says nothing) | the resume command when its transcript is on this machine (`transcript_path`), else "nothing on this machine resumes it" |
+| an ended thread (`--all`) | how it returns, as `unreachable_hint` words an ended thread |
+| a member of a machine the org retired (`--all`) | `unreachable_hint`'s retired-machine words |
+| a retired seat (`--all`) | `unreachable_hint`'s retired-seat words |
+
+Where `unreachable_hint` builds its sentence inside a refusal, the sentence is factored out so `reach_lines` and the refusal say the same thing.
 
     $ sminos find "who runs CI for these repositories"
     CI-opt [a45b97a3]  interactive  busy  @macbook  doperpowers  doperpowers@main  in charge: I'm in charge of CI here: …
@@ -137,7 +166,7 @@ When the model named shorts the corpus does not hold, a last line says so: `(the
 
 ### 3e. Failure
 
-A call that fails — it does not start, times out, exits non-zero, returns an error result or no parseable JSON object — prints `sminos: find: <reason>` on stderr and exits 1. There is no fallback to keyword filtering: a silent substitute would hand back a different kind of answer under the same name; the error tells the caller `list --org <words>` exists.
+A call that fails — it does not start, times out, exits non-zero, returns an error result, no parseable JSON object, or one without a `matches` list — or a corpus over budget (§3a) prints `sminos: find: <reason>` on stderr and exits 1. There is no fallback to keyword filtering: a silent substitute would hand back a different kind of answer under the same name; the error tells the caller `list --org <words>` exists.
 
 ## 4. Looking at one session: `who @<session>`
 
@@ -153,24 +182,33 @@ The approved design named `who --session <short>` for this. That form already ha
 
 ## 6. A consumer of the old `find`: MAWS's acceptance scene
 
-MAWS's endpoint acceptance harness runs `sminos find "$1" --org --json` (`apps/desk-hub/deploy/vm/scene.sh`, its `as-session <session> find <name>` step) and reads list's JSON rows. After this change that call is refused (`find` takes no `--org`). The scene's line becomes `sminos list --org "$1" --json`, which prints the same rows `find` printed until now. It is MAWS's change, landed in MAWS before this sminos release reaches a machine the scene runs on; the orchestrator of this spec hands it to MAWS's landing session with the one-line diff. Nothing else in either repository calls `sminos find`.
+MAWS's reach acceptance runs `sminos find "$1" --org --json` (`apps/desk-hub/deploy/vm/scene.sh`, its `as-session <session> find <name>` step, driven by `reach-items.ts`' item 3a, "U's list --org, find and @short name nothing of S"). After this change that call is refused (`find` takes no `--org`), and item 3a would not notice: it only checks that no output line names the private session, and `asSession` does not look at the exit status, so a refused `find` passes as "names nothing".
+
+The scene stages sminos by commit (each scene runs its own copy of sminos at a pinned commit, not the machine's installed plugin), so nothing breaks until a scene fixture update moves that pin past this change. The handoff is tied to that update, and is MAWS's change, which the orchestrator of this spec gives MAWS's landing session with these three parts:
+
+1. The scene's `find` step runs `sminos list --org "$1" --json`, which prints the rows `find` printed until now.
+2. Item 3a's check asserts the call exited 0 and its output parsed as a JSON array of rows, before asserting no row names S; a refused or malformed call then fails the item instead of passing it.
+3. The check is relabelled for what it proves, the keyword list (`list --org <words>`), not `find`.
+
+What 3a protected on the sminos side holds for the new `find` by construction (§3a: the corpus is `project_rows`, which leaves out a session withdrawn from this machine's view), and acceptance 6 pins it. Nothing else in either repository calls `sminos find`.
 
 ## Delegated unknowns
 
 - **The hub carries the new field.** The MAWS hub (`apps/desk-hub`) shows no filter on log event kinds or fields: session-plane kinds are listed (`SESSION_KINDS`), log events are not. Resolved by acceptance 7: a summary written on the MacBook shows on the mini.
-- **The corpus outgrowing the model's window.** At about 150 tokens a session the window holds thousands of sessions. When the corpus nears it, `find` splits the corpus and asks the parts in parallel, as `query-transcript --all` asks segments. Not built now.
+- **The corpus outgrowing its budget.** At about 150 tokens a session, `FIND_CORPUS_MAX` (§3a) holds several thousand sessions; past it `find` refuses with a clear message. When the org nears it, `find` splits the corpus and asks the parts in parallel, as `query-transcript --all` asks segments. Not built now.
 - **Effort and latency.** `--effort medium` is the starting point; acceptance 8 measures the call's time on the real corpus. A slower-than-30-second answer, or poor ranking, moves the effort.
 
 ## Acceptance
 
 In the suite (`sminos/tests/run-sminos-tests.sh`, with the stub `claude`):
 
-1. A derive's prompt carries `SUMMARY_ASK` and ends "Answer with these four lines only." (with a charge-name ask, "five lines"); an answer of a line and the three labelled lines records an `in-charge` event whose `summary` holds the three texts; a line of more than 200 characters is cut to 200.
-2. An answer whose labelled lines come before the line, or that adds a `name:` line, still records the right line; an answer missing `next:` records the line with no `summary` field and the derive succeeds.
+1. A derive's prompt carries `SUMMARY_ASK` and ends "Answer with these four lines only." (with a charge-name ask, "five lines"); an answer of a line and the three labelled lines records an `in-charge` event whose `summary` holds the three texts; a summary line of more than 200 characters is cut to 200.
+2. Reading the answer (§1b), each case checked on the recorded event's `text` and `summary` and, where a name is asked, the kept `name`: labelled lines before the line; a `name:` line among them; the five lines split across two `<message>` spans; only the summary marked, the line and name unmarked; the line marked with commentary outside the marks (the commentary is never the line); an unmarked answer, read as today. An answer missing `next:` records the line with no `summary` field and the derive succeeds.
 3. Two `derive <member> --compacted` runs in a row both fork (the stub's call log shows two forks); `$SMINOS_HOME/compactions/` is never written.
-4. `sminos who @<short>` prints the member's summary lines with the summary's age; `who <commit>` for a commit of that session does too; `list` prints no `doing:`; `list --json` carries `summary` and `summary_age`. A member whose summary came from another machine's log (an event written by another writer) shows it.
-5. `sminos find "<question>"` starts one internal process — `SMNS_INTERNAL=1`, its marker present while it runs, `--safe-mode`, `--no-session-persistence`, `--model haiku`, `--tools ""`, no `--bare` — whose standard input holds the question after the corpus; the corpus holds live and stopped members with their summaries, and not the caller, retired or ended members; with `--all` it holds those too.
-6. Given a stub answer naming two corpus shorts and one unknown, `find` prints the two rows with their `why:`, summaries and reach lines (a stopped member's says how a message reaches it), and the dropped count; given `{"matches": [], "note": "…"}` it prints `no session matches: …` and exits 4; given a crash, a timeout or text with no JSON object, it exits 1 with the reason on stderr and no match; `--json` gives the documented object. `list --org <words>` keeps the old keyword results (the suite's former `find <words>` cases, moved to it).
+4. `sminos who @<short>` prints the member's summary lines with the summary's age; `who <commit>` for a commit of that session does too; `list` prints no `doing:`; `list --json` carries `summary` and `summary_age`. A member whose summary came from another machine's log (an event written by another writer) shows it. `who @<short>` of a local `gone` member with no seat prints the resume command when its transcript is here, and "nothing on this machine resumes it" when it is not.
+5. `sminos find "<question>"` starts one internal process — `SMNS_INTERNAL=1`, its marker present while it runs, `--safe-mode`, `--no-session-persistence`, `--model haiku`, `--tools ""`, no `--bare` — whose standard input holds the question after the corpus. Run with gateway variables (the keys a stub gateway settings file names), `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` and `CLAUDE_CODE_USE_BEDROCK` in the caller's environment, the stub records none of them in the process's environment. The corpus holds live and stopped members with their summaries, and not the caller, retired or ended members; with `--all` it holds those, a seatless ended thread among them, and a retired machine's member, whose reach line gives `unreachable_hint`'s words. A project's retained log after it has left this machine (`has_left`) contributes nothing, with or without `--all`. A session withdrawn from this machine's view (`unlisted`) never appears in the process's standard input, while a session still in view does. Every field is capped (a 5,000-character set line reaches the corpus as 200), and a corpus over `FIND_CORPUS_MAX` (lowered for the test) exits 1 with the budget message and starts no process.
+6. Given a stub answer naming two corpus shorts, one unknown and one repeat, `find` prints the two rows with their `why:`, summaries and reach lines (a stopped member's says how a message reaches it), and the dropped count; given seven valid shorts it prints five. Given `{"matches": [], "note": "…"}` it prints `no session matches: …` and exits 4; given `{}`, a crash, a timeout or text with no JSON object, it exits 1 with the reason on stderr and no match — each of these in text and in `--json`, which gives the documented object. `list --org <words>` keeps the old keyword results (the former `find <words>` cases, moved to it).
+6a. The start gate (§3b): a gate closed without the release byte never starts the stub engine (its call log stays empty, no process outlives the helper); a failure to write the marker kills and reaps the child and raises `ForkFailed`. Derive's headless fork passes its existing tests through the same helper.
 
 Live, after the release reaches both Macs (the orchestrator runs these):
 
@@ -182,7 +220,7 @@ Live, after the release reaches both Macs (the orchestrator runs these):
 
 ## Execution
 
-**Verification.** One independent review of this spec by `doperpowers:adversarial-reviewer`, and, the execution section having two milestones, its buildability review by the same agent in the same round. The branch is reviewed through `doperpowers:review-code` at the medium rung (`doperpowers:reviewer-medium`): a focused diff in one plugin, whose risks — the derive prompt and parsing, the removed counter, an internal process that must never become a member, a model's output turned into addresses — are pinned by the suite.
+**Verification.** One independent review of this spec by `doperpowers:adversarial-reviewer`, and, the execution section having two milestones, its buildability review by the same agent in the same round. The branch is reviewed through `doperpowers:review-code` at the medium rung (`doperpowers:reviewer-medium`): a focused diff in one plugin, whose risks — the derive prompt and parsing, the removed counter, an internal process that must never become a member (the start gate), the whole directory sent only on the owner's subscription route, the corpus kept to `list --org`'s view, a model's output turned into addresses — are pinned by the suite.
 
 **Binding on every milestone.**
 
@@ -197,11 +235,11 @@ Live, after the release reaches both Macs (the orchestrator runs these):
 
 **At its end:** every derive asks for and records the summary (§1a–1c), every compaction derives (§2), members carry their summary (§1d), and `who @<session>` and `who <commit|PR>` show it (§4).
 
-**Touches:** `sminos/skills/sminos/scripts/sminos.py` — `derive_prompt`, `answer_line`, a new `answer_summary` and `SUMMARY_*` constants beside `answer_name` and `NAME_LINE_RE`, `derive_member`, `cmd_derive`, the removed `compaction_due` and `compactions_path`, `Member`, `_member`, a new `summary_of` beside `charge_of`, `member_json`, `who_lines` (its reach lines extracted into `reach_lines`), `cmd_who` and the `who` parser, the usage block's `who` and `derive` lines. `sminos/tests/run-sminos-tests.sh` (the derive cases, the every-third-compaction block that exports `SMINOS_DERIVE_COMPACTIONS`, the `who` cases). `sminos/skills/sminos/SKILL.md` (the in-charge paragraph under "Your lines and your project": the summary exists and how to see it; the `who` line under "Who is here"). `sminos/hooks/hooks.json`'s description of `smns-derive.sh` if it states the cadence. `docs/whats-inside.md` (the `names` row says "every third compaction"). `docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md` §5: one sentence at its head saying this spec's §2 replaces it. The bump.
+**Touches:** `sminos/skills/sminos/scripts/sminos.py` — `derive_prompt`, `answer_text`, `answer_line` and `answer_name` (their reading moved into a new `answer_fields`), `SUMMARY_*` constants beside `NAME_LINE_RE`, `derive_member`, `cmd_derive`, the removed `compaction_due` and `compactions_path`, `Member`, `_member`, a new `summary_of` beside `charge_of`, `member_json`, `who_lines` (its reach lines extracted into `reach_lines`, with §3d's table, and `unreachable_hint`'s sentences factored out for it), `cmd_who` and the `who` parser, the usage block's `who` and `derive` lines. `sminos/tests/run-sminos-tests.sh` (the derive cases, the every-third-compaction block that exports `SMINOS_DERIVE_COMPACTIONS`, the `who` cases). `sminos/skills/sminos/SKILL.md` (the in-charge paragraph under "Your lines and your project": the summary exists and how to see it; the `who` line under "Who is here"). `sminos/hooks/hooks.json`'s description of `smns-derive.sh` if it states the cadence. `docs/whats-inside.md` (the `names` row says "every third compaction"). `docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md` §5: one sentence at its head saying this spec's §2 replaces it. The bump.
 
-**Decisions:** `who @<session>` resolves through the tag resolver `say` uses, read-only: it must not record or deliver anything, so call the resolution part alone; a tag that resolves to no session, or to several, exits 4 with `say`'s wording for the same case. The summary ask goes on every derive prompt, the daemon's included; a session whose model answers only the line (an older cached answer style) loses nothing. `answer_summary` is pure and takes the raw fork text, as `answer_name` does.
+**Decisions:** `who @<session>` resolves through the tag resolver `say` uses, read-only: it must not record or deliver anything, so call the resolution part alone; a tag that resolves to no session, or to several, exits 4 with `say`'s wording for the same case. The summary ask goes on every derive prompt, the daemon's included; a session whose model answers only the line (an older cached answer style) loses nothing. `answer_fields` is pure and takes the raw fork text, as `answer_name` does; `answer_line` and `answer_name` stay as thin readers of it, since `derive_line` and `derive_member` call them.
 
-**Does not touch:** `find`, `sminos_fork.py`, the daemon's derive cadence and caps (`derive --all`, `derive_order`, `DERIVE_EVERY`, `DERIVE_RETRY`), `name.tsx`, `who --session` and `who --thread`.
+**Does not touch:** `find`, `sminos_fork.py`, `unreachable_hint`'s refusal wording, the daemon's derive cadence and caps (`derive --all`, `derive_order`, `DERIVE_EVERY`, `DERIVE_RETRY`), `name.tsx`, `who --session` and `who --thread`.
 
 **Proves:** acceptance 1–4.
 
@@ -209,13 +247,13 @@ Live, after the release reaches both Macs (the orchestrator runs these):
 
 **At its end:** `sminos find "<question>"` answers from one haiku call over the corpus (§3), and the documentation says so.
 
-**Touches:** `sminos/skills/sminos/scripts/sminos_fork.py` (the shared run helper extracted from `headless_fork`, and `ask_model`). `sminos/skills/sminos/scripts/sminos.py` — `cmd_find` rewritten, new `find_corpus`, `find_entry`, `find_prompt`, `parse_find` and `FIND_PROMPT`, the `find` parser (`question` words, `--all`, `--json`; no `list_flags`), `cmd_list`'s two `a.find` checks (the flag goes with `find`'s use of `cmd_list`), the usage block's `find` line. `sminos/tests/run-sminos-tests.sh` — the stub `claude` gains a branch for a `-p` call without `--resume` (it records its argv, environment and marker as the fork branch does, saves its standard input to `find-prompt.txt`, and answers `STUB_FIND_RESULT`, or fails or crashes on the same switches the fork branch reads); the old `find <words>` cases move to `list --org <words>`; the new cases. `sminos/skills/sminos/SKILL.md` ("Who is here": `find`'s new line, and `list --org <words>` for keyword filtering). `docs/whats-inside.md` (the sminos CLI row's `find`). `docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md` §4: one sentence where it defines `find` as `list --org <words>`, pointing here.
+**Touches:** `sminos/skills/sminos/scripts/sminos_fork.py` (`run_internal`, extracted from `headless_fork` with the gate fixed, §3b; `ask_model` and its environment). `sminos/skills/sminos/scripts/sminos.py` — `cmd_find` rewritten, new `find_corpus`, `find_entry`, `find_prompt`, `parse_find` and `FIND_PROMPT`, the `find` parser (`question` words, `--all`, `--json`; no `list_flags`), `cmd_list`'s two `a.find` checks (the flag goes with `find`'s use of `cmd_list`), the usage block's `find` line. `sminos/tests/run-sminos-tests.sh` — the stub `claude` gains a branch for a `-p` call without `--resume` (it records its argv, environment and marker as the fork branch does, saves its standard input to `find-prompt.txt`, and answers `STUB_FIND_RESULT`, or fails or crashes on the same switches the fork branch reads); the old `find <words>` cases move to `list --org <words>`; the new cases. The Python tests that call the old `find` (a grep for `"find"` in `sminos/tests/*.py` finds exactly these): `test_list_fold.py`, `test_org_retired.py`, `test_channels.py`, `test_channels_roster.py` — their list and fold assertions move to `list --org <words>` — and `test_visibility.py`, whose withdrawn-member case keeps asserting on `find`, now through the stub, that the withdrawn session is not in the model's standard input and a session still in view is. The gate's tests live beside `headless_fork`'s. `sminos/skills/sminos/SKILL.md` ("Who is here": `find`'s new line, and `list --org <words>` for keyword filtering). `docs/whats-inside.md` (the sminos CLI row's `find`). `docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md` §4: one sentence where it defines `find` as `list --org <words>`, pointing here.
 
-**Decisions:** the corpus is built from the members `project_rows` yields for each known project, deduplicated by session, never from `list`'s printed text. The entry's ages use the CLI's `short_age`. Matches print in the model's order, deduplicated by short. The question is passed to the model verbatim; `find` with no words is a usage error. `ask_model`'s minted session id exists only so a transcript the engine writes despite `--no-session-persistence` is found and deleted, as in `headless_fork`.
+**Decisions:** the corpus is built from `list_scope`'s `--org` projects and the members `project_rows` yields for each (§3a), deduplicated by session, never from `list`'s printed text. The entry's ages use the CLI's `short_age`. Matches print in the model's order, deduplicated by short. The question is passed to the model verbatim; `find` with no words is a usage error. `ask_model`'s minted session id exists only so a transcript the engine writes despite `--no-session-persistence` is found and deleted, as in `headless_fork`.
 
 **Does not touch:** derive, the summary's shape, `list`'s text and `--json` beyond M1, the guide (§5).
 
-**Proves:** acceptance 5–6, and runs 7–10's commands once on this Mac against a copy of its sminos home (below) to check the prompt on the real model; 7–10 proper run after release.
+**Proves:** acceptance 5, 6 and 6a, and runs 7–10's commands once on this Mac against a copy of its sminos home (below) to check the prompt on the real model; 7–10 proper run after release.
 
 ## Concrete Steps
 
@@ -244,7 +282,10 @@ In `sminos/skills/sminos/scripts/sminos.py`:
     SUMMARY_LINE_MAX = 200
     SUMMARY_ASK = …                      # §1a, exact
     SUMMARY_LINE_RE                      # a line starting, after whitespace, with one of the labels and ':' (case-insensitive)
-    def answer_summary(text) -> dict | None          # §1b
+    class AnswerFields(NamedTuple): line: str; name: str | None; summary: dict | None
+    def answer_fields(text) -> AnswerFields           # §1b; answer_line and answer_name read it
+    CORPUS_FIELD_MAX = 200
+    FIND_CORPUS_MAX = 400_000            # characters
     def summary_of(member, events) -> tuple[dict | None, str]   # (summary, ts), §1d
     class Member(NamedTuple): … summary: dict | None = None; summary_age: float | None = None
     def member_json(m, project=None, private=True)   # + "summary", "summary_age"
@@ -252,20 +293,24 @@ In `sminos/skills/sminos/scripts/sminos.py`:
     FIND_PROMPT = …                      # §3b, exact
     def find_corpus(caller_session, include_ended) -> list[tuple[Project, Member]]
     def find_entry(project, member) -> str           # one corpus block, §3a
-    def parse_find(text) -> tuple[list[dict], str]   # (matches [{short, why}], note); raises FindFailed on no JSON object
+    def parse_find(text) -> tuple[list[dict], str]   # (matches [{short, why}], note); raises FindFailed on no JSON object or no `matches` list
     SMINOS_FIND_TIMEOUT (env), default 120
 
 In `sminos/skills/sminos/scripts/sminos_fork.py`:
 
+    def run_internal(args, *, cwd, env, timeout, stdin_text=None, minted=()) -> dict
+        # the gate (read must succeed before exec), the marker, the run, the result JSON, cleanup (§3b);
+        # headless_fork and ask_model both call it
     def ask_model(prompt, *, model="haiku", effort="medium", timeout=120) -> ForkAnswer
-        # a fresh internal `claude -p` (§3b), prompt on stdin; ForkFailed as headless_fork raises it
+        # a fresh internal `claude -p` (§3b) on the subscription-route environment, prompt on stdin;
+        # ForkFailed as headless_fork raises it
 
 CLI:
 
     sminos find <question…> [--all] [--json]   # exit 0 matches, 4 none, 1 failure
     sminos who @<short|project/alias|alias>      # a session's who_lines, its summary included
 
-The `in-charge` event's optional `summary` field: §1c. M1 produces `answer_summary`, `summary_of`, the `Member` fields, `member_json`'s fields and `reach_lines`; M2 consumes `Member.summary`, `summary_age` and `reach_lines`.
+The `in-charge` event's optional `summary` field: §1c. M1 produces `answer_fields`, `summary_of`, the `Member` fields, `member_json`'s fields and `reach_lines`; M2 consumes `Member.summary`, `summary_age` and `reach_lines`.
 
 ## Outcomes & Retrospective
 
