@@ -40,7 +40,7 @@ def entry(q="Which?", **kw):
     return {"question": q, **kw}
 
 
-# -- validation (§2.1, §1)
+# -- validation: C2's published tool-input schema (sminos/types/sheet/schema/tool-input.schema.json) as a whole
 
 def refuses(inp, words):
     try:
@@ -50,20 +50,36 @@ def refuses(inp, words):
     return False
 
 
+def accepts(inp):
+    try:
+        qs.validate(inp)
+        return True
+    except qs.InputError:
+        return False
+
+
 check("empty call refused", refuses({}, "at least one"))
-check("empty ask and withdraw refused", refuses({"ask": [], "withdraw": []}, "at least one"))
+check("an empty withdraw is a schema fault (minItems 1)", refuses({"ask": [entry()], "withdraw": []}, "one or more"))
 check("21 entries refused", refuses({"ask": [entry()] * 21}, "1 to 20"))
 check("an id named twice refused", refuses({"ask": [entry(id="q1")], "withdraw": ["q1"]}, "more than once"))
-check("multiSelect without options refused", refuses({"ask": [entry(multiSelect=True)]}, "needs options"))
-check("a preview on multi-select refused",
-      refuses({"ask": [entry(multiSelect=True, options=[{"label": "A", "preview": "x"}])]}, "single-select"))
+check("q0 is not an id", refuses({"withdraw": ["q0"]}, "question ids"))
 check("an unknown field refused", refuses({"ask": [entry(async_=True)]}, "does not take"))
 check("13 options refused", refuses({"ask": [entry(options=[{"label": str(i)} for i in range(13)])]}, "at most 12"))
 check("a long question refused", refuses({"ask": [entry("x" * 2001)]}, "at most 2000"))
-check("a bad line range refused", refuses({"ask": [entry(references=[{"path": "a", "lines": [9, 3]}])]}, "line range"))
 check("today's form refused", refuses({"questions": [entry()]}, "only ask and withdraw"))
+check("options: false is a schema fault", refuses({"ask": [entry(options=False)]}, "options is a list"))
+check("references: 0 is a schema fault", refuses({"ask": [entry(references=0)]}, "references is a list"))
+check('recommended: "false" is a schema fault',
+      refuses({"ask": [entry(options=[{"label": "A", "recommended": "false"}])]}, "boolean"))
+check('multiSelect: "yes" is a schema fault', refuses({"ask": [entry(multiSelect="yes")]}, "boolean"))
+check("lines of strings are a schema fault", refuses({"ask": [entry(references=[{"path": "a", "lines": ["1", "2"]}])]},
+                                                     "two integers"))
+check("entry-local rules pass the schema", accepts({"ask": [entry(multiSelect=True)]}) and
+      accepts({"ask": [entry(references=[{"path": "a", "lines": [9, 3]}])]}) and
+      accepts({"ask": [entry(options=[{"label": "A"}, {"label": "A"}])]}) and
+      accepts({"ask": [entry(multiSelect=True, options=[{"label": "A", "preview": "x"}])]}))
 
-# -- the stub's results (§2.2)
+# -- the stub's results (§2.2, C2's grammar sminos/types/sheet/grammar/result.md)
 
 fs = ss.make_fs()
 sheet = qs.Sheet(fs)
@@ -72,40 +88,63 @@ check("add assigns q1, q2", r == "Added q1, q2.", r)
 r = sheet.call({"ask": [entry("A, revised?", id="q1"), entry("C?")], "withdraw": ["q2"]})
 check("revise, add and withdraw in one line", r == "Added q3. Revised q1 (revision 2). Withdrew q2.", r)
 check("revision kept with history", sheet.questions["q1"]["revision"] == 2 and len(sheet.questions["q1"]["history"]) == 1)
+check("a call records the card it showed and, for a revision, the one before",
+      sheet.calls[-1]["shown"]["q1"]["question"] == "A, revised?" and sheet.calls[-1]["before"]["q1"]["question"] == "A?"
+      and sheet.calls[-1]["shown"]["q3"]["question"] == "C?")
 r = sheet.call({"ask": [entry("D?"), entry("E?", id="q2"), entry("F?", references=[{"path": ".env"}])],
                 "withdraw": ["q9"]})
 check("partial refusal carries entry places", r.split("\n")[0] == "Added q4 (entry 1).", r)
-check("partial refusal says what was not done",
-      r.split("\n")[1] == "Not done: entry 2, q2 is not open (withdrawn). entry 3, the reference .env could not be "
-                          "read: permission denied. q9 is not open.", r)
+check("partial refusal says what was not done, in the grammar's clauses",
+      r.split("\n")[1] == "Not done: entry 2, q2 is not open (withdrawn at 15:42). entry 3, the reference .env could "
+                          "not be read: permission denied. q9 is not open (never asked at 15:42).", r)
 r = sheet.call({"ask": [entry("G?", references=[{"path": "nope.py"}]), entry("H?", id="q3")]})
 check("a refused add before a revise keeps places", r == "Revised q3 (entry 2, revision 2).\nNot done: entry 1, "
       "the reference nope.py could not be read: no such file.", r)
-r = sheet.call({"ask": [entry("I?")]})
-check("ids are never reused", r == "Added q5.", r)
+r = sheet.call({"ask": [entry("I?")], "withdraw": ["q99"]})
+check("a refused withdrawal alone puts places on the adds", r.split("\n")[0] == "Added q5 (entry 1).", r)
 r = sheet.call({"ask": [entry("Dup?", options=[{"label": "A"}, {"label": "A"}])], "withdraw": ["q2"]})
-check("a call in which nothing was done says so on its first line", r == "Nothing done.\nNot done: entry 1, two options "
-      "are labelled 'A'; labels must be unique within a question. q2 is not open (withdrawn).", r)
-r = sheet.call({"ask": [entry("Dup?", options=[{"label": "A"}, {"label": "A"}]), entry("Fine?")]})
-check("equal labels refuse their entry alone", r.startswith("Added q6 (entry 2).") and "entry 1, two options" in r, r)
+check("a call in which nothing was done says so on its first line", r == 'Nothing done.\nNot done: entry 1, two '
+      'options share the label "A". q2 is not open (withdrawn at 15:42).', r)
+r = sheet.call({"ask": [entry("M?", multiSelect=True), entry("P?", multiSelect=True, options=[{"label": "A", "preview": "x"}]),
+                        entry("L?", references=[{"path": "pyproject.toml", "lines": [9, 3]}]), entry("Fine?"),
+                        entry("I, revised?", id="q5")]})
+check("entry-local faults refuse their entry alone", r == "Added q6 (entry 4). Revised q5 (entry 5, revision 2).\n"
+      "Not done: entry 1, multiSelect needs options. entry 2, an option's preview needs a single-select question. "
+      "entry 3, lines must be [a, b] with 1 <= a <= b.", r)
 sheet.call({"withdraw": ["q6"]})
+r = sheet.call({"ask": [entry("Std?", references=[{"path": f"{ss.STDLIB}/csv.py"}])]})
+check("a reference outside the working directories is refused", "it is outside the session's working directories" in r, r)
+fs.files[ss.P(".fixtures/usage_2m.sql")] = "-- rows=2000000\n"
+fs.sizes[ss.P(".fixtures/usage_2m.sql")] = 611 * 2**20
+r = sheet.call({"ask": [entry("Big?", references=[{"path": ".fixtures/usage_2m.sql"}])]})
+check("a file the world models over 256 KB needs a range", "over Read's 256 KB without a range" in r, r)
+r = sheet.call({"ask": [entry("Big, ranged?", references=[{"path": ".fixtures/usage_2m.sql", "lines": [1, 1]}])]})
+check("with a range it is captured", r.startswith("Added"), r)
+n_next = sheet.next_id
 r = sheet.call({"ask": [entry("J?", id="q1")]}, asker="a01")
-check("a subagent cannot revise the main agent's question", "asked by another asker" in r and
-      sheet.questions["q1"]["revision"] == 2, r)
+check("a subagent cannot revise the main agent's question", r == "Nothing done.\nNot done: entry 1, q1 was asked by "
+      "the main conversation; only its asker revises it." and sheet.questions["q1"]["revision"] == 2, r)
 r = sheet.call({"withdraw": ["q5"]}, asker="a01")
-check("a subagent cannot withdraw it either", "another asker" in r and sheet.questions["q5"]["state"] == "open", r)
+check("a subagent cannot withdraw it either", r == "Nothing done.\nNot done: q5 was asked by the main conversation; "
+      "only its asker or the main conversation withdraws it." and sheet.questions["q5"]["state"] == "open", r)
 r = sheet.call({"ask": [entry("K?")]}, asker="a01")
-r2 = sheet.call({"withdraw": ["q7"]})
-check("the main conversation may withdraw a subagent's question", r == "Added q7." and r2 == "Withdrew q7.", (r, r2))
+r2 = sheet.call({"withdraw": [f"q{n_next}"]})
+check("the main conversation may withdraw a subagent's question", r == f"Added q{n_next}." and
+      r2 == f"Withdrew q{n_next}.", (r, r2))
 n = len(sheet.calls)
 try:
-    sheet.call({"ask": [entry("L?"), entry("M?", multiSelect=True)]})
+    sheet.call({"ask": [entry("L?"), entry("M?", options=False)]})
     check("a schema failure raises", False)
 except qs.InputError:
-    check("a schema failure changes nothing", sheet.next_id == 8 and len(sheet.calls) == n + 1 and "error" in sheet.calls[-1])
+    check("a schema failure changes nothing", sheet.next_id == n_next + 1 and len(sheet.calls) == n + 1
+          and "error" in sheet.calls[-1])
 cap, why = sheet.capture({"path": "tally/http/downloads.py", "lines": [1, 3]})
 check("a reference is captured as Read shows it", why is None and cap["body"].split("\n")[0].endswith(
     '\t"""Download links for generated files (print view today; the CSV export\'s') and len(cap["body"].split("\n")) == 3, cap)
+first_line = __import__("re").compile(r"^(?:Nothing done\.|Outcome not known yet\.|Added q[0-9]+(?: \(entry [0-9]+\))?(?:, q[0-9]+(?: \(entry [0-9]+\))?)*\.(?: Revised q[0-9]+ \((?:entry [0-9]+, )?revision [0-9]+\)(?:, q[0-9]+ \((?:entry [0-9]+, )?revision [0-9]+\))*\.)?(?: Withdrew q[0-9]+(?:, q[0-9]+)*\.)?|Revised q[0-9]+ \((?:entry [0-9]+, )?revision [0-9]+\)(?:, q[0-9]+ \((?:entry [0-9]+, )?revision [0-9]+\))*\.(?: Withdrew q[0-9]+(?:, q[0-9]+)*\.)?|Withdrew q[0-9]+(?:, q[0-9]+)*\.)$")
+results = [c for c in sheet.calls if "error" not in c]
+check("every result's first line matches C2's pattern", len(results) > 10 and
+      all(first_line.match(c["result"].split("\n")[0]) for c in results), [c["result"] for c in results])
 
 # -- the card
 
@@ -195,6 +234,17 @@ env_f, *_ = qs.session(ss.e2_script("cap", "long"), qs.DEFAULT_ARM)
 check("the slow test takes its time and needs the fixture make wrote", "611 MB" not in env_f.shell("ls -la .fixtures")
       and "640679936" in env_f.shell("ls -la .fixtures") and "in 83.70s" in env_f.shell("pytest tests/export -m slow -q -s"))
 check("git log over paths is not answered by the canned shell", env_f.shell_one(["git", "log", "--", "Makefile"]) is None)
+env_d, prefix_d, *_ = qs.session(ss.e1_script("premise", "far"), qs.DEFAULT_ARM)
+shown = next(b["content"] for m in prefix_d if m["role"] == "user" and isinstance(m["content"], list)
+             for b in m["content"] if "diff --git a/tally/export/writer.py" in str(b.get("content", "")))
+live_diff = env_d.shell("git diff main...csv-export")
+check("the live branch diff agrees with the one the session showed",
+      all(f"diff --git a/{f}" in live_diff for f in ("tally/export/writer.py", "tally/export/columns.py",
+                                                      "tests/export/test_writer.py", "docs/export.md"))
+      and "migrations/0042" not in live_diff and "tally/auth/permissions.py" not in live_diff, live_diff[:300])
+check("git diff --stat against main lists the branch's files", "tally/export/writer.py |" in
+      env_d.shell("git diff --stat main...HEAD") and "files changed" in env_d.shell("git diff --stat main...HEAD"))
+check("git diff against a commit goes to the simulator", env_d.shell_one(["git", "diff", "3d70a1e"]) is None)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 env.simulator = None
 check("staging answers the numbers the session showed",

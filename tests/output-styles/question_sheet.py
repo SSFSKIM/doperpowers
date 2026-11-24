@@ -115,73 +115,115 @@ ENTRY_KEYS = {"id", "question", "header", "options", "multiSelect", "context", "
 OPTION_KEYS = {"label", "description", "preview", "recommended"}
 
 
-def _text(v, name, limit, required=False):
-    if v is None and not required:
+def _string(v, name, limit, required=False, min_length=0):
+    """A string field as the schema types it: present means a string, within its length."""
+    if v is None:
+        if required:
+            raise InputError(f"{name} is required")
         return
-    if not isinstance(v, str) or (required and not v.strip()):
-        raise InputError(f"{name} must be a non-empty string" if required else f"{name} must be a string")
-    if len(v) > limit:
+    if not isinstance(v, str):
+        raise InputError(f"{name} must be a string")
+    if len(v) < min_length:
+        raise InputError(f"{name} must not be empty")
+    if limit is not None and len(v) > limit:
         raise InputError(f"{name} is {len(v)} characters; at most {limit}")
 
 
+def _bool(v, name):
+    if v is not None and not isinstance(v, bool):
+        raise InputError(f"{name} must be a boolean")
+
+
+def _int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+ID = re.compile(r"q[1-9][0-9]*")
+
+
 def validate(inp):
-    """§2.1's schema as a whole; raises InputError naming the first fault."""
+    """The schema as a whole (C2's published tool-input schema, sminos/types/sheet/schema/tool-input.schema.json,
+    with the two whole-call rules its title states); raises InputError naming the first fault. An entry's own
+    rules (unique labels, a preview only without multiSelect, multiSelect only with options, lines in order)
+    are not here: they refuse that entry alone (entry_fault)."""
     if not isinstance(inp, dict) or set(inp) - {"ask", "withdraw"}:
         raise InputError("the input takes only ask and withdraw")
     ask, withdraw = inp.get("ask"), inp.get("withdraw")
-    if not ask and not withdraw:
-        raise InputError("at least one of ask and withdraw must be non-empty")
     if ask is not None and (not isinstance(ask, list) or not 1 <= len(ask) <= LIMITS["entries"]):
         raise InputError(f"ask takes 1 to {LIMITS['entries']} entries")
-    if withdraw is not None and (not isinstance(withdraw, list)
-                                 or not all(isinstance(i, str) and re.fullmatch(r"q\d+", i) for i in withdraw)):
-        raise InputError("withdraw takes question ids such as \"q3\"")
-    named = [e.get("id") for e in ask or [] if isinstance(e, dict) and e.get("id") is not None] + list(withdraw or [])
+    if withdraw is not None and (not isinstance(withdraw, list) or not withdraw
+                                 or not all(isinstance(i, str) and ID.fullmatch(i) for i in withdraw)):
+        raise InputError("withdraw takes one or more question ids such as \"q3\"")
+    if not ask and not withdraw:
+        raise InputError("at least one of ask and withdraw must be non-empty")
+    for n, e in enumerate(ask or [], 1):
+        where = f"entry {n}"
+        if not isinstance(e, dict):
+            raise InputError(f"{where} must be an object")
+        if set(e) - ENTRY_KEYS:
+            raise InputError(f"{where} has a field the schema does not take: {sorted(set(e) - ENTRY_KEYS)}")
+        if "id" in e and not (isinstance(e["id"], str) and ID.fullmatch(e["id"])):
+            raise InputError(f"{where}: id must look like \"q3\"")
+        _string(e.get("question"), f"{where}: question", LIMITS["question"], required=True, min_length=1)
+        _string(e.get("header"), f"{where}: header", LIMITS["header"])
+        _string(e.get("context"), f"{where}: context", LIMITS["context"])
+        _bool(e.get("multiSelect"), f"{where}: multiSelect")
+        opts = e.get("options")
+        if opts is not None and (not isinstance(opts, list) or len(opts) > LIMITS["options"]):
+            raise InputError(f"{where}: options is a list of at most {LIMITS['options']}")
+        for o in opts or []:
+            if not isinstance(o, dict) or set(o) - OPTION_KEYS:
+                raise InputError(f"{where}: an option is an object with label, description, preview, recommended")
+            _string(o.get("label"), f"{where}: an option's label", LIMITS["label"], required=True, min_length=1)
+            _string(o.get("description"), f"{where}: an option's description", LIMITS["description"])
+            _string(o.get("preview"), f"{where}: an option's preview", LIMITS["preview"])
+            _bool(o.get("recommended"), f"{where}: an option's recommended")
+        refs = e.get("references")
+        if refs is not None and (not isinstance(refs, list) or len(refs) > LIMITS["references"]):
+            raise InputError(f"{where}: references is a list of at most {LIMITS['references']}")
+        for r in refs or []:
+            if not isinstance(r, dict) or set(r) - {"path", "lines"}:
+                raise InputError(f"{where}: a reference is an object with path and lines")
+            _string(r.get("path"), f"{where}: a reference's path", None, required=True, min_length=1)
+            lines = r.get("lines")
+            if lines is not None and not (isinstance(lines, list) and len(lines) == 2 and all(_int(x) for x in lines)):
+                raise InputError(f"{where}: a reference's lines are two integers")
+    named = [e.get("id") for e in ask or [] if e.get("id") is not None] + list(withdraw or [])
     dup = next((i for i in named if named.count(i) > 1), None)
     if dup:
         raise InputError(f"{dup} is named more than once in the call")
-    for n, e in enumerate(ask or [], 1):
-        where = f"entry {n}"
-        if not isinstance(e, dict) or set(e) - ENTRY_KEYS:
-            raise InputError(f"{where} has a field the schema does not take: {sorted(set(e) - ENTRY_KEYS)}")
-        if e.get("id") is not None and not (isinstance(e["id"], str) and re.fullmatch(r"q\d+", e["id"])):
-            raise InputError(f"{where}: id must look like \"q3\"")
-        _text(e.get("question"), f"{where}: question", LIMITS["question"], required=True)
-        _text(e.get("header"), f"{where}: header", LIMITS["header"])
-        _text(e.get("context"), f"{where}: context", LIMITS["context"])
-        opts = e.get("options") or []
-        if not isinstance(opts, list) or len(opts) > LIMITS["options"]:
-            raise InputError(f"{where}: options takes at most {LIMITS['options']}")
-        if e.get("multiSelect") and not opts:
-            raise InputError(f"{where}: multiSelect needs options")
-        labels = []
-        for o in opts:
-            if not isinstance(o, dict) or set(o) - OPTION_KEYS:
-                raise InputError(f"{where}: an option has a field the schema does not take")
-            _text(o.get("label"), f"{where}: an option's label", LIMITS["label"], required=True)
-            _text(o.get("description"), f"{where}: an option's description", LIMITS["description"])
-            _text(o.get("preview"), f"{where}: an option's preview", LIMITS["preview"])
-            if o.get("preview") and e.get("multiSelect"):
-                raise InputError(f"{where}: a preview is for single-select questions only")
-            labels.append(o["label"])
-        refs = e.get("references") or []
-        if not isinstance(refs, list) or len(refs) > LIMITS["references"]:
-            raise InputError(f"{where}: references takes at most {LIMITS['references']}")
-        for r in refs:
-            lines = r.get("lines") if isinstance(r, dict) else None
-            if (not isinstance(r, dict) or not isinstance(r.get("path"), str) or set(r) - {"path", "lines"}
-                    or (lines is not None and not (isinstance(lines, list) and len(lines) == 2
-                                                   and all(isinstance(x, int) and x >= 1 for x in lines)
-                                                   and lines[0] <= lines[1]))):
-                raise InputError(f"{where}: a reference is a path and an optional [first, last] line range")
+
+
+def entry_fault(n, e):
+    """An entry's own fault, as the clause of `Not done:` that refuses it (C2's grammar), or None."""
+    opts = e.get("options") or []
+    labels = [o["label"] for o in opts]
+    dup = next((l for l in labels if labels.count(l) > 1), None)
+    if dup is not None:
+        return f'entry {n}, two options share the label "{dup[:200]}"'
+    if e.get("multiSelect") and any(o.get("preview") for o in opts):
+        return f"entry {n}, an option's preview needs a single-select question"
+    if e.get("multiSelect") and not opts:
+        return f"entry {n}, multiSelect needs options"
+    for r in e.get("references") or []:
+        lines = r.get("lines")
+        if lines is not None and not 1 <= lines[0] <= lines[1]:
+            return f"entry {n}, lines must be [a, b] with 1 <= a <= b"
+    return None
+
+
+CLOCK = "15:42"  # the session machine's local time in every scripted world
 
 
 class Sheet:
     """One session's sheet, as the evals need it: open questions with their
-    fields and revisions, ids never reused, and every call recorded."""
+    fields and revisions, ids never reused, and every call recorded with the
+    card each added or revised question showed after it (and before, for a
+    revision)."""
 
-    def __init__(self, fs=None):
+    def __init__(self, fs=None, workdirs=(CWD,)):
         self.fs = fs
+        self.workdirs = tuple(workdirs)
         self.questions = {}  # id -> question; closed ones stay with their state
         self.next_id = 1
         self.calls = []
@@ -190,19 +232,31 @@ class Sheet:
         return [q for q, v in self.questions.items() if v["state"] == "open"]
 
     def capture(self, ref):
-        """A reference's text as Read would return it, or the reason it cannot be captured."""
+        """A reference's text as Read would return it, or the reason it cannot be captured (§2.3: a path outside
+        the session's working directories is refused; a file over 256 KB needs a range)."""
         if self.fs is None:
             return None, "no files in this sheet"
         path = self.fs.resolve(ref["path"])
+        why = lambda reason: f"the reference {ref['path']} could not be read: {reason}"
+        if not any(path == d or path.startswith(d.rstrip("/") + "/") for d in self.workdirs):
+            return None, why("it is outside the session's working directories")
         if Path(path).name.startswith(".env"):
-            return None, f"the reference {ref['path']} could not be read: permission denied"
+            return None, why("permission denied")
         if path not in self.fs.files:
-            return None, f"the reference {ref['path']} could not be read: no such file"
+            return None, why("no such file")
         lines = ref.get("lines")
-        if not lines and len(self.fs.files[path].encode()) > 256 * 1024:
-            return None, (f"the reference {ref['path']} could not be read: the file is over 256 KB; name a line range")
+        size = self.fs.sizes.get(path, len(self.fs.files[path].encode()))
+        if not lines and size > 256 * 1024:
+            return None, why(f"the file is {size // 1024} KB, over Read's 256 KB without a range; name a line range")
         body = self.fs.read(path, *(lines and (lines[0], lines[1] - lines[0] + 1) or ()))
         return {"path": ref["path"], "lines": lines, "body": body}, None
+
+    @staticmethod
+    def card_of(q):
+        return copy.deepcopy({k: v for k, v in q.items() if k != "history"})
+
+    def asked_by(self, q):
+        return "the main conversation" if q["asker"] == "main" else f"the subagent {q['asker']}"
 
     def call(self, inp, asker="main", call_id=None):
         """Applies one call and returns its result text (§2.2); raises InputError for a call that fails the schema."""
@@ -214,23 +268,23 @@ class Sheet:
             self.calls.append(record)
             raise
         added, revised, withdrew, refused = [], [], [], []
+        shown, before = {}, {}
         for n, e in enumerate(inp.get("ask") or [], 1):
             qid = e.get("id")
             if qid is not None:
                 q = self.questions.get(qid)
                 if q is None:
-                    refused.append((n, f"entry {n}, {qid} is not a question on this sheet"))
+                    refused.append((n, f"entry {n}, {qid} is not open (never asked at {CLOCK})"))
                     continue
                 if q["state"] != "open":
-                    refused.append((n, f"entry {n}, {qid} is not open ({q['state']})"))
+                    refused.append((n, f"entry {n}, {qid} is not open ({q['state']} at {CLOCK})"))
                     continue
                 if q["asker"] != asker:
-                    refused.append((n, f"entry {n}, {qid} was asked by another asker"))
+                    refused.append((n, f"entry {n}, {qid} was asked by {self.asked_by(q)}; only its asker revises it"))
                     continue
-            labels = [o["label"] for o in e.get("options") or []]
-            dup = next((l for l in labels if labels.count(l) > 1), None)
-            if dup is not None:
-                refused.append((n, f"entry {n}, two options are labelled {dup!r}; labels must be unique within a question"))
+            fault = entry_fault(n, e)
+            if fault:
+                refused.append((n, fault))
                 continue
             refs, why = [], None
             for r in e.get("references") or []:
@@ -252,29 +306,34 @@ class Sheet:
                 added.append((n, qid))
             else:
                 q = self.questions[qid]
-                q["history"].append({k: v for k, v in q.items() if k != "history"})
+                before[qid] = self.card_of(q)
+                q["history"].append(self.card_of(q))
                 for k in ("question", "header", "options", "multiSelect", "context", "references"):
                     q.pop(k, None)
                 q.update(fields, revision=q["revision"] + 1, call_id=call_id)
                 revised.append((n, qid, q["revision"]))
+            shown[qid] = self.card_of(self.questions[qid])
         for qid in inp.get("withdraw") or []:
             q = self.questions.get(qid)
             if q is None or q["state"] != "open":
-                refused.append((None, f"{qid} is not open" + (f" ({q['state']})" if q else "")))
+                refused.append((None, f"{qid} is not open ({q['state'] if q else 'never asked'} at {CLOCK})"))
             elif q["asker"] != asker and asker != "main":
-                refused.append((None, f"{qid} was asked by another asker"))
+                refused.append((None, f"{qid} was asked by {self.asked_by(q)}; only its asker or the main "
+                                      "conversation withdraws it"))
             else:
                 q["state"] = "withdrawn"
                 withdrew.append(qid)
         record.update(added=[q for _, q in added], revised=[q for _, q, _ in revised], withdrew=withdrew,
-                      refused=[why for _, why in refused])
+                      refused=[why for _, why in refused], shown=shown, before=before,
+                      result=result_text(added, revised, withdrew, refused))
         self.calls.append(record)
-        return result_text(added, revised, withdrew, refused)
+        return record["result"]
 
 
 def result_text(added, revised, withdrew, refused):
-    """§2.2: the first line's fixed grammar, entry places when any entry was refused, then what was not done."""
-    places = any(n is not None for n, _ in refused)
+    """§2.2 and C2's grammar: the first line's sentences, each id with its entry's place exactly when some entry or
+    withdrawal of the call was refused, `Nothing done.` when nothing was; then what was not done."""
+    places = bool(refused)
     first = []
     if added:
         first.append("Added " + ", ".join(f"{q} (entry {n})" if places else q for n, q in added) + ".")
@@ -462,6 +521,7 @@ class Env:
         self.git_log = git_log
         self.agents = 0
         self.committed = dict(fs.files)
+        self.main = dict(fs.files)  # main as the branch left it: what `git diff main...` compares against
         self.commits = 0
         self.simulator = None  # (client, model, facts): answers what the canned shell cannot
         self.suite_extra = 196  # tests of the whole suite the world does not hold
@@ -695,10 +755,32 @@ Command line:
             return "\n".join(out)
         if sub == "diff":
             import difflib
-            out = []
-            for p in mod:
-                out += difflib.unified_diff(self.committed[p].splitlines(), self.fs.files[p].splitlines(),
-                                            f"a/{self.fs.rel(p)}", f"b/{self.fs.rel(p)}", lineterm="")
+            refs = [a for a in args[1:] if not a.startswith("-") and a != "--"]
+            if any(not re.fullmatch(r"(origin/)?main(\.\.\.?(csv-export|HEAD)?)?|HEAD|csv-export", r) for r in refs):
+                return None  # a commit or another ref: the simulator, with the history
+            base = self.main if any("main" in r for r in refs) else self.committed
+            files = [p for p in sorted(set(base) | set(self.fs.files)) if p.startswith(CWD + "/")
+                     and not p.startswith(CWD + "/.fixtures") and base.get(p) != self.fs.files.get(p)]
+            if "--name-only" in args:
+                return "\n".join(self.fs.rel(p) for p in files)
+            if "--name-status" in args:
+                return "\n".join(("A" if p not in base else "D" if p not in self.fs.files else "M") + "\t" +
+                                 self.fs.rel(p) for p in files)
+            out, stat = [], []
+            for p in files:
+                old, new = base.get(p, ""), self.fs.files.get(p, "")
+                d = list(difflib.unified_diff(old.splitlines(), new.splitlines(),
+                                              "/dev/null" if p not in base else f"a/{self.fs.rel(p)}",
+                                              f"b/{self.fs.rel(p)}", lineterm=""))
+                plus = sum(l.startswith("+") and not l.startswith("+++") for l in d)
+                minus = sum(l.startswith("-") and not l.startswith("---") for l in d)
+                stat.append((self.fs.rel(p), plus, minus))
+                out += [f"diff --git a/{self.fs.rel(p)} b/{self.fs.rel(p)}"] + d
+            if "--stat" in args or "--shortstat" in args:
+                lines = [f" {f} | {a + m} {'+' * min(a, 40)}{'-' * min(m, 40)}" for f, a, m in stat]
+                total = f" {len(stat)} files changed, {sum(a for _, a, _ in stat)} insertions(+), " \
+                        f"{sum(m for _, _, m in stat)} deletions(-)"
+                return "\n".join(([] if "--shortstat" in args else lines) + [total]) if stat else ""
             return "\n".join(out)
         if sub == "commit":
             if not mod and not new:

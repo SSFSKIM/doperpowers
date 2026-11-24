@@ -511,6 +511,8 @@ def _premise_pull(env):
         '    },\n'
         '    "usage_events": {')
     env.fs.files[P("migrations/0042_pii_column_grants.py")] = MIGRATION_0042
+    for path in (P("tally/auth/permissions.py"), P("migrations/0042_pii_column_grants.py")):  # main moved too
+        env.main[path] = env.fs.files[path]
     lines = env.git_log.split("\n")  # the branch's commits now sit on main's new one
     base = GIT_LOG.split("\n")
     env.git_log = "\n".join([l for l in lines if l not in base] + [
