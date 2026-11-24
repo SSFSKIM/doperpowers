@@ -619,6 +619,11 @@ run_suites_c() {
     fail "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_find.py"; then pass "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; else
     fail "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; fi
+  # The question sheet's C2, M1 (docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md): the published set
+  # (sminos/types/sheet/), the door and the reader.
+  if python3 -B "$SCRIPT_DIR/test_sheet_contract.py"; then
+    pass "the question sheet's published set: the generator's, valid, the reader's model, the envelopes, the door (test_sheet_contract.py)"
+  else fail "the question sheet's published set: the generator's, valid, the reader's model, the envelopes, the door (test_sheet_contract.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a

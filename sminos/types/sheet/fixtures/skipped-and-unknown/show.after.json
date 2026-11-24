@@ -1,0 +1,51 @@
+{
+ "closed": {},
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0001",
+   "handle": "q1",
+   "header": "Migration",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "unknown",
+   "id": "q99",
+   "key": "page-1801a005",
+   "kind": "answer",
+   "state": "closed",
+   "verdict": "closed"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "unknown",
+   "id": "q42",
+   "key": "page-1801d006",
+   "kind": "dismiss",
+   "state": "closed",
+   "verdict": "closed"
+  }
+ ],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-000000000018",
+ "v": 1
+}

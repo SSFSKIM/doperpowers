@@ -1,0 +1,32 @@
+{
+ "closed": {},
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0001",
+   "handle": "q1",
+   "header": "Migration",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [],
+ "sent": [],
+ "seq": 2,
+ "session": "5eed0000-0000-4000-8000-000000000020",
+ "v": 1
+}

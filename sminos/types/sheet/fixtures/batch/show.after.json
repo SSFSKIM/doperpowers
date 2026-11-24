@@ -1,0 +1,160 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "places": [
+    1
+   ],
+   "receipt": "OAuth",
+   "revision": 1
+  },
+  "q2": {
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "places": [
+    2
+   ],
+   "receipt": "No",
+   "revision": 1
+  },
+  "q3": {
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Empty state",
+   "how": "dismissed",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1401a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "places": [
+    1
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  },
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q2",
+   "images": [],
+   "key": "page-1401a002",
+   "kind": "answer",
+   "picks": [
+    "No"
+   ],
+   "places": [
+    2
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": {
+    "agentId": "a1b2c3"
+   },
+   "revision": 1,
+   "taken": true,
+   "text": "wait for the backup"
+  },
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q3",
+   "key": "page-1401d003",
+   "kind": "dismiss",
+   "question": {
+    "askedAt": "2026-11-23T09:03:00.000Z",
+    "asker": "main",
+    "header": "Empty state",
+    "multiSelect": false,
+    "options": [],
+    "question": "What should the empty state say?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "key": "page-1401a001",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "key": "page-1401a002",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q3",
+   "key": "page-1401d003",
+   "kind": "dismiss",
+   "state": "accepted",
+   "verdict": "applied"
+  }
+ ],
+ "seq": 5,
+ "session": "5eed0000-0000-4000-8000-000000000014",
+ "v": 1
+}

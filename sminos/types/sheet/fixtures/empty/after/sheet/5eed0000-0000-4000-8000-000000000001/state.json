@@ -1,0 +1,24 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 1,
+  "owed": [],
+  "projects": {}
+ },
+ "nextId": 1,
+ "pending": [],
+ "questions": [],
+ "seq": 1,
+ "session": "5eed0000-0000-4000-8000-000000000001",
+ "v": 1,
+ "verdicts": {}
+}

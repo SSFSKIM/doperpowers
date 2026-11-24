@@ -1,0 +1,241 @@
+[
+ {
+  "input": {
+   "ask": [
+    {
+     "header": "Auth method",
+     "options": [
+      {
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "label": "Passkeys"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [
+      {
+       "lines": [
+        40,
+        80
+       ],
+       "path": "src/auth.ts"
+      }
+     ]
+    },
+    {
+     "question": "Question 2 of the batch?"
+    },
+    {
+     "question": "Question 3 of the batch?"
+    },
+    {
+     "question": "Question 4 of the batch?"
+    },
+    {
+     "question": "Question 5 of the batch?"
+    },
+    {
+     "question": "Question 6 of the batch?"
+    },
+    {
+     "question": "Question 7 of the batch?"
+    },
+    {
+     "question": "Question 8 of the batch?"
+    }
+   ]
+  },
+  "parsed": {
+   "added": [
+    {
+     "id": "q1"
+    },
+    {
+     "id": "q2"
+    },
+    {
+     "id": "q3"
+    },
+    {
+     "id": "q4"
+    },
+    {
+     "id": "q5"
+    },
+    {
+     "id": "q6"
+    },
+    {
+     "id": "q7"
+    },
+    {
+     "id": "q8"
+    }
+   ],
+   "form": "sentences",
+   "revised": [],
+   "withdrew": []
+  },
+  "result": "Added q1, q2, q3, q4, q5, q6, q7, q8."
+ },
+ {
+  "input": {
+   "ask": [
+    {
+     "question": "Which log level in production?"
+    },
+    {
+     "id": "q3",
+     "question": "Ship the migration today?"
+    },
+    {
+     "question": "Rename the settings page?"
+    }
+   ],
+   "withdraw": [
+    "q2"
+   ]
+  },
+  "parsed": {
+   "added": [
+    {
+     "id": "q7"
+    },
+    {
+     "id": "q8"
+    }
+   ],
+   "form": "sentences",
+   "revised": [
+    {
+     "id": "q3",
+     "revision": 2
+    }
+   ],
+   "withdrew": [
+    "q2"
+   ]
+  },
+  "result": "Added q7, q8. Revised q3 (revision 2). Withdrew q2.\nNo surface can show these questions right now; they wait on the sheet and show when one returns."
+ },
+ {
+  "input": {
+   "ask": [
+    {
+     "question": "Which log level in production?"
+    },
+    {
+     "id": "q3",
+     "question": "Ship the migration today?"
+    },
+    {
+     "question": "Is this check right?",
+     "references": [
+      {
+       "path": "src/x.ts"
+      }
+     ]
+    },
+    {
+     "question": "Rename the settings page?"
+    }
+   ],
+   "withdraw": [
+    "q5"
+   ]
+  },
+  "parsed": {
+   "added": [
+    {
+     "entry": 1,
+     "id": "q7"
+    },
+    {
+     "entry": 4,
+     "id": "q8"
+    }
+   ],
+   "form": "sentences",
+   "revised": [
+    {
+     "entry": 2,
+     "id": "q3",
+     "revision": 2
+    }
+   ],
+   "withdrew": []
+  },
+  "result": "Added q7 (entry 1), q8 (entry 4). Revised q3 (entry 2, revision 2).\nNot done: entry 3, the reference src/x.ts could not be read: permission denied. q5 is not open (answered at 14:05)."
+ },
+ {
+  "input": {
+   "ask": [
+    {
+     "options": [
+      {
+       "label": "Yes"
+      },
+      {
+       "label": "Yes"
+      }
+     ],
+     "question": "Keep the export?"
+    },
+    {
+     "question": "Which log level in production?"
+    }
+   ]
+  },
+  "parsed": {
+   "added": [
+    {
+     "entry": 2,
+     "id": "q4"
+    }
+   ],
+   "form": "sentences",
+   "revised": [],
+   "withdrew": []
+  },
+  "result": "Added q4 (entry 2).\nNot done: entry 1, two options share the label \"Yes\"."
+ },
+ {
+  "input": {
+   "withdraw": [
+    "q3"
+   ]
+  },
+  "parsed": {
+   "form": "nothing"
+  },
+  "result": "Nothing done.\nNot done: q3 is not open (withdrawn at 09:12)."
+ },
+ {
+  "input": {
+   "ask": [
+    {
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
+  "parsed": {
+   "form": "nothing"
+  },
+  "result": "Nothing done.\nNot done: the sheet could not be written (no step answered); call again."
+ },
+ {
+  "input": {
+   "ask": [
+    {
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
+  "parsed": {
+   "form": "unknown"
+  },
+  "result": "Outcome not known yet.\nThe sheet did not answer. Do not repeat this call: what it did will be told to you."
+ }
+]

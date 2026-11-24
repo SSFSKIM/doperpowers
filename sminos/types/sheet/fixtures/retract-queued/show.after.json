@@ -1,0 +1,122 @@
+{
+ "closed": {
+  "q2": {
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "places": [
+    2
+   ],
+   "receipt": "No",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "handle": "q1",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:44.000Z",
+   "by": "page",
+   "id": "q2",
+   "images": [],
+   "key": "page-0701a005",
+   "kind": "answer",
+   "picks": [
+    "No"
+   ],
+   "places": [
+    2
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": "after the freeze"
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "key": "page-0701a001",
+   "kind": "answer",
+   "state": "retracted",
+   "verdict": "retracted"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "key": "page-0701a003",
+   "kind": "answer",
+   "state": "retracted",
+   "verdict": "retracted"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "key": "page-0701a005",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "key": "page-0701r002",
+   "kind": "retract",
+   "state": "retracted",
+   "target": "page-0701a001",
+   "verdict": "retracted"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "key": "page-0701r004",
+   "kind": "retract",
+   "state": "retracted",
+   "target": "page-0701a003",
+   "verdict": "retracted"
+  }
+ ],
+ "seq": 4,
+ "session": "5eed0000-0000-4000-8000-000000000007",
+ "v": 1
+}

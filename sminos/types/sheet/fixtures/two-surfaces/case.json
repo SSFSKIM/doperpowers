@@ -1,0 +1,35 @@
+{
+ "covers": "§4.2 rows 1 and 3: two answers to one question in one tail, from page and cli; the first applied wins",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0401a001",
+   "cli-0401b002"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "two-surfaces",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000004",
+ "verdicts": {
+  "cli-0401b002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "answered",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "closed"
+  },
+  "page-0401a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

@@ -1,0 +1,103 @@
+{
+ "closed": {},
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "handle": "q1",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "handle": "q2",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "queued": {
+    "at": "2026-11-23T09:59:44.000Z",
+    "by": "page",
+    "images": [],
+    "key": "page-0701a005",
+    "kind": "answer",
+    "picks": [
+     "No"
+    ],
+    "revision": 1,
+    "text": "after the freeze"
+   },
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [],
+ "sent": [
+  {
+   "cancelled": true,
+   "id": "q1",
+   "key": "page-0701a001",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "key": "page-0701r002",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-0701a001"
+  },
+  {
+   "cancelled": true,
+   "id": "q2",
+   "key": "page-0701a003",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "key": "page-0701r004",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-0701a003"
+  },
+  {
+   "id": "q2",
+   "key": "page-0701a005",
+   "kind": "answer",
+   "state": "queued"
+  }
+ ],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-000000000007",
+ "v": 1
+}

@@ -1,0 +1,73 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "deliveredAt": "2026-11-23T10:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "places": [
+    1
+   ],
+   "receipt": "OAuth",
+   "revision": 1
+  },
+  "q2": {
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "deliveredAt": "2026-11-23T09:35:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "places": [
+    1
+   ],
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "handle": "q3",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "key": "maws-1101d003",
+   "kind": "delivered",
+   "state": "delivered",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q1",
+   "key": "page-1101a001",
+   "kind": "answer",
+   "state": "delivered",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q2",
+   "key": "page-1101a002",
+   "kind": "answer",
+   "state": "delivered",
+   "verdict": "applied"
+  }
+ ],
+ "seq": 9,
+ "session": "5eed0000-0000-4000-8000-000000000011",
+ "v": 1
+}

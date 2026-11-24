@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""E1 of the question sheet: when an open question it asked changes, does the
+agent revise it rather than ask a second one? Hand-run: it spends model calls.
+
+Composite spec: docs/doperpowers/specs/2026-11-23-question-sheet-design.md in
+the MAWS repository, child C1 (parent pin ad4427f93, MAWS board ticket #866),
+§2.4 and §12 (E1).
+
+The human hands the agent the CSV export spec's M1 and M2 and leaves. The
+agent reads the code, puts three questions on its sheet in one call (q1 the
+row cap, recommending splitting big exports into several files; q2 billing
+contacts' email and phone; q3 accounts with no time zone), and works. Then
+the scenario's trigger arrives and the model continues the session live,
+under the to-human style, with the stub of the sheet's tool described by the
+arm (question_sheet.py; arms are description files, default
+question-sheet/description-v3.md, the wording the composite ships; v1 and v2
+are the wordings the baseline compared):
+
+  option_gone  reading the downloads code: a job owns exactly one file, so
+               q1's recommended option (several files) cannot be built
+               without unscheduled work; q1 should be revised
+  premise      a rebase brings a migration that makes the contacts' email and
+               phone admin-only and leaves open whether finance reads them;
+               q2's premise is gone and its question changes; revise
+  subagent     a subagent the agent sent off reports that finance's loader
+               accepts only UTC with a literal Z: q3 (no time zone) becomes a
+               question about every account's format; revise
+  distinct     the control: the legacy writer M2 deletes feeds finance's
+               nightly dump, a new matter; a new question is right, and
+               folding it into q1-q3 is the failure
+
+Histories (question_sheet_session.e1_script): short (the ask, then the
+trigger); far (the ask, then about forty tool rounds of work: M1 and M2,
+library source read while debugging, a review and its fixes, the full suite,
+the branch's diff; then the trigger); near (the same steps with the ask moved
+to just before the trigger). far and near differ only in how far back the
+ask is, so far minus near is what having moved on costs.
+
+The project's shell is canned (git, files, grep, sed, pytest, the staging
+numbers the session showed); a command it cannot answer goes to
+--shell-model, told the facts the session established and to invent no
+problem (question_sheet.Env.simulate); each such answer is kept on the run.
+
+A run ends at the turn's end, a final message, --max-steps responses, or one
+response after the call that revises or withdraws the target (in the
+control, after its first sheet call): an agent that asks early may put
+another question first and come to the target later. Its outcome, from the stub's record:
+
+  revised                 the target revised (an `ask` entry with its id)
+  replaced                the target withdrawn and a question for the same
+                          decision added: one question stands, the human's
+                          draft and the "updated" mark are lost
+  withdrawn               the target withdrawn and nothing added for it
+  duplicated              a question for the same decision added while the
+                          target stays open: the observed problem
+  revised+duplicated      both
+  untouched               the target left as it was (cut_off when the run ran
+                          out of steps first)
+  distinct: added, repurposed (an open question revised into the new matter),
+            no_ask
+
+Whether an added question asks for the same decision as the target, and
+whether a revision still asks for the decision it replaced, is judged
+(claude-opus-5-5, --judge-effort) from the two cards alone. The second
+judgment decides only the distinct control: in the other scenarios a revision
+of the target counts as revised even when it broadens the question.
+
+Each run also records how many responses came before its first sheet call:
+§2.4 asks for every question in one call, and an agent that batches waits
+for the turn's end to ask what it knew at its first step.
+
+  python3 tests/output-styles/question-sheet-revise-eval.py [NAME=DESCRIPTION.md ...]
+      [--scenarios option_gone,premise,subagent,distinct] [--history far] [--reps 10]
+      [--model claude-opus-5-5] [--effort medium] [--judge-effort low] [--max-steps 20]
+      [--shell-model claude-sonnet-5-5]
+      [--workers 8] [--out question-sheet-revise-results.json] [--dry-run]
+
+With no arguments it runs Acceptance 14's E1 rows (the far history, 10 runs
+of each scenario, v3, the subject at medium effort as the baseline ran),
+prints PASS, FAIL, "short" (a scenario with fewer than 10 runs) or
+"incomplete" (a run that errored or whose judging gave no valid verdict) per
+arm, and exits 0 only when every arm passes.
+
+It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
+ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
+"""
+import argparse, json, sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import question_sheet as qs  # noqa: E402
+import question_sheet_session as ss  # noqa: E402
+
+SAME = """An agent keeps questions for a human on a sheet; the human sees each one as a card. Question A was open on the sheet. Later the agent put question B on it.
+
+<A>
+{a}
+</A>
+
+<B>
+{b}
+</B>
+
+Does B ask the human for the same decision as A, or for one that would settle or replace A's, so that a human who saw both would have to work out which one stands? Or is B a separate decision, answerable on its own whatever the answer to A? Answer JSON only: {"same_decision": true|false, "why": "<one short clause>"}"""
+
+REVISED = """An agent keeps questions for a human on a sheet and revised one of them in place.
+
+<before>
+{a}
+</before>
+
+<after>
+{b}
+</after>
+
+Does the revised question still ask for the same decision as before (reframed, with facts or options changed, is fine), or has it become a question about a different matter? Answer JSON only: {"same_decision": true|false, "why": "<one short clause>"}"""
+
+
+def card(q):
+    return qs.render_card(q)  # the references too: a captured file can show two questions concern one decision
+
+
+SAME_VALID = lambda v: isinstance(v.get("same_decision"), bool)
+
+
+def run(job, args, arms):
+    arm, scenario, history, rep = job
+    env, prefix, system, tools = qs.session(ss.e1_script(scenario, history), arms[arm], simulator=(client, args.shell_model))
+    n0 = len(env.sheet.calls)
+    before = {q: json.loads(json.dumps(v)) for q, v in env.sheet.questions.items()}
+    target = ss.E1_TRIGGERS[scenario]["target"]
+
+    def touched(env, calls):  # the target revised or withdrawn; in the control, any call
+        return any(target in c.get("revised", []) + c.get("withdrew", []) for c in calls) if target else bool(calls)
+    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps, touched)
+    first = qs.sheet_calls(steps)
+    hit = next((i for i, b in first if any(c.get("call_id") == b["id"] and target in c.get("revised", []) +
+                                           c.get("withdrew", []) for c in env.sheet.calls)), None)
+    return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
+            "first_sheet_step": first[0][0] if first else None, "target_step": hit,
+            "calls": env.sheet.calls[n0:], "before": before, "simulated": env.simulated,
+            "after": {q: {k: v for k, v in env.sheet.questions[q].items() if k != "history"} for q in env.sheet.questions}}
+
+
+def classify(x, judge_effort):
+    """The run's outcome, with the judgments it rests on written on the run. Each card is judged as the call that
+    made it showed it (the call's own record), never in a later version. A judge with no valid verdict raises
+    JudgeError, which the caller records as the outcome "judge_error": the arm's gate is then incomplete."""
+    t = ss.E1_TRIGGERS[x["scenario"]]
+    target, calls = t["target"], [c for c in x["calls"] if "error" not in c]
+    x["schema_errors"] = sum("error" in c for c in x["calls"])
+    x["judged"] = {}
+    revised, repurposed = [], []
+    for i, c in enumerate(calls):  # does each revision still ask what the card before it asked?
+        for q in c["revised"]:
+            key = f"call {i} revise {q}"
+            x["judged"][key] = qs.judge(client, REVISED.replace("{a}", card(c["before"][q])).replace(
+                "{b}", card(c["shown"][q])), judge_effort, valid=SAME_VALID)
+            revised.append(q)
+            if x["judged"][key]["same_decision"] is False:
+                repurposed.append(q)
+    added = [(i, q) for i, c in enumerate(calls) for q in c["added"]]
+    withdrew = [q for c in calls for q in c["withdrew"]]
+    if target is None:
+        x["outcome"] = "repurposed" if repurposed else "added" if added else "no_ask"
+        x["repurposed"] = repurposed
+        return x
+    same = []
+    for i, q in added:
+        v = qs.judge(client, SAME.replace("{a}", card(x["before"][target])).replace("{b}", card(calls[i]["shown"][q])),
+                     judge_effort, valid=SAME_VALID)
+        x["judged"][f"call {i} added {q}"] = v
+        if v["same_decision"] is True:
+            same.append(q)
+    open_target = x["after"][target]["state"] == "open"
+    if target in revised:
+        x["outcome"] = "revised+duplicated" if same else "revised"
+    elif target in withdrew:
+        x["outcome"] = "replaced" if same else "withdrawn"
+    elif same and open_target:
+        x["outcome"] = "duplicated"
+    else:
+        x["outcome"] = "cut_off" if x["ended"] == "max_steps" else "untouched"
+    x["repurposed"] = [q for q in repurposed if q != target]
+    return x
+
+
+FAIL = {"duplicated", "revised+duplicated", "untouched", "cut_off", "repurposed"}
+
+
+def gate(results):
+    """Acceptance 14's E1 gate, per arm, on the far history: at most 1 failure in 30 changed-scenario runs, and no
+    repurposed question in 10 control runs. Each changed scenario needs 10 runs and the control 10, or the arm is
+    "short"; a run that errored or whose judging is incomplete makes the arm "incomplete", never a pass."""
+    out = {}
+    for x in results:
+        if x.get("history", (x.get("job") or [None] * 3)[2]) != "far":
+            continue
+        arm = x.get("arm") or x["job"][0]
+        g = out.setdefault(arm, {"runs": {}, "changed": 0, "failures": 0, "control": 0, "repurposed": 0,
+                                 "incomplete": 0})
+        if "error" in x or x.get("outcome") == "judge_error":
+            g["incomplete"] += 1
+            continue
+        g["runs"][x["scenario"]] = g["runs"].get(x["scenario"], 0) + 1
+        if ss.E1_TRIGGERS[x["scenario"]]["target"] is None:
+            g["control"] += 1
+            g["repurposed"] += x["outcome"] == "repurposed"
+        else:
+            g["changed"] += 1
+            g["failures"] += x["outcome"] in FAIL
+    for g in out.values():
+        if g["incomplete"]:
+            g["verdict"] = "incomplete"
+        elif any(g["runs"].get(s, 0) < 10 for s in ss.E1_TRIGGERS):
+            g["verdict"] = "short"
+        else:
+            g["verdict"] = "PASS" if g["failures"] <= 1 and g["repurposed"] == 0 else "FAIL"
+    return out
+
+
+def summary(results):
+    rows = {}
+    for x in results:
+        if "error" in x:
+            continue
+        r = rows.setdefault((x["arm"], x["scenario"], x["history"]), {"runs": 0, "outcomes": {}, "schema_errors": 0,
+                                                                     "responses_before_sheet": []})
+        r["runs"] += 1
+        if x.get("first_sheet_step") is not None:
+            r["responses_before_sheet"].append(x["first_sheet_step"])
+        if x.get("target_step") is not None:
+            r.setdefault("responses_before_target", []).append(x["target_step"])
+        r["outcomes"][x["outcome"]] = r["outcomes"].get(x["outcome"], 0) + 1
+        r["schema_errors"] += x["schema_errors"]
+    return rows
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("arms", nargs="*", help="NAME=PATH to a description file (default v1)")
+    ap.add_argument("--scenarios", default=",".join(ss.E1_TRIGGERS))
+    ap.add_argument("--history", default="far")
+    ap.add_argument("--reps", type=int, default=10)
+    ap.add_argument("--model", default="claude-opus-5-5")
+    ap.add_argument("--effort", default="medium")
+    ap.add_argument("--judge-effort", default="low")
+    ap.add_argument("--max-steps", type=int, default=20)
+    ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--out", default="question-sheet-revise-results.json")
+    ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")
+    args = ap.parse_args()
+    arms = dict(a.split("=", 1) for a in args.arms) or {"v3": str(qs.DEFAULT_ARM)}
+    jobs = [(a, s, h, r) for a in arms for s in args.scenarios.split(",") for h in args.history.split(",")
+            for r in range(args.reps)]
+    if args.dry_run:
+        for a, s, h, _ in sorted({j[:3] + (0,) for j in jobs}):
+            env, prefix, system, tools = qs.session(ss.e1_script(s, h), arms[a])
+            print(a, s, h, f"{len(prefix)} messages, {len(json.dumps(prefix)):,} characters, open {env.sheet.open_ids()}")
+        print(len(jobs), "runs")
+        raise SystemExit
+    from mid_turn import gateway_client
+    client = gateway_client()
+    out = qs.run_jobs(jobs, key=lambda j: j[:3], run=lambda j: run(j, args, arms), workers=args.workers)
+    for x in out:
+        if "error" not in x:
+            try:
+                classify(x, args.judge_effort)
+            except Exception as e:
+                x["outcome"], x["judge_error"] = "judge_error", repr(e)
+    out.sort(key=lambda x: (x.get("arm", ""), x.get("scenario", ""), x.get("history", ""), x.get("rep", 0)))
+    usage = qs.usage_total(out)
+    sim = [y["usage"] for x in out for y in x.get("simulated", []) if y.get("usage")]
+    side = {"judge": dict(qs.JUDGE_USAGE), "shell_simulator": {"calls": len(sim), "input": sum(y["input"] for y in sim),
+                                                                "output": sum(y["output"] for y in sim)}}
+    side["plan_usage_waits"] = list(qs.PLAN_WAITS)
+    print("judges", side["judge"], "shell simulator", side["shell_simulator"], "plan-usage waits", len(qs.PLAN_WAITS))
+    Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage, "side_usage": side,
+                                          "runs": out}, indent=1, ensure_ascii=False, default=str))
+    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; usage {usage}, about ${qs.cost(usage, args.model)} "
+          f"at list price (judges not counted); full output in {args.out}")
+    for key, r in sorted(summary(out).items()):
+        fails = sum(v for k, v in r["outcomes"].items() if k in FAIL)
+        print(*key, f"runs {r['runs']}", json.dumps(r["outcomes"]), f"failures {fails}", f"schema errors {r['schema_errors']}",
+              f"responses before the first sheet call {sorted(r['responses_before_sheet'])}",
+              f"before the target's revision {sorted(r.get('responses_before_target', []))}")
+    for x in out:
+        if "error" in x:
+            print("error", x["job"], x["error"])
+        else:
+            print(x["arm"], x["scenario"], x["history"], x["rep"], x["outcome"], x["ended"],
+                  [(c.get("added"), c.get("revised"), c.get("withdrew"), c.get("error")) for c in x["calls"]])
+    print("\nAcceptance 14, E1 (far history; at most 1 failure in 30 changed-scenario runs, no repurposed question in "
+          "10 control runs; timing reported above, not gated):")
+    verdicts = gate(out)
+    for arm, g in sorted(verdicts.items()):
+        print(f"  {arm}: {g['verdict']}  failures {g['failures']}/{g['changed']}, repurposed {g['repurposed']}/{g['control']}"
+              f", runs per scenario {g['runs']}" + (f", incomplete runs {g['incomplete']}" if g["incomplete"] else ""))
+    raise SystemExit(0 if verdicts and all(g["verdict"] == "PASS" for g in verdicts.values()) else 1)

@@ -1,0 +1,24 @@
+{
+ "covers": "a new record: a start on a session with none",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "source": "startup",
+   "today": {
+    "asks": [],
+    "definite": true
+   }
+  }
+ },
+ "name": "empty",
+ "now": "2026-11-23T09:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000001",
+ "verdicts": {}
+}

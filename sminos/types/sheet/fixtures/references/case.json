@@ -1,0 +1,27 @@
+{
+ "covers": "a text reference with lines, one without, an image: their bodies under refs/, named by their hash; a reader marks each changed where the file at abs is missing",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "cli-1901a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "references",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000019",
+ "verdicts": {
+  "cli-1901a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

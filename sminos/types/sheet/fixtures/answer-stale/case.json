@@ -1,0 +1,28 @@
+{
+ "covers": "§4.2 row 2: an answer to revision 1 of a question at revision 2",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0301a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "answer-stale",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000003",
+ "verdicts": {
+  "page-0301a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "current": 2,
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "stale"
+  }
+ }
+}

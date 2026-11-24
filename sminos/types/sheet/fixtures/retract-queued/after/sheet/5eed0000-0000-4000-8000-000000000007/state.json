@@ -1,0 +1,135 @@
+{
+ "calls": [],
+ "closed": {
+  "q2": {
+   "answer": "\"Ship the migration today?\" → No. Their text: \"after the freeze\"",
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "page-0701a005",
+   "places": [
+    2
+   ],
+   "question": "Ship the migration today?",
+   "receipt": "No",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 649,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [
+   {
+    "kind": "answered",
+    "n": 3,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000007:q2",
+    "text": "\"Ship the migration today?\" → No. Their text: \"after the freeze\""
+   }
+  ],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 3,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:44.000Z",
+   "by": "page",
+   "id": "q2",
+   "images": [],
+   "key": "page-0701a005",
+   "kind": "answer",
+   "picks": [
+    "No"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": "after the freeze"
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 4,
+ "session": "5eed0000-0000-4000-8000-000000000007",
+ "v": 1,
+ "verdicts": {
+  "page-0701a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "retracted"
+  },
+  "page-0701a003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "retracted"
+  },
+  "page-0701a005": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-0701r002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0701a001",
+   "verdict": "retracted"
+  },
+  "page-0701r004": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0701a003",
+   "verdict": "retracted"
+  }
+ }
+}

@@ -1,0 +1,77 @@
+{
+ "covers": "event start carrying an ask only today's tool accepts (a 2,001-character question, a 201-character label, a preview on a multi-select question): the three kept as questions, unchanged, marked importedFrom",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "source": "resume",
+   "today": {
+    "asks": [
+     {
+      "askedAt": "2026-11-22T18:00:00.000Z",
+      "callId": "toolu_01Legacy00017",
+      "questions": [
+       {
+        "header": "Rollout",
+        "multiSelect": false,
+        "options": [
+         {
+          "description": "The note's plan, step by step.",
+          "label": "As written"
+         },
+         {
+          "description": "Skip the beta cohort.",
+          "label": "Faster"
+         }
+        ],
+        "question": "Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which "
+       },
+       {
+        "header": "Gate",
+        "multiSelect": false,
+        "options": [
+         {
+          "description": "Every gate the note lists.",
+          "label": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n"
+         },
+         {
+          "description": "Ship to everyone at once.",
+          "label": "No gate"
+         }
+        ],
+        "question": "Which rollout gate?"
+       },
+       {
+        "header": "Screens",
+        "multiSelect": true,
+        "options": [
+         {
+          "description": "The landing screen.",
+          "label": "Home",
+          "preview": "## Home\n\nThe new grid."
+         },
+         {
+          "description": "The account screens.",
+          "label": "Settings"
+         }
+        ],
+        "question": "Which screens get the new layout?"
+       }
+      ]
+     }
+    ],
+    "definite": true
+   }
+  }
+ },
+ "name": "imported-legacy",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000017",
+ "verdicts": {}
+}

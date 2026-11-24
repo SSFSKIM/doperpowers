@@ -1,0 +1,144 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {
+   "toolu_01Legacy00017": [
+    "q1",
+    "q2",
+    "q3"
+   ]
+  },
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [
+   {
+    "choices": [
+     "As written",
+     "Faster"
+    ],
+    "kind": "question",
+    "n": 1,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000017:q1",
+    "text": [
+     "Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which "
+    ]
+   },
+   {
+    "choices": [
+     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n",
+     "No gate"
+    ],
+    "kind": "question",
+    "n": 2,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000017:q2",
+    "text": [
+     "Which rollout gate?"
+    ]
+   },
+   {
+    "choices": [
+     "Home",
+     "Settings"
+    ],
+    "kind": "question",
+    "n": 3,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000017:q3",
+    "text": [
+     "Which screens get the new layout?"
+    ]
+   }
+  ],
+  "projects": {}
+ },
+ "nextId": 4,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Legacy00017",
+   "header": "Rollout",
+   "id": "q1",
+   "importedFrom": {
+    "callId": "toolu_01Legacy00017",
+    "index": 0
+   },
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The note's plan, step by step.",
+     "label": "As written"
+    },
+    {
+     "description": "Skip the beta cohort.",
+     "label": "Faster"
+    }
+   ],
+   "question": "Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which of the rollout plans in the design note should we follow, given everything listed below? Which ",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Legacy00017",
+   "header": "Gate",
+   "id": "q2",
+   "importedFrom": {
+    "callId": "toolu_01Legacy00017",
+    "index": 1
+   },
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "Every gate the note lists.",
+     "label": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n"
+    },
+    {
+     "description": "Ship to everyone at once.",
+     "label": "No gate"
+    }
+   ],
+   "question": "Which rollout gate?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Legacy00017",
+   "header": "Screens",
+   "id": "q3",
+   "importedFrom": {
+    "callId": "toolu_01Legacy00017",
+    "index": 2
+   },
+   "multiSelect": true,
+   "options": [
+    {
+     "description": "The landing screen.",
+     "label": "Home",
+     "preview": "## Home\n\nThe new grid."
+    },
+    {
+     "description": "The account screens.",
+     "label": "Settings"
+    }
+   ],
+   "question": "Which screens get the new layout?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 1,
+ "session": "5eed0000-0000-4000-8000-000000000017",
+ "v": 1,
+ "verdicts": {}
+}

@@ -1,0 +1,100 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which auth method should the login use?\" → Passkeys.",
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-1201a001",
+   "places": [
+    2
+   ],
+   "question": "Which auth method should the login use?",
+   "receipt": "Passkeys",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 268,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 3,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1201a001",
+   "kind": "answer",
+   "picks": [
+    "Passkeys"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 6,
+ "session": "5eed0000-0000-4000-8000-000000000012",
+ "v": 1,
+ "verdicts": {
+  "page-1201a001": {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

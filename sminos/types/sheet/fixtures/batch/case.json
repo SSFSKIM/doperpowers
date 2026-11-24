@@ -1,0 +1,43 @@
+{
+ "covers": "one Send of three lines (two answers and a dismissal) applied whole: the main conversation's outcomes and a running subagent's, taken",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": [
+    "a1b2c3"
+   ]
+  },
+  "event": "drain",
+  "keys": [
+   "page-1401a001",
+   "page-1401a002",
+   "page-1401d003"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "batch",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000014",
+ "verdicts": {
+  "page-1401a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1401a002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1401d003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q3",
+   "kind": "dismiss",
+   "verdict": "applied"
+  }
+ }
+}

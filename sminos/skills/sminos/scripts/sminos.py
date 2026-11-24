@@ -147,6 +147,13 @@ back by a fill.
                    (`watch` prints its id; a unique prefix will do), racing the terminal's own dialog
     sminos answer   <member> <request> <answer>...        # a question it asked, one answer per question
                    (an option's label or number; multi-select: "1,3"); its async questions too
+    sminos sheet    show <member>|--session <id> [--json [--keys K,..]]   # a session's question sheet as its
+                   record has it: each open question by its handle (q7, q7@2 after a revise) with a queued answer;
+                   --json the reader's model (sminos/types/sheet/), --keys holds it to those lines' keys
+    sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
+                   answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
+                   session told; prints each key's state, `queued` until a verdict comes. Exit 2 a line refused,
+                   3 no sheet, 75 busy
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -21471,6 +21478,15 @@ def control_module():
     return sibling_module("sminos_control")
 
 
+def sheet_module():
+    """The question sheet's record: its door and its reader (sminos_sheet)."""
+    return sibling_module("sminos_sheet")
+
+
+def cmd_sheet(a):
+    sheet_module().cmd_sheet(a)
+
+
 def cmd_bridge(a):
     bridge_module().cmd_bridge(a)
 
@@ -21834,6 +21850,21 @@ def build_parser():
     br.add_argument("--launch", default=None)   # the process's launch its module minted (O12 M7): `--launch=<id>`
     br.set_defaults(fn=cmd_bridge)
 
+    # The question sheet (sminos_sheet). Given --session, a verb is dispatched ahead of the migration (main): a
+    # session's own hooks and surfaces call it, and it reads no registry.
+    sq = sub.add_parser("sheet", add_help=False)
+    sqsub = sq.add_subparsers(dest="sheet_op")
+    for op in ("put", "show"):
+        so = sqsub.add_parser(op, add_help=False)
+        so.add_argument("member", nargs="?", default="")
+        so.add_argument("--session", default="")
+        if op == "put":
+            so.add_argument("--no-wait", dest="no_wait", action="store_true")
+        else:
+            so.add_argument("--json", action="store_true")
+            so.add_argument("--keys", default=None)
+        so.set_defaults(fn=cmd_sheet)
+
     wa = sub.add_parser("watch", add_help=False)
     wa.add_argument("member")
     wa.add_argument("--json", action="store_true")
@@ -22048,6 +22079,11 @@ def main(argv=None):
         # registry, so it runs no migration (which takes the registry's lock).
         cmd_bridge(a)
         return
+    if a.cmd == "sheet" and getattr(a, "session", ""):
+        # The sheet's verbs given --session read no registry (the door, a reader, the tool's own step): no
+        # migration, so a session's hooks never wait on the registry's lock.
+        cmd_sheet(a)
+        return
     if a.cmd == "guide":
         # A SessionStart hook's: the record hook beside it migrates, bounded;
         # a session's start never waits here on the registry's lock.
@@ -22074,6 +22110,9 @@ def main(argv=None):
             die("usage: sminos seat add <group> <alias> [--role R] [--brief B] [--session S]")
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
+        if a.cmd == "sheet":
+            die("usage: sminos sheet put (<member> | --session <id>) [--no-wait] | show (<member> | --session <id>) "
+                "[--json [--keys <k,...>]]")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
                 "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine> | lead <channel> "

@@ -1,0 +1,27 @@
+{
+ "covers": "§4.2 row 4: a dismissal of an open question, whatever its revision; hidden while queued",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0601d001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "dismiss-applied",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000006",
+ "verdicts": {
+  "page-0601d001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "dismiss",
+   "verdict": "applied"
+  }
+ }
+}

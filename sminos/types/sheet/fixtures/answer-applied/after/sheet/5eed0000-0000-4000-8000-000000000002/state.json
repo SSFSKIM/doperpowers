@@ -1,0 +1,109 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which auth method should the login use?\" → OAuth. Their text: \"OAuth first; passkeys later.\"",
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-0201a001",
+   "places": [
+    1
+   ],
+   "question": "Which auth method should the login use?",
+   "receipt": "OAuth",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 201,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [
+   {
+    "kind": "answered",
+    "n": 3,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000002:q1",
+    "text": "\"Which auth method should the login use?\" → OAuth. Their text: \"OAuth first; passkeys later.\""
+   }
+  ],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 3,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:58.120Z",
+   "by": "page",
+   "id": "q1",
+   "images": [
+    "uploads/sketch.png"
+   ],
+   "key": "page-0201a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": "OAuth first; passkeys later."
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 5,
+ "session": "5eed0000-0000-4000-8000-000000000002",
+ "v": 1,
+ "verdicts": {
+  "page-0201a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

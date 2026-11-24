@@ -1,0 +1,94 @@
+{
+ "$defs": {
+  "id": {
+   "pattern": "^q[1-9][0-9]{0,8}$",
+   "type": "string"
+  },
+  "key": {
+   "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+   "type": "string"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "answered": {
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/id"
+     },
+     "images": {
+      "items": {
+       "minLength": 1,
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "picks": {
+      "items": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "type": "array"
+     },
+     "revision": {
+      "minimum": 1,
+      "type": "integer"
+     },
+     "text": {
+      "maxLength": 500,
+      "type": "string"
+     },
+     "textCut": {
+      "const": true,
+      "type": "boolean"
+     },
+     "textFile": {
+      "minLength": 1,
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "revision",
+     "picks",
+     "text",
+     "images"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "dismissed": {
+   "items": {
+    "$ref": "#/$defs/id"
+   },
+   "type": "array"
+  },
+  "keys": {
+   "items": {
+    "$ref": "#/$defs/key"
+   },
+   "maxItems": 200,
+   "type": "array"
+  },
+  "more": {
+   "const": true,
+   "type": "boolean"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "v",
+  "keys",
+  "answered",
+  "dismissed"
+ ],
+ "title": "The <sheet-delivery> block (plan I7): the last line of an envelope, terminal form and steer form alike.",
+ "type": "object"
+}

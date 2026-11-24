@@ -1,0 +1,114 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which auth method should the login use?\" → OAuth.",
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-1101a001",
+   "places": [
+    1
+   ],
+   "question": "Which auth method should the login use?",
+   "receipt": "OAuth",
+   "revision": 1
+  },
+  "q2": {
+   "answer": "\"Ship the migration today?\" → Yes.",
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "deliveredAt": "2026-11-23T09:35:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "page-1101a002",
+   "places": [
+    1
+   ],
+   "question": "Ship the migration today?",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 260,
+  "skipped": 0
+ },
+ "log": {
+  "next": 6,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 4,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1101a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 8,
+ "session": "5eed0000-0000-4000-8000-000000000011",
+ "v": 1,
+ "verdicts": {
+  "page-1101a001": {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1101a002": {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}
