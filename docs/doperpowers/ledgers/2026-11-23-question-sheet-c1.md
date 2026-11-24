@@ -146,6 +146,48 @@ The first prefix had three inconsistencies the agent audited in most runs before
 - **§12 E1 and observed problem 2**: with a revise in the tool and either wording, the agent revised in 125 of 125 runs and never asked a second question for the same decision. The problem did not reproduce; E1 guards against a regression rather than measuring a gap.
 - **§10**: the runs answer its open point: agents do not leave `context` empty where the card needs it (far-back reasons present on every counted card), and capture would not help (above). Automatic capture can move from Deferred to Out of scope.
 
+## Review of #629 (2026-11-23)
+
+The medium review returned 11 findings, verdict "incorrect" (no paid run; it reproduced false passes and early stops with fake clients). Each was verified against the code and held; all are fixed on this branch, and the offline test covers each. For findings 7 to 10 the authority was C2's published set (`sminos/types/sheet/grammar/result.md`, `schema/tool-input.schema.json`, at C2's `7139891f9`, pull request #628) and the composite's §1, §2.1 and §2.3 at MAWS `e905d604d`.
+
+| # | finding | what changed |
+|---|---|---|
+| 1 | judge errors counted as success | Every judge verdict is validated (E1 `same_decision` a boolean; E2 each fact a boolean, the reader's verdict yes, partly or no; relevance one of the scenario's keys or none) and asked again, three tries; a judge with no valid verdict raises `JudgeError`. A run whose judging failed, a card left unjudged, or a run that errored makes the arm's gate `incomplete`; each command exits 0 only when every arm passes. |
+| 2 | a card judged in its final version for an earlier call | The stub records, per call, the card each added or revised question showed, and the card before a revision. E1 judges each revision as before-this-call against this call, and each add as its call showed it (no `KeyError` for an add revised later in the run); E2 judges every call's card as that call showed it. |
+| 3 | bare cards dropped from the denominator | A separate relevance judge, which sees the run's evidence (the trigger's output and the matters' titles), decides which scenario matter a card asks about, poorly stated or not; the facts judge, told only the matter, and the reader stay blind to the session. Calibration rerun under the new facts prompt: 6 of 6. |
+| 4 | E1's sample pooled before checking it | The gate needs 10 runs of every scenario (each changed scenario and the control) or reads `short`. |
+| 5 | E2 stopped when unrelated questions filled its quota | A run stops early only once every matter of its scenario has a question, placed by the relevance judge as the run goes; otherwise it runs to its turn's end or 20 responses. |
+| 6 | E1 judged cards without their references | E1's two judgments see the whole card, references included. |
+| 7 | entry-local rules refused the whole call | Duplicate labels, a preview on a multi-select question, multiSelect without options and lines out of order refuse that entry alone, in the grammar's clauses. |
+| 8 | the schema's types not enforced | `validate` checks the published schema's types strictly (`options: false`, `references: 0`, `recommended: "false"`, string line numbers are whole-call faults), `withdraw` takes at least one id, and ids start at `q1`. |
+| 9 | no places when only a withdrawal was refused | Places appear whenever any entry or withdrawal was refused, as the grammar says ("every `item` and `ritem` carries it exactly when some entry or withdrawal of the call was refused"). The stub's `Not done:` clauses now use the grammar's wording (`not open (withdrawn at 15:42)`, `never asked`, `was asked by the main conversation; only its asker revises it`, `two options share the label "A"`). Every result the offline test produces matches the grammar's first-line pattern. |
+| 10 | references outside the working directories and the modelled size | A reference outside the session's working directory is refused (the scripted stdlib paths included, as §2.3 says); a file the world models over 256 KB (the 611 MB fixture) needs a range. |
+| 11 | `git diff main...csv-export` answered nothing live | `git diff` against `main` (two or three dots, `--stat`, `--name-only`, `--name-status`) answers from the world's main, which in the premise scenario includes main's own new commit; a diff against a commit goes to the simulator. |
+
+Also added from C2's grammar: an add on a sheet holding 500 open questions is refused (`entry <n>, the sheet holds 500 open questions`).
+
+**Where the stub and C2's set still differ, by design of a stub:** the stub never answers `Outcome not known yet.` or the foreclosed clause `the sheet could not be written (<why>); call again` (it has no asynchronous step and no file to fail); it never adds the last line `No surface can show these questions right now; ...` (every scenario has a surface); a reference's `<reason>` is the stub's wording (`permission denied`, `no such file`, `it is outside the session's working directories`, the 256 KB rule), not the engine's Read's; the clock in a `not open` clause is the world's fixed 15:42; and a subagent is named by its asker id.
+
+### Did the baseline move? Measured from the stored result files
+
+No subject run; judge spend $5.40 at list price (relevance on 461 stored cards $3.80, E1's re-judging with references $1.14, the calibration about $0.45).
+
+- **Finding 1 (judge errors).** None in any row: E1 far, near and fixed-prefix 0 of 115 runs; E2 long, cap rerun and short 0 runs with a judge error, 0 unjudged cards.
+- **Finding 2 (later versions).** E2: 1 of 324 long-history cards was judged in a later version than its call showed (a v2 personal-data run's time-zone card, outside its scenario's matter and never counted); 0 of 93 in the cap rerun, 0 of 44 in the short rows. E1: no run revised a question it had added, so no card was judged in a later version.
+- **Finding 3 (bare cards dropped).** Relevance with run evidence placed all 93 counted long-history cards on the matter they were counted for, and none of the 231 uncounted cards (179 judged "none", 52 about another matter) on a scenario matter; the cap rerun (16 counted, 77 not) and the short rows (18 and 26) likewise. Nothing changed sides, so nothing needed re-judging.
+- **Finding 5 (cut off before the matter).** Three long-history runs lack one of their scenario's matters (v1 `all` rep 4 and v2 `all` rep 1 missing the row cap, v1 `tz` rep 1 asking nothing); they ended on a final message, at the turn's end and at the 20-response limit, none by the old stop condition. No run was cut off before its matter.
+- **Finding 6 (references in E1's judgments).** The 135 questions E1's changed-scenario runs added, judged again against their target with references included: no verdict changed.
+
+| E2 long, per wording | before | after |
+|---|---|---|
+| v1: essential facts / reader no / personal data and time zone passing / row cap passing | 42 of 46 / 0 / 29 of 31 / 6 of 15 | same |
+| v1 per matter passing: row cap, personal data, time zone | 6/15, 14/16, 15/15 | same |
+| v2: essential facts / reader no / personal data and time zone passing / row cap passing | 40 of 47 / 0 / 30 of 32 / 4 of 15 | same |
+| v2 per matter passing: row cap, personal data, time zone | 4/15, 14/16, 16/16 | same |
+| gate | PASS, PASS | PASS, PASS |
+
+E1 far under the new gate (10 runs of every scenario, no incomplete run): v1 and v2 PASS, 0 failures of 30 and 0 repurposed of 10 each. The thresholds the owner set rest on figures the fixes leave unchanged.
+
 ## Acceptance 14 as set (2026-11-23)
 
 The owner set the thresholds as proposed; the composite words them in Acceptance 14, and each eval's command prints its verdict on them:

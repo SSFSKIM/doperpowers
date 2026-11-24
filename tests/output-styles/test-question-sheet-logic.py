@@ -138,6 +138,13 @@ try:
 except qs.InputError:
     check("a schema failure changes nothing", sheet.next_id == n_next + 1 and len(sheet.calls) == n + 1
           and "error" in sheet.calls[-1])
+full = qs.Sheet(fs)
+full.call({"ask": [entry(f"Q{i}?") for i in range(20)]})
+for i in range(24):
+    full.call({"ask": [entry(f"R{i}-{j}?") for j in range(20)]})
+r = full.call({"ask": [entry("One too many?"), entry("Q0, revised?", id="q1")]})
+check("a sheet holding 500 open questions refuses an add, not a revise", len(full.open_ids()) == 500 and
+      r == "Revised q1 (entry 2, revision 2).\nNot done: entry 1, the sheet holds 500 open questions.", r)
 cap, why = sheet.capture({"path": "tally/http/downloads.py", "lines": [1, 3]})
 check("a reference is captured as Read shows it", why is None and cap["body"].split("\n")[0].endswith(
     '\t"""Download links for generated files (print view today; the CSV export\'s') and len(cap["body"].split("\n")) == 3, cap)

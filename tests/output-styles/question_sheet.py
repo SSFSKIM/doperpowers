@@ -213,6 +213,7 @@ def entry_fault(n, e):
 
 
 CLOCK = "15:42"  # the session machine's local time in every scripted world
+MAX_OPEN = 500  # open questions a sheet holds (C2's grammar: "the sheet holds 500 open questions")
 
 
 class Sheet:
@@ -283,6 +284,8 @@ class Sheet:
                     refused.append((n, f"entry {n}, {qid} was asked by {self.asked_by(q)}; only its asker revises it"))
                     continue
             fault = entry_fault(n, e)
+            if not fault and qid is None and len(self.open_ids()) >= MAX_OPEN:
+                fault = f"entry {n}, the sheet holds {MAX_OPEN} open questions"
             if fault:
                 refused.append((n, fault))
                 continue
