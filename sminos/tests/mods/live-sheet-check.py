@@ -34,7 +34,11 @@ its questions. M4's, in a session of their own that asks for them: rendering
 (an envelope by each route, read back where the mod's landing hook and a
 start's search read it), subset, note, dismiss, compaction, both, subagent,
 agent-open, then stopped (the session ended, answered, resumed); and
-max-send, in one more session. It ends `live-sheet-check: N passed` and
+max-send, in one more session. M5's: the band line and the rows in `many` and
+`withdraw`, and import (a session's asks of today's tool, made with the
+setting off, moved onto the sheet when it resumes under it: not on a read
+that cannot be whole, once after more resumes, and never into a fork). It
+ends `live-sheet-check: N passed` and
 exits 0; a failing check prints `FAIL <case>: <what was observed>`.
 """
 import os.path, runpy  # noqa: E401 — the caller's repository kept out first (#623)
@@ -68,7 +72,10 @@ OUTSIDE = "LIVE_SHEET_OUTSIDE_MARKER_c91e"
 GUARDED = "ghp_" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
 DOOR_S = 1.0          # M3's At its end: a `put` to a live session prints its verdict within a second
 DELIVERY = ("rendering", "subset", "note", "dismiss", "compaction", "both", "subagent", "agent-open", "stopped")
-CASES = ("many", "revise", "withdraw", "two-surfaces", "secret", "fork", "no-surface", "nested") + DELIVERY + ("max-send",)
+CASES = ("many", "revise", "withdraw", "two-surfaces", "secret", "fork", "import", "no-surface", "nested") + DELIVERY + ("max-send",)
+SURFACE_URL = "http://sheet.localhost:47590"     # the stand-in's default
+MOVED = "Moved onto the sheet from the earlier question tool: "
+READ_LIMIT = 4 * 1024 * 1024                     # what ask.tsx reads whole; a transcript past it is searched
 # What a session that delivers is told once, so the model's reply shows what it read (the cases match words of it).
 REPEAT = ("When answers from the human's question sheet reach you later, reply by repeating each one: its question "
           "id, the option picked, and the human's text word for word, and name every question dismissed. Do not read "
@@ -328,6 +335,8 @@ class Sheet(LB.Live):
         if self.wants("fork"):
             self.case_fork(main)
         self.close("main")
+        if self.wants("import"):
+            self.case_import()
         if any(self.wants(c) for c in DELIVERY):
             self.delivery()
         if self.wants("max-send"):
@@ -360,6 +369,26 @@ class Sheet(LB.Live):
         tools = self.debug("main")
         self.check("many: the start chose the sheet", "sheet: sheet (terminal)" in tools,
                    [line for line in tools.splitlines() if "sheet: " in line][:3])
+        self.check_band("many", "main", sid, 8)
+        pane = self.pane_of("main")
+        lines = ["q%d Fruit %d — Question %d: which fruit?" % (i, i, i) for i in range(1, 9)]
+        self.check("many: the call's row lists its eight questions, one line each, under the engine's head",
+                   all(x in pane for x in lines) and "⎿  q1 Fruit 1 — " in pane, self.pane_lines("main", "q"))
+
+    def band(self, sid, n):
+        return "%d open question%s · %s/s/%s" % (n, "" if n == 1 else "s", SURFACE_URL, sid)
+
+    def check_band(self, case, name, sid, n):
+        """The line above the prompt names the `n` open questions and the stand-in's link to the session's sheet."""
+        try:
+            wait_for("the band line", 20, lambda: self.band(sid, n) in self.pane_of(name))
+        except TimeoutError:
+            pass
+        self.check("%s: the line above the prompt reads %r" % (case, self.band(sid, n)), self.band(sid, n) in self.pane_of(name),
+                   self.pane_lines(name, "open question"))
+
+    def pane_lines(self, name, needle):
+        return [x.strip() for x in self.pane_of(name).splitlines() if needle in x]
 
     def case_revise(self, sid):
         result = self.ask("main", {"ask": [{"id": "q2", "question": "Question 2, revised: which colour?",
@@ -392,6 +421,9 @@ class Sheet(LB.Live):
         opened = [q["id"] for q in (self.show(sid) or {}).get("open", [])]
         self.check("withdraw: the agent withdraws q3; show no longer lists it",
                    result.startswith("Withdrew q3.") and "q3" not in opened, "%r; open %s" % (result, opened))
+        self.check("withdraw: the call's row draws q3 · Withdrawn", "⎿  q3 · Withdrawn" in self.pane_of("main"),
+                   self.pane_lines("main", "q3"))
+        self.check_band("withdraw", "main", sid, len(opened))
         inner = call_prompt({"ask": [{"id": "q4", "question": "Changed by a subagent?"}], "withdraw": ["q5"]})
         before = len(self.calls(sid, sub=True))
         self.say("main", "Use the Agent tool once (subagent_type general-purpose) with this as its whole prompt: %s "
@@ -504,6 +536,109 @@ class Sheet(LB.Live):
         said = self.first_contexts(branch)
         self.check("fork (/branch): the copy's first context says its sheet starts empty",
                    any(t.startswith("[sheet v1] This conversation is a copy") for t in said), [t[:100] for t in said])
+
+    # -- import (M5)
+
+    def today_calls(self, sid):
+        """The calls of today's question tool the transcript holds: (call id, questions, result text or None)."""
+        return [(u, i.get("questions") or [], r) for u, i, r in self.calls(sid, ids=True)
+                if isinstance(i, dict) and "questions" in i]
+
+    def imported(self, sid):
+        """The record's imported questions: (id, question, call id, index); None while there is no record."""
+        try:
+            qs = self.state(sid)["questions"]
+        except (OSError, ValueError):
+            return None
+        return [(q["id"], q["question"], q["importedFrom"]["callId"], q["importedFrom"]["index"])
+                for q in qs if q.get("importedFrom")]
+
+    def told(self, sid):
+        """The contexts that tell the agent of an import: a start's, on its SessionStart or its first route."""
+        return [t for _, k, t, _ in self.envelopes(sid) if k in ("SessionStart", "prompt.submit", "tool.call") and MOVED in t]
+
+    def resumed(self, name, sid, env=None, args=()):
+        """`sid` resumed under the sheet in a session of its own, once its start's step has made the record."""
+        got = self.open(name, args=["--resume", sid, *args], env=dict({"SMINOS_QUESTION_SHEET": "1"}, **(env or {})))
+        wait_for("%s's record" % name, 30, lambda: os.path.exists(os.path.join(self.smh, "sheet", got, "state.json")))
+        self.idle(got, 60)
+        return got
+
+    def case_import(self):
+        name = "legacy"
+        sid = self.open(name)
+        self.say(name, "Use your AskUserQuestion tool twice, one call after the other, each with async true and one "
+                       "question: first ask me which colour I prefer, Red or Blue; then ask me which fruit I prefer, "
+                       "Apple or Pear. Then reply with only: asked.")
+        try:
+            wait_for("the two asks' results", 180, lambda: len([c for c in self.today_calls(sid) if c[2]]) >= 2)
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        self.close(name)
+        calls = self.today_calls(sid)
+        asked = [(q.get("question"), u, n) for u, qs, r in calls if r and r.startswith("Your questions are waiting")
+                 for n, q in enumerate(qs)]
+        self.check("import: with the setting off, today's tool asks twice without waiting; no record",
+                   len(asked) >= 2 and not os.path.exists(os.path.join(self.smh, "sheet", sid, "state.json")),
+                   [(u, [q.get("question") for q in qs], (r or "")[:60]) for u, qs, r in calls])
+        if len(asked) < 2:
+            return
+        # A read that cannot be whole: the transcript padded past what ask.tsx reads at once (a row of a type the
+        # engine does not know), so it is searched, and the search fails (perl and grep that exit 2 first on PATH).
+        path = glob.glob(os.path.join(self.cfg, "projects", "*", sid + ".jsonl"))[0]
+        with open(path, "a") as f:
+            f.write(json.dumps({"type": "live-check-padding", "padding": "x" * (READ_LIMIT + 65536)}) + "\n")
+        stubs = os.path.join(self.root, "failing-search")
+        os.makedirs(stubs, exist_ok=True)
+        for tool in ("perl", "grep"):
+            with open(os.path.join(stubs, tool), "w") as f:
+                f.write("#!/bin/sh\nexit 2\n")
+            os.chmod(os.path.join(stubs, tool), 0o755)
+        first = self.resumed("import-1", sid, env={"PATH": stubs + ":" + os.environ.get("PATH", "")})
+        unread = self.debug_lines("import-1", "no async ask is rebuilt")
+        held = self.imported(first)
+        self.check("import: resumed under the sheet when the read cannot be whole, nothing is imported or recorded "
+                   "as imported", first == sid and unread and held == [] and not self.state(sid)["import"]["calls"],
+                   "session %s; ask's debug %s; imported %s; import %s" % (first, [x[-120:] for x in unread[:1]], held,
+                                                                          self.state(sid).get("import")))
+        self.close("import-1")
+        self.resumed("import-2", sid)
+        self.check_band("import", "import-2", sid, len(asked))
+        self.say("import-2", "Reply with only: ok.")
+        self.idle(sid)
+        held = self.imported(sid)
+        told = self.told(sid)
+        want = [(q, u, n) for q, u, n in asked]
+        self.check("import: resumed again with a whole read, each open ask is on the sheet once, as asked, and the "
+                   "agent is told",
+                   [(q, u, n) for _, q, u, n in held or []] == want and len(told) == 1
+                   and all(i in told[0] for i, _, _, _ in held),
+                   "imported %s; asked %s; told %r" % (held, want, [t[t.find(MOVED):][:200] for t in told]))
+        self.close("import-2")
+        for n in (3, 4):
+            self.resumed("import-%d" % n, sid)
+            self.close("import-%d" % n)
+        again = self.imported(sid)
+        told = self.told(sid)
+        self.check("import: after two more resumes the asks are still there once, and told once",
+                   again == held and len((self.state(sid))["questions"]) == len(want) and len(told) == 1,
+                   "imported %s; questions %d; told %d" % (again, len(self.state(sid)["questions"]), len(told)))
+        copy = self.resumed("import-fork", sid, args=["--fork-session"])
+        m = self.show(copy) or {}
+        never = self.state(copy)["import"]["never"]
+        # Its transcript is written with the copied conversation only at its first prompt (C0's P5).
+        self.say("import-fork", "Reply with only: ok.")
+        self.idle(copy)
+        self.close("import-fork")
+        self.resumed("import-fork-2", copy)
+        self.close("import-fork-2")
+        m2 = self.show(copy) or {}
+        self.check("import: a fork of the session starts with an empty sheet, marked never to import, and stays empty "
+                   "when resumed", copy != sid and m.get("open") == [] and never is True and m2.get("open") == []
+                   and self.imported(copy) == [],
+                   "copy %s; open %s then %s; never %s; imported %s" % (copy, m.get("open"), m2.get("open"), never,
+                                                                       self.imported(copy)))
 
     # -- delivery (M4)
 
