@@ -322,6 +322,7 @@ vacant, retired, or gone seat), or a seat that is already filled.
 import argparse
 import calendar
 import datetime
+import contextlib
 import fcntl
 import functools
 import glob
@@ -329,6 +330,7 @@ import hashlib
 import heapq
 import http.client
 import importlib
+import io
 import json
 import os
 import re
@@ -7191,7 +7193,7 @@ def logged_alias(sid, info):
     return held
 
 
-def charge_of(member, events, title=True, published=""):
+def charge_of(member, events, title=True, published="", info=None):
     """(line, source, ts): what a member is in charge of, the first present of
     (§5) the latest of its `set` and `derived` in-charge lines — a set line
     until a line derived after it (a compaction derives over a set line:
@@ -7203,8 +7205,15 @@ def charge_of(member, events, title=True, published=""):
     is the log, or any part of it holding the member's in-charge events, each
     writer's in seq order. With title=False the transcript is not read (the
     daemon's tick has no use for the line). A line set for a session the
-    member continues (`former`) is the member's."""
-    sessions = (member.session,) + tuple(member.former) + tuple(member.thread_sessions)
+    member continues (`former`) is the member's, but, given the projection
+    `info`, none of a session the log shows unlisted to this reader, as
+    summary_of reads the summary: a withdrawn session's line reaches no one
+    through a session that continues it, and a withdrawn row itself (who's
+    history of a retired one) has none."""
+    if info is not None and member.session in info and unlisted_here(member.session, info[member.session]):
+        return "", "", ""
+    sessions = tuple(x for x in (member.session,) + tuple(member.former) + tuple(member.thread_sessions)
+                     if info is None or x not in info or not unlisted_here(x, info[x]))
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") in sessions]
     lines = {}
     for source in ("set", "derived"):
@@ -7388,7 +7397,7 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
         why=str(published.get("why") or "") if not local and not gone_machine and state_word in HELD_STATES else "",
         end=end, end_by=str(latest.get("by") or "") if ended else "", named=thread_mark,
         channels=threads_module().stated_set(r["stated"]) if r and r.get("stated") else ())   # no call for none
-    charge, source, ts = charge_of(m, in_charge, title, published_title(own))
+    charge, source, ts = charge_of(m, in_charge, title, published_title(own), info)
     summary, said = summary_of(m, in_charge, info)
     return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None,
                       summary=summary, summary_age=ts_age(said) if said else None)
@@ -9646,7 +9655,7 @@ def ended_words(m):
 
 def fill_words(seat):
     """What returns a retired seat, as a refusal and `who` say it."""
-    return 'a fill returns it: sminos fill %s/%s "<task>"' % (seat["group"], seat["alias"])
+    return 'a fill returns it: sminos fill %s "<task>"' % shlex.quote("%s/%s" % (seat["group"], seat["alias"]))
 
 
 def retired_machine_words(m):
@@ -21261,13 +21270,12 @@ def reach_lines(p, m):
     if m.end in END_REASONS and m.thread:
         return ["  it %s; %s" % ended_words(m)]
     if m.state in FILLED:
-        return ['  reach: sminos say "@%s ..."' % m.short]
+        return ['  reach: sminos say "@%s ..."' % reach_tag(m)]
     if m.seat:
         why = hold_for(m.session)
-        return ['  reach: sminos say "@%s ..."%s' % (m.short, "  (the stopped seat is not woken: %s; the message is "
-                                                               "held until a process of it runs)"
-                                                     % hold_words(why, m.session) if why else
-                                                     "  (the stopped seat is resumed)")]
+        held = ("  (the stopped seat is not woken: %s; the message is held until a process of it runs)"
+                % hold_words(why, m.session) if why else "  (the stopped seat is resumed)")
+        return ['  reach: sminos say "@%s ..."%s' % (reach_tag(m), held)]
     if m.local and m.state == "gone":
         return ["  nothing on this machine resumes it"]
     # What its machine published (on a `gone` state too, state_wake); a sender here meets this machine's
@@ -21278,7 +21286,7 @@ def reach_lines(p, m):
         wakes, why = wake_here(m.session)
     held = ('leave it a message, held until a process of it runs%s: sminos say "@%s ..."' % (
         " (%s)" % (hold_words(why, m.session if m.local else "") if why in HOLD_WORDS else why)
-        if why else "", m.short))
+        if why else "", reach_tag(m)))
     if wakes == "held" and why == "transcript" and not m.local:
         # No conversation of it is on its machine: nothing there to resume, and a message waits.
         return ["  " + held]
@@ -21286,7 +21294,7 @@ def reach_lines(p, m):
     out = ["  resume it %s: cd %s && claude --resume %s" % (where, shlex.quote(m.cwd or "."), m.session)]
     if wakes == "woken" and m.state == "stopped":
         # A stopped thread its machine wakes (T2): an addressed message starts it again.
-        out.append('  or message it, which wakes it: sminos say "@%s ..."' % m.short)
+        out.append('  or message it, which wakes it: sminos say "@%s ..."' % reach_tag(m))
     elif why == "read-only":
         # Its machine refuses what this one sends it (T2's §5): nothing to leave it from here.
         out.append("  no message from here reaches it: %s admits nothing from another machine, and refuses "
@@ -21295,8 +21303,26 @@ def reach_lines(p, m):
         # One its machine holds: an addressed message waits for a process of it (T1's M3, T2's §5).
         out.append("  or " + held)
     else:
-        out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."' % tag_project(p))
+        out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."'
+                   % shlex.quote(tag_project(p)))
     return out
+
+
+def reach_tag(m):
+    """The name a message to member `m` tags it by from here: its short when
+    that tag resolves to it, read as `say` reads a tag from the caller's
+    project (_resolve_tag, read-only, as `who @` resolves one: a short is
+    read as an alias there first, so a member or channel-mate whose alias
+    is the short would take it), else its whole session id."""
+    tags, _ = _leading_run("@" + m.short)
+    if tags:
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                if _resolve_tag(caller_scope(), tags[0])[1].session == m.session:
+                    return m.short
+            except SystemExit:
+                pass
+    return m.session
 
 
 def cmd_who(a):

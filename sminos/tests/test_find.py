@@ -32,8 +32,10 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 import unittest
@@ -120,8 +122,9 @@ class Finding(Machine):
                           cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive", repo="repo",
                           branch=branch, thread=str(uuidlib.uuid4()))
         sminos.log_append(p, w, "state", session=sid, state=state, machine=machine, **state_fields)
-        sminos.log_append(p, w, "in-charge", session=sid, text=charge, source="derived",
-                          **({"summary": summary} if summary else {}))
+        if charge is not None:
+            sminos.log_append(p, w, "in-charge", session=sid, text=charge, source="derived",
+                              **({"summary": summary} if summary else {}))
         sminos.forget_caches()
         return sid
 
@@ -139,6 +142,9 @@ class Call(Finding):
         caller = {"CLODEX_SETTINGS": gateway, "GATEWAY_ONLY_KEY": "g", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
                   "ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_API_KEY": "key", "ANTHROPIC_MODEL": "a-model",
                   "CLAUDE_CODE_USE_BEDROCK": "1", "CLAUDE_CODE_USE_VERTEX": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "m",
+                  "CLAUDE_CODE_USE_ANTHROPIC_AWS": "1", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD": "1",
+                  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector.invalid", "OTEL_LOGS_EXPORTER": "otlp",
+                  "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
                   "MAWS_LANE": "B", "CLAUDE_CODE_OAUTH_TOKEN": "first-party", "CLAUDE_CONFIG_DIR": config,
                   "FAKE_CLAUDE_FIND_RESULT": json.dumps({"matches": [{"short": sid[:8], "why": "owns the CI"}]})}
         with mock.patch.dict(os.environ, caller):
@@ -161,7 +167,9 @@ class Call(Finding):
         self.assertEqual(os.path.realpath(c["cwd"]), os.path.realpath(os.environ["SMINOS_HOME"]))
         for gone in ("CLODEX_SETTINGS", "GATEWAY_ONLY_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
                      "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-                     "CLAUDE_CODE_SUBAGENT_MODEL", "MAWS_LANE"):
+                     "CLAUDE_CODE_SUBAGENT_MODEL", "MAWS_LANE", "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+                     "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_LOGS_EXPORTER",
+                     "CLAUDE_CODE_ENABLE_TELEMETRY"):
             self.assertNotIn(gone, c["env"]["set"])
         self.assertEqual(c["env"]["set"], ["CLAUDE_CODE_OAUTH_TOKEN"], "of the transport and login variables, the token")
         self.assertEqual(c["env"]["oauth"], "first-party", "unchanged")
@@ -238,6 +246,19 @@ class Corpus(Finding):
                 self.assertIn("[%s]" % kept[:8], prompts[0])
                 self.assertNotIn(withdrawn[:8], prompts[0])
                 self.assertNotIn("WITHDRAWN-SECRET", prompts[0])
+
+    def test_a_withdrawn_predecessors_line_never_reaches_the_model_through_its_successor(self):
+        before = self.remote(alias="earlier", charge="PREDECESSOR-LINE-SECRET")
+        later = self.remote(alias="went-on", charge=None)
+        sminos.log_append(self.p, "beta/%s" % before, "retired", session=before, reason="continued", to=later)
+        sminos.forget_caches()
+        _, _, _, prompts = self.answered(NONE, "q")
+        self.assertIn("PREDECESSOR-LINE-SECRET", prompts[0], "visible, the successor carries its line")
+        sminos.log_append(self.p, "beta/%s" % before, "unlisted", session=before, policyRev=1)
+        sminos.forget_caches()
+        _, _, _, prompts = self.answered(NONE, "q")
+        self.assertIn("[%s] went-on" % later[:8], prompts[0])
+        self.assertNotIn("PREDECESSOR-LINE-SECRET", prompts[0])
 
     def test_a_member_in_two_projects_is_one_entry_in_the_project_it_joined_last(self):
         """A move's dual membership: the row of the project it moved to, as a name resolves (one_per_session)."""
@@ -374,6 +395,38 @@ class Answer(Finding):
                                  % value)
         self.assertEqual(self.calls(), [])
 
+    def test_a_short_another_member_holds_as_its_alias_is_reached_by_the_whole_id(self):
+        """say reads a short as an alias of the caller's project first: the reach line tags what reaches it."""
+        far = self.remote(alias="far")
+        near, proc = self.session(name=far[:8])
+        self.peer_set(proc, nameSource="user")
+        self.reconcile()
+        self.assertEqual(next(m for m in sminos.members(self.p) if m.session == near).alias, far[:8])
+        here = os.getcwd()
+        os.chdir(self.root)   # the caller's project, as say reads it
+        self.addCleanup(os.chdir, here)
+        tags, _ = sminos._leading_run("@" + far[:8])
+        self.assertEqual(sminos._resolve_tag(sminos.caller_scope(), tags[0])[1].session, near, "the collision")
+        tags, _ = sminos._leading_run("@" + far)
+        self.assertEqual(sminos._resolve_tag(sminos.caller_scope(), tags[0])[1].session, far, "the whole id reaches it")
+        os.chdir(here)
+        code, out, err, _ = self.answered(json.dumps({"matches": [{"short": far[:8], "why": "w"}]}), "q")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn('  reach: sminos say "@%s ..."' % far, out.splitlines())
+        code, out, err = self.run_cli("who", "@%s/far" % self.p.name)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn('  reach: sminos say "@%s ..."' % far, out.splitlines())
+        other = self.remote(alias="plain")
+        code, out, err = self.run_cli("who", "@" + other[:8])
+        self.assertIn('  reach: sminos say "@%s ..."' % other[:8], out.splitlines(), "a short that reaches it alone")
+
+    def test_a_project_name_in_a_command_is_quoted(self):
+        sid = self.remote(alias="asleep", state="stopped")
+        with mock.patch.object(sminos, "tag_project", return_value="my work"):   # a name as a tag would give it
+            code, out, err = self.run_cli("who", "@" + sid[:8])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("  or leave it a note it reads when resumed: sminos say --in 'my work' \"...\"", out.splitlines())
+
     def test_seven_valid_shorts_print_five(self):
         sids = [self.remote(alias="m%d" % i) for i in range(7)]
         code, out, err, _ = self.answered(json.dumps({"matches": [{"short": s[:8], "why": "w"} for s in sids]}), "q")
@@ -507,6 +560,34 @@ class Gate(Finding):
             os.path.join(r, n) for r, _, ns in os.walk(os.path.join(config, "projects")) for n in ns)], [],
             "the minted transcript (%s) is removed from the child's config dir" % minted)
         self.assertTrue(os.path.exists(kept), "the transcript of an id the result named is not find's to remove")
+
+    def test_an_interrupt_mid_wait_stops_and_reaps_the_engine_before_it_is_unmarked(self):
+        started, seen = [], []
+        real = subprocess.Popen
+
+        def popen(*a, **kw):
+            started.append(real(*a, **kw))
+            return started[-1]
+
+        def cleanup(obj):
+            seen.append((started[0].poll(), os.listdir(os.path.join(os.environ["SMINOS_HOME"], "internal"))))
+
+        def interrupt():
+            for _ in range(600):
+                if self.calls():
+                    break
+                time.sleep(0.05)
+            os.kill(os.getpid(), signal.SIGINT)   # a real signal: it interrupts the wait in select
+        threading.Thread(target=interrupt, daemon=True).start()
+        with mock.patch.dict(os.environ, {"FAKE_CLAUDE_FIND_MODE": "sleep:60"}), \
+                mock.patch.object(FORK.subprocess, "Popen", popen), self.assertRaises(KeyboardInterrupt):
+            FORK.run_internal([FAKE, "-p"], cwd=self.home, env=dict(os.environ, SMNS_INTERNAL="1"), timeout=120,
+                              stdin_text="q", cleanup=cleanup)
+        self.assertTrue(self.calls()[0]["marker"], "it ran marked")
+        self.assertIsNotNone(seen[0][0], "the engine was gone before the cleanup ran")
+        self.assertEqual(len(seen[0][1]), 1, "and still marked then")
+        self.assertIsNotNone(started[0].returncode, "reaped")
+        self.assertEqual(os.listdir(os.path.join(os.environ["SMINOS_HOME"], "internal")), [], "unmarked after")
 
     def test_a_cleanup_that_fails_still_removes_the_marker(self):
         def cleanup(obj):

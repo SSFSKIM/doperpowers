@@ -48,9 +48,10 @@ def row(short, sid, name):
                    "cwd": cwd}, f)
 
 
-# The transport and credential variables a call is checked for, by presence alone.
-WATCHED = ("CLODEX_SETTINGS", "GATEWAY_ONLY_KEY", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-           "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_OAUTH_TOKEN", "MAWS_LANE")
+# The transport, credential and telemetry variables a call is checked for, by presence alone.
+WATCHED = ("CLODEX_SETTINGS", "GATEWAY_ONLY_KEY", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_OAUTH_TOKEN", "MAWS_LANE",
+           "CLAUDE_CODE_ENABLE_TELEMETRY")
+WATCHED_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "OTEL_")
 
 if args[:1] == ["-p"]:
     stdin = sys.stdin.read()
@@ -58,7 +59,7 @@ if args[:1] == ["-p"]:
     oauth = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
     seen = {"internal": os.environ.get("SMNS_INTERNAL"), "config": os.environ.get("CLAUDE_CONFIG_DIR"),
             "path": os.environ.get("PATH"),
-            "set": sorted(k for k in os.environ if k in WATCHED or k.startswith("ANTHROPIC_")),
+            "set": sorted(k for k in os.environ if k in WATCHED or k.startswith(WATCHED_PREFIXES)),
             "oauth": None if oauth is None else "first-party" if oauth == "first-party" else "other"}
     with open(os.path.join(state, "find-calls.log"), "a") as f:
         f.write(json.dumps({"argv": args, "env": seen, "cwd": os.getcwd(), "stdin": stdin,

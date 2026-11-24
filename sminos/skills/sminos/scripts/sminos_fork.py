@@ -306,6 +306,15 @@ def run_internal(args, *, cwd, env, timeout, stdin_text=None, cleanup=None, what
             why = fork_failure(None, err)
             raise ForkFailed("the %s timed out after %ds%s" % (what, timeout, ": " + why if why else ""), err,
                              code="timeout")
+        except BaseException:
+            # An interrupt (or anything) mid-wait: the engine is stopped and reaped before its transcript and
+            # its marker are removed, never left running unmarked.
+            proc.kill()
+            proc.wait()
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            raise
         for raw in reversed((out or "").splitlines()):
             if raw.strip().startswith("{"):
                 try:
@@ -368,13 +377,15 @@ def headless_fork(project, m, prompt, *, tools, cache, timeout):
 
 # ------------------------------------------------------------------ a model, asked afresh
 
-# What would carry a call off the owner's first-party login (§3b of
-# docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md): a
-# provider switch, the gateway's settings, a subagent model override. Every
-# ANTHROPIC_* variable goes too (base URL, auth token, API key, model
-# aliases), and every key the gateway settings file names.
-OFF_LOGIN = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SUBAGENT_MODEL",
-             "CLODEX_SETTINGS")
+# What would carry a call, or the prompt, off the owner's first-party login
+# (§3b of docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md):
+# the gateway's settings, a subagent model override, telemetry that can
+# export the prompt; and by prefix (OFF_LOGIN_PREFIXES) every ANTHROPIC_*
+# variable (base URL, auth token, API key, model aliases), every provider
+# switch (CLAUDE_CODE_USE_*, those to come included) and every OpenTelemetry
+# setting (OTEL_*); and every key the gateway settings file names.
+OFF_LOGIN = ("CLAUDE_CODE_SUBAGENT_MODEL", "CLODEX_SETTINGS", "CLAUDE_CODE_ENABLE_TELEMETRY")
+OFF_LOGIN_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "OTEL_")
 # What stays whatever a gateway settings file names: how the engine is found, and the first-party login itself.
 LOGIN_KEPT = ("PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN")
 
@@ -383,10 +394,11 @@ def model_env():
     """The environment of a fresh model call: the caller's, less what
     launch_env drops for a plain-route launch (the launch-only markers and
     the gateway settings' keys) and everything that routes off the
-    first-party login (OFF_LOGIN, ANTHROPIC_*), marked internal."""
+    first-party login or exports the prompt (OFF_LOGIN, OFF_LOGIN_PREFIXES),
+    marked internal."""
     env = S.launch_env("")
     for k in list(env):
-        if k not in LOGIN_KEPT and (k.startswith("ANTHROPIC_") or k in OFF_LOGIN):
+        if k not in LOGIN_KEPT and (k.startswith(OFF_LOGIN_PREFIXES) or k in OFF_LOGIN):
             del env[k]
     for k in LOGIN_KEPT:
         if k in os.environ:

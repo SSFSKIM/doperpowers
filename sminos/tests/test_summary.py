@@ -351,8 +351,10 @@ class Who(Deriving):
         sminos.forget_caches()
         self.assertEqual(self.member(later).former, (former,), "it continues the former")
         self.assertEqual(self.member(later).summary["made"], "WITHDRAWN-SECRET plans", "visible, it carries it")
+        self.assertEqual(self.member(later).charge, "Runs far things.", "visible, it carries its line too")
         self.withdrawn(former)
         self.assertIsNone(self.member(later).summary)
+        self.assertEqual(self.member(later).charge, "far2", "the withdrawn line is gone: its name is all it has")
         code, out = self.cli("who", "@" + later[:8])
         self.assertEqual(code, 0, out)
         self.assertNotIn("WITHDRAWN-SECRET", out)
@@ -379,11 +381,13 @@ class Who(Deriving):
         code, out = self.cli("who", sha)
         self.assertEqual(code, 0, out)
         self.assertIn("PREDECESSOR-SECRET", out, "visible, the successor carries its predecessor's summary")
+        self.assertIn("in charge: Runs far things.", out, "and its in-charge line")
         self.withdrawn(after)
         code, out = self.cli("who", sha)
         self.assertEqual(code, 0, out)
         self.assertIn("far2#%s" % after[:8], out, "the session is still said")
         self.assertNotIn("PREDECESSOR-SECRET", out)
+        self.assertNotIn("Runs far things.", out, "nor the predecessor's line (charge_of, as summary_of)")
 
 
 if __name__ == "__main__":
