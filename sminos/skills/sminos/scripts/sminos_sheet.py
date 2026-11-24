@@ -16,6 +16,9 @@ From M2 (I3, I5):
     sminos sheet answer|dismiss|retract|remove (<member> | --session <id>) ...    the command's acts on a sheet
     sminos sheet surfaces [--json]                 the registrations, and which are alive
 
+`<member>` is a member as the control verbs name one; where no member matches, a unique prefix (8 characters or
+more) of a session that has a record names it, as the terminal's band prints it (`sminos sheet show <first 8>`).
+
 The step's transitions and composers are sminos_sheet_step's pure function; this module is its shell (the lock,
 the staging, the files, the replace).
 
@@ -1269,15 +1272,36 @@ def remove(session, cleared=False):
               "%s" % (session, "; ".join(left)), 1)
 
 
+PREFIX_RE = re.compile(r"^[0-9a-f][0-9a-f-]{7,34}$")
+
+
+def recorded(prefix):
+    """The sessions with a record under sheet/ whose id begins with `prefix`, in order."""
+    try:
+        names = os.listdir(sheet_root())
+    except OSError:
+        return []
+    return sorted(n for n in names if n.startswith(prefix) and S.UUID_RE.fullmatch(n)
+                  and os.path.isfile(os.path.join(record_dir(n), "state.json")))
+
+
 def resolve(a, verb):
     """The session a verb names: --session as given (no registry read), else the member as the control verbs
-    resolve one."""
+    resolve one; where no member matches, a unique prefix of 8 characters or more of a session that has a record
+    (what the band prints, `sminos sheet show <first 8>`, M5: a sheet's session need not be a member)."""
     if bool(a.member) == bool(a.session):
         S.die("usage: sminos sheet %s (<member> | --session <id>)" % verb)
     if a.session:
         if not S.UUID_RE.fullmatch(a.session):
             S.die("sheet %s: --session takes an engine session id" % verb)
         return a.session
+    if PREFIX_RE.fullmatch(a.member) and S.find_target(a.member)[0] == "none":
+        found = recorded(a.member)
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            S.die("sheet %s: '%s' begins more than one sheet's session: %s; name it whole with --session"
+                  % (verb, a.member, ", ".join(found)), S.EXIT_UNKNOWN)
     return S.bridge_module().watch_session(a.member)
 
 

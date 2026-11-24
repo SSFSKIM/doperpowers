@@ -1046,19 +1046,34 @@ export function parseResult(text: string): Parsed | undefined {
   return { form: 'sentences', added, revised, withdrew }
 }
 
-/** A sentence's end: its stop (`.`, `?`, `!`, their full-width forms), any closing quote or bracket, then a space or the end. */
-const SENTENCE = /\S.*?(?:[.?!。？！]+["'”’)\]]*(?=\s|$)|$)/g
-const ASKS = /[?？]["'”’)\]]*$/
+/**
+ * A sentence's end (the composite's writer's ruling of 2026-11-24, which C3
+ * holds too): a run of `.`, `?`, `!` with its closing quotes or brackets,
+ * where whitespace or the end follows (so `v1.2` ends none); or a run of the
+ * full-width `。？！` with theirs, whatever follows.
+ */
+const SENTENCE_END = /(?:[.?!]+["'”’)\]]*(?=\s|$)|[。？！]+["'”’)\]」』）]*)/g
 
 /**
  * A question's line (§8.1, which the app draws alike): its first sentence that
- * ends in a question mark, or its first sentence when none does, so a question
- * that opens with a statement is not shown as its preamble. A line break ends
- * a sentence too.
+ * asks (its ending run holds `?` or `？`), else its first sentence, so a
+ * question that opens with a statement is not shown as its preamble. A line
+ * break ends a sentence too; a line's rest after its last end is a sentence
+ * that does not ask.
  */
 export function questionSentence(question: string): string {
-  const sentences = question.split(/\n+/).flatMap((line) => [...line.matchAll(SENTENCE)].map((m) => m[0].trim())).filter((s) => s !== '')
-  return sentences.find((s) => ASKS.test(s)) ?? sentences[0] ?? ''
+  const sentences: { text: string; asks: boolean }[] = []
+  for (const line of question.split(/\r?\n/)) {
+    let from = 0
+    for (const end of line.matchAll(SENTENCE_END)) {
+      const to = (end.index ?? 0) + end[0].length
+      sentences.push({ text: line.slice(from, to).trim(), asks: /[?？]/.test(end[0]) })
+      from = to
+    }
+    sentences.push({ text: line.slice(from).trim(), asks: false })
+  }
+  const kept = sentences.filter((sentence) => sentence.text !== '')
+  return (kept.find((sentence) => sentence.asks) ?? kept[0])?.text ?? ''
 }
 
 /** A stored result's text as a row hook is given it: a string, its text blocks joined, or an MCP result's content. */
@@ -1172,9 +1187,15 @@ export function deliveredIn(texts: readonly string[]): Map<string, Delivered> {
   return out
 }
 
-/** The outcomes the conversation the model holds was delivered, in blocks a route put there. */
+/**
+ * The outcomes the conversation the model holds was delivered, for drawing
+ * only (M5): in blocks a route put there, and in a steer, a user row whose
+ * text is an envelope (X3's steer form, `examples/terminal/steer.txt`).
+ * Landing reads routes' blocks alone (`heldKeys`): a steer settles nothing.
+ */
 export function deliveriesHeld(api: readonly { role: string; content: unknown }[]): Map<string, Delivered> {
-  return deliveredIn(routeItems(api))
+  const steers = api.filter((message) => message.role === 'user').flatMap((message) => textsOf(message.content).filter((text) => ENVELOPE_HEADS.some((head) => text.startsWith(head))))
+  return deliveredIn([...routeItems(api), ...steers])
 }
 
 /** What a row reads of the sheet beyond its own call: the view while the record lives, and the deliveries' blocks. */

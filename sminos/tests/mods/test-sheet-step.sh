@@ -25,8 +25,8 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
-import { ASYNC_RESULT, registerAsk, yieldAsk } from '$root/hooks/mods/ask.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
+import { ASYNC_RESULT } from '$root/hooks/mods/ask.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, blocksOf, deliveriesHeld, floorOfLines, floorOfSheetText, floorSearchArgs, heldKeys, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -121,11 +121,6 @@ const port: Port = {
   toast: () => {},
   list: async (path) => readdirSync(path),
   now: async () => Date.now(),
-  wait: (ms) => {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const done = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))
-    return { done, cancel: () => clearTimeout(timer) }
-  },
 }
 const submitted: string[] = []
 const hops: (() => void)[] = []
@@ -306,26 +301,17 @@ for (const [i, example] of examples.entries()) {
   check(\`the published stored call \${i + 1} draws its row\`, parsed !== undefined && rowLines(example.input, parsed, { delivered: new Map() }).length > 0)
 }
 
-// M5: a resume's open asks of today's tool. The ask's own SessionStart hook reads the transcript (yielded, it adopts
-// none), the sheet stages what it read, and the real step imports it once: an ask only today's tool accepts, kept as
+// M5: a resume's open asks of today's tool. The sheet's start reads the transcript itself, as the ask reads it
+// (readTodayAsks), stages what it read, and the real step imports it once: an ask only today's tool accepts, kept as
 // it was asked. A read that was not definite imports nothing, and the next start does. A copy never imports.
-const askHooks: { event: string; handler: (...args: unknown[]) => unknown }[] = []
-registerAsk(((event: string, ...rest: unknown[]) => (askHooks.push({ event, handler: rest[rest.length - 1] as (...args: unknown[]) => unknown }), { catch: () => {} })) as never)
-yieldAsk()
-const askStart = askHooks.find((hook) => hook.event === 'classic.SessionStart')!.handler
-const askEngine = (isSearchFailing = false) => ({
-  fs: {
-    stat: async (path: string) => ({ size: isSearchFailing ? 5 * 1024 * 1024 : statSync(path).size }),
-    read: async (path: string) => readFileSync(path, 'utf8'),
-    exists: async (path: string) => existsSync(path),
-  },
-  process: { run: async () => ({ exitCode: 2, stdout: '', stderr: 'no', isStdoutTruncated: false }) },
-  ui: { log: () => {} },
-})
-const resumeWith = async (session: string, path: string, isSearchFailing = false) => {
-  await askStart(askEngine(isSearchFailing), { hook_event_name: 'SessionStart', source: 'resume', session_id: session, transcript_path: path, cwd: CWD }, async () => ({}))
-  return sheetForTests.sessionStarted(port, 'resume', session, path)
+// Not definite: the transcript past what one read takes, so it is searched, and the asks' search fails (the floor's,
+// which names the path alone, runs).
+const searchFailing: Port = {
+  ...port,
+  size: async (path) => (path.endsWith('/today.jsonl') ? 5 * 1024 * 1024 : port.size(path)),
+  exec: async (argv) => (argv[0] === 'grep' || argv.length > 5 ? { exitCode: 2, stdout: '', isStdoutTruncated: false } : port.exec(argv)),
 }
+const resumeWith = (session: string, path: string, isSearchFailing = false) => sheetForTests.sessionStarted(isSearchFailing ? searchFailing : port, 'resume', session, path)
 const wide = { question: \`\${'Which port should the dev server use, given everything above? '.repeat(40)}Which?\`, header: 'Port', multiSelect: false, options: [{ label: 'L'.repeat(201), description: 'a' }, { label: 'B', description: 'b' }] }
 writeFileSync('$work/today.jsonl', [
   { type: 'assistant', timestamp: '2026-11-20T08:00:00.000Z', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_today1', name: 'mcp__sminos__AskUserQuestion', input: { questions: [wide], async: true } }] } },
@@ -353,6 +339,19 @@ await sheetForTests.sessionStarted(port, 'fork', S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 check("a copy's sheet starts empty and stays empty", stateOf(S6).questions.length === 0 && stateOf(S6).import.never === true, stateOf(S6).import)
+
+// M5: the published steer (X3: a user row whose text is an envelope) draws its receipts, read for drawing alone;
+// landing reads routes' blocks only.
+const steer = readFileSync('$root/types/sheet/examples/terminal/steer.txt', 'utf8')
+const steerRow = [{ role: 'user', content: [{ type: 'text', text: steer }] }]
+check("the published steer's block draws receipts: q7, q8, q12 answered, q9, q11 dismissed", JSON.stringify([...deliveriesHeld(steerRow)]) === JSON.stringify([
+  ['q7', { how: 'answered', revision: 2, picks: [1, 2], text: 'passkeys only on mobile' }],
+  ['q8', { how: 'answered', revision: 1, picks: [], text: 'Nothing waiting for you.' }],
+  ['q12', { how: 'answered', revision: 1, picks: [1], text: '' }],
+  ['q9', { how: 'dismissed' }],
+  ['q11', { how: 'dismissed' }],
+]), [...deliveriesHeld(steerRow)])
+check('and settles nothing: no key of it is held as landed', heldKeys(steerRow).size === 0, [...heldKeys(steerRow)])
 
 // M5: the registrations the band reads between steps, against the command's own reading of them (I8): the same
 // surface, mawsd first, then by name; a temporary file, a half-written one and a stale one passed over.

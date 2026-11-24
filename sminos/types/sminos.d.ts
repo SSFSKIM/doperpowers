@@ -51,6 +51,9 @@ export type AskSnapshot = {
  * `starting` the start step owed for `session` (its nonce, which every retry
  * repeats, its source, the conversation's floor, its transcript and, for a
  * resume, the asks of today's tool it imports), until it answers;
+ * `preparing` a resume's or a copy's start still being made ready (its
+ * nonce, source and transcript, kept before its floor is read and its asks
+ * staged), so that a reload makes it ready again under the same nonce;
  * `left` the session a /clear left, whose record is removed. Only sminos
  * writes or reads it.
  */
@@ -61,6 +64,7 @@ export type SheetKept = {
   session: string
   started?: string
   starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[] } }
+  preparing?: { nonce: string; source: 'resume' | 'fork'; transcript: string }
   left?: string
 }
 

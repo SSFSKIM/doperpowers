@@ -1,7 +1,7 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
 import type { SheetKept } from '../../types/sminos'
-import { askChoiceMade, asksReadWhileYielded, deferAskToChoice, yieldAsk } from './ask'
+import { askChoiceMade, deferAskToChoice, readTodayAsks, yieldAsk } from './ask'
 import {
   DESCRIPTION,
   INPUT_SCHEMA,
@@ -66,8 +66,6 @@ const STEP_TIMEOUT_MS = 20_000
 export const TICK_MS = 5_000
 /** The band's link is judged again between steps every this many ticks (M5). */
 const SURFACE_TICKS = 3
-/** How long a start waits for the ask's read of a resume's asks of today's tool, when that read is still pending (M5). */
-const TODAY_WAIT_MS = 5_000
 /** How many times a call with no answer from its step is settled in the same dispatch (I5). */
 const SETTLES = 3
 /** The keys one drain asks verdicts for: what the step takes in one event (I5). */
@@ -125,8 +123,6 @@ export type Port = {
   list: (path: string) => Promise<string[]>
   /** Milliseconds since the epoch (`$.clock.now`). */
   now: () => Promise<number>
-  /** A timer (`$.clock.after`): `done` resolves after `ms`, unless cancelled first. */
-  wait: (ms: number) => { done: Promise<void>; cancel: () => void }
 }
 
 type Failure = { ok: false; code: string; error: string }
@@ -270,6 +266,8 @@ type Sheet = {
   surface?: Surface | null
   /** How many ticks the timer has made: every third reads the registrations. */
   ticks: number
+  /** How many views have set the band's link: a registrations' read that one overtook is dropped. */
+  surfaceViews: number
   /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
   isDeliveryWanted: boolean
 }
@@ -286,6 +284,7 @@ function fresh(): Sheet {
     turns: 0,
     stopped: new Set(),
     ticks: 0,
+    surfaceViews: 0,
     isDeliveryWanted: false,
   }
 }
@@ -333,11 +332,16 @@ const inbox = (session: string) => `${sheet.home}/sheet/${session}/inbox.jsonl`
 
 function keep(change: Partial<SheetKept>) {
   if (sheet.kept === undefined) return
+  const wasStarted = sheet.kept.started
   sheet.kept = { ...sheet.kept, ...change }
   for (const key of Object.keys(change) as (keyof SheetKept)[]) {
     if (change[key] === undefined) delete sheet.kept[key]
   }
   sheet.port?.keep(sheet.kept)
+  if (sheet.kept.started !== wasStarted) {
+    // The band draws only for a started session (M5).
+    sheet.port?.redraw()
+  }
 }
 
 /** Retires the current generation (a session change): its start in flight is remembered for a removal to wait on. */
@@ -391,9 +395,13 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
     // A view adopted opens the routes it holds envelopes for (I9).
     deliver(port, gen)
     // And the band's line and the rows' receipts draw from it (M5): its surface is the full rule.
-    if (gen === current() && (before?.seq !== answer.view.seq || JSON.stringify(sheet.surface) !== JSON.stringify(answer.view.surface))) {
-      sheet.surface = answer.view.surface
-      port.redraw()
+    if (gen === current()) {
+      // A registrations' read under way when this view came is older than it: it sets nothing.
+      sheet.surfaceViews += 1
+      if (before?.seq !== answer.view.seq || JSON.stringify(sheet.surface) !== JSON.stringify(answer.view.surface)) {
+        sheet.surface = answer.view.surface
+        port.redraw()
+      }
     }
   }
   return answer
@@ -465,7 +473,8 @@ async function runDrain(port: Port, gen: Gen, keys: string[], context?: 'compact
 }
 
 /**
- * The start step owed for the generation's session (kept as `starting`):
+ * The start step owed for the generation's session (kept as `starting`, or
+ * as `preparing` while a resume's or a copy's is made ready first):
  * single-flight by its nonce, so a trigger while one runs joins it; ordered
  * again only once an attempt settled with no answer. An answer is followed
  * by the search for what landed (I9), and marks the session started only
@@ -473,14 +482,18 @@ async function runDrain(port: Port, gen: Gen, keys: string[], context?: 'compact
  * route takes an outcome the search is about to land.
  */
 function startStep(port: Port, gen: Gen): Promise<Started> | undefined {
-  const starting = sheet.kept?.starting
-  if (starting === undefined || gen !== current()) {
+  const owed = sheet.kept?.starting ?? sheet.kept?.preparing
+  if (owed === undefined || gen !== current()) {
     return undefined
   }
-  if (gen.starting !== undefined && gen.starting.nonce === starting.nonce) {
+  if (gen.starting !== undefined && gen.starting.nonce === owed.nonce) {
     return gen.starting.attempt
   }
   const attempt = (async (): Promise<Started> => {
+    const starting = sheet.kept?.starting ?? (await prepareStart(port, gen))
+    if (starting === undefined) {
+      return { answer: { ok: false, code: 'superseded', error: 'another start took the place of this one while it was made ready' } }
+    }
     const event = {
       event: 'start',
       start: {
@@ -509,7 +522,7 @@ function startStep(port: Port, gen: Gen): Promise<Started> | undefined {
     }
     return { answer, context }
   })()
-  gen.starting = { nonce: starting.nonce, attempt }
+  gen.starting = { nonce: owed.nonce, attempt }
   void attempt.finally(() => {
     if (gen.starting?.attempt === attempt) gen.starting = undefined
   })
@@ -1006,6 +1019,7 @@ function tick(port: Port) {
  */
 async function readSurfaces(port: Port) {
   const dir = `${sheet.home}/sheet/surfaces`
+  const views = sheet.surfaceViews
   try {
     const files: { file: string; text: string }[] = []
     for (const file of (await port.list(dir).catch(() => [])).filter((name) => name.endsWith('.json'))) {
@@ -1014,7 +1028,7 @@ async function readSurfaces(port: Port) {
       if (text !== undefined) files.push({ file, text })
     }
     const surface = surfaceOf(files, await port.now(), sheet.remote)
-    if (JSON.stringify(surface) !== JSON.stringify(sheet.surface ?? null)) {
+    if (views === sheet.surfaceViews && JSON.stringify(surface) !== JSON.stringify(sheet.surface ?? null)) {
       sheet.surface = surface
       port.redraw()
     }
@@ -1299,27 +1313,55 @@ async function floorAtStart(port: Port, gen: Gen, source: StartSource, transcrip
 }
 
 /**
- * The asks of today's tool a resume's start imports (M5; §9): what the ask's
- * SessionStart read of the transcript (I11), each open ask staged as a file
- * of its own under the start's nonce, its call's time where the transcript
- * holds one, else now. A read that was not definite (a search that failed or
- * was cut), one not made, or one not done in time, sends none and says so,
- * so nothing is recorded and the next start reads again; so does a staging
- * that fails.
+ * A resume's or a copy's start made ready (I10; M5): the conversation's floor
+ * read, and for a resume its open asks of today's tool staged; then kept as
+ * the start owed, under the nonce `preparing` kept before anything was
+ * awaited, so a reload in between makes it ready again. Undefined when
+ * another start took its place meanwhile.
  */
-async function stageToday(port: Port, session: string, nonce: string): Promise<NonNullable<NonNullable<SheetKept['starting']>['today']>> {
+async function prepareStart(port: Port, gen: Gen): Promise<NonNullable<SheetKept['starting']> | undefined> {
+  const preparing = sheet.kept?.preparing
+  const isMine = () => gen === current() && sheet.kept?.preparing?.nonce === preparing?.nonce
+  if (preparing === undefined || !isMine()) {
+    return undefined
+  }
+  const floor = await floorAtStart(port, gen, preparing.source, preparing.transcript)
+  if (!isMine()) {
+    return undefined
+  }
+  if (floor !== undefined) {
+    gen.floor = floor
+  }
+  // A resume's open asks of today's tool go with its start, which imports them once (M5); a copy's never do: its
+  // first start records that it imports nothing.
+  const today = preparing.source === 'resume' ? await stageToday(port, gen.session, preparing.nonce, preparing.transcript, floor !== undefined) : undefined
+  if (!isMine()) {
+    return undefined
+  }
+  const starting = { nonce: preparing.nonce, source: preparing.source, ...(floor !== undefined && { floor }), transcript: preparing.transcript, ...(today !== undefined && { today }) }
+  keep({ preparing: undefined, starting })
+  return starting
+}
+
+/**
+ * The asks of today's tool a resume's start imports (M5; §9): the start reads
+ * the transcript itself, as the ask reads it (`readTodayAsks`, its own calls:
+ * no hook waits on another's work), and stages each open ask as a file of its
+ * own under the start's nonce, its call's time where the transcript holds
+ * one, else now. A read that was not definite (a search that failed or was
+ * cut) sends none and says so, so nothing is recorded and the next start reads
+ * again; so does a staging that fails, and so does a floor not known (an
+ * import takes ids, which must not be ones the conversation used before).
+ */
+async function stageToday(port: Port, session: string, nonce: string, transcript: string, isFloorKnown: boolean): Promise<NonNullable<NonNullable<SheetKept['starting']>['today']>> {
   const none = { definite: false, asks: [] }
-  const pending = asksReadWhileYielded(session)
-  if (pending === undefined) {
-    port.log("sheet: no read of the session's asks of today's tool was made; none is imported at this start")
+  if (!isFloorKnown) {
+    port.log("sheet: the conversation's ids are not known; no ask of today's tool is imported at this start")
     return none
   }
-  // Read before this start at once, but for a launch's SessionStart that came before the choice: bounded then.
-  const timer = port.wait(TODAY_WAIT_MS)
-  const read = await Promise.race([pending.catch(() => undefined), timer.done.then(() => undefined)])
-  timer.cancel()
+  const read = await readTodayAsks(port, transcript).catch((error: unknown) => (port.log(`sheet: the asks of today's tool could not be read (${message(error)})`), undefined))
   if (read === undefined || !read.isDefinite) {
-    port.log(`sheet: the read of the session's asks of today's tool was ${read === undefined ? 'not had in time' : 'not definite'}; none is imported at this start`)
+    port.log("sheet: the read of the session's asks of today's tool was not definite; none is imported at this start")
     return none
   }
   try {
@@ -1375,9 +1417,11 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   gen.transcript = transcript
   gen.isStartRouted = isRouted
   // A new conversation's floor is known at once, and its start is kept for a
-  // retry before anything is awaited; a resumed one's is read first.
+  // retry before anything is awaited; a resumed one's or a copy's is kept as
+  // being made ready, also before anything is awaited, and made ready first.
   const isNew = source === 'startup' || source === 'clear'
-  keep({ session, started: undefined, starting: isNew ? { nonce: newName('n'), source, floor: 0, transcript } : undefined })
+  const nonce = newName('n')
+  keep({ session, started: undefined, ...(isNew ? { starting: { nonce, source, floor: 0, transcript }, preparing: undefined } : { starting: undefined, preparing: { nonce, source: source as 'resume' | 'fork', transcript } }) })
   // The SessionStart names only the new session (C0's P5): the session a
   // /clear left is the one the end hook kept. Its removal is ordered behind
   // that session's start still in flight, in the background: never a
@@ -1388,22 +1432,6 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   }
   if (isNew) {
     gen.floor = 0
-  } else {
-    const floor = await floorAtStart(port, gen, source, transcript)
-    if (gen !== current()) {
-      return undefined
-    }
-    if (floor !== undefined) {
-      gen.floor = floor
-    }
-    const nonce = newName('n')
-    // A resume's open asks of today's tool go with its start, which imports them once (M5); a copy's never do: its
-    // first start records that it imports nothing.
-    const today = source === 'resume' ? await stageToday(port, session, nonce) : undefined
-    if (gen !== current()) {
-      return undefined
-    }
-    keep({ starting: { nonce, source, ...(floor !== undefined && { floor }), transcript, ...(today !== undefined && { today }) } })
   }
   const started = await startStep(port, gen)
   if (started === undefined || !started.answer.ok) {
@@ -1483,12 +1511,6 @@ function portOf($: EngineInterface): Port {
     toast: (text) => $.ui.toast(text),
     list: async (path) => (await $.fs.list(path)).map((entry) => entry.name),
     now: () => $.clock.now(),
-    wait: (ms) => {
-      let resolve: () => void = () => {}
-      const done = new Promise<void>((settle) => (resolve = settle))
-      const timer = $.clock.after(ms, () => resolve())
-      return { done, cancel: () => timer.cancel() }
-    },
   }
 }
 
@@ -1556,15 +1578,18 @@ export function registerSheet(on: On) {
       session,
       ...(kept?.started !== undefined && { started: kept.started }),
       ...(kept?.starting !== undefined && { starting: kept.starting }),
+      ...(kept?.preparing !== undefined && { preparing: kept.preparing }),
       ...(kept?.left !== undefined && { left: kept.left }),
     }
     sheet.port = port
     if (sheet.gen?.session !== session) {
       sheet.gen = newGen(session)
-      if (kept?.starting !== undefined) {
-        // A start a module before this reload left unanswered: its retry searches the transcript it was given, and its
-        // context goes by a route, its SessionStart long returned.
-        sheet.gen.transcript = kept.starting.transcript
+      const owed = kept?.starting ?? kept?.preparing
+      if (owed !== undefined) {
+        // A start a module before this reload left unanswered, or still being made ready (made ready again then, under
+        // its nonce): its retry searches the transcript it was given, and its context goes by a route, its
+        // SessionStart long returned.
+        sheet.gen.transcript = owed.transcript
         sheet.gen.isStartRouted = true
       }
     }
@@ -1596,11 +1621,11 @@ export function registerSheet(on: On) {
     }
     $.clock.every(TICK_MS, () => tick(port))
     if (early !== undefined) {
-      // Its SessionStart has returned: the start's context goes by the next result or prompt route. Not awaited: a
-      // resume's start may wait on the ask's read of its asks of today's tool, another hook's work (K4).
-      void sessionStarted(port, early.source, early.session, early.transcript, true).catch((error: unknown) => port.log(`sheet: the start failed: ${message(error)}`))
+      // Its SessionStart has returned: the start's context goes by the next result or prompt route. Awaited, as its
+      // own calls (a resume's read of its asks included), so no prompt enters before the start has answered.
+      await sessionStarted(port, early.source, early.session, early.transcript, true)
     }
-    if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined)) {
+    if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined || kept.preparing !== undefined)) {
       void check(port)
     }
     return result
@@ -1639,19 +1664,11 @@ export function registerSheet(on: On) {
         }
       }
     } else {
-      // The hooks beneath first: the ask's among them reads a resume's asks of today's tool, which this start imports
-      // (M5). Its own result is the hooks' beneath, with the start's context.
-      const result = await next(e)
-      try {
-        context = await sessionStarted(port, e.source, e.session_id, e.transcript_path)
-      } catch (error) {
-        port.log(`sheet: the start failed: ${message(error)}`)
-      }
-      return context === undefined || context === '' ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
+      context = await sessionStarted(port, e.source, e.session_id, e.transcript_path)
     }
     const result = await next(e)
     return context === undefined || context === '' ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
-  }).catch((_, e, next) => (next.called ? {} : next(e)))
+  }).catch((_, e, next) => next(e))
 
   // A /clear leaves the session (E15): its record goes, here first, since the
   // next SessionStart names only the new session; not awaited, as a session's
@@ -1662,7 +1679,7 @@ export function registerSheet(on: On) {
       // The session's work retired, its start forgotten, so no trigger orders
       // it again; a start already in flight lands before the removal.
       retire()
-      keep({ left: e.sessionId, started: undefined, starting: undefined })
+      keep({ left: e.sessionId, started: undefined, starting: undefined, preparing: undefined })
       removeLeftLater(port, e.sessionId)
     }
     return next(e)

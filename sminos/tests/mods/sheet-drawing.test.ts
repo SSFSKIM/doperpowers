@@ -73,6 +73,51 @@ describe('the line above the prompt (§8.3)', () => {
     for (let i = 0; i < 3; i++) await h.tick()
     expect(linesOf(await band(h))).toEqual([`2 open questions · ${LINK}`])
   })
+
+  test('the band is drawn again when the session becomes started', async () => {
+    const g = gated(['start'], (event, n) => ok(n, {}, { open: open(1) }))
+    const h = sheetOn({ step: g.script })
+    // Each redraw, with whether the session was started by then.
+    const engine = h.engine as unknown as { ui: { invalidate: (event: string) => void } }
+    const invalidate = engine.ui.invalidate
+    const redraws: (string | undefined)[] = []
+    engine.ui.invalidate = (event) => (event === 'ui.render' && redraws.push((h.kept.get('sminos.sheet') as { started?: string } | undefined)?.started), invalidate(event))
+    await h.start()
+    void h.classicStart('startup')
+    await h.settle()
+    g.waiting[0]?.release()
+    await h.settle()
+    // The start's view is adopted before the session is started: only the redraw at the flip draws the band.
+    expect(redraws.at(-1)).toBe(S1)
+    expect(linesOf(await band(h))).toEqual([`1 open question · ${LINK}`])
+  })
+
+  test("a registrations' read that a step's view overtook sets nothing: the view's surface, the full rule, stands", async () => {
+    const reg = JSON.stringify({ v: 1, name: 'stale', pid: 99999, url: 'http://stale.localhost:1', reach: 'local', heartbeatAt: '2026-11-24T10:00:20.000Z' })
+    const dir = `${HOME}/sheet/surfaces`
+    let seq = 1
+    const h = sheetOn({ step: (_event, n) => ok(n, {}, { seq: seq++, open: open(1) }), files: { [`${dir}/stale.json`]: reg }, now: NOW })
+    await h.ready()
+    // The registrations' read is held at its file; a drain's view comes meanwhile.
+    const engine = h.engine as unknown as { fs: { read: (path: string) => Promise<string> } }
+    const read = engine.fs.read
+    let release: () => void = () => {}
+    engine.fs.read = async (path) => {
+      if (path === `${dir}/stale.json`) await new Promise<void>((r) => (release = r))
+      return read(path)
+    }
+    void h.tick()
+    void h.tick()
+    void h.tick()
+    await h.settle()
+    // The inbox grew: the next check drains, and its view comes while the read waits.
+    h.files.set(`${HOME}/sheet/${S1}/inbox.jsonl`, '{"v":1}\n')
+    await h.tick()
+    expect(h.steps.filter((step) => step.event === 'drain').length).toBeGreaterThan(0)
+    release()
+    await h.settle()
+    expect(linesOf(await band(h))).toEqual([`1 open question · ${LINK}`])
+  })
 })
 
 describe("a call's row (§8.3, I11)", () => {
@@ -182,6 +227,7 @@ describe("a resume's asks of today's tool, imported once (§9; M5)", () => {
     ]
       .map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : `u${i - 1}`, uuid: `u${i}`, ...row }))
       .join('\n') + '\n'
+  const EMPTY = { rows: [], api: [] }
   const startOf = (h: { steps: StepEvent[] }) => h.steps.find((step) => step.event === 'start')?.start as { nonce: string; source: string; today?: { definite: boolean; asks: { file: string }[] } }
 
   test("a resume under the sheet: the ask's read of the transcript goes with the start, each open ask staged as a file of its own, its call's time kept", async () => {
@@ -201,13 +247,13 @@ describe("a resume's asks of today's tool, imported once (§9; M5)", () => {
 
   test('a read that was not definite (a search that failed, or was cut) imports nothing and says so; the next start reads again', async () => {
     for (const exec of [() => ({ exitCode: 2, stdout: '' }), () => ({ exitCode: 0, stdout: transcript(), isStdoutTruncated: true })]) {
-      // No file to read whole: the ask searches.
-      const h = sheetOn({ exec })
+      // No file to read whole: the read searches; the conversation gives the floor.
+      const h = sheetOn({ exec, messages: EMPTY })
       await h.ready('resume')
       expect(startOf(h).today).toEqual({ definite: false, asks: [] })
     }
     // A search that ran and found none is definite.
-    const none = sheetOn({ exec: () => ({ exitCode: 1, stdout: '' }) })
+    const none = sheetOn({ exec: () => ({ exitCode: 1, stdout: '' }), messages: EMPTY })
     await none.ready('resume')
     expect(startOf(none).today).toEqual({ definite: true, asks: [] })
   })
@@ -238,44 +284,100 @@ describe("a resume's asks of today's tool, imported once (§9; M5)", () => {
     expect((h.kept.get('sminos.sheet') as { started?: string }).started).toBe(S1)
   })
 
-  test("a launch's SessionStart before the choice: the start waits for the ask's read, bounded, and session.start never waits on it", async () => {
-    const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: transcript() } })
+  test("a conversation's ids not known (the floor's search failed) while the asks were read: none is imported, nothing recorded", async () => {
+    // Past what one read takes, both are searched: the floor's search fails, the asks' finds the open one.
+    const big = `${transcript()}${'x'.repeat(4 * 1024 * 1024)}`
+    // The asks' search names its stored forms after `--`; the floor's names the path alone.
+    const exec = (argv: readonly string[]) => (argv[0] === 'perl' && argv.length > 5 ? { exitCode: 0, stdout: transcript() } : { exitCode: 2, stdout: '' })
+    const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: big }, exec })
+    await h.ready('resume')
+    const start = startOf(h)
+    expect(start.today).toEqual({ definite: false, asks: [] })
+    expect(start).not.toHaveProperty('floor')
+    expect([...h.files.keys()].filter((path) => path.includes('/.staging/'))).toEqual([])
+    expect(h.logs().some((line) => line.includes("the conversation's ids are not known"))).toBe(true)
+  })
+
+  /** A transcript read the test holds: the `n`th read of the session's transcript waits until released. */
+  function holdRead(h: ReturnType<typeof harness>, n: number) {
     const engine = h.engine as unknown as { fs: { read: (path: string) => Promise<string> } }
-    let releaseRead: () => void = () => {}
     const read = engine.fs.read
-    let isHeld = false
+    let seen = 0
+    const held = { release: () => {}, isHeld: false }
     engine.fs.read = async (path) => {
-      if (path === `/t/${S1}.jsonl` && !isHeld) {
-        isHeld = true
-        await new Promise<void>((r) => (releaseRead = r))
+      if (path === `/t/${S1}.jsonl` && ++seen === n) {
+        held.isHeld = true
+        await new Promise<void>((r) => (held.release = r))
       }
       return read(path)
     }
-    // The SessionStart comes first; the ask's read of the transcript is held.
-    const classic = h.classicStart('resume')
+    return held
+  }
+
+  test("a launch's SessionStart before the choice: session.start awaits the start, which reads the asks itself, so a first prompt queued behind it carries the start's context and finds the sheet started", async () => {
+    const CONTEXT = '[sheet v1] Your question sheet, after a resume. Moved onto the sheet from the earlier question tool: q1.'
+    const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: transcript() }, step: (event, n) => ok(n, event.event === 'start' ? { context: CONTEXT } : {}) })
+    // The SessionStart comes first, before the choice: it returns at once; the asks' read (the second of the transcript, after the floor's) is held.
+    const held = holdRead(h, 2)
+    await h.classicStart('resume')
+    let isStartDone = false
+    const started = h.start().then(() => (isStartDone = true))
+    // The engine queues the first prompt behind session.start.
+    let startedAtPrompt: string | undefined
+    const prompted = started.then(() => ((startedAtPrompt = (h.kept.get('sminos.sheet') as { started?: string }).started), h.prompt('hello')))
     await h.settle()
-    await h.start()
-    await h.settle()
+    expect(held.isHeld).toBe(true)
+    expect(isStartDone).toBe(false)
     expect(h.steps.filter((step) => step.event === 'start')).toEqual([])
-    // The bound runs out (the timer's hop) before the read: nothing imported at this start.
-    await h.hop()
-    await h.settle()
-    expect(startOf(h).today).toEqual({ definite: false, asks: [] })
-    releaseRead()
-    await classic
+    held.release()
+    const entered = (await prompted) as { context?: string[] }
+    expect(startedAtPrompt).toBe(S1)
+    expect(startOf(h).today).toMatchObject({ definite: true, asks: [{}] })
+    expect(entered.context).toContain(CONTEXT)
   })
 
-  test('the same, the read done in time: the start imports it', async () => {
-    const g = gated(['start'])
-    const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: transcript() }, step: g.script })
-    const classic = h.classicStart('resume')
-    await h.settle()
-    await h.start()
-    await h.settle()
-    await classic
-    await h.settle()
-    expect((g.waiting[0]?.event.start as { today?: { definite: boolean; asks: unknown[] } }).today).toMatchObject({ definite: true, asks: [{}] })
-    g.waiting[0]?.release()
+  test('a reload while the start is made ready (its asks being read, or its first ask being staged) makes it ready again under the same nonce and orders it', async () => {
+    for (const hold of ['read', 'write'] as const) {
+      const first = sheetOn({ files: { [`/t/${S1}.jsonl`]: transcript() } })
+      if (hold === 'read') {
+        holdRead(first, 2)
+      } else {
+        const engine = first.engine as unknown as { fs: { write: (path: string, text: string) => Promise<void> } }
+        const write = engine.fs.write
+        engine.fs.write = async (path, text) => (path.includes('/.staging/') ? new Promise<void>(() => {}) : write(path, text))
+      }
+      await first.start()
+      void first.classicStart('resume')
+      await first.settle()
+      const kept = first.kept.get('sminos.sheet') as { preparing?: { nonce: string; source: string; transcript: string }; starting?: unknown; started?: string }
+      expect(kept.preparing).toMatchObject({ source: 'resume', transcript: `/t/${S1}.jsonl` })
+      expect(kept.starting).toBeUndefined()
+      expect(first.steps).toEqual([])
+      // The module reloads (the held work of the one before never comes back).
+      const reloaded = sheetOn({ kept: first.kept, files: { [`/t/${S1}.jsonl`]: transcript() } })
+      await reloaded.start()
+      await reloaded.settle()
+      const start = startOf(reloaded)
+      expect(start).toMatchObject({ source: 'resume', nonce: kept.preparing?.nonce, today: { definite: true, asks: [{ file: `start-${kept.preparing?.nonce}/ask-1.json` }] } })
+      expect(reloaded.staged(`${HOME}/sheet/.staging/${S1}/start-${kept.preparing?.nonce}/ask-1.json`)).toMatchObject({ callId: 't-open' })
+      const after = reloaded.kept.get('sminos.sheet') as { preparing?: unknown; started?: string }
+      expect(after.started).toBe(S1)
+      expect(after.preparing).toBeUndefined()
+    }
+  })
+})
+
+describe("a stored call of the sheet's form in a session whose choice is today (K3, I11)", () => {
+  test("the engine's head over the sheet's lines, and its unfolded view (ctrl+o) the engine's whole", async () => {
+    const h = harness()
+    await h.ready()
+    const props = { tool: SHEET_TOOL, tool_use_id: 't', input: { ask: [{ question: 'Which?', header: 'H' }] }, output: 'Added q1.', isRunning: false, isErrored: false, isInterrupted: false }
+    const drawn = await h.render('ToolUse', props)
+    expect((drawn as { children: unknown[] }).children[0]).toBe('beneath')
+    expect(linesOf(drawn)).toEqual(['  ⎿  ', 'q1 H — Which?'])
+    expect(await h.render('ToolUse', { ...props, isExpanded: true })).toBe('beneath')
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't', output: 'Added q1.', isErrored: false, isExpanded: true })).toBe('beneath')
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't', output: 'Added q1.', isErrored: false })).toMatchObject({ type: 'Box' })
   })
 })
 

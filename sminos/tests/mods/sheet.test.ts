@@ -1,6 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import { ASYNC_RESULT, asksReadWhileYielded, asyncAsks, observeAsks } from '../../hooks/mods/ask'
+import { ASYNC_RESULT, asyncAsks, observeAsks } from '../../hooks/mods/ask'
 import type { AskNote } from '../../hooks/mods/ask'
 import { DESCRIPTION, INPUT_SCHEMA, NOT_KNOWN, SHEET_TOOL, WITHDRAWN } from '../../hooks/mods/sheet-model'
 import { TICK_MS, sheetNotices, sheetNudge, sheetView } from '../../hooks/mods/sheet'
@@ -521,9 +521,8 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
       expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('sheet')
       expect(notes).toEqual([])
       expect(asyncAsks()).toEqual([])
-      expect((await asksReadWhileYielded(S1))?.asks.map((ask) => ask.callId)).toEqual(['t-open'])
       expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
-      // The start imports it (M5): staged under the start's nonce, named by the event.
+      // The start reads it itself and imports it (M5): staged under the start's nonce, named by the event.
       const start = h.steps.find((step) => step.event === 'start')?.start as { nonce: string; today?: { definite: boolean; asks: { file: string }[] } }
       expect(start.today).toEqual({ definite: true, asks: [{ file: `start-${start.nonce}/ask-1.json` }] })
       expect(h.staged(`${HOME}/sheet/.staging/${S1}/start-${start.nonce}/ask-1.json`)).toMatchObject({ callId: 't-open', questions: [{ question: 'Which port?' }] })
@@ -579,8 +578,7 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
       if (choice === 'sheet') {
         expect(notes).toEqual([])
         expect(asyncAsks()).toEqual([])
-        expect((await asksReadWhileYielded(S1))?.asks.map((ask) => ask.callId)).toEqual(['t-open'])
-        // The start waited for the read, and imports it.
+        // The start read it, and imports it.
         expect((h.steps.find((step) => step.event === 'start')?.start as { today?: { definite: boolean; asks: unknown[] } }).today).toMatchObject({ definite: true, asks: [{}] })
       } else {
         expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])

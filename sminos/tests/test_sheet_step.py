@@ -434,6 +434,31 @@ class Verbs(unittest.TestCase):
         o = state_of()["pending"][0]
         self.assertEqual((o["picks"], o["revision"]), (["Wait"], 2), "the new first option")
 
+    def test_the_bands_command_reads_a_sheet_whose_session_is_no_member(self):
+        """M5: the band's unreachable-page form prints `sminos sheet show <first 8>`; the session need not be a
+        member, so the verbs also take a unique prefix (8 characters or more) of a session that has a record."""
+        band = "4 open questions · the page is unreachable: sminos sheet show %s" % SESSION[:8]
+        printed = band.split(": ", 1)[1].split()
+        self.assertEqual(printed[0], "sminos")
+        code, out, err = run_cli(printed[1:])
+        self.assertEqual(code, 0, err)
+        self.assertIn("Which auth method?", out)
+        code, out, err = self.cli("answer", SESSION[:13], "q2", "--pick", "1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["results"][0]["state"], "queued")
+        # Shorter than 8, or matching no record, it is no session's: the member resolver's refusal stands.
+        for who in (SESSION[:7], "5eed0001"):
+            code, _, err = self.cli("show", who)
+            self.assertNotEqual(code, 0)
+            self.assertIn("no member matching", err)
+        # Two records sharing it: refused, naming both.
+        other = SESSION[:-1] + "b"
+        self.assertTrue(step(ev("start", start={"source": "startup"}), session=other)["ok"])
+        code, _, err = self.cli("show", SESSION[:8])
+        self.assertNotEqual(code, 0)
+        self.assertIn(SESSION, err)
+        self.assertIn(other, err)
+
     def test_a_line_sent_against_the_old_wording_is_stale_with_current(self):
         stale = line("page-00000001", "answer", id="q2", revision=1, picks=["Yes"])
         self.assertTrue(step(inline_call("toolu_c2", [{"id": "q2", "question": "Ship today?",

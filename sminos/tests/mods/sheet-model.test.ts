@@ -561,6 +561,25 @@ describe("the terminal's drawing (M5, §8.3)", () => {
     expect(questionSentence('He said "ship it?" Then what.')).toBe('He said "ship it?"')
   })
 
+  test("the sentence rule's cases, as the plan writes them (the composite's writer's ruling of 2026-11-24; C3 holds the same)", async () => {
+    const cases: [string, string][] = [
+      ['We ship Friday. Keep the earlier sailing?', 'Keep the earlier sailing?'],
+      ['Use v1.2 or v2.0?', 'Use v1.2 or v2.0?'],
+      ['Pick one', 'Pick one'],
+      ['First line\nWhich one?', 'Which one?'],
+      ['He said "go?" Then left.', 'He said "go?"'],
+      ['배포할까요？다음 주에 합니다。', '배포할까요？'],
+      ['Statement。Question？rest', 'Question？'],
+      ['What?! Really.', 'What?!'],
+      ['No marks here\nSecond line.', 'No marks here'],
+      ['e.g. this?', 'this?'],
+      ['', ''],
+    ]
+    expect(cases.map(([text]) => questionSentence(text))).toEqual(cases.map(([, line]) => line))
+    // A line break is \r\n too; empty sentences are dropped.
+    expect(questionSentence('Intro.\r\n\r\nWhich?')).toBe('Which?')
+  })
+
   test("the band's line: its four forms, and none with nothing open or owed", async () => {
     expect(bandLine({ open: 3, owed: 0 }, SURFACE, S)).toBe(`3 open questions · http://sheet.localhost:47590/s/${S}`)
     expect(bandLine({ open: 3, owed: 0 }, null, S)).toBe('3 open questions · the page is unreachable: sminos sheet show 5eed0000')
@@ -607,6 +626,14 @@ describe("the terminal's drawing (M5, §8.3)", () => {
     const reminder = `<system-reminder>\ntool.call hook additional context: ${block}\n</system-reminder>`
     expect([...deliveriesHeld([{ role: 'user', content: [{ type: 'text', text: reminder }] }]).keys()]).toEqual(['q7', 'q8', 'q9'])
     expect([...deliveriesHeld([{ role: 'user', content: block }]).keys()]).toEqual([])
+    // A steer (X3): a user row whose text is an envelope, its block on its own line, read for drawing alone.
+    const steer = `[sheet v1] The human answered questions on your sheet.\nq7 → option 1, option 2.\nDismissed: q9.\n${block}`
+    expect([...deliveriesHeld([{ role: 'user', content: steer }]).keys()]).toEqual(['q7', 'q8', 'q9'])
+    expect([...deliveriesHeld([{ role: 'user', content: [{ type: 'text', text: steer }] }]).keys()]).toEqual(['q7', 'q8', 'q9'])
+    // Not the model's own words, and not a text that only quotes one; landing reads none of it.
+    expect([...deliveriesHeld([{ role: 'assistant', content: steer }]).keys()]).toEqual([])
+    expect([...deliveriesHeld([{ role: 'user', content: `As said: ${steer}` }]).keys()]).toEqual([])
+    expect([...heldKeys([{ role: 'user', content: steer }])]).toEqual([])
   })
 
   describe("a call's row: one line a question, then its receipt in the line's place", () => {
