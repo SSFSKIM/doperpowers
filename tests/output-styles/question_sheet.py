@@ -336,13 +336,14 @@ def create(client, **kw):
 class FS:
     """The project's files, keyed by absolute path under CWD."""
 
-    def __init__(self, files=None):
+    def __init__(self, files=None, sizes=None):
         if files is None:
             files = {f"{CWD}/{p.relative_to(WORLD)}": p.read_text() for p in sorted(WORLD.rglob("*")) if p.is_file()}
         self.files = dict(files)
+        self.sizes = dict(sizes or {})  # a file whose stand-in content is smaller than the file it stands for
 
     def copy(self):
-        return FS(self.files)
+        return FS(self.files, self.sizes)
 
     def resolve(self, path):
         path = path.strip()
@@ -579,8 +580,7 @@ Command line:
             if path:
                 self.fs.files[self.fs.resolve(path.strip("'\""))] = m.group(4) + "\n"
             command = command[:m.start()] + "\n" + command[m.end():]
-        command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
-        if self.simulator and re.search(r"(^|[;&|\n]\s*)(for|while|until|if|case|function)\b|\$\(", command):
+        if self.simulator and re.search(r"(^|[;&|\n]\s*)(for|while|until|if|case|function)\b|\$\(|<<", command):
             return self.simulate(command.strip())  # a compound command is answered whole
         for words in simple_commands(command):
             out = self.shell_one(words)
@@ -608,6 +608,12 @@ Command line:
         if cmd in ("pytest", "python", "python3", "uv", "make") and ("pytest" in words or cmd == "pytest" or
                                                                     (cmd == "make" and "test" in args)):
             return self.pytest(args)
+        if cmd == "make" and "fixtures" in args:
+            self.fs.files.setdefault(f"{CWD}/.fixtures/usage_2m.sql", "-- rows=2000000\n")
+            self.fs.sizes[f"{CWD}/.fixtures/usage_2m.sql"] = 611 * 2**20
+            return ("python -m tests.fixtures.generate --rows 2000000 --out .fixtures/usage_2m.sql\n"
+                    "generating usage_events: 2,000,000 rows across 14 products ... done in 58.2s\n"
+                    "wrote .fixtures/usage_2m.sql (611 MB)")
         if cmd in ("ruff", "mypy") or (cmd in ("python", "python3", "uv") and ({"ruff", "mypy"} & set(args))):
             return "All checks passed!" if "ruff" in words else "Success: no issues found in 41 source files"
         if cmd in ("cat", "head", "tail", "sed", "nl", "less", "wc"):
@@ -619,9 +625,24 @@ Command line:
             return "\n".join(out)
         if cmd == "ls":
             target = next((a for a in args if not a.startswith("-")), ".")
-            root = self.fs.resolve(target).rstrip("/") + "/"
-            names = sorted({p[len(root):].split("/")[0] for p in self.fs.files if p.startswith(root)})
-            return "\n".join(names)
+            path = self.fs.resolve(target)
+            if path in self.fs.files:
+                names, root = [Path(path).name], str(Path(path).parent) + "/"
+            else:
+                root = path.rstrip("/") + "/"
+                names = sorted({p[len(root):].split("/")[0] for p in self.fs.files if p.startswith(root)})
+            if not names:
+                return f"ls: {target}: No such file or directory"
+            if not any("l" in a for a in args if a.startswith("-") and not a.startswith("--")):
+                return "\n".join(names)
+
+            def size(name):
+                full = root + name
+                if full in self.fs.files:
+                    return self.fs.sizes.get(full, len(self.fs.files[full].encode()))
+                return 192
+            return "\n".join(f"{'d' if root + n not in self.fs.files else '-'}rw-r--r--  1 dev  staff  {size(n):>10} "
+                             f"Nov 23 14:02 {n}" for n in names)
         if cmd in ("grep", "rg"):
             flags = [a for a in args if a.startswith("-")]
             rest = [a for a in args if not a.startswith("-")]
@@ -660,7 +681,7 @@ Command line:
         if sub == "status":
             if not mod and not new:
                 return "On branch csv-export\nnothing to commit, working tree clean"
-            if "--short" in args or "-s" in args or "--porcelain" in args:
+            if "--short" in args or "-s" in args or any(a.startswith("--porcelain") for a in args):
                 return "\n".join([f" M {self.fs.rel(p)}" for p in mod] + [f"?? {self.fs.rel(p)}" for p in new])
             out = ["On branch csv-export"]
             if mod:
@@ -685,6 +706,8 @@ Command line:
             self.git_log = f"{sha} {msg.splitlines()[0]}\n" + self.git_log
             return f"[csv-export {sha}] {msg.splitlines()[0]}\n {len(mod) + len(new)} files changed"
         if sub == "log":
+            if "--" in args or any(a.startswith(("--stat", "-p", "--patch", "--name")) for a in args):
+                return None  # paths or patches: the simulator, with the history
             n = next((int(a[1:]) for a in args if re.fullmatch(r"-\d+", a)), None)
             n = next((int(args[i + 1]) for i, a in enumerate(args) if a in ("-n", "--max-count") and i + 1 < len(args)
                       and args[i + 1].isdigit()), n)
@@ -699,9 +722,9 @@ Command line:
                              for i, l in enumerate(self.git_log.split("\n")[:8]))
         if sub in ("pull", "fetch"):
             return "Already up to date."
-        if sub == "show":
-            return self.git_log.split("\n")[0]
-        return ""
+        if sub in ("add", "checkout", "switch", "stash", "restore", "rm", "mv", "config", "tag"):
+            return ""
+        return None  # show, merge-base, worktree, blame and the rest: the simulator
 
     def sed_in_place(self, args):
         """`sed -i` with s/// expressions: basic regular expressions unless -E or -r."""
@@ -748,7 +771,11 @@ Command line:
             names = [x for x in names if not x[2]]
         extra = 0 if paths or k else 196
         n = len(names) + extra
-        tail = f"{n} passed" + (", 3 skipped" if extra else "") + f" in {0.2 + n * 0.19:.2f}s"
+        slow = sum(x[2] for x in names)
+        seconds = 0.2 + (n - slow) * 0.019 + slow * 83.5
+        tail = f"{n} passed" + (", 3 skipped" if extra else "") + f" in {seconds:.2f}s"
+        if slow and any(a in ("-s", "--capture=no") for a in args):
+            tail = "  wrote 2,000,000 rows in 21.7s; peak RSS 88.4 MB (baseline 71.0 MB)\n" + tail
         if any(a in ("-v", "--verbose", "-vv") for a in args):
             body = [f"{f}::{t} PASSED".ljust(72) + f"[{100 * (i + 1) // max(1, len(names)):>3}%]"
                     for i, (f, t, _) in enumerate(names)]

@@ -143,7 +143,7 @@ check("the live part starts from a clean tree", sh("git status") == "On branch c
 sh("mkdir -p tests/export && cat > tests/export/test_x.py <<'EOF'\ndef test_a():\n    pass\n\n\ndef test_b():\n    pytest\nEOF\n")
 check("a heredoc writes its file", env.fs.files.get(ss.P("tests/export/test_x.py"), "").startswith("def test_a"))
 check("git status shows the new file", "?? tests/export/test_x.py" in sh("git status --short"), sh("git status --short"))
-check("pytest counts the tests it is given", sh("pytest tests/export/test_x.py -q").endswith("2 passed in 0.58s"),
+check("pytest counts the tests it is given", sh("pytest tests/export/test_x.py -q").endswith("2 passed in 0.24s"),
       sh("pytest tests/export/test_x.py -q"))
 sh("sed -i '' 's/normalize(), \"f\"/normalize(), \"g\"/' tally/export/writer.py")
 check("sed -i edits in place", 'format(value.normalize(), "g")' in env.fs.files[ss.P("tally/export/writer.py")])
@@ -158,7 +158,7 @@ env_p, *_ = qs.session(ss.e1_script("premise", "far"), qs.DEFAULT_ARM)
 check("the branch's scripted commits sit on main's new one", env_p.shell("git log --oneline -4").split("\n")[3]
       .startswith("5d0e7a9"), env_p.shell("git log --oneline -4"))
 check("pytest -v lists the tests it ran", "tests/export/test_x.py::test_a PASSED" in sh("pytest tests/export/test_x.py -v"))
-check("pytest -k filters by name", sh("pytest tests/export/test_x.py -k test_b -q").endswith("1 passed in 0.39s"),
+check("pytest -k filters by name", sh("pytest tests/export/test_x.py -k test_b -q").endswith("1 passed in 0.22s"),
       sh("pytest tests/export/test_x.py -k test_b -q"))
 check("an unknown command prints nothing without a simulator", sh("uv run python -c 'print(1)'") == qs.NO_OUTPUT)
 
@@ -187,6 +187,10 @@ sh("for c in a b; do git show $c; done")
 check("a compound command goes to the simulator whole", sim.prompts[-1].endswith("for c in a b; do git show $c; done")
       and "41b0c8a docs: CSV export spec" in sim.prompts[-1])
 check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 3)
+env_f, *_ = qs.session(ss.e2_script("cap", "long"), qs.DEFAULT_ARM)
+check("the slow test takes its time and needs the fixture make wrote", "611 MB" not in env_f.shell("ls -la .fixtures")
+      and "640679936" in env_f.shell("ls -la .fixtures") and "in 83.70s" in env_f.shell("pytest tests/export -m slow -q -s"))
+check("git log over paths is not answered by the canned shell", env_f.shell_one(["git", "log", "--", "Makefile"]) is None)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 env.simulator = None
 check("staging answers the numbers the session showed",
