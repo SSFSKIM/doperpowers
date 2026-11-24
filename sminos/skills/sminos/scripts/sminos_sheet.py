@@ -1102,6 +1102,131 @@ def probe(session, remote=False):
     return out
 
 
+# ------------------------------------------------------------------ the project log (I12)
+
+LOG_REMOVED = "removed with its sheet"    # the closing a removal writes for a question still open
+
+
+class LogFailed(Exception):
+    """The project log refused what the projection gave it: what it took is no longer owed, the rest is."""
+
+
+def has_record(session):
+    return os.path.isfile(os.path.join(record_dir(session), "state.json"))
+
+
+def _log_problem(rec):
+    """Why the projection may not read and replace the record's state (no link followed), or None."""
+    try:
+        if not stat.S_ISDIR(os.lstat(rec).st_mode):
+            return "the record %s is not a directory" % rec
+        if not stat.S_ISREG(os.lstat(os.path.join(rec, "state.json")).st_mode):
+            return "the record's state.json is not a file"
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def _question_from(project, session, src, here):
+    """The `from` a question's later event carries: the question's own, as the log holds it (close_questions does
+    the same), else the alias the session goes by where it is now, else its short id."""
+    for store in ("log", S.HOST_STORE):
+        for e in S._own_events(project, session, store):
+            if e["kind"] == "question" and e.get("src") == src and e.get("from"):
+                return e["from"]
+    now = here()
+    return now[1] if now is not None and now[0].id == project.id else session[:8]
+
+
+def project_log(session, here=None, closing=False):
+    """The projection (I12): what the record owes the project log, appended under the session's writer through
+    append_host, whose (kind, src) rule appends nothing twice; then taken off `log.owed`, the project each question
+    went to recorded in `log.projects`, by one replace under the lock. A `question` goes to the project the session
+    is in now (`here(session)`: (project, alias), or None while it is in none or no member there: it waits, and
+    with it every later event of its question); any other event to its question's recorded project. `closing`
+    (a removal): a closing for each question still open is appended after them, and owed nothing. The lock is held
+    to read and to replace, never while the log is written. Returns {written, owed}, None for no record; raises
+    LogFailed when the log refused a project's events (the others are taken), after the replace."""
+    here_of = here or (lambda s: S.held_member(s))
+    rec = record_dir(session)
+    with Lock(session):
+        why = _log_problem(rec)
+        if why:
+            raise LogFailed(why)
+        try:
+            state = _read_json(os.path.join(rec, "state.json"))
+        except FileNotFoundError:
+            return None
+        owed = [dict(e) for e in state["log"]["owed"]]
+        projects = dict(state["log"]["projects"])
+        if closing:
+            owed += [{"kind": "answered", "src": STEP().src(session, q["id"]), "text": LOG_REMOVED,
+                      "closed": "removed"} for q in state["questions"]]
+    if not owed:
+        return {"written": 0, "owed": 0}
+    cache = []
+
+    def now():
+        if not cache:
+            try:
+                cache.append(here_of(session))
+            except (OSError, S.LockBusy) as e:
+                raise LogFailed("where the session is could not be read: %s" % e)
+        return cache[0]
+    went, batches, froms = {}, {}, {}
+    for e in owed:
+        id_ = e["src"].rsplit(":", 1)[1]
+        if e["kind"] == "question":
+            where = now()
+            if where is None:
+                continue
+            project, alias = where
+            went[id_] = project.id
+            froms[e["src"]] = alias
+            event = {"kind": "question", "from": alias, "to": "host", "text": e["text"], "choices": e["choices"],
+                     "src": e["src"]}
+        else:
+            pid = projects.get(id_) or went.get(id_)
+            project = S.known_project(pid) if pid else None
+            if project is None:
+                continue   # its question not written yet, or its project gone from this machine: it waits
+            if e["src"] not in froms:
+                froms[e["src"]] = _question_from(project, session, e["src"], now)
+            event = {"kind": "answered", "from": froms[e["src"]], "src": e["src"], "text": e["text"]}
+            if "closed" in e:
+                event["closed"] = e["closed"]
+        batches.setdefault(project.id, (project, []))[1].append((e.get("n"), id_, event))
+    written, recorded, failed = set(), {}, []
+    for project, batch in batches.values():
+        try:
+            S.append_host(project, session, [event for _, _, event in batch])
+        except (OSError, S.LockBusy, S.LogWriteFailed) as e:
+            failed.append("%s: %s" % (project.name, e))
+            continue
+        for n, id_, event in batch:
+            if n is not None:
+                written.add(n)
+            if event["kind"] == "question":
+                recorded[id_] = project.id
+    left = len([e for e in owed if "n" in e])
+    if written or recorded:
+        with Lock(session):
+            try:
+                state = _read_json(os.path.join(rec, "state.json"))
+            except FileNotFoundError:
+                state = None
+            if state is not None:
+                log = state["log"]
+                log["owed"] = [e for e in log["owed"] if e["n"] not in written]
+                log["projects"].update(recorded)
+                state["seq"] += 1
+                _write_file(rec, "state.json", _dumps(state).encode())
+                left = len(log["owed"])
+    if failed:
+        raise LogFailed("; ".join(failed))
+    return {"written": len(written), "owed": left}
+
+
 # ------------------------------------------------------------------ the command's acts on a sheet (I3)
 
 HANDLE_RE = re.compile(r"^(q[1-9][0-9]{0,8})(?:@([1-9][0-9]*))?$")
@@ -1224,14 +1349,41 @@ def _removed_leftovers(now_s):
                 shutil.rmtree(os.path.join(root, n), ignore_errors=True)
 
 
+class Refused(Exception):
+    """A removal refused or left unfinished: what to say, and the command's exit code."""
+
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+
 def remove(session, cleared=False):
-    """A stopped session's record and its staging (I1, M2). Liveness is checked before the lock and again under it (a
-    session resumed while this waited); under the lock the staging, then the record, are detached, each by one rename
-    inside sheet/, so no reader or step sees part of a removal, and a record that cannot be detached gets its staging
-    back; then they are deleted, and what could not be is said (the next removal deletes it). The lock file stays."""
+    """remove_record for the command: a refusal is its exit."""
+    try:
+        remove_record(session, cleared)
+    except Refused as e:
+        S.die(str(e), e.code)
+
+
+def remove_record(session, cleared=False):
+    """A stopped session's record and its staging (I1, M2), its log projected first (I12, M6): what the record
+    still owes the log, then a closing for each question still open. Liveness is checked before the lock and again
+    under it (a session resumed while this waited); under the lock the staging, then the record, are detached, each
+    by one rename inside sheet/, so no reader or step sees part of a removal, and a record that cannot be detached
+    gets its staging back; then they are deleted, and what could not be is said (the next removal deletes it). The
+    lock file stays. A projection that fails leaves the record (Refused, 1): the next removal writes what it owes."""
     if not cleared and S.session_running(session):
-        S.die("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)" % session, 2)
+        raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
+                      % session, 2)
     _removed_leftovers(int(time.time()))
+    try:
+        # A record that is no sound directory is not read through: the lock's checks below refuse or remove it.
+        if _log_problem(record_dir(session)) is None:
+            project_log(session, closing=True)
+    except LogFailed as e:
+        raise Refused("sheet remove: %s's project log could not be written (%s); the sheet stays" % (session, e), 1)
+    except Busy:
+        raise Refused("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
     detached = []
     try:
         with Lock(session):
@@ -1244,11 +1396,11 @@ def remove(session, cleared=False):
             except FileNotFoundError:
                 is_dir = True
             if not is_dir:
-                S.die("sheet remove: the record %s is not a directory; nothing removed" % rec, 1)
+                raise Refused("sheet remove: the record %s is not a directory; nothing removed" % rec, 1)
             if not os.path.isfile(os.path.join(rec, "state.json")):
-                S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
+                raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
-                S.die("sheet remove: %s started while this waited; its sheet stays" % session, 2)
+                raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
             for d in (staging_dir(session), rec):
                 if os.path.exists(d):
                     to = os.path.join(sheet_root(), "%s%d-%s" % (REMOVED, int(time.time()), uuid.uuid4().hex))
@@ -1257,10 +1409,11 @@ def remove(session, cleared=False):
                     except OSError as e:
                         for back, was in reversed(detached):
                             os.rename(was, back)
-                        S.die("sheet remove: %s could not be detached (%s); the sheet is still there" % (d, e), 1)
+                        raise Refused("sheet remove: %s could not be detached (%s); the sheet is still there"
+                                      % (d, e), 1)
                     detached.append((d, to))
     except Busy:
-        S.die("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
+        raise Refused("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
     left = []
     for _, d in detached:
         try:
@@ -1268,8 +1421,8 @@ def remove(session, cleared=False):
         except OSError as e:
             left.append("%s (%s)" % (d, e))
     if left:
-        S.die("sheet remove: %s's sheet is removed, but these could not be deleted (the next removal deletes them): "
-              "%s" % (session, "; ".join(left)), 1)
+        raise Refused("sheet remove: %s's sheet is removed, but these could not be deleted (the next removal deletes "
+                      "them): %s" % (session, "; ".join(left)), 1)
 
 
 PREFIX_RE = re.compile(r"^[0-9a-f][0-9a-f-]{7,34}$")
@@ -1395,11 +1548,21 @@ def cmd_sheet(a):
             print("\n".join("%s  %s  %s  %s" % (r["name"], r["url"], r["reach"], "alive" if r["alive"] else "stale")
                             for r in regs) or "no surface registered")
         return
-    if op in ("step", "probe"):
+    if op in ("step", "probe", "log"):
         if not a.session or not S.UUID_RE.fullmatch(a.session):
             S.die("sheet %s: --session takes an engine session id" % op)
         if op == "step":
             print(_dumps(run_step(a.session, sys.stdin.buffer.read())))
+        elif op == "log":
+            try:
+                out = project_log(a.session)
+            except Busy:
+                S.die("sheet log: %s's sheet is busy; the next projection writes it" % a.session, EXIT_BUSY)
+            except LogFailed as e:
+                S.die("sheet log: %s's project log could not be written: %s" % (a.session, e), 1)
+            if out is None:
+                S.die("no sheet: %s has no question sheet on this machine" % a.session, EXIT_NO_SHEET)
+            print(json.dumps(dict({"session": a.session}, **out)))
         else:
             try:
                 out = probe(a.session, remote=a.remote)

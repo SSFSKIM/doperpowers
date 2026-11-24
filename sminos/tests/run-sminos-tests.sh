@@ -604,6 +604,10 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_sheet_step.py"; then
     pass "the question sheet's step: every fixture and vector replays, the envelopes, the context, the verbs, deaths, bounds, at once (test_sheet_step.py)"
   else fail "the question sheet's step: every fixture and vector replays, the envelopes, the context, the verbs, deaths, bounds, at once (test_sheet_step.py)"; fi
+  # M6: the project log's projection, the stop cleanup's pass, removal's closings, the daemon's sweep.
+  if python3 -B "$SCRIPT_DIR/test_sheet_log.py"; then
+    pass "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"
+  else fail "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a

@@ -1,4 +1,4 @@
-import type { SheetKept } from '../../types/sminos'
+import type { AskSnapshot, SheetKept } from '../../types/sminos'
 
 /**
  * The question sheet's model: everything of the sheet's mod that takes no `$`
@@ -580,6 +580,35 @@ export function answerOf(stdout: string): StepAnswer | undefined {
  */
 export function isNewer(held: { session: string; view: View } | undefined, session: string, view: View): boolean {
   return held === undefined || held.session !== session || view.seq >= held.view.seq
+}
+
+/**
+ * The ask snapshot a session under the sheet keeps (I13): today's shape, so
+ * doperpowers' appeal and reload read it unchanged. The questions answered
+ * last (the view's `answered`, which the record keeps across a lost answer,
+ * a reload and a resume) are its answered asks, each the question and the
+ * human's answer as the envelope words it; `answered` is the record's count
+ * of answered questions, which a dismissal does not raise; the open
+ * questions and what is owed go apart, under `sheet`.
+ */
+export function snapshotOf(view: View, isTurnRunning: boolean): AskSnapshot {
+  return {
+    shape: 2,
+    asks: view.answered.map((q) => ({
+      id: `sheet:${q.id}`,
+      questions: [{ question: q.question, header: q.header ?? '', options: [], multiSelect: false }],
+      status: 'answered',
+      answer: q.answer,
+    })),
+    undelivered: [],
+    isTurnRunning,
+    isDialogUp: false,
+    answered: view.answeredCount,
+    sheet: {
+      open: view.open.map((q) => ({ id: q.id, revision: q.revision, ...(q.header !== undefined && { header: q.header }), question: q.question, asker: q.asker === 'main' ? 'main' : q.asker.agentId })),
+      owed: view.pendingCount,
+    },
+  }
 }
 
 /** Whether a view holds a subagent's question or outcome: then the running agents go with every step (I9). */

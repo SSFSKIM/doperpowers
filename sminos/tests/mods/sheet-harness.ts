@@ -84,6 +84,8 @@ export function harness(
     exec?: (argv: readonly string[]) => { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | Promise<{ exitCode: number; stdout: string; isStdoutTruncated?: boolean }>
     /** The clock (`$.clock.now`), in milliseconds since the epoch. */
     now?: number
+    /** What `sminos sheet log` (the projection) answers; exit 0 otherwise. */
+    log?: (n: number) => { exitCode: number; stderr?: string } | Promise<{ exitCode: number; stderr?: string }>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -105,6 +107,7 @@ export function harness(
   const submits: string[] = []
   const sends: { agentId: string; text: string }[] = []
   let session = options.session ?? S1
+  let projections = 0
   const env: Record<string, string> = { SMINOS_HOME: HOME, ...options.env }
   const $ = {
     plugin: { root: '/plug', name: 'sminos' },
@@ -159,6 +162,11 @@ export function harness(
         const [verb, op] = [argv[1], argv[2]]
         if (verb === 'sheet' && op === 'probe') {
           return { exitCode: 0, stdout: JSON.stringify(options.probe ?? { ...ALIVE, surface: null, surfaces: 0 }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        }
+        if (verb === 'sheet' && op === 'log') {
+          projections += 1
+          const out = options.log === undefined ? { exitCode: 0 } : await options.log(projections)
+          return { stdout: '', stderr: '', ...out, isStdoutTruncated: false, isStderrTruncated: false }
         }
         if (verb === 'sheet' && op === 'remove') {
           return { exitCode: options.remove ?? 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }

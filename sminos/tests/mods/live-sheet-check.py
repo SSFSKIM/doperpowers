@@ -33,7 +33,8 @@ their own). `many` comes first whatever is asked: the cases after it act on
 its questions. M4's, in a session of their own that asks for them: rendering
 (an envelope by each route, read back where the mod's landing hook and a
 start's search read it), subset, note, dismiss, compaction, both, subagent,
-agent-open, then stopped (the session ended, answered, resumed); and
+agent-open, then stopped (the session ended, answered, resumed; M6: its
+question and the real answer in the project log, once each); and
 max-send, in one more session. M5's: the band line and the rows in `many` and
 `withdraw`, and import (a session's asks of today's tool, made with the
 setting off, moved onto the sheet when it resumes under it: not on a read
@@ -952,6 +953,26 @@ class Sheet(LB.Live):
                    [k for k, _, _ in rows] == ["prompt.submit"] and "while this session was stopped" in rows[0][1]
                    and "rings" in rows[0][1] and not dropped and not started,
                    "rows %r; retracted's rows %d; turns before the prompt %d" % ([t[:240] for _, t, _ in rows], len(dropped), len(started)))
+        # The project log (M6, I12): the question went at its call; its answer, accepted while the session was
+        # stopped, goes once the resumed start applied it (the mod's projection, or the Stop hook's record).
+        src = "sheet:%s:q13" % sid
+
+        def logged():
+            r = self.cli("chat", "--host", "--json", "-n", "100000")
+            events = [json.loads(line) for line in r.stdout.splitlines() if line.strip()] if r.returncode == 0 else []
+            return [e for e in events if e.get("src") == src]
+        try:
+            wait_for("q13's answer in the project log", 60, lambda: any(e["kind"] == "answered" for e in logged()))
+        except TimeoutError:
+            pass
+        events = logged()
+        asked = [e for e in events if e["kind"] == "question"]
+        answered = [e for e in events if e["kind"] == "answered"]
+        self.check("stopped: the project log holds one question for it and one answered with the real answer",
+                   len(asked) == 1 and asked[0].get("text") == ["D13: which colour?"] and len(answered) == 1
+                   and answered[0].get("text") == '"D13: which colour?" → Saturn. Their text: "rings"'
+                   and "closed" not in answered[0],
+                   "events for %s: %r" % (src, [(e["kind"], e.get("text"), e.get("closed")) for e in events]))
         self.close("resumed")
 
     def case_max_send(self):

@@ -807,3 +807,87 @@ describe('a /clear (E15)', () => {
     expect(h.kept.get('sminos.sheet')).not.toHaveProperty('left')
   })
 })
+
+describe('the other readers (M6): the ask snapshot (I13), the project log (I12)', () => {
+  const read = view({
+    seq: 4,
+    open: [
+      { id: 'q1', revision: 2, asker: 'main', header: 'Auth', question: 'Which method?', askedAt: '2026-11-24T10:00:00.000Z' },
+      { id: 'q3', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Theirs?', askedAt: '2026-11-24T10:00:01.000Z' },
+    ],
+    pending: [{ key: 'k1', id: 'q2', kind: 'answer', recipient: 'main', taken: false, acrossStop: false }],
+    pendingCount: 2,
+    answered: [{ id: 'q2', header: 'Ship', question: 'Ship today?', answer: '"Ship today?" → Yes. Their text: "after the review"' }],
+    answeredCount: 3,
+  })
+
+  test("a view adopted writes the ask key as today's readers read it: the answered questions as answered asks, the count, the open ones apart", async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'start' ? ok(n) : ok(n, {}, { ...read, seq: n })) })
+    await h.ready()
+    expect(h.kept.get('sminos.ask')).toEqual({ shape: 2, asks: [], undelivered: [], isTurnRunning: false, isDialogUp: false, answered: 0, sheet: { open: [], owed: 0 } })
+    await sheetNudge([])
+    expect(h.kept.get('sminos.ask')).toEqual({
+      shape: 2,
+      asks: [{ id: 'sheet:q2', questions: [{ question: 'Ship today?', header: 'Ship', options: [], multiSelect: false }], status: 'answered', answer: '"Ship today?" → Yes. Their text: "after the review"' }],
+      undelivered: [],
+      isTurnRunning: false,
+      isDialogUp: false,
+      answered: 3,
+      sheet: {
+        open: [
+          { id: 'q1', revision: 2, header: 'Auth', question: 'Which method?', asker: 'main' },
+          { id: 'q3', revision: 1, question: 'Theirs?', asker: 'a1' },
+        ],
+        owed: 2,
+      },
+    })
+  })
+
+  test('isTurnRunning follows the main turn; a subagent\'s turn changes nothing; a session under today\'s tool is left to the ask', async () => {
+    const h = sheetOn()
+    await h.ready()
+    await h.turnStart('t1')
+    expect((h.kept.get('sminos.ask') as { isTurnRunning: boolean }).isTurnRunning).toBe(true)
+    await h.turnStart('s1', 'a1')
+    await h.turnComplete('s1', 'answer', 'a1')
+    expect((h.kept.get('sminos.ask') as { isTurnRunning: boolean }).isTurnRunning).toBe(true)
+    await h.turnComplete('t1')
+    expect((h.kept.get('sminos.ask') as { isTurnRunning: boolean }).isTurnRunning).toBe(false)
+    const today = harness({ probe: ALIVE })
+    await today.start()
+    await today.turnStart('t1')
+    expect((today.kept.get('sminos.ask') as { sheet?: unknown } | undefined)?.sheet).toBeUndefined()
+  })
+
+  test('a step that leaves the log owed orders the projection, not awaited and one at a time; one that owes nothing orders none', async () => {
+    let release: () => void = () => {}
+    const h = sheetOn({
+      step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q1.', owed: 1 }, { nextId: 2 }) : event.event === 'drain' ? ok(n, { owed: 2 }) : ok(n)),
+      log: (n) => (n === 1 ? new Promise((resolve) => (release = () => resolve({ exitCode: 0 }))) : { exitCode: 0 }),
+    })
+    await h.ready()
+    expect(h.runs().filter((r) => r.startsWith('sheet log'))).toEqual([])
+    const asked = await h.ask({ ask: [{ question: 'Ship?' }] })
+    expect(asked.result.result).toBe('Added q1.')
+    expect(h.runs().filter((r) => r.startsWith('sheet log'))).toEqual([`sheet log --session ${S1}`])
+    // Two more owing steps while the first projection runs: one more projection, after it.
+    await sheetNudge([])
+    await sheetNudge([])
+    await h.settle()
+    expect(h.runs().filter((r) => r.startsWith('sheet log'))).toHaveLength(1)
+    release()
+    await h.settle()
+    expect(h.runs().filter((r) => r.startsWith('sheet log'))).toHaveLength(2)
+  })
+
+  test("a projection that fails says so in the debug log and is ordered again by the next step that owes", async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q1.', owed: 1 }, { nextId: 2 }) : ok(n)), log: (n) => (n === 1 ? { exitCode: 75, stderr: 'busy' } : { exitCode: 0 }) })
+    await h.ready()
+    await h.ask({ ask: [{ question: 'Ship?' }] })
+    await h.settle()
+    expect(h.logs()).toContain('sheet: the project log was not written (exit 75: busy); the next step that owes it orders it again')
+    await h.ask({ ask: [{ question: 'And?' }] })
+    await h.settle()
+    expect(h.runs().filter((r) => r.startsWith('sheet log'))).toHaveLength(2)
+  })
+})

@@ -681,10 +681,23 @@ notice waiting when the idle route opens goes in its prompt, above the
 envelope. In a MAWS-run session no answer goes by a route of the main
 conversation and no row lands (MAWS delivers there); only a start's or a
 compaction's context rides the next prompt.
+
+The other readers (the plan's M6; the composite's §11). Under the sheet,
+`sheet.tsx` writes the `ask` key the ask writes elsewhere, still `shape: 2`,
+so doperpowers' appeal and reload read it unchanged (`snapshotOf`, from each
+view adopted and at each main turn's start and end, written only when it
+changes): the questions answered last are its answered asks (`sheet:<id>`,
+the human's answer as the envelope words it), `answered` the record's count
+of answered questions (a dismissal is none), and the open ones and what is
+owed under its `sheet` field. After a step whose effects say the project log
+is owed it orders `sminos sheet log --session <id>`, never awaited and one
+at a time; what that projection cannot write stays in the record, for the
+next step that owes it or the Stop hook's `sminos record`.
 `sheet-model.tsx` holds what takes no `$` (the schema and its validation,
 the start choice, the result texts, the floor of a conversation's ids, the
 block's parser and the rows that land one, the notices, the result's
-parser, the band's line and the row's lines); `sheet.tsx` the hooks. Tests
+parser, the band's line and the row's lines, the ask snapshot); `sheet.tsx`
+the hooks. Tests
 `tests/mods/sheet-model.test.ts`, `tests/mods/sheet.test.ts`,
 `tests/mods/sheet-delivery.test.ts`, `tests/mods/sheet-drawing.test.ts` (on
 `tests/mods/sheet-harness.ts`), and

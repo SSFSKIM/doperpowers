@@ -11806,6 +11806,7 @@ def _askers(project, session, srcs):
 
 
 QUESTION_CLOSED = "closed: the session stopped before this was answered"   # Interfaces §2
+SHEET_SRC = "sheet:"   # a question sheet's events' src prefix (sminos_sheet's projection): the stop leaves them open
 
 
 def close_questions(thread):
@@ -11823,7 +11824,9 @@ def close_questions(thread):
     id) is closed, but for the current session in the project it is in now,
     where a question of an unmarked episode (from before threads) is its own
     too: an unmarked episode of a former session, or elsewhere, may be
-    another conversation's. The events appended."""
+    another conversation's. A question sheet's question is passed over: it
+    survives its process, and its record writes its closing (sminos_sheet's
+    projection). The events appended."""
     out, tid, cur = [], thread["thread"], thread["current"]
     projects, home = known_projects(), last_project(cur)
     for sid in dict.fromkeys(thread["sessions"] + [cur]):
@@ -11833,7 +11836,9 @@ def close_questions(thread):
             marks = ("", tid) if sid == cur and home is not None and project.id == home.id else (tid,)
             log = _own_events(project, sid)
             own = log + _own_events(project, sid, HOST_STORE)
-            asked = [q for q in own if q["kind"] == "question" and q.get("src")]
+            # A question sheet's (src `sheet:<session>:<id>`) outlives its process: its record closes it (I12).
+            asked = [q for q in own if q["kind"] == "question" and q.get("src")
+                     and not str(q["src"]).startswith(SHEET_SRC)]
             if not asked:
                 continue
             r = _projection(log).get(sid)
@@ -12112,8 +12117,37 @@ def _member_alias(project, session, seat, peer, marked=False, evidence=None, ove
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
+    return _alias_held(project, session, seat, peer, own)
+
+
+def _alias_held(project, session, seat, peer, own):
+    """The alias a member's host events carry (_member_alias): its seat's, else the one it goes by."""
     return (seat or {}).get("alias") or held_alias(*own_alias(own, session), peer, session,
                                                     shadowing(project, session))[0] or session[:8]
+
+
+def held_member(session, transcript="", cwd=""):
+    """(project, alias) where a session's host events go now: its project as
+    `sminos record` resolves it (from its launch directory, `cwd` only until
+    its transcript names one), and the alias its events carry there
+    (_member_alias's), when its membership there is in effect; None when it
+    is in no project or no member of it. Joins nothing: a session the log
+    does not hold yet is joined by its own hooks (its first Stop), and what
+    waits on it (the question sheet's projection to the log) waits until
+    then. A session whose launch directory nothing names any more (a
+    stopped one whose transcript is gone) is where its membership in effect
+    puts it (last_project)."""
+    where = launch_cwd(session, transcript, fallback=cwd)
+    project = session_project(session, where) or (None if where else last_project(session))
+    if project is None:
+        return None
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        return None
+    seen = _on_sight(project, session)
+    if seen is None:
+        return None
+    return project, _alias_held(project, session, *seen, own)
 
 
 def export_live(cwd, session, records):
@@ -12308,6 +12342,27 @@ def cmd_record(_a, payload=None):
     except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
         try:
             daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
+        except OSError:
+            pass
+    if event == "Stop":
+        record_sheet(session, tpath, cwd)
+
+
+def record_sheet(session, tpath, cwd):
+    """At a Stop, what the session's question sheet owes the project log
+    (sminos_sheet.project_log, I12), for a session that has one: the record
+    keeps it until the log has it, so what the mod's own projection could
+    not write (the session joined only at this Stop) goes now. A failure is
+    a line in daemon.log; the next Stop, or the mod's next projection,
+    writes it."""
+    sheet = sibling_module("sminos_sheet")
+    if not sheet.has_record(session):
+        return
+    try:
+        sheet.project_log(session, here=lambda s: held_member(s, tpath, cwd))
+    except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
+        try:
+            daemon_log("record Stop %s: the question sheet's log: %s: %s" % (session[:8], type(e).__name__, e))
         except OSError:
             pass
 
@@ -21497,7 +21552,7 @@ def build_parser():
     so = sqsub.add_parser("surfaces", add_help=False)
     so.add_argument("--json", action="store_true")
     so.set_defaults(fn=cmd_sheet, session="")
-    for op in ("step", "probe"):                        # the tool's own, in no usage text
+    for op in ("step", "probe", "log"):                 # the tool's own, in no usage text
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("--session", default="")
         if op == "probe":

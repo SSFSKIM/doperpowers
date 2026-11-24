@@ -1,6 +1,6 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
-import type { SheetKept } from '../../types/sminos'
+import type { AskSnapshot, SheetKept } from '../../types/sminos'
 import { askChoiceMade, deferAskToChoice, readTodayAsks, yieldAsk } from './ask'
 import {
   DESCRIPTION,
@@ -38,6 +38,7 @@ import {
   resultTextOf,
   rowLines,
   searchedKeys,
+  snapshotOf,
   surfaceOf,
   unreadClause,
   validateCall,
@@ -55,7 +56,9 @@ import type { Asker, Delivered, Effects, Probe, Recipient, Reference, Runner, Sh
  * evidence of the row that holds them; a start's and a compaction's context
  * (I10). The terminal's drawing (M5, §8.3): the line above the prompt and a
  * call's row; a resume's open asks of today's tool staged for its start's
- * import. The snapshot (M6) is not here yet.
+ * import. The other readers (M6): the ask snapshot another plugin reads
+ * (I13), and the projection to the project log after a step that owes it
+ * (I12).
  */
 
 /** What the mod keeps in `$.state` for the process (types/sminos.d.ts). */
@@ -108,6 +111,8 @@ export type Port = {
   notify: (text: string) => void
   log: (text: string) => void
   keep: (kept: SheetKept) => void
+  /** The ask key another plugin reads (I13): written as `ask.tsx` writes it where the sheet is not chosen. */
+  publish: (snapshot: AskSnapshot) => void
   invalidate: () => void
   /** A prompt of this plugin's (`$.prompt.submit`), the idle route; what entered, or why not. */
   submit: (text: string) => Promise<{ drop?: string; text?: string }>
@@ -195,6 +200,9 @@ type Gen = {
   delivered: Map<string, Delivered>
   /** The one read of the conversation for those blocks: under way, made, or failed (where it cannot be read yet, C0's P5) when this many turns had started, and whether retried since. */
   deliveriesRead?: { state: 'reading' | 'done' } | { state: 'failed'; turns: number; isRetried: boolean }
+  /** The projection to the project log running (I12), and whether a step owed it again meanwhile: one more after it. */
+  logging?: Promise<void>
+  isLogAgain: boolean
 }
 
 /**
@@ -271,6 +279,8 @@ type Sheet = {
   surfaceViews: number
   /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
   isDeliveryWanted: boolean
+  /** The ask snapshot last written (I13), as its JSON: one that would say the same is not written again. */
+  published?: string
 }
 
 function fresh(): Sheet {
@@ -307,6 +317,7 @@ const newGen = (session: string): Gen => ({
   named: new Set(),
   sentTo: new Map(),
   delivered: new Map(),
+  isLogAgain: false,
 })
 
 let sheet: Sheet = fresh()
@@ -390,6 +401,9 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
     return answer
   }
   acked.forEach((id) => gen.toAck.delete(id))
+  if (answer.effects.owed > 0) {
+    projectLog(port, gen)
+  }
   if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
     const before = gen.held
     gen.held = answer.view
@@ -403,9 +417,53 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
         sheet.surface = answer.view.surface
         port.redraw()
       }
+      publish(port)
     }
   }
   return answer
+}
+
+/**
+ * The ask snapshot (I13) from the view held for the session the process is
+ * in, written when it says something new: the answered questions, their
+ * count and the open ones from the view, whether the main turn runs.
+ */
+function publish(port: Port) {
+  const held = current()?.held
+  if (held === undefined || !isSheetChosen()) return
+  const snapshot = snapshotOf(held, sheet.mainTurn !== undefined)
+  const text = JSON.stringify(snapshot)
+  if (text === sheet.published) return
+  sheet.published = text
+  port.publish(snapshot)
+}
+
+/**
+ * The projection to the project log (I12), `sminos sheet log`, after a step
+ * whose effects say the log is owed: never awaited, one at a time, and one
+ * more after it when a step owed it again meanwhile. What it could not write
+ * stays owed in the record: the next step that owes orders it again, and
+ * the Stop hook's record runs it too.
+ */
+function projectLog(port: Port, gen: Gen) {
+  if (gen.logging !== undefined) {
+    gen.isLogAgain = true
+    return
+  }
+  gen.logging = (async () => {
+    do {
+      gen.isLogAgain = false
+      try {
+        const out = await port.run(['sheet', 'log', '--session', gen.session])
+        if (out.exitCode !== 0) {
+          port.log(`sheet: the project log was not written (exit ${out.exitCode}: ${out.stderr.trim().slice(0, 300)}); the next step that owes it orders it again`)
+        }
+      } catch (error) {
+        port.log(`sheet: the project log was not written (${message(error)}); the next step that owes it orders it again`)
+      }
+    } while (gen.isLogAgain)
+    gen.logging = undefined
+  })()
 }
 
 /**
@@ -1506,6 +1564,7 @@ function portOf($: EngineInterface): Port {
     notify: (text) => void $.ui.notify(text).catch((error: unknown) => $.ui.log(`sheet: the question's notification failed (${message(error)})`, { to: 'debug' })),
     log: (text) => $.ui.log(text, { to: 'debug' }),
     keep: (kept) => void $.state.set(KEPT, kept).catch((error: unknown) => $.ui.log(`sheet: the choice is not kept for a reload: ${message(error)}`, { to: 'debug' })),
+    publish: (snapshot) => void $.state.set({ plugin: 'sminos', key: 'ask' }, snapshot).catch((error: unknown) => $.ui.log(`sheet: the ask snapshot is not written: ${message(error)}`, { to: 'debug' })),
     invalidate: () => $.ui.invalidate('tool.describe'),
     submit: (text) => $.prompt.submit({ text }),
     send: (agentId, text) => $.session.send({ to: { agentId }, text }),
@@ -1799,6 +1858,7 @@ export function registerSheet(on: On) {
     if (e.agentId === undefined) {
       sheet.mainTurn = e.turnId
       sheet.turns += 1
+      if (sheet.port !== undefined) publish(sheet.port)
       for (const flight of current()?.flights ?? []) {
         if (flight.awaitsTurn === true) {
           flight.awaitsTurn = false
@@ -1816,6 +1876,7 @@ export function registerSheet(on: On) {
     triggerCheck()
     if (e.agentId === undefined) {
       if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
+      if (sheet.port !== undefined) publish(sheet.port)
       const gen = routable()
       if (gen !== undefined) {
         void endTurn(sheet.port as Port, gen, e.turnId, e.reason)

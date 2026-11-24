@@ -26,6 +26,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFil
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
 import { ASYNC_RESULT } from '$root/hooks/mods/ask.tsx'
+import type { AskSnapshot } from '$root/types/sminos.d.ts'
 import { DESCRIPTION, INPUT_SCHEMA, blocksOf, deliveriesHeld, floorOfLines, floorOfSearch, floorOfSheetText, floorSearchArgs, heldKeys, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
@@ -80,8 +81,11 @@ check("every field C1 describes is a property", Object.keys(c1).every((name) => 
 
 const logs: string[] = []
 const CAP = 4 * 1024 * 1024
+const ran: string[] = []
+const snapshots: AskSnapshot[] = []
 const port: Port = {
   run: async (args, stdin) => {
+    ran.push(args.join(' '))
     const p = spawnSync('$root/skills/sminos/scripts/sminos', args, { input: stdin ?? '', encoding: 'utf8', env: { ...process.env, SMINOS_HOME: HOME } })
     if (p.error) throw p.error
     return { exitCode: p.status ?? 1, stdout: p.stdout, stderr: p.stderr }
@@ -114,6 +118,7 @@ const port: Port = {
   notify: () => {},
   log: (text) => void logs.push(text),
   keep: () => {},
+  publish: (snapshot) => void snapshots.push(snapshot),
   invalidate: () => {},
   submit: async (text) => (submitted.push(text), { text }),
   send: async () => ({ isDelivered: true }),
@@ -496,6 +501,31 @@ const ours = () => surfaceOf(readdirSync(surfaces).map((file) => ({ file, text: 
 check("the band's reading is the command's: mawsd first", JSON.stringify(ours()) === JSON.stringify(theirs()) && ours()?.name === 'mawsd' && ours()?.url === 'http://mawsd.localhost:47590', [ours(), theirs()])
 rmSync(\`\${surfaces}/mawsd.json\`)
 check("the band's reading is the command's: then by name", JSON.stringify(ours()) === JSON.stringify(theirs()) && ours()?.name === 'alpha', [ours(), theirs()])
+
+// M6: the ask snapshot a session under the sheet writes (I13), from the real step's views: an answer raises its count
+// and lists the question with the human's answer as the envelope words it; a dismissal does neither. The steps that
+// owe the project log order its projection, run for real: in no project here, it writes nothing, and the record keeps
+// all it owes.
+const SR = '5eed0000-0000-4000-8000-00000000c3c0'
+await sheetForTests.sessionStarted(port, 'startup', SR, '$work/none.jsonl')
+const logRuns = () => ran.filter((r) => r === \`sheet log --session \${SR}\`).length
+await call('toolu_r1', { ask: [{ question: 'Ship today?', header: 'Ship', options: [{ label: 'Yes' }, { label: 'No' }] }, { question: 'Rename it?' }] })
+const last = () => snapshots.at(-1)
+check('the snapshot lists the two open, nothing answered', last()?.answered === 0 && last()?.sheet?.open.map((q) => q.id).join() === 'q1,q2' && last()?.asks.length === 0, last())
+const putR = (line: Record<string, unknown>) => sminos(['sheet', 'put', '--session', SR, '--no-wait'], JSON.stringify({ v: 1, by: 'cli', ...line }) + '\n')
+putR({ key: 'kr000001', kind: 'answer', id: 'q1', revision: 1, picks: ['Yes'], text: 'after the review' })
+await sheetForTests.drain(port, sheetForTests.sheet().gen!)
+hops.splice(0)
+check('an answer: counted, and listed as an answered ask with the real answer', JSON.stringify(last()?.asks) === JSON.stringify([
+  { id: 'sheet:q1', questions: [{ question: 'Ship today?', header: 'Ship', options: [], multiSelect: false }], status: 'answered', answer: '"Ship today?" → Yes. Their text: "after the review"' },
+]) && last()?.answered === 1 && last()?.sheet?.owed === 1 && last()?.sheet?.open.map((q) => q.id).join() === 'q2', last())
+putR({ key: 'kr000002', kind: 'dismiss', id: 'q2' })
+await sheetForTests.drain(port, sheetForTests.sheet().gen!)
+hops.splice(0)
+check('a dismissal: no answer, not counted', last()?.answered === 1 && last()?.asks.length === 1 && last()?.sheet?.open.length === 0 && last()?.sheet?.owed === 2, last())
+await new Promise((resolve) => setTimeout(resolve, 50))
+const sr = JSON.parse(readFileSync(\`\${HOME}/sheet/\${SR}/state.json\`, 'utf8'))
+check('each step that owed the log ordered its projection; in no project it wrote nothing, and all four are owed', logRuns() >= 2 && sr.log.owed.map((e: { kind: string }) => e.kind).join() === 'question,question,answered,answered', { runs: logRuns(), owed: sr.log.owed })
 
 process.exit(failed === 0 ? 0 : 1)
 TS

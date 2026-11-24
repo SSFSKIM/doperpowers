@@ -9,8 +9,10 @@
  *
  * `ask`: the ask mod's async asks and the answers on their way to the model
  * (hooks/mods/ask.tsx), kept so that a reload of the module takes them up,
- * and written on every change of any field it carries. Another plugin reads
- * it and observes its writes; only sminos writes it. doperpowers' appeal ends
+ * and written on every change of any field it carries; in a session under
+ * the question sheet, the sheet's answered questions in the same shape
+ * (hooks/mods/sheet.tsx, its `sheet` field below). Another plugin reads it
+ * and observes its writes; only sminos writes it. doperpowers' appeal ends
  * its passes when `answered` grows, and its reload waits while `isDialogUp`:
  *
  *   const ASK = { plugin: 'sminos', key: 'ask' } as const
@@ -38,6 +40,18 @@ export type AskSnapshot = {
   answered: number
   /** Where the session's pasted pictures are kept, once the session start named it. */
   store?: { slug: string; sessionId: string; root?: string | null }
+  /**
+   * A session under the question sheet (hooks/mods/sheet.tsx; the plan
+   * docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I13): its
+   * open questions, each at its revision (`asker` is `main` or the asking
+   * agent's id), and how many accepted answers and dismissals are still owed
+   * to the agent. There, `asks` holds the questions answered last as
+   * answered asks, one each (`id` `sheet:<question id>`, no options), from
+   * the sheet's record, `answered` counts every question the human
+   * answered, a dismissal not being an answer, and no ask is open,
+   * undelivered or behind a dialog: the sheet raises none.
+   */
+  sheet?: { open: { id: string; revision: number; header?: string; question: string; asker: string }[]; owed: number }
 }
 
 /**
