@@ -188,3 +188,48 @@ Tests: `test_sheet_contract: 38 passed`.
 Gates: `ci-gate --gates sminos,sminos-suites-c,version-bump,shell-lint` ran GREEN on `4c43641b9`,
 https://github.com/SSFSKIM/doperpowers/actions/runs/45351655242. The intermediate head `7139891f9` was GREEN too (run
 45350746456).
+
+## Fix wave 2: the high-rung review's second pass
+
+The branch first took current main (`e32649e88`, a clean merge). origin/main carries sminos 1.56.0 and the branch
+1.57.0, so the version bump needed nothing. The fixes are in `bd3cf9d55`.
+
+1. **A lock-free reader can see a short write's first lines before the rest or the rollback.** Not repaired, as
+   ruled. Logged as `docs/doperpowers/TECH-DEBT.md` row #37 (T3). The plan's I3 names it, and so do its M7 limits
+   list and the README's door reading.
+2. **A Python validator reads a pattern's `$` more loosely than ECMA-262 does.** Not repaired, as ruled. Logged as
+   TECH-DEBT row #38 (T3). The plan's I1 dialect paragraph names it, and so do M7's list and the README's dialect
+   paragraph.
+3. **A lone surrogate in a record's string made `show` fail.** `printable()` in `sminos_sheet.py` now writes every
+   lone surrogate as U+FFFD before `show` prints, in both the JSON and the text form. A test plants one in a label
+   and checks that both forms exit 0, that U+FFFD stands in its place, and that the output passes the show schema.
+   The writer rule is now in the plan:
+   - U14 lists a lone surrogate as one of an entry's own refusals;
+   - M2's import replaces each lone surrogate with U+FFFD;
+   - I4 states the reader's rule and the writers' side.
+   
+   The README says the same.
+4. **Queued `sent` entries are now discriminated by kind.** An answer or dismissal requires `id` and may carry
+   `cancelled`; a retract requires `target`; a `delivered` line has neither. Negative tests cover:
+   - a retract carrying `id` or `cancelled`;
+   - a retract without `target`;
+   - an answer carrying `target`;
+   - a delivered line carrying `id`.
+5. **The show schema has its own string limits.** `cutSnapshot` and `cutAsker` set the bounds: header 60,
+   question 2,000, labels and picks 200, a subagent's name 200. A pending outcome's text is at most 20,000
+   characters. The state schema still bounds nothing. Tests check that an over-long header, question or pick fails
+   the show schema, and that the state schema accepts a long imported question.
+6. **The handle's pattern** is now `^q[1-9][0-9]{0,8}(@[1-9][0-9]*)?$`, which bounds the id and leaves the
+   revision open.
+7. **An upload's name.** The README and the plan's I3 now say that the stem before the final dot is 1 to 250
+   characters. The door's error message says the same.
+
+Generator line:
+
+    sheet-contract: 21 cases, 6 examples, digest 594200ae4e539c0688c67b511968861d8ebf03c87d1c45b512903a538326e277
+
+Tests: `--check` passes; `test_sheet_contract: 39 passed`; pyflakes is clean. The diff contains no `/Users/new`.
+
+Gates: `ci-gate --gates sminos,sminos-suites-c,version-bump,shell-lint` was GREEN on `bd3cf9d55`, run
+https://github.com/SSFSKIM/doperpowers/actions/runs/45355494591. Timings: version-bump 0m07s, shell-lint 0m24s,
+sminos 7m54s, sminos-suites-c 12m47s.
