@@ -377,6 +377,12 @@ class Env:
         self.shell_overrides = list(shell_overrides)  # (regex, output) tried before the generic shell
         self.git_log = git_log
         self.agents = 0
+        self.committed = dict(fs.files)
+        self.commits = 0
+
+    def mark_committed(self):
+        """The working tree as committed: what the live part of a run starts from."""
+        self.committed = dict(self.fs.files)
 
     def tool(self, name, inp, call_id=None):
         """(content, is_error) for one tool call."""
@@ -431,9 +437,19 @@ class Env:
 
     def shell(self, command):
         for rx, out in self.shell_overrides:
-            if re.search(rx, command):
-                return out
+            if re.search(rx, command, re.S | re.I):
+                return out(self) if callable(out) else out
         outputs = []
+        heredoc = re.compile(r"(?:cat|tee)\s*(?:>\s*(\S+)\s*)?<<-?\s*['\"]?(\w+)['\"]?\s*(?:>\s*(\S+))?\n(.*?)\n\2\s*(?:\n|$)", re.S)
+        while True:
+            m = heredoc.search(command)
+            if not m:
+                break
+            path = m.group(1) or m.group(3)
+            if path:
+                self.fs.files[self.fs.resolve(path.strip("'\""))] = m.group(4) + "\n"
+            command = command[:m.start()] + "\n" + command[m.end():]
+        command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
         for segment in re.split(r"&&|\|\||;|\n", command):
             first = segment.split("|")[0].strip()
             try:
@@ -454,22 +470,12 @@ class Env:
         if cmd == "cd":
             return ""
         if cmd == "git":
-            sub = args[0] if args else ""
-            if sub == "log":
-                return self.git_log
-            if sub == "status":
-                return "On branch csv-export\nnothing to commit, working tree clean"
-            if sub == "branch":
-                return "* csv-export\n  main"
-            if sub in ("pull", "fetch"):
-                return "Already up to date."
-            return ""
+            return self.git(args)
+        if cmd == "sed" and any(a.startswith("-i") for a in args):
+            return self.sed_in_place(args)
         if cmd in ("pytest", "python", "python3", "uv", "make") and ("pytest" in words or cmd == "pytest" or
                                                                     (cmd == "make" and "test" in args)):
-            return "........................................................................ [ 33%]\n" \
-                   "........................................................................ [ 67%]\n" \
-                   "...................................................................... [100%]\n" \
-                   "214 passed, 3 skipped in 43.08s"
+            return self.pytest(args)
         if cmd in ("ruff", "mypy") or (cmd in ("python", "python3", "uv") and ({"ruff", "mypy"} & set(args))):
             return "All checks passed!" if "ruff" in words else "Success: no issues found in 41 source files"
         if cmd in ("cat", "head", "tail", "sed", "nl", "less", "wc"):
@@ -499,9 +505,98 @@ class Env:
             name = args[args.index("-name") + 1] if "-name" in args else "*"
             return "\n".join("./" + self.fs.rel(p) for p in self.fs.under(root) if Path(p).match(name))
         if cmd in ("echo", "printf"):
-            return " ".join(a for a in args if not a.startswith("-"))
+            return " ".join(a for a in args if not a.startswith("-")).replace("$?", "0")
+        if cmd in ("mkdir", "touch", "rm", "mv", "cp", "chmod"):
+            if cmd == "touch":
+                for a in args:
+                    if not a.startswith("-"):
+                        self.fs.files.setdefault(self.fs.resolve(a), "")
+            return ""
         return {"pwd": CWD, "whoami": "dev", "hostname": "macbook",
                 "date": "Mon Nov 23 15:42:10 UTC 2026"}.get(cmd, "")
+
+
+    def changed(self):
+        new = sorted(p for p in self.fs.files if p not in self.committed)
+        mod = sorted(p for p in self.fs.files if p in self.committed and self.fs.files[p] != self.committed[p])
+        return mod, new
+
+    def git(self, args):
+        sub = args[0] if args else ""
+        mod, new = self.changed()
+        if sub == "status":
+            if not mod and not new:
+                return "On branch csv-export\nnothing to commit, working tree clean"
+            if "--short" in args or "-s" in args or "--porcelain" in args:
+                return "\n".join([f" M {self.fs.rel(p)}" for p in mod] + [f"?? {self.fs.rel(p)}" for p in new])
+            out = ["On branch csv-export"]
+            if mod:
+                out += ["Changes not staged for commit:"] + [f"\tmodified:   {self.fs.rel(p)}" for p in mod]
+            if new:
+                out += ["Untracked files:"] + [f"\t{self.fs.rel(p)}" for p in new]
+            return "\n".join(out)
+        if sub == "diff":
+            import difflib
+            out = []
+            for p in mod:
+                out += difflib.unified_diff(self.committed[p].splitlines(), self.fs.files[p].splitlines(),
+                                            f"a/{self.fs.rel(p)}", f"b/{self.fs.rel(p)}", lineterm="")
+            return "\n".join(out)
+        if sub == "commit":
+            if not mod and not new:
+                return "On branch csv-export\nnothing to commit, working tree clean"
+            self.commits += 1
+            msg = next((args[i + 1] for i, a in enumerate(args) if a in ("-m", "--message") and i + 1 < len(args)), "wip")
+            sha = f"{0x5a3c1e0 + self.commits * 0x10f3b:07x}"
+            self.committed = dict(self.fs.files)
+            self.git_log = f"{sha} {msg.splitlines()[0]}\n" + self.git_log
+            return f"[csv-export {sha}] {msg.splitlines()[0]}\n {len(mod) + len(new)} files changed"
+        if sub == "log":
+            return self.git_log
+        if sub == "rev-parse":
+            return (self.git_log.split()[0] if self.git_log else "b81f2c4") + "9d04c2e51f7a3b86e0d12c4f9a7e5b3d01"
+        if sub == "branch":
+            return "* csv-export\n  main"
+        if sub in ("pull", "fetch"):
+            return "Already up to date."
+        if sub == "show":
+            return self.git_log.split("\n")[0]
+        return ""
+
+    def sed_in_place(self, args):
+        """`sed -i` with s/// expressions: basic regular expressions unless -E or -r."""
+        ere = any(a in ("-E", "-r") for a in args)
+        exprs = [a for a in args if len(a) > 3 and a[0] == "s" and not a[1].isalnum() and a.count(a[1]) >= 3]
+        paths = [a for a in args if self.fs.resolve(a) in self.fs.files]
+        for e in exprs:
+            d = e[1]
+            parts = re.split(r"(?<!\\)" + re.escape(d), e[2:])
+            if len(parts) < 3:
+                continue
+            old, new, flags = parts[0].replace("\\" + d, d), parts[1].replace("\\" + d, d), parts[2]
+            if not ere:  # BRE: ( ) { } + ? | are literal unless escaped
+                old = re.sub(r"\\([(){}+?|])|([(){}+?|])", lambda m: m.group(1) or "\\" + m.group(2), old)
+            new = new.replace("&", r"\g<0>")
+            for p in paths:
+                path = self.fs.resolve(p)
+                try:
+                    self.fs.files[path] = re.sub(old, new, self.fs.files[path], count=0 if "g" in flags else 1, flags=re.M)
+                except re.error:
+                    self.fs.files[path] = self.fs.files[path].replace(old, new)
+        return ""
+
+    def pytest(self, args):
+        """Every test passes; the count is what the named paths hold, or the whole suite."""
+        paths = [a.split("::")[0] for a in args if a.split("::")[0].startswith("tests")]
+        files = [p for p in self.fs.files if p.endswith(".py") and "/tests/" in p and
+                 (not paths or any(self.fs.rel(p).startswith(x.rstrip("/")) for x in paths))]
+        n = sum(len(re.findall(r"^def test_", self.fs.files[p], re.M)) for p in files)
+        if not paths:
+            n += 196  # the rest of the suite, which the world does not hold
+        dots = "." * n
+        lines = [dots[i:i + 72] for i in range(0, len(dots), 72)] or [""]
+        tail = f"{n} passed" + (", 3 skipped" if not paths else "") + f" in {0.2 + n * 0.19:.2f}s"
+        return "\n".join(lines) + "\n" + tail
 
 
 # -- the session the model continues
@@ -720,10 +815,12 @@ def run_jobs(jobs, key, run, workers=8):
     return out
 
 
-def session(script, arm_path):
-    """A fresh environment, the scripted prefix built through it, and the request's system and tools."""
-    from question_sheet_session import GIT_LOG, make_fs
+def session(script, arm_path, overrides=()):
+    """A fresh environment, the scripted prefix built through it, and the request's system and tools.
+    `overrides` are (regex, output) answers tried before staging's and the generic shell's."""
+    from question_sheet_session import GIT_LOG, STAGING, make_fs
     fs = make_fs()
-    env = Env(fs, Sheet(fs), git_log=GIT_LOG)
+    env = Env(fs, Sheet(fs), shell_overrides=list(overrides) + STAGING, git_log=GIT_LOG)
     prefix = build(script, env)
+    env.mark_committed()
     return env, prefix, claude_code_system(PREAMBLE + style_body()), tools_for(arm_path)

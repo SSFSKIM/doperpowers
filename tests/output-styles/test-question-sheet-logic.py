@@ -130,6 +130,27 @@ check("the tool definition carries the arm's description",
       qs.sheet_tool_def()["description"].startswith("Put questions for the human on this session's question sheet."))
 check("the built-in's async is not offered", "async" not in json.dumps(qs.sheet_tool_def()["input_schema"]))
 
+# -- the shell the live part meets
+
+env, *_ = qs.session(ss.e2_script("cap", "short"), qs.DEFAULT_ARM, [(r"smoke-staging", ss.trigger_output("cap"))])
+sh = env.shell
+check("the live part starts from a clean tree", sh("git status") == "On branch csv-export\nnothing to commit, working tree clean")
+sh("mkdir -p tests/export && cat > tests/export/test_x.py <<'EOF'\ndef test_a():\n    pass\n\n\ndef test_b():\n    pytest\nEOF\n")
+check("a heredoc writes its file", env.fs.files.get(ss.P("tests/export/test_x.py"), "").startswith("def test_a"))
+check("git status shows the new file", "?? tests/export/test_x.py" in sh("git status --short"), sh("git status --short"))
+check("pytest counts the tests it is given", sh("pytest tests/export/test_x.py -q").endswith("2 passed in 0.58s"),
+      sh("pytest tests/export/test_x.py -q"))
+sh("sed -i '' 's/normalize(), \"f\"/normalize(), \"g\"/' tally/export/writer.py")
+check("sed -i edits in place", 'format(value.normalize(), "g")' in env.fs.files[ss.P("tally/export/writer.py")])
+check("git diff shows the edit", '+        return format(value.normalize(), "g")' in sh("git diff"), sh("git diff"))
+out = sh("git add -A && git commit -m 'wip: two tests'")
+check("a commit cleans the tree", "2 files changed" in out and "nothing to commit" in sh("git status"), out)
+check("git log shows the commit", sh("git log --oneline -3").split("\n")[0].endswith("wip: two tests"))
+check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
+check("staging answers the numbers the session showed",
+      "1204" in sh('psql "$STAGING_RO_URL" -c "select count(*) from accounts where timezone is null"'))
+check("the trigger run again answers the same", "ExportTooLarge" in sh("make smoke-staging"))
+
 # -- the run loop against a fake client
 
 
@@ -210,6 +231,7 @@ e2 = load("question-sheet-card-eval")
 facts_all = {"matter": "cap", "facts": {str(i): True for i in range(1, 7)}}
 facts_missing = {"matter": "cap", "facts": {"1": True, "2": True, "3": False, "4": True, "5": True, "6": True}}
 yes, partly = {"could_decide": "yes"}, {"could_decide": "partly"}
+e2.READER_SAMPLES = 1
 e2.client = Fake([], [facts_all, yes])
 v = e2.judge_card("card", ["cap"], "low")
 check("E2 a card with every fact and a yes passes", v["pass"] and v["essential"], v)
@@ -225,6 +247,11 @@ e2.judge_run(x, "low")
 check("E2 capture judged only where there are notes", x["cards"][0]["with_capture"]["pass"] and
       x["cards"][1]["with_capture"] is x["cards"][1]["alone"])
 check("E2 the matters asked are read from the cards", x["matters_asked"] == ["cap"])
+e2.READER_SAMPLES = 3
+e2.client = Fake([], [facts_all, yes, partly, yes])
+check("E2 the reader is the median of three", e2.judge_card("card", ["cap"], "low")["reader"]["could_decide"] == "yes")
+e2.client = Fake([], [facts_all, partly, yes, {"could_decide": "no"}])
+check("E2 one yes of three is not a yes", not e2.judge_card("card", ["cap"], "low")["pass"])
 
 print("\n%d failed" % len(FAILED) if FAILED else "\nall passed")
 sys.exit(1 if FAILED else 0)

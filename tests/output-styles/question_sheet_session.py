@@ -929,10 +929,38 @@ CALIBRATION = {
         "full": {"id": "q1", "header": "Accounts with no time zone",
                  "question": "1,204 of 3,170 accounts (38%) have no time zone set, and as built every export of "
                              "theirs fails. What should their exports use?",
-                 "context": "The spec writes timestamps in the account's time zone, ISO 8601 with the offset. "
-                            "`accounts.timezone` stays empty until someone sets it in Settings.",
-                 "options": [{"label": "UTC", "recommended": True, "description": "+00:00 offsets; nothing fails."},
+                 "context": "The spec writes each row's timestamps in the account's time zone, ISO 8601 with the "
+                            "offset; nothing in the export groups rows by day, so the zone changes how a time is "
+                            "written, not which rows a file holds. `accounts.timezone` stays empty until someone sets "
+                            "it in Settings; the export page would say which zone a file uses.",
+                 "options": [{"label": "UTC", "recommended": True,
+                              "description": "+00:00 offsets for them; nothing fails, and the same instant reads "
+                                             "differently from a zoned account's file until they set one."},
                              {"label": "Refuse until set", "description": "Their exports keep failing, with a "
                                                                           "message asking an admin to set it."},
-                             {"label": "The exporting user's zone"}]}},
+                             {"label": "The exporting user's zone",
+                              "description": "Users have their own zone setting; two users exporting the same report "
+                                             "would get different times in their files."}]}},
 }
+
+
+# -- what staging answers in the live part of a run: the numbers the sessions already showed, so a query the agent
+# runs again agrees with them. Tried in order against the whole command; anything else on staging is "(0 rows)".
+
+_DB = r"(psql|db\.shell|db_shell|STAGING)"
+STAGING = [
+    (_DB + r".*timezone\s+is\s+null", " accounts | no_timezone\n----------+-------------\n     3170 |        1204\n(1 row)"),
+    (_DB + r".*from\s+billing_contacts", " count\n-------\n 48211\n(1 row)"),
+    (_DB + r".*usage_events", "      slug       |  count\n-----------------+---------\n acme-logistics  | 1412903\n"
+                              " northwind-freight |  884120\n helios-energy   |  610447\n brightpath      |  402915\n"
+                              " carto-labs      |  288730\n(5 rows)"),
+    (_DB + r".*viewer", " role   | seats\n--------+-------\n viewer |  2914\n member | 11207\n finance |   988\n"
+                        " admin  |  3402\n(4 rows)"),
+    (_DB, "(0 rows)"),
+]
+
+
+def trigger_output(scenario):
+    """The output of E2's trigger command, for a run that runs it again."""
+    steps = E2_TRIGGERS[scenario]["steps"]
+    return steps[-1][2][-1][2]
