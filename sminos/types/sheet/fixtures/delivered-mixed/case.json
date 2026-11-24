@@ -1,0 +1,26 @@
+{
+ "covers": "§4.2 row 7: a delivered line naming one key pending, one delivered before and one unknown; after it show's closed holds the delivered answer's receipt and pending holds it no longer",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "maws-1101d003"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "delivered-mixed",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000011",
+ "verdicts": {
+  "maws-1101d003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "delivered",
+   "verdict": "applied"
+  }
+ }
+}

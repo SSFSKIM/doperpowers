@@ -1,0 +1,27 @@
+{
+ "covers": "torn-tail after the surface sent again: a newline, then the answer under the same key; the first copy is applied, the second set aside, one verdict",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-2101a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "torn-tail-resent",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000021",
+ "verdicts": {
+  "page-2101a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

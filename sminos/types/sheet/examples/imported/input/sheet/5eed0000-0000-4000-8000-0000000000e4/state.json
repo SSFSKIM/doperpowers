@@ -1,0 +1,82 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which rollout gate?\" → Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and ….",
+   "asker": "main",
+   "at": "2026-11-23T10:00:01.000Z",
+   "header": "Gate",
+   "how": "answered",
+   "key": "page-e4a00001",
+   "places": [
+    3
+   ],
+   "question": "Which rollout gate?",
+   "receipt": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {
+   "toolu_01Legacy00017": [
+    "q1"
+   ]
+  },
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 3,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 2,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:01.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T10:00:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-e4a00001",
+   "kind": "answer",
+   "picks": [
+    "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look"
+   ],
+   "question": {
+    "askedAt": "2026-11-22T18:00:00.000Z",
+    "asker": "main",
+    "header": "Gate",
+    "multiSelect": false,
+    "options": [
+     "No gate",
+     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n",
+     "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and , and a second look"
+    ],
+    "question": "Which rollout gate?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "questions": [],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-0000000000e4",
+ "v": 1,
+ "verdicts": {
+  "page-e4a00001": {
+   "at": "2026-11-23T10:00:01.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

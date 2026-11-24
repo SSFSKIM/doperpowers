@@ -1,0 +1,44 @@
+{
+ "closed": {},
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:30:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0003",
+   "handle": "q1@2",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 2
+  }
+ ],
+ "pending": [],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "current": 2,
+   "id": "q1",
+   "key": "page-0301a001",
+   "kind": "answer",
+   "state": "stale",
+   "verdict": "stale"
+  }
+ ],
+ "seq": 7,
+ "session": "5eed0000-0000-4000-8000-000000000003",
+ "v": 1
+}

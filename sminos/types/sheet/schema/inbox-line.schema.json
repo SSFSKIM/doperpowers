@@ -1,0 +1,181 @@
+{
+ "$defs": {
+  "id": {
+   "pattern": "^q[1-9][0-9]{0,8}$",
+   "type": "string"
+  },
+  "key": {
+   "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+   "type": "string"
+  },
+  "time": {
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+   "type": "string"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "oneOf": [
+  {
+   "oneOf": [
+    {
+     "properties": {
+      "picks": {
+       "minItems": 1
+      },
+      "text": {
+       "minLength": 1
+      }
+     },
+     "required": [
+      "picks",
+      "text"
+     ]
+    },
+    {
+     "properties": {
+      "picks": {
+       "minItems": 1
+      },
+      "text": {
+       "maxLength": 0
+      }
+     },
+     "required": [
+      "picks"
+     ]
+    },
+    {
+     "properties": {
+      "picks": {
+       "maxItems": 0
+      },
+      "text": {
+       "minLength": 1
+      }
+     },
+     "required": [
+      "text"
+     ]
+    }
+   ],
+   "properties": {
+    "kind": {
+     "const": "answer"
+    }
+   },
+   "required": [
+    "id",
+    "revision"
+   ]
+  },
+  {
+   "properties": {
+    "kind": {
+     "const": "dismiss"
+    }
+   },
+   "required": [
+    "id"
+   ]
+  },
+  {
+   "properties": {
+    "kind": {
+     "const": "retract"
+    }
+   },
+   "required": [
+    "target"
+   ]
+  },
+  {
+   "properties": {
+    "kind": {
+     "const": "delivered"
+    }
+   },
+   "required": [
+    "keys"
+   ]
+  }
+ ],
+ "properties": {
+  "at": {
+   "$ref": "#/$defs/time"
+  },
+  "batch": {
+   "$ref": "#/$defs/key"
+  },
+  "by": {
+   "enum": [
+    "page",
+    "maws",
+    "desk",
+    "cli"
+   ],
+   "type": "string"
+  },
+  "id": {
+   "$ref": "#/$defs/id"
+  },
+  "images": {
+   "items": {
+    "pattern": "^uploads/[A-Za-z0-9._-]{1,250}\\.(png|jpg|jpeg|gif|webp)$",
+    "type": "string"
+   },
+   "maxItems": 8,
+   "type": "array"
+  },
+  "key": {
+   "$ref": "#/$defs/key"
+  },
+  "keys": {
+   "items": {
+    "$ref": "#/$defs/key"
+   },
+   "maxItems": 200,
+   "minItems": 1,
+   "type": "array"
+  },
+  "kind": {
+   "enum": [
+    "answer",
+    "dismiss",
+    "retract",
+    "delivered"
+   ],
+   "type": "string"
+  },
+  "picks": {
+   "items": {
+    "type": "string"
+   },
+   "maxItems": 12,
+   "type": "array"
+  },
+  "revision": {
+   "minimum": 1,
+   "type": "integer"
+  },
+  "target": {
+   "$ref": "#/$defs/key"
+  },
+  "text": {
+   "maxLength": 20000,
+   "type": "string"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "v",
+  "key",
+  "kind",
+  "by"
+ ],
+ "title": "One inbox.jsonl line (composite §4.1; plan I3). The door takes at most 50 lines a call.",
+ "type": "object"
+}

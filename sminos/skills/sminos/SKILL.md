@@ -269,6 +269,22 @@ way, and start nothing and exit 4 when it is held. `send --wait`, the
 scripts' verb, prints the reply to its message; `reply <name>` the
 latest, a pending question included. For a working seat prefer `say` to
 `resume`, which stops its live turn.
+
+A session's **question sheet**, where that session puts questions for
+its human, is read and answered from a shell too:
+
+    sminos sheet show <member> [--json]     # its open questions, each by its handle (q7, q7@2 after a revise)
+    key="cli-$(uuidgen | tr 'A-Z' 'a-z')"   # a new key for each new act
+    printf '{"v":1,"key":"%s","kind":"dismiss","id":"q7","by":"cli"}\n' "$key" | sminos sheet put <member>
+
+`put` is the sheet's one door: JSON lines on stdin, appended whole or not
+at all. It prints each line's state: `queued` until the session applies
+it, then its verdict. A key names one act, not you: make a new one for
+each new answer or dismissal, and send the same key again only to retry
+that same act (a line under a key already used is set aside and reads
+that key's first verdict). The lines' shape is the published set's
+(`sminos/types/sheet/`). Answer only a sheet your human asked you to.
+
 `attach`, `fill [--resume]` and `retire [--purge]` are in `sminos help`.
 A member on another machine is reached by `say`, and `spawn
 --on` opens one on a devcloud VM; the other verbs act on this machine's

@@ -1,0 +1,27 @@
+{
+ "covers": "§4.2 row 8: a resent copy of an applied line is set aside: the first verdict again",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-1201a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "resent-key",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000012",
+ "verdicts": {
+  "page-1201a001": {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

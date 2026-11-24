@@ -1,0 +1,107 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which auth method should the login use?\" → OAuth.",
+   "asker": "main",
+   "at": "2026-11-23T09:40:00.000Z",
+   "deliveredAt": "2026-11-23T10:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-0801a001",
+   "places": [
+    1
+   ],
+   "question": "Which auth method should the login use?",
+   "receipt": "OAuth",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 842,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 3,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:30:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0008",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 2
+  }
+ ],
+ "seq": 10,
+ "session": "5eed0000-0000-4000-8000-000000000008",
+ "v": 1,
+ "verdicts": {
+  "maws-0801d005": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "delivered",
+   "verdict": "applied"
+  },
+  "page-0801a001": {
+   "at": "2026-11-23T09:40:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-0801a002": {
+   "at": "2026-11-23T09:40:00.000Z",
+   "current": 2,
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "stale"
+  },
+  "page-0801r003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801a001",
+   "verdict": "too-late"
+  },
+  "page-0801r004": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801a002",
+   "verdict": "too-late"
+  },
+  "page-0801r006": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "maws-0801d005",
+   "verdict": "too-late"
+  },
+  "page-0801r007": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801r003",
+   "verdict": "too-late"
+  }
+ }
+}

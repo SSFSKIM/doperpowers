@@ -1,0 +1,44 @@
+{
+ "$defs": {},
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "heartbeatAt": {
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+   "type": "string"
+  },
+  "name": {
+   "pattern": "^[A-Za-z0-9._-]{1,64}$",
+   "type": "string"
+  },
+  "pid": {
+   "minimum": 1,
+   "type": "integer"
+  },
+  "reach": {
+   "enum": [
+    "local",
+    "remote"
+   ],
+   "type": "string"
+  },
+  "url": {
+   "minLength": 1,
+   "type": "string"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "v",
+  "name",
+  "pid",
+  "url",
+  "reach",
+  "heartbeatAt"
+ ],
+ "title": "A surface's registration, $SMINOS_HOME/sheet/surfaces/<name>.json (composite §7; plan I8).",
+ "type": "object"
+}

@@ -1,0 +1,39 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 2,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 2,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Mail0015",
+   "header": "Onboarding",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [],
+   "question": "What does the onboarding email need to say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 2,
+ "session": "5eed0000-0000-4000-8000-000000000015",
+ "v": 1,
+ "verdicts": {}
+}

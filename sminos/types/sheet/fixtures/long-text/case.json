@@ -1,0 +1,27 @@
+{
+ "covers": "an answer of 18,214 characters: its outcome's textFile and the file under texts/, named by the hash of its UTF-8 bytes",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-1501a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "long-text",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000015",
+ "verdicts": {
+  "page-1501a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

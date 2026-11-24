@@ -1,0 +1,36 @@
+{
+ "covers": "§4.2 row 3: an answer and a dismissal for a withdrawn question; show's closed reads withdrawn for q3, which no line ever touched",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0501a001",
+   "page-0501a002"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "closed-withdrawn",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000005",
+ "verdicts": {
+  "page-0501a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "withdrawn",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "closed"
+  },
+  "page-0501a002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "withdrawn",
+   "id": "q2",
+   "kind": "dismiss",
+   "verdict": "closed"
+  }
+ }
+}
