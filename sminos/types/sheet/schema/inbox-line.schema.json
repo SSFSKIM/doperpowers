@@ -149,7 +149,6 @@
   },
   "picks": {
    "items": {
-    "minLength": 1,
     "type": "string"
    },
    "maxItems": 12,

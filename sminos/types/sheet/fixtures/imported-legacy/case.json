@@ -22,9 +22,11 @@
         "multiSelect": false,
         "options": [
          {
+          "description": "The note's plan, step by step.",
           "label": "As written"
          },
          {
+          "description": "Skip the beta cohort.",
           "label": "Faster"
          }
         ],
@@ -35,9 +37,11 @@
         "multiSelect": false,
         "options": [
          {
+          "description": "Every gate the note lists.",
           "label": "Roll out to the internal org first, then to the beta cohort, then to everyone, each step gated on the error budget and on the support queue staying under its usual size for a whole week, no less, and n"
          },
          {
+          "description": "Ship to everyone at once.",
           "label": "No gate"
          }
         ],
@@ -48,10 +52,12 @@
         "multiSelect": true,
         "options": [
          {
+          "description": "The landing screen.",
           "label": "Home",
           "preview": "## Home\n\nThe new grid."
          },
          {
+          "description": "The account screens.",
           "label": "Settings"
          }
         ],

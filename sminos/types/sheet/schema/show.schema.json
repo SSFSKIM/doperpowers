@@ -141,6 +141,10 @@
     "text": {
      "type": "string"
     },
+    "textCut": {
+     "const": true,
+     "type": "boolean"
+    },
     "textFile": {
      "pattern": "^texts/[0-9a-f]{64}\\.txt$",
      "type": "string"
@@ -211,8 +215,7 @@
     "text",
     "images",
     "revision",
-    "by",
-    "at"
+    "by"
    ],
    "type": "object"
   },
@@ -239,6 +242,30 @@
   },
   "reference": {
    "additionalProperties": false,
+   "oneOf": [
+    {
+     "properties": {
+      "kind": {
+       "const": "text"
+      }
+     },
+     "required": [
+      "startLine",
+      "numLines",
+      "totalLines"
+     ]
+    },
+    {
+     "properties": {
+      "kind": {
+       "const": "image"
+      }
+     },
+     "required": [
+      "mediaType"
+     ]
+    }
+   ],
    "properties": {
     "abs": {
      "minLength": 1,
@@ -513,6 +540,30 @@
   "sent": {
    "items": {
     "additionalProperties": false,
+    "oneOf": [
+     {
+      "properties": {
+       "kind": {
+        "const": "unseen"
+       }
+      },
+      "required": [
+       "by"
+      ]
+     },
+     {
+      "properties": {
+       "kind": {
+        "enum": [
+         "answer",
+         "dismiss",
+         "retract",
+         "delivered"
+        ]
+       }
+      }
+     }
+    ],
     "properties": {
      "at": {
       "$ref": "#/$defs/time"
@@ -608,6 +659,6 @@
   "sent",
   "pending"
  ],
- "title": "What `sminos sheet show --json` prints (plan I4); with --keys, `open`, `hidden` and `closed` are left out.",
+ "title": "What `sminos sheet show --json` prints (plan I4). With --keys, `open`, `hidden` and `closed` are left out and each pending outcome's `text` is its first 500 characters, with `textCut` when it was longer.",
  "type": "object"
 }

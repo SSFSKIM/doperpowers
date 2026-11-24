@@ -76,7 +76,6 @@
    "properties": {
     "lines": {
      "items": {
-      "minimum": 1,
       "type": "integer"
      },
      "maxItems": 2,

@@ -54,14 +54,14 @@
     },
     {
      "abs": "/Users/me/work/proj/docs/login.png",
-     "bytes": 71,
+     "bytes": 68,
      "changed": true,
      "kind": "image",
      "mediaType": "image/png",
      "mtimeMs": 1763887000000,
      "path": "docs/login.png",
-     "sha256": "0eb42155b45b045f71b7fc72a9c8d6e8e2941e9a26ec046379b72568aaf77ae3",
-     "size": 71
+     "sha256": "36c907715b80d7cdad0e196256966a3353b771387aefb1116d8769dacc81b675",
+     "size": 68
     }
    ],
    "revision": 1

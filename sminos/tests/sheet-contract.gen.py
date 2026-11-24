@@ -63,10 +63,10 @@ def sha(data):
     return hashlib.sha256(data if isinstance(data, bytes) else data.encode()).hexdigest()
 
 
-# A 1x1 PNG: what a surface saves under uploads/ for a pasted image.
-PNG = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
-                    "1f15c4890000000d49444154789c6360f8cfc0f01f0005fe02fe0d2fd0"
-                    "b70000000049454e44ae426082")
+# A 1x1 white PNG: what a surface saves under uploads/ for a pasted image. Literal bytes, so no zlib build changes
+# them; the suite checks each chunk's CRC and inflates its data.
+PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                    "0000000b4944415478da63f80f040009fb03fd68fa1ccc0000000049454e44ae426082")
 
 
 # ------------------------------------------------------------------ schemas (I1: JSON Schema 2020-12, a subset)
@@ -147,6 +147,10 @@ def schema(title, body, defs):
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": title, **body, "$defs": defs}
 
 
+REFERENCE_KINDS = [{"properties": {"kind": {"const": "text"}}, "required": ["startLine", "numLines", "totalLines"]},
+                   {"properties": {"kind": {"const": "image"}}, "required": ["mediaType"]}]
+VERDICT_KINDS = [{"properties": {"kind": {"const": "unseen"}}, "required": ["by"]},
+                 {"properties": {"kind": {"enum": ["answer", "dismiss", "retract", "delivered"]}}}]
 STATE_SCHEMA = schema(
     "state.json: one session's sheet (plan I2). Structure, not the tool input's bounds.",
     obj({
@@ -173,13 +177,14 @@ STATE_SCHEMA = schema(
                       ["never", "calls"])},
         ["v", "session", "seq", "nextId", "inbox", "questions", "pending", "closed", "verdicts", "calls", "log",
          "import"]),
-    {**COMMON_DEFS, "reference": obj(REFERENCE_PROPS, REFERENCE_REQ), "question": obj(QUESTION_PROPS, QUESTION_REQ),
-     "outcome": OUTCOME, "closed": CLOSED, "verdict": VERDICT})
+    {**COMMON_DEFS, "reference": {**obj(REFERENCE_PROPS, REFERENCE_REQ), "oneOf": REFERENCE_KINDS},
+     "question": obj(QUESTION_PROPS, QUESTION_REQ), "outcome": OUTCOME, "closed": CLOSED,
+     "verdict": {**VERDICT, "oneOf": VERDICT_KINDS}})
 
 LINE_PROPS = {
     "v": {"type": "integer", "const": 1}, "key": {"$ref": "#/$defs/key"},
     "kind": {"type": "string", "enum": ["answer", "dismiss", "retract", "delivered"]},
-    "id": {"$ref": "#/$defs/id"}, "revision": T_INT1, "picks": arr({"type": "string", "minLength": 1}, maxItems=12),
+    "id": {"$ref": "#/$defs/id"}, "revision": T_INT1, "picks": arr({"type": "string"}, maxItems=12),
     "text": {"type": "string", "maxLength": 20000}, "images": arr(T_UPLOAD, maxItems=8),
     "target": {"$ref": "#/$defs/key"}, "keys": arr({"$ref": "#/$defs/key"}, minItems=1, maxItems=200),
     "batch": {"$ref": "#/$defs/key"}, "by": T_BY, "at": {"$ref": "#/$defs/time"}}
@@ -197,13 +202,15 @@ INBOX_SCHEMA = schema(
          {"properties": {"kind": {"const": "delivered"}}, "required": ["keys"]}]},
     {"time": T_TIME, "id": T_ID, "key": T_KEY})
 
-SHOW_REFERENCE = obj({**REFERENCE_PROPS, "changed": {"type": ["boolean", "null"]}}, REFERENCE_REQ + ["changed"])
+SHOW_REFERENCE = {**obj({**REFERENCE_PROPS, "changed": {"type": ["boolean", "null"]}}, REFERENCE_REQ + ["changed"]),
+                  "oneOf": REFERENCE_KINDS}
 QUEUED = obj({"key": {"$ref": "#/$defs/key"}, "kind": {"type": "string", "const": "answer"},
               "picks": arr({"type": "string"}), "text": {"type": "string"}, "images": arr(T_UPLOAD),
               "revision": T_INT1, "by": T_BY, "at": {"$ref": "#/$defs/time"}},
-             ["key", "kind", "picks", "text", "images", "revision", "by", "at"])
+             ["key", "kind", "picks", "text", "images", "revision", "by"])
 SHOW_SCHEMA = schema(
-    "What `sminos sheet show --json` prints (plan I4); with --keys, `open`, `hidden` and `closed` are left out.",
+    "What `sminos sheet show --json` prints (plan I4). With --keys, `open`, `hidden` and `closed` are left out and "
+    "each pending outcome's `text` is its first 500 characters, with `textCut` when it was longer.",
     obj({
         "v": {"type": "integer", "const": 1}, "session": {"type": "string", "minLength": 1}, "seq": T_INT0,
         "open": arr(obj({**QUESTION_PROPS, "references": arr({"$ref": "#/$defs/reference"}),
@@ -213,14 +220,16 @@ SHOW_SCHEMA = schema(
         "sent": arr(obj({**VERDICT_PROPS, "key": {"$ref": "#/$defs/key"},
                          "state": {"type": "string", "enum": ["queued", "accepted", "delivered", "stale", "closed",
                                                                "retracted", "too-late"]},
-                         "cancelled": {"type": "boolean", "const": True}}, ["key", "kind", "state"])),
+                         "cancelled": {"type": "boolean", "const": True}}, ["key", "kind", "state"])
+                    | {"oneOf": VERDICT_KINDS}),
         "pending": arr({"$ref": "#/$defs/outcome"}),
         "closed": {"type": "object", "additionalProperties": obj(
             {"how": HOW, "at": {"$ref": "#/$defs/time"}, "revision": T_INT1, "asker": {"$ref": "#/$defs/asker"},
              "header": {"type": "string"}, "receipt": {"type": "string"}, "deliveredAt": {"$ref": "#/$defs/time"}},
             ["how", "at", "revision", "asker"])}},
         ["v", "session", "seq", "sent", "pending"]),
-    {**COMMON_DEFS, "reference": SHOW_REFERENCE, "queued": QUEUED, "outcome": OUTCOME})
+    {**COMMON_DEFS, "reference": SHOW_REFERENCE, "queued": QUEUED,
+     "outcome": {**OUTCOME, "properties": {**OUTCOME["properties"], "textCut": {"type": "boolean", "const": True}}}})
 
 DELIVERY_SCHEMA = schema(
     "The <sheet-delivery> block (plan I7): the last line of an envelope, terminal form and steer form alike.",
@@ -260,7 +269,7 @@ TOOL_INPUT_SCHEMA = schema(
                     "description": {"type": "string", "maxLength": 500},
                     "preview": {"type": "string", "maxLength": 8000}, "recommended": {"type": "boolean"}}, ["label"]),
      "reference": obj({"path": {"type": "string", "minLength": 1},
-                       "lines": arr(T_INT1, minItems=2, maxItems=2)}, ["path"])})
+                       "lines": arr({"type": "integer"}, minItems=2, maxItems=2)}, ["path"])})
 
 
 # ------------------------------------------------------------------ the record's parts, written out
@@ -418,7 +427,9 @@ def shown(qn, queued=None):
     if queued is not None:
         s["queued"] = {"key": queued["key"], "kind": "answer", "picks": queued.get("picks", []),
                        "text": queued.get("text", ""), "images": queued.get("images", []),
-                       "revision": queued["revision"], "by": queued["by"], "at": queued["at"]}
+                       "revision": queued["revision"], "by": queued["by"]}
+        if "at" in queued:
+            s["queued"]["at"] = queued["at"]
     return s
 
 
@@ -836,12 +847,15 @@ LEGACY_LABEL = ("Roll out to the internal org first, then to the beta cohort, th
 assert len(LEGACY_Q) == 2001 and len(LEGACY_LABEL) == 201
 ASK_CALL = "toolu_01Legacy00017"
 ASK_AT = "2026-11-22T18:00:00.000Z"
-legacy = [{"question": LEGACY_Q, "header": "Rollout", "options": [opt("As written"), opt("Faster")],
+legacy = [{"question": LEGACY_Q, "header": "Rollout",
+           "options": [opt("As written", "The note's plan, step by step."), opt("Faster", "Skip the beta cohort.")],
            "multiSelect": False},
-          {"question": "Which rollout gate?", "header": "Gate", "options": [opt(LEGACY_LABEL), opt("No gate")],
+          {"question": "Which rollout gate?", "header": "Gate",
+           "options": [opt(LEGACY_LABEL, "Every gate the note lists."), opt("No gate", "Ship to everyone at once.")],
            "multiSelect": False},
           {"question": "Which screens get the new layout?", "header": "Screens",
-           "options": [opt("Home", preview="## Home\n\nThe new grid."), opt("Settings")], "multiSelect": True}]
+           "options": [opt("Home", "The landing screen.", preview="## Home\n\nThe new grid."),
+                       opt("Settings", "The account screens.")], "multiSelect": True}]
 ask = {"callId": ASK_CALL, "askedAt": ASK_AT, "questions": legacy}
 imp = [question("q%d" % (i + 1), x["question"], ASK_AT, ASK_CALL, x["options"], x["header"], multi=x["multiSelect"],
                 imported={"callId": ASK_CALL, "index": i}) for i, x in enumerate(legacy)]
@@ -919,7 +933,8 @@ case("torn-tail", "an inbox that ends in bytes without a newline (a whole answer
 S, NOW = session(21), "2026-11-23T10:00:00.000Z"
 q1 = q_ship(1)
 a = L("page-2101a001", "answer", "page", "2026-11-23T09:59:00.000Z", id="q1", revision=1, picks=["Yes"])
-data = jline(a) + "\n" + jline(a) + "\n"   # the resend's door ended the fragment with a newline, then appended
+again = dict(a, at="2026-11-23T09:59:30.000Z")    # the resend, under the same key, stamped when it was sent
+data = jline(a) + "\n" + jline(again) + "\n"  # the resend's door ended the fragment with a newline, then appended
 before = {"state.json": record(S, 2, 2, 0, [q1]), "inbox.jsonl": data}
 out = answer_out(a, q1, NOW)
 va = V("applied", "answer", NOW, id="q1")
@@ -1050,7 +1065,8 @@ example("more", 3, "main", rec, {}, "\n".join([
 
 # imported: a pick of an imported question's 201-character label
 S = "5eed0000-0000-4000-8000-0000000000e4"
-qi = question("q1", "Which rollout gate?", ASK_AT, ASK_CALL, [opt("No gate"), opt(LEGACY_LABEL)], "Gate",
+qi = question("q1", "Which rollout gate?", ASK_AT, ASK_CALL,
+              [opt("No gate", "Ship to everyone at once."), opt(LEGACY_LABEL, "Every gate the note lists.")], "Gate",
               imported={"callId": ASK_CALL, "index": 0})
 li = L("page-e4a00001", "answer", "page", "2026-11-23T10:00:00.000Z", id="q1", revision=1, picks=[LEGACY_LABEL])
 AC = "2026-11-23T10:00:01.000Z"
@@ -1082,6 +1098,53 @@ example("subagent", 5, {"agentId": "a7c0ffee"}, rec, {}, "\n".join([
     'q3 "Should the cache key include the locale?" → Yes. Their text: "and the region"',
     block({"v": 1, "keys": [l3["key"]], "answered": [{"id": "q3", "revision": 1, "picks": [1],
                                                      "text": "and the region", "images": []}], "dismissed": []})]))
+
+# split: one Send that no file can shrink leaves in two envelopes. Forty answers of exactly 2,000 characters each
+# (a text has a file only past 2,000, so packing rule 2 carries nothing), one call of the door; rule 3 takes the
+# batch's outcomes in order while they fit: twenty-two, then, once those landed, the other eighteen.
+S = "5eed0000-0000-4000-8000-0000000000e6"
+SPLIT_FIRST = 22
+qs = [question("q%d" % n, "Which wording for message %d?" % n, "2026-11-23T09:00:00.000Z", "toolu_01Word0006")
+      for n in range(1, 41)]
+WORDING = [(("Wording %d: say it plainly, once, and stop. " % n) * 100)[:2000] for n in range(1, 41)]
+assert all(len(t) == 2000 for t in WORDING)
+ls = [L("page-e6a%04d" % n, "answer", "page", "2026-11-23T10:00:00.000Z", id="q%d" % n, revision=1,
+        text=WORDING[n - 1], batch="page-b6000001") for n in range(1, 41)]
+AC, LANDED = "2026-11-23T10:00:01.000Z", "2026-11-23T10:00:05.000Z"
+outs = [answer_out(ls[i], qs[i], AC) for i in range(40)]
+vs = {x["key"]: V("applied", "answer", AC, id=x["id"]) for x in ls}
+cl = {"q%d" % (i + 1): closed_answered(qs[i], ls[i], AC) for i in range(40)}
+rec = record(S, 2, 41, 0, [], outs, cl, vs, 81)
+landed = record(S, 3, 41, 0, [], outs[SPLIT_FIRST:],
+                {k: dict(c, deliveredAt=LANDED) if int(k[1:]) <= SPLIT_FIRST else c for k, c in cl.items()}, vs, 81)
+
+
+def split_line(i):
+    return "q%d %s → their text: %s" % (i + 1, jstr(qs[i]["question"]), jstr(WORDING[i]))
+
+
+def split_block(span, more):
+    return block({"v": 1, "keys": [ls[i]["key"] for i in span], "answered": [
+        {"id": "q%d" % (i + 1), "revision": 1, "picks": [], "text": WORDING[i][:500], "textCut": True, "images": []}
+        for i in span], "dismissed": [], **({"more": True} if more else {})})
+
+
+def split_first(n):
+    return "\n".join(["[sheet v1] The human answered questions on your sheet. More follows."]
+                     + [split_line(i) for i in range(n)] + [split_block(range(n), True)])
+
+
+def u16(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+assert u16(split_first(SPLIT_FIRST)) <= 60000 < u16(split_first(SPLIT_FIRST + 1)), "twenty-two fit, twenty-three do not"
+second = "\n".join(["[sheet v1] The human answered questions on your sheet."]
+                   + [split_line(i) for i in range(SPLIT_FIRST, 40)] + [split_block(range(SPLIT_FIRST, 40), False)])
+example("split", 6, "main", rec, {}, split_first(SPLIT_FIRST), {
+    "then/case.json": dump({"recipient": "main", "runner": "terminal", "tz": "UTC"}),
+    "then/input/sheet/%s/state.json" % S: dump(landed),
+    "then/envelope.txt": second})
 
 put("examples/surface.json", dump({"v": 1, "name": "mawsd", "pid": 4321, "url": "http://sheet.localhost:47590",
                                    "reach": "local", "heartbeatAt": "2026-11-23T10:00:00.000Z"}))
@@ -1227,7 +1290,7 @@ ruling of the composite's writer, and raises `version` in `MANIFEST.json`.
 | `schema/delivery.schema.json` | the `<sheet-delivery>` block, terminal and steer form alike (I7) |
 | `schema/surface.schema.json` | a surface's registration (composite §7) |
 | `schema/tool-input.schema.json` | the tool's input (composite §2.1 with §1's limits), without descriptions |
-| `examples/<name>/` | an envelope (`envelope.txt`) with the record it was composed from (`input/sheet/<session>/`) and `case.json` `{recipient, runner, tz}`; `terminal/` also has `steer.txt` |
+| `examples/<name>/` | an envelope (`envelope.txt`) with the record it was composed from (`input/sheet/<session>/`) and `case.json` `{recipient, runner, tz}`; `terminal/` also has `steer.txt`; `split/then/` is the second envelope of `split`'s Send, composed from its record once the first envelope landed |
 | `examples/surface.json` | a registration |
 | `grammar/result.md` | the first line of a call's result: its grammar and the pattern a reader matches |
 | `grammar/result.examples.json` | stored calls, `[{input, result, parsed}]` |
@@ -1280,6 +1343,9 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
 - **A line a reader drops** (I4) is one a drain skips (U2): it fails the line's schema, or it answers an open
   question at its current revision with a pick that is no label of it.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
+- **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome's `text` as its
+  first 500 characters, with `textCut: true` when it was longer and the record's `textFile` where it has one: a
+  hook reads it through a process call that returns at most 4 MiB. The unkeyed form carries texts whole.
 - **A start's asks** (I5), inline or staged: `{callId, askedAt, questions}`, `questions` today's tool's objects as
   it held them.
 - **The input schema** (I6) states neither the call's two rules nor an entry's own (U14): a preview on a
@@ -1304,7 +1370,9 @@ def manifest():
 
 
 def write(out):
-    if os.path.isdir(out):
+    if os.path.isdir(out) and os.listdir(out):
+        if os.path.realpath(out) != os.path.realpath(SET):
+            sys.exit("sheet-contract: %s is not empty; --out takes a new or empty directory" % out)
         shutil.rmtree(out)
     for path, data in FILES.items():
         full = os.path.join(out, path)

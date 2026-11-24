@@ -35,6 +35,7 @@ EXIT_BUSY = 75
 DOOR_LINES = 50
 KEYS_MAX = 50
 NUDGE_WAIT_MS = 10000
+KEYED_TEXT = 500
 
 KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 ID_RE = re.compile(r"^q[1-9][0-9]*$")
@@ -98,6 +99,11 @@ class Lock:
 # ------------------------------------------------------------------ a line
 
 
+def _count(v, least):
+    """A JSON integer at least `least`: 1.0 is the integer 1, as JSON Schema counts it; a boolean is none."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == int(v) and v >= least
+
+
 def line_error(line):
     """Why an inbox line fails its schema (inbox-line.schema.json), or None."""
     if not isinstance(line, dict):
@@ -105,7 +111,7 @@ def line_error(line):
     extra = sorted(set(line) - set(FIELDS))
     if extra:
         return "unknown field %s" % extra[0]
-    if line.get("v") != 1 or isinstance(line.get("v"), bool):
+    if not (_count(line.get("v"), 1) and line["v"] == 1):
         return "v is 1"
     for f in ("key", "kind", "by"):
         if f not in line:
@@ -120,10 +126,10 @@ def line_error(line):
         return "at is a UTC time with milliseconds"
     if "id" in line and not (isinstance(line["id"], str) and ID_RE.match(line["id"])):
         return "id is q<n>"
-    if "revision" in line and not (type(line["revision"]) is int and line["revision"] >= 1):
+    if "revision" in line and not _count(line["revision"], 1):
         return "revision is an integer from 1"
     if "picks" in line and not (isinstance(line["picks"], list) and len(line["picks"]) <= 12
-                                and all(isinstance(p, str) and p for p in line["picks"])):
+                                and all(isinstance(p, str) for p in line["picks"])):
         return "picks are at most 12 labels"
     if "text" in line and not (isinstance(line["text"], str) and len(line["text"]) <= 20000):
         return "text is at most 20,000 characters"
@@ -186,7 +192,7 @@ def _tail(rec, offset):
     except FileNotFoundError:
         return []
     end = data.rfind(b"\n")
-    return data[:end + 1].splitlines() if end >= 0 else []
+    return data[:end].split(b"\n") if end >= 0 else []
 
 
 def snapshot(session):
@@ -206,8 +212,8 @@ def snapshot(session):
         except FileNotFoundError:
             return None
         if state.get("seq") == first.get("seq"):
-            break
-    return state, tail
+            return state, tail
+    return state, _tail(rec, int(state["inbox"]["offset"]))
 
 
 def queued_lines(state, tail):
@@ -241,6 +247,16 @@ def bounded(outcome):
     q["question"] = str(q.get("question", ""))[:2000]
     q["options"] = [str(label)[:200] for label in q.get("options") or []]
     o["question"] = q
+    return o
+
+
+def keyed(outcome):
+    """An outcome as the keyed form carries it: its text the first KEYED_TEXT characters, `textCut` when it was
+    longer (the record's `textFile` names the whole where it has one), so fifty keys stay far under the 4 MiB a
+    hook's process call returns."""
+    o = dict(outcome)
+    if len(o.get("text") or "") > KEYED_TEXT:
+        o["text"], o["textCut"] = o["text"][:KEYED_TEXT], True
     return o
 
 
@@ -281,7 +297,7 @@ def model(session, keys=None):
     if keys is not None:
         want = set(keys)
         out["sent"] = [s for s in sent if s["key"] in want]
-        out["pending"] = [o for o in pending if o["key"] in want]
+        out["pending"] = [keyed(o) for o in pending if o["key"] in want]
         return out
 
     hidden, open_ = [], []
@@ -297,7 +313,9 @@ def model(session, keys=None):
         if ans is not None:
             s["queued"] = {"key": ans["key"], "kind": "answer", "picks": ans.get("picks", []),
                            "text": ans.get("text", ""), "images": ans.get("images", []),
-                           "revision": ans["revision"], "by": ans["by"], "at": ans.get("at")}
+                           "revision": ans["revision"], "by": ans["by"]}
+            if "at" in ans:
+                s["queued"]["at"] = ans["at"]
         open_.append(s)
     closed = {k: {f: c[f] for f in ("how", "at", "revision", "asker", "header", "receipt", "deliveredAt") if f in c}
               for k, c in (state.get("closed") or {}).items()}
@@ -352,7 +370,7 @@ def read_lines(data):
     except UnicodeDecodeError:
         S.die("sheet put: stdin is not UTF-8")
     lines = []
-    for n, chunk in enumerate(raw.splitlines(), 1):
+    for n, chunk in enumerate(raw.split("\n"), 1):     # JSON lines: LF alone ends one (U+2028 is text)
         if not chunk.strip():
             continue
         try:
@@ -383,6 +401,8 @@ def append(session, lines):
             S.die("sheet put: line %d refused: %s; nothing appended" % (n, why))
         line = dict(line)
         line.setdefault("at", _now_ms())
+        if "revision" in line:
+            line["revision"] = int(line["revision"])
         if batch is not None:
             line["batch"] = batch
         stamped.append({f: line[f] for f in FIELDS if f in line})
@@ -412,10 +432,11 @@ def append(session, lines):
                         f.seek(size - 1)
                         if f.read(1) != b"\n":
                             data = b"\n" + data       # what an unfinished write left becomes a line of its own
-                view = memoryview(data)
-                while view:
-                    view = view[os.write(fd, view):]
+                wrote = os.write(fd, data)
                 os.fsync(fd)
+                if wrote != len(data):
+                    S.die("sheet put: the inbox took %d of %d bytes (%s); send again under the same keys"
+                          % (wrote, len(data), session), 1)
             finally:
                 os.close(fd)
     except Busy:

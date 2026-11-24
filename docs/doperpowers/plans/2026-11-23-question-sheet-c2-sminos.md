@@ -821,9 +821,13 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
 - A session with no record: `show` exits 3, `no sheet`.
 
 `show --json --keys <k1,k2,…>` (at most 50) prints the same with `pending`
-and `sent` held to those keys and `open`, `hidden` and `closed` left out:
-a few kilobytes an outcome, which a hook can take through
-`$.process.run`.
+and `sent` held to those keys and `open`, `hidden` and `closed` left out,
+and each pending outcome's `text` held to its first 500 characters, with
+`textCut: true` when it was longer and the record's `textFile` where it
+has one (the block's rule, I7): about 20 KB an outcome at every bound of
+the line and the question, so fifty keys stay far under the 4 MiB a hook
+takes through `$.process.run`. The unkeyed form, read by processes and
+not hooks, carries texts whole.
 
 ### I5 · The step
 
@@ -1127,6 +1131,7 @@ so a composer in either repository is held to bytes it can reproduce:
 | `more` | five Sends of fifty dismissals each | four Sends, 200 keys; `More follows.` and `"more": true`; the fifth Send stays pending |
 | `imported` | an answer that picks the 201-character label of an imported question | the label cut at 200 in the prose, its place in the block |
 | `subagent` | one answer for a running subagent, `taken` | the opening line |
+| `split` | one Send of forty answers of exactly 2,000 characters (no file can shrink it) | packing rule 3: twenty-two with `More follows.` and `"more": true`; then, in `split/then/` from the record once those landed, the other eighteen without them |
 
 Times are composed in the zone `case.json` names; paths under the home
 the composer is run with.
@@ -1566,7 +1571,7 @@ examples, the surface's schema. Consumes nothing.
   refused withdrawal only (`Nothing done.`); a foreclosed call (`Nothing
   done.` and its clause); and one whose outcome was not known (`Outcome
   not known yet.`), whose `parsed` holds no id.
-- The envelope's examples are I7's five, each with its input record,
+- The envelope's examples are I7's six, each with its input record,
   whole and concrete: no key, entry or path is elided but for `{HOME}`,
   and each example's `answered` and `dismissed` name exactly the
   questions its prose does. The generator writes each `envelope.txt` by
@@ -1600,7 +1605,8 @@ input record; every `texts/` file is named by the hash of its bytes;
 `more` is set exactly where the input record holds more for that
 recipient than the envelope's keys; for `long`, the four texts in full,
 and with one carried by its file, measure over the budget, and with two
-under; for `more`, the fifth Send would make 250 keys;
+under; for `more`, the fifth Send would make 250 keys; for `split`, the two
+envelopes together name every key of the Send once, in order;
 `state.schema.json` accepts the
 `imported-legacy` record and `tool-input.schema.json` refuses the same
 question as an entry; `put` to a fixture copy appends exactly its lines,
@@ -2085,7 +2091,7 @@ and by hand, the door and the reader on a record nobody runs:
 The last prints `{"session": "5eed0000-…", "results": [{"key":
 "demo-0001", "state": "queued"}]}`, and `show` then no longer lists
 `q1`. The test file ends `test_sheet_contract: N passed`; the generator
-prints `sheet-contract: 21 cases, 5 examples, digest <sha256>`. After the merge,
+prints `sheet-contract: 21 cases, 6 examples, digest <sha256>`. After the merge,
 M1's Progress line is completed with the merge commit, the sminos
 version and that digest: the three things MAWS pins.
 

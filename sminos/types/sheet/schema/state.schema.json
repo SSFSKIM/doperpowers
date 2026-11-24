@@ -309,6 +309,30 @@
   },
   "reference": {
    "additionalProperties": false,
+   "oneOf": [
+    {
+     "properties": {
+      "kind": {
+       "const": "text"
+      }
+     },
+     "required": [
+      "startLine",
+      "numLines",
+      "totalLines"
+     ]
+    },
+    {
+     "properties": {
+      "kind": {
+       "const": "image"
+      }
+     },
+     "required": [
+      "mediaType"
+     ]
+    }
+   ],
    "properties": {
     "abs": {
      "minLength": 1,
@@ -417,6 +441,30 @@
   },
   "verdict": {
    "additionalProperties": false,
+   "oneOf": [
+    {
+     "properties": {
+      "kind": {
+       "const": "unseen"
+      }
+     },
+     "required": [
+      "by"
+     ]
+    },
+    {
+     "properties": {
+      "kind": {
+       "enum": [
+        "answer",
+        "dismiss",
+        "retract",
+        "delivered"
+       ]
+      }
+     }
+    }
+   ],
    "properties": {
     "at": {
      "$ref": "#/$defs/time"

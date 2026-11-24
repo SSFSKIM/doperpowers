@@ -18,7 +18,7 @@ ruling of the composite's writer, and raises `version` in `MANIFEST.json`.
 | `schema/delivery.schema.json` | the `<sheet-delivery>` block, terminal and steer form alike (I7) |
 | `schema/surface.schema.json` | a surface's registration (composite §7) |
 | `schema/tool-input.schema.json` | the tool's input (composite §2.1 with §1's limits), without descriptions |
-| `examples/<name>/` | an envelope (`envelope.txt`) with the record it was composed from (`input/sheet/<session>/`) and `case.json` `{recipient, runner, tz}`; `terminal/` also has `steer.txt` |
+| `examples/<name>/` | an envelope (`envelope.txt`) with the record it was composed from (`input/sheet/<session>/`) and `case.json` `{recipient, runner, tz}`; `terminal/` also has `steer.txt`; `split/then/` is the second envelope of `split`'s Send, composed from its record once the first envelope landed |
 | `examples/surface.json` | a registration |
 | `grammar/result.md` | the first line of a call's result: its grammar and the pattern a reader matches |
 | `grammar/result.examples.json` | stored calls, `[{input, result, parsed}]` |
@@ -71,6 +71,9 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
 - **A line a reader drops** (I4) is one a drain skips (U2): it fails the line's schema, or it answers an open
   question at its current revision with a pick that is no label of it.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
+- **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome's `text` as its
+  first 500 characters, with `textCut: true` when it was longer and the record's `textFile` where it has one: a
+  hook reads it through a process call that returns at most 4 MiB. The unkeyed form carries texts whole.
 - **A start's asks** (I5), inline or staged: `{callId, askedAt, questions}`, `questions` today's tool's objects as
   it held them.
 - **The input schema** (I6) states neither the call's two rules nor an entry's own (U14): a preview on a

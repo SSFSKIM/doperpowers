@@ -51,6 +51,7 @@ sheet = sminos.sibling_module("sminos_sheet")
 ALLOWED = sheet_schema.KEYWORDS | sheet_schema.ANNOTATIONS
 CASES = sorted(os.listdir(os.path.join(SET, "fixtures")))
 EXAMPLES = sorted(d for d in os.listdir(os.path.join(SET, "examples")) if os.path.isdir(os.path.join(SET, "examples", d)))
+EXAMPLES.append("split/then")       # the second envelope of split's Send
 BUDGET, KEYS_MAX, TEXT_MAX = 60000, 200, 500
 
 
@@ -112,7 +113,7 @@ class TheSet(unittest.TestCase):
     def test_the_generator_reproduces_the_set(self):
         out = os.path.join(BASE, "gen")
         p = subprocess.run([sys.executable, "-B", GEN, "--out", out], capture_output=True, text=True, check=True)
-        self.assertRegex(p.stdout, r"^sheet-contract: 21 cases, 5 examples, digest [0-9a-f]{64}\n$")
+        self.assertRegex(p.stdout, r"^sheet-contract: 21 cases, 6 examples, digest [0-9a-f]{64}\n$")
         made, have = files(out), files(SET)
         self.assertEqual(sorted(made), sorted(have), "the same files")
         self.assertEqual([p for p in made if made[p] != have[p]], [], "byte for byte")
@@ -179,6 +180,42 @@ class TheSet(unittest.TestCase):
         for c in load(os.path.join(SET, "grammar", "result.examples.json")):
             self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], c["input"]), [], c["result"])
 
+    def test_every_png_decodes(self):
+        import struct
+        import zlib
+        found = [p for p in glob.glob(os.path.join(SET, "**", "*"), recursive=True)
+                 if os.path.isfile(p) and raw_bytes(p).startswith(b"\x89PNG\r\n\x1a\n")]
+        self.assertGreaterEqual(len(found), 3)
+        for p in found:
+            data, at, idat = raw_bytes(p), 8, b""
+            while at < len(data):
+                n, = struct.unpack(">I", data[at:at + 4])
+                kind, body = data[at + 4:at + 8], data[at + 8:at + 8 + n]
+                self.assertEqual(struct.unpack(">I", data[at + 8 + n:at + 12 + n])[0], zlib.crc32(kind + body), p)
+                idat += body if kind == b"IDAT" else b""
+                at += 12 + n
+            self.assertEqual(zlib.decompress(idat), b"\x00\xff\xff\xff\xff", "one white pixel")
+
+    def test_the_schemas_refuse_what_their_shapes_forbid(self):
+        rec = load(glob.glob(os.path.join(SET, "fixtures", "references", "before", "sheet", "*", "state.json"))[0])
+        text, image = rec["questions"][0]["references"][0], rec["questions"][0]["references"][2]
+        ref = {"$ref": "#/$defs/reference", "$defs": SCHEMA["state"]["$defs"]}
+        self.assertEqual(sheet_schema.errors(ref, text), [])
+        self.assertNotEqual(sheet_schema.errors(ref, {k: v for k, v in text.items() if k != "totalLines"}), [])
+        self.assertNotEqual(sheet_schema.errors(ref, {k: v for k, v in image.items() if k != "mediaType"}), [])
+        verdict = {"$ref": "#/$defs/verdict", "$defs": SCHEMA["state"]["$defs"]}
+        unseen = {"verdict": "retracted", "kind": "unseen", "at": "2026-11-23T10:00:00.000Z", "by": "page-0901r001"}
+        self.assertEqual(sheet_schema.errors(verdict, unseen), [])
+        self.assertNotEqual(sheet_schema.errors(verdict, {k: v for k, v in unseen.items() if k != "by"}), [])
+        # A line range out of order or from 0 is an entry's own refusal (U14), not the whole call's.
+        for lines in ([0, 3], [9, 2]):
+            self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], {"ask": [
+                {"question": "x?", "references": [{"path": "a.ts", "lines": lines}]}]}), [])
+        line = {"v": 1, "key": "page-00000001", "kind": "answer", "id": "q1", "revision": 1, "picks": [""], "by": "page"}
+        self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], line), [], "a pick of an empty label")
+        self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], dict(line, revision=1.0)), [], "1.0 is 1")
+        self.assertIsNone(sheet.line_error(dict(line, revision=1.0)))
+
     def test_imported_legacy_is_a_record_and_no_input(self):
         rec = load(glob.glob(os.path.join(SET, "fixtures", "imported-legacy", "after", "sheet", "*", "state.json"))[0])
         self.assertEqual(sheet_schema.errors(SCHEMA["state"], rec), [])
@@ -192,6 +229,10 @@ class TheSet(unittest.TestCase):
         # A preview on a multi-select question is an entry's own rule (U14), refused alone and not by the schema,
         # which would deny the whole call.
         self.assertTrue(preview["multiSelect"] and any("preview" in o for o in preview["options"]))
+        # Valid under today's tool: a header, two to four options, a description on each.
+        for e in entries:
+            self.assertTrue(isinstance(e["header"], str) and 2 <= len(e["options"]) <= 4)
+            self.assertTrue(all(isinstance(o.get("description"), str) for o in e["options"]))
         self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], {"ask": [preview]}), [])
 
     def test_case_files(self):
@@ -222,6 +263,43 @@ class TheReader(unittest.TestCase):
                     want = load(os.path.join(SET, "fixtures", case, "show.%s.json" % side))
                     self.assertEqual(sheet.model(c["session"]), want)
 
+    def test_the_first_copy_is_the_one_applied(self):
+        rec = load(glob.glob(os.path.join(SET, "fixtures", "torn-tail-resent", "after", "sheet", "*", "state.json"))[0])
+        lines = [json.loads(x) for x in raw_bytes(glob.glob(os.path.join(SET, "fixtures", "torn-tail-resent", "after",
+                                                                     "sheet", "*", "inbox.jsonl"))[0]).splitlines()]
+        self.assertNotEqual(lines[0]["at"], lines[1]["at"])
+        self.assertEqual(rec["pending"][0]["at"], lines[0]["at"])
+
+    def test_a_queued_line_without_its_time(self):
+        h = home("references", "before")
+        s = load(os.path.join(SET, "fixtures", "references", "case.json"))["session"]
+        write(os.path.join(h, "sheet", s, "inbox.jsonl"),
+              '{"v":1,"key":"maws-00000001","kind":"answer","id":"q1","revision":1,"picks":["No"],"by":"maws"}\n')
+        m = sheet.model(s)
+        self.assertEqual(m["open"][0]["queued"]["key"], "maws-00000001")
+        self.assertNotIn("at", m["open"][0]["queued"])
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], m), [])
+
+    def test_a_seq_that_keeps_moving_reads_the_last_state_with_its_own_tail(self):
+        home("retract-unseen-late", "before")
+        s = load(os.path.join(SET, "fixtures", "retract-unseen-late", "case.json"))["session"]
+        real, n = sheet._read_json, [0]
+
+        def moving(path):
+            got = real(path)
+            n[0] += 1
+            if n[0] == 8:          # the last read: a step has applied the whole tail meanwhile
+                got["inbox"]["offset"] = os.path.getsize(os.path.join(os.path.dirname(path), "inbox.jsonl"))
+            got["seq"] = n[0]
+            return got
+        sheet._read_json = moving
+        try:
+            m = sheet.model(s)
+        finally:
+            sheet._read_json = real
+        self.assertEqual(m["seq"], 8)
+        self.assertEqual([x for x in m["sent"] if x["state"] == "queued"], [], "no line past the last state's offset")
+
     def test_show_keys(self):
         c = load(os.path.join(SET, "fixtures", "batch", "case.json"))
         home("batch", "after")
@@ -231,6 +309,25 @@ class TheReader(unittest.TestCase):
         self.assertEqual([o["key"] for o in got["pending"]], ["page-1401a002", "page-1401d003"])
         self.assertEqual(got["sent"], [s for s in full["sent"] if s["key"] in ("page-1401a002", "page-1401d003")])
         self.assertEqual(sheet_schema.errors(SCHEMA["show"], got), [])
+
+    def test_the_keyed_form_holds_texts_to_500(self):
+        c = load(os.path.join(SET, "fixtures", "long-text", "case.json"))
+        h = home("long-text", "after")
+        o = sheet.model(c["session"], ["page-1501a001"])["pending"][0]
+        self.assertEqual((len(o["text"]), o["textCut"], o["textFile"][:6]), (500, True, "texts/"))
+        self.assertEqual(len(sheet.model(c["session"])["pending"][0]["text"]), 18214, "unkeyed: whole")
+        # Fifty outcomes at every bound of the line and the question, in four-byte characters.
+        path = os.path.join(h, "sheet", c["session"], "state.json")
+        rec = load(path)
+        big = rec["pending"][0]
+        big["text"] = "\U0001F600" * 20000
+        big["question"] = dict(big["question"], question="\U0001F600" * 2000, options=["\U0001F600" * 200] * 12)
+        rec["pending"] = [dict(big, key="page-%08d" % n) for n in range(50)]
+        write(path, json.dumps(rec, ensure_ascii=False))
+        keys = ",".join("page-%08d" % n for n in range(50))
+        rc, out, err = run(["sheet", "show", "--session", c["session"], "--json", "--keys", keys])
+        self.assertEqual(rc, 0, err)
+        self.assertLess(len(out.encode()), 4 * 1024 * 1024 // 2, "far under what a hook's process call returns")
 
     def test_a_pending_question_is_bounded(self):
         h = home("answer-applied", "after")
@@ -386,6 +483,22 @@ class TheEnvelopes(unittest.TestCase):
         self.assertEqual(len(first4) + 50, 250, "the fifth Send would make 250 keys")
         self.assertTrue(b["more"])
 
+    def test_split_leaves_in_two_envelopes(self):
+        first, then, rec = block(envelope("split")), block(envelope("split/then")), example_record("split")
+        send = [o["key"] for o in rec["pending"]]
+        self.assertEqual(len({o["batch"] for o in rec["pending"]}), 1, "one Send")
+        self.assertLessEqual(len(send), 50, "one call of the door")
+        self.assertTrue(all(len(o["text"]) == 2000 and "textFile" not in o for o in rec["pending"]))
+        self.assertEqual(first["keys"] + then["keys"], send, "every key of the Send once, in order")
+        self.assertTrue(first["more"])
+        self.assertNotIn("more", then)
+        self.assertTrue(envelope("split").split("\n")[0].endswith(" More follows."))
+        self.assertFalse(envelope("split/then").split("\n")[0].endswith(" More follows."))
+        landed = example_record("split/then")
+        self.assertEqual([o["key"] for o in landed["pending"]], then["keys"])
+        for o in rec["pending"]:
+            self.assertEqual("deliveredAt" in landed["closed"][o["id"]], o["key"] in first["keys"])
+
     def test_the_steer_carries_the_same_block(self):
         steer = read_text(os.path.join(SET, "examples", "terminal", "steer.txt"))
         self.assertEqual(steer.split("\n")[-1], envelope("terminal").split("\n")[-1])
@@ -510,6 +623,13 @@ class TheDoor(unittest.TestCase):
         rc, _, err = self.put([answer("cli-test0009", "q2", revision=3, picks=["Whatever"])])
         self.assertEqual(rc, 0, err)
 
+    def test_a_text_with_line_separators_and_a_revision_of_one_point_oh(self):
+        data = '{"v":1,"key":"cli-test0001","kind":"answer","id":"q2","revision":1.0,"text":"a\u2028b\u2029c\u0085d","by":"cli"}\n'
+        rc, _, err = run(["sheet", "put", "--session", self.s, "--no-wait"], data.encode())
+        self.assertEqual(rc, 0, err)
+        got = self.added()[0]
+        self.assertEqual((got["text"], got["revision"], type(got["revision"])), ("a\u2028b\u2029c\u0085d", 1, int))
+
     def test_no_record_exits_3(self):
         rc, _, err = run(["sheet", "put", "--session", "5eed0000-0000-4000-8000-0000000000ff"],
                          (json.dumps(answer("cli-test0001", "q1", text="x")) + "\n").encode())
@@ -523,9 +643,13 @@ class TheDoor(unittest.TestCase):
         fcntl.flock(fd, fcntl.LOCK_EX)
         old, sheet.LOCK_WAIT_S = sheet.LOCK_WAIT_S, 0.2
         try:
-            with self.assertRaises(SystemExit) as e:
+            import contextlib
+            import io
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(err):
                 sheet.append(self.s, [answer("cli-test0001", "q2", picks=["Yes"])])
             self.assertEqual(e.exception.code, 75)
+            self.assertIn("is busy", err.getvalue())
         finally:
             sheet.LOCK_WAIT_S = old
             os.close(fd)
