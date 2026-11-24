@@ -88,7 +88,7 @@ No duplicate, no untouched target, no cut-off run, no repurposed question, and n
 | v1 | option_gone 9, premise 9, subagent 5, distinct 7.5 | option_gone 3, premise 4 | far 4/40; fixed 1/10 | far 37/40; fixed 5/10 |
 | v2 | option_gone 9.5, premise 4.5, subagent 7.5, distinct 4.5 | option_gone 2, premise 9 | far 2/40; fixed 1/10 | far 29/40; fixed 3/10 |
 
-**What asking early did.** It did not change revise-versus-duplicate: both wordings revised every time. It did not make the agent ask sooner after the trigger: in every run, of either wording, the trigger's own response says the question changed ("The download layer only allows one file per job ... so I'm revising q1"), and then the agent checks something first: who still calls the legacy writer (and then asks that too, in the same call: the frontier batched), whether the suite passes on the rebased branch, or, on the first prefix, the inconsistencies it found in its own earlier work. What v2 changed is what follows the call: the agent kept working after it in 11 of 40 far runs, against 3 of 40 under v1 (Fisher's exact, one-sided, p ≈ 0.02). On the fixed prefix the wait shrinks to 2 to 4 responses for option_gone under both wordings; premise still runs the suite first (up to 13 responses).
+**What asking early did.** It did not change revise-versus-duplicate: both wordings revised every time. It did not make the agent ask sooner after the trigger: in every run, of either wording, the trigger's own response says the question changed ("The download layer only allows one file per job ... so I'm revising q1"), and then the agent checks something first: who still calls the legacy writer (and then asks that too, in the same call: the frontier batched), whether the suite passes on the rebased branch, or, on the first prefix, the inconsistencies it found in its own earlier work. What v2 changed is what follows the call: the agent kept working after it in 11 of 40 far runs, against 3 of 40 under v1 (Fisher's exact, one-sided, p = 0.018). On the fixed prefix the wait shrinks to 2 to 4 responses for option_gone under both wordings; premise still runs the suite first (up to 13 responses).
 
 ### E2: a card judged alone
 
@@ -127,7 +127,7 @@ On the definitions above (C1's harness at its commit of this baseline; subject a
 
 - **E1**, far history, 3 changed scenarios × 10 runs and the control × 10: at most 1 failure of 30 in the changed scenarios (a failure: duplicated, revised and duplicated, untouched, or cut off), and no repurposed question of 10 in the control. The baseline is 0 of 30 and 0 of 10 for both wordings; at a true failure rate of 15%, 30 runs show 2 or more failures 95% of the time.
 - **E2**, long history, 4 scenarios × 8 runs (about 47 counted cards):
-  1. every essential fact of its matter on at least 85% of counted cards (baseline 87% and 85%, 94% on the fixed prefix's cap);
+  1. every essential fact of its matter on at least 80% of counted cards (baseline 91% for v1 and 85% for v2 on the first prefix, 94% on the fixed prefix's cap; 80% leaves room for the noise between those);
   2. no reader "no" on more than 2 counted cards (baseline 0);
   3. at least 85% of the pii and tz cards pass (baseline 94% for both wordings).
   The cap matter's overall pass rate is reported and not gated until its reader is calibrated for an open-ended choice of a number: as it stands, a card with every fact passes half the time.
