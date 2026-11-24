@@ -31,6 +31,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -154,17 +155,18 @@ class Call(Finding):
             self.assertEqual(argv[at:at + len(flags)], flags)
         for absent in ("--bare", "--resume", "--fork-session"):
             self.assertNotIn(absent, argv)
-        self.assertEqual(c["env"].get("SMNS_INTERNAL"), "1")
+        self.assertEqual(c["env"]["internal"], "1")
         self.assertTrue(c["marker"], "its pid is marked internal while it runs")
         self.assertEqual(os.listdir(os.path.join(os.environ["SMINOS_HOME"], "internal")), [], "and unmarked after")
         self.assertEqual(os.path.realpath(c["cwd"]), os.path.realpath(os.environ["SMINOS_HOME"]))
         for gone in ("CLODEX_SETTINGS", "GATEWAY_ONLY_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
                      "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
                      "CLAUDE_CODE_SUBAGENT_MODEL", "MAWS_LANE"):
-            self.assertNotIn(gone, c["env"])
-        self.assertEqual(c["env"].get("CLAUDE_CODE_OAUTH_TOKEN"), "first-party")
-        self.assertEqual(c["env"].get("CLAUDE_CONFIG_DIR"), config)
-        self.assertEqual(c["env"].get("PATH"), os.environ["PATH"])
+            self.assertNotIn(gone, c["env"]["set"])
+        self.assertEqual(c["env"]["set"], ["CLAUDE_CODE_OAUTH_TOKEN"], "of the transport and login variables, the token")
+        self.assertEqual(c["env"]["oauth"], "first-party", "unchanged")
+        self.assertEqual(c["env"]["config"], config)
+        self.assertEqual(c["env"]["path"], os.environ["PATH"])
         stdin = c["stdin"]
         self.assertTrue(stdin.endswith("Question: who runs CI"), stdin[-200:])
         self.assertLess(stdin.index("[%s] ci-owner" % sid[:8]), stdin.index("Question: who runs CI"))
@@ -237,16 +239,30 @@ class Corpus(Finding):
                 self.assertNotIn(withdrawn[:8], prompts[0])
                 self.assertNotIn("WITHDRAWN-SECRET", prompts[0])
 
-    def test_a_member_in_several_projects_is_one_entry(self):
-        sid = self.remote(alias="twice")
-        other = self.project_of(self.repo("other"))
+    def test_a_member_in_two_projects_is_one_entry_in_the_project_it_joined_last(self):
+        """A move's dual membership: the row of the project it moved to, as a name resolves (one_per_session)."""
+        other = self.project_of(self.repo("zz-destination"))
+        sid = self.remote(alias="mover")
+        time.sleep(0.01)
         w = "beta/%s" % sid
-        sminos.log_append(other, w, "joined", session=sid, alias="twice", name_source="user", machine="beta",
+        sminos.log_append(other, w, "joined", session=sid, alias="mover", name_source="user", machine="beta",
                           cwd="/w", worktree="", role="", seat="", by="", session_kind="interactive")
         sminos.log_append(other, w, "state", session=sid, state="idle", machine="beta")
         sminos.forget_caches()
         _, _, _, prompts = self.answered(NONE, "q")
         self.assertEqual(prompts[0].count("[%s]" % sid[:8]), 1)
+        self.assertIn("[%s] mover — %s on beta" % (sid[:8], other.name), prompts[0], "the destination's row")
+
+    def test_a_thread_the_caller_has_left_is_in_the_corpus(self):
+        """Only the caller's current thread is its own: the session that went on with a thread it left is not."""
+        before = self.remote(alias="earlier")
+        later = self.remote(alias="went-on")
+        sminos.log_append(self.p, "beta/%s" % before, "retired", session=before, reason="continued", to=later)
+        sminos.forget_caches()
+        self.assertIn(before, next(m for m in sminos.members(self.p) if m.session == later).former)
+        os.environ["CLAUDE_CODE_SESSION_ID"] = before
+        _, _, _, prompts = self.answered(NONE, "q")
+        self.assertIn("[%s] went-on" % later[:8], prompts[0])
 
     def test_every_field_is_capped_and_normalized(self):
         sid = self.remote(alias="long", branch="b" * 300, charge="x")
@@ -327,6 +343,37 @@ class Answer(Finding):
         self.assertEqual(d["dropped"], 1)
         self.assertTrue(any(e.startswith("[%s] ci-owner" % live[:8]) for e in d["corpus"]))
 
+    def test_a_retired_machines_member_under_all_says_it_cannot_be_reached(self):
+        sid = self.remote(machine="gamma", alias="on-gamma")
+        os.makedirs(os.path.join(os.environ["SMINOS_HOME"], "daemon"), exist_ok=True)
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "org.json"), {
+            "projects": [], "machines": [{"name": "gamma", "retired": True}], "at": sminos.now()})
+        sminos.forget_caches()
+        code, out, err, _ = self.answered(json.dumps({"matches": [{"short": sid[:8], "why": "w"}]}), "q", "--all")
+        self.assertEqual(code, 0, out + err)
+        m = next(m for p, m in sminos.find_corpus("", True) if m.session == sid)
+        self.assertIn("  " + sminos.retired_machine_words(m), out.splitlines())
+        self.assertIn("gamma was retired", out)
+
+    def test_the_note_is_one_clean_line_and_why_is_always_said(self):
+        sid = self.remote(alias="someone")
+        code, out, err, _ = self.answered(json.dumps({"matches": [{"short": sid[:8]}], "note": "a\x07b\n\tc"}), "q")
+        self.assertEqual(code, 0, out + err)
+        lines = out.splitlines()
+        at = next(i for i, x in enumerate(lines) if x.startswith("someone [%s]" % sid[:8]))
+        self.assertEqual(lines[at + 1], "  why:", "the why line, empty")
+        self.assertIn("note: ab c", lines)
+
+    def test_a_timeout_that_is_no_number_of_seconds_is_refused_before_any_call(self):
+        self.remote(alias="someone")
+        for value in ("abc", "0", "-3", "inf", "nan"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"SMINOS_FIND_TIMEOUT": value}):
+                code, out, err = self.run_cli("find", "q")
+                self.assertEqual(code, 1, out + err)
+                self.assertEqual(err, "sminos: find: SMINOS_FIND_TIMEOUT is %r, not a number of seconds above 0\n"
+                                 % value)
+        self.assertEqual(self.calls(), [])
+
     def test_seven_valid_shorts_print_five(self):
         sids = [self.remote(alias="m%d" % i) for i in range(7)]
         code, out, err, _ = self.answered(json.dumps({"matches": [{"short": s[:8], "why": "w"} for s in sids]}), "q")
@@ -362,7 +409,8 @@ class Answer(Finding):
                     code, out, err, _ = self.answered(text, "q", *json_flag)
                     self.assertEqual(code, 1, out + err)
                     self.assertEqual(out, "", "no match")
-                    self.assertRegex(err, r"^sminos: find: .+\n$")
+                    self.assertRegex(err, r"^sminos: find: .+; list --org <words> lists the sessions some words "
+                                          r"match\n$")
 
     def test_a_crash_an_error_and_a_timeout_exit_1_with_the_reason(self):
         self.remote(alias="someone")
@@ -377,6 +425,7 @@ class Answer(Finding):
                     self.assertEqual(code, 1, out + err)
                     self.assertEqual(out, "")
                     self.assertIn("sminos: find: " + said, err)
+                    self.assertIn("; list --org <words> lists the sessions some words match", err)
         self.assertEqual(os.listdir(os.path.join(os.environ["SMINOS_HOME"], "internal")), [], "no marker is left")
 
     def test_parse_find_reads_the_first_object_and_checks_it(self):
@@ -432,13 +481,45 @@ class Gate(Finding):
                 got = FORK.headless_fork(self.p, m, "the question", tools=False, cache=False, timeout=30)
         self.assertEqual((got.text, got.via), ("From the fork.", "headless fork"))
         self.assertEqual(helper.call_count, 1)
-        self.assertEqual(helper.call_args.kwargs["spare"], (sid,), "the resumed session's transcript is never removed")
         c = self.calls()[0]
         self.assertTrue(c["marker"])
-        self.assertEqual(c["env"]["SMNS_INTERNAL"], "1")
+        self.assertEqual(c["env"]["internal"], "1")
         self.assertEqual(c["argv"][:4], ["-p", "--resume", sid, "--fork-session"])
         self.assertEqual(c["argv"][-1], "the question")
 
 
+    def test_only_the_minted_transcript_is_removed_under_the_childs_config_dir(self):
+        config = os.path.join(self.home, "other-config")
+        unrelated = str(uuidlib.uuid4())
+        kept = os.path.join(os.environ["HOME"], ".claude", "projects", "-elsewhere", unrelated + ".jsonl")
+        os.makedirs(os.path.dirname(kept))
+        with open(kept, "w") as f:
+            f.write("{}\n")
+        sminos.forget_caches()
+        sminos.transcripts_now()
+        self.assertEqual(sminos.transcript_now(unrelated), kept, "a transcript this machine knows")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": config, "FAKE_CLAUDE_FIND_TRANSCRIPT": "1",
+                                          "FAKE_CLAUDE_FIND_SESSION": unrelated, "FAKE_CLAUDE_FIND_RESULT": NONE}):
+            FORK.ask_model("a question", timeout=30)
+        minted = self.calls()[0]["argv"][self.calls()[0]["argv"].index("--session-id") + 1]
+        self.assertEqual(self.calls()[0]["env"]["config"], config)
+        self.assertEqual([os.path.basename(x) for x in sorted(
+            os.path.join(r, n) for r, _, ns in os.walk(os.path.join(config, "projects")) for n in ns)], [],
+            "the minted transcript (%s) is removed from the child's config dir" % minted)
+        self.assertTrue(os.path.exists(kept), "the transcript of an id the result named is not find's to remove")
+
+    def test_a_cleanup_that_fails_still_removes_the_marker(self):
+        def cleanup(obj):
+            raise OSError("cannot remove")
+        with mock.patch.dict(os.environ, {"FAKE_CLAUDE_FIND_RESULT": NONE}), self.assertRaises(OSError):
+            FORK.run_internal([FAKE, "-p"], cwd=self.home, env=dict(os.environ, SMNS_INTERNAL="1"), timeout=30,
+                              stdin_text="q", cleanup=cleanup)
+        self.assertTrue(self.calls()[0]["marker"], "it ran marked")
+        self.assertEqual(os.listdir(os.path.join(os.environ["SMINOS_HOME"], "internal")), [], "and was unmarked")
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    try:
+        unittest.main(verbosity=2)
+    finally:
+        shutil.rmtree(BASE, ignore_errors=True)   # the fixtures' scratch, the stand-in's logs among it

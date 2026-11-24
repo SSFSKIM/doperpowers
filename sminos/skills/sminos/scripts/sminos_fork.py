@@ -29,6 +29,7 @@ It and the headless fork are both internal processes, started and cleaned
 up by one helper (run_internal).
 """
 
+import glob
 import json
 import os
 import queue
@@ -258,7 +259,7 @@ def _stop(proc):
     proc.communicate()
 
 
-def run_internal(args, *, cwd, env, timeout, stdin_text=None, minted=(), spare=(), what="fork"):
+def run_internal(args, *, cwd, env, timeout, stdin_text=None, cleanup=None, what="fork"):
     """Run `args` (a `claude -p … --output-format json` call) as an internal
     process: started behind GATE, its pid marked internal under
     $SMINOS_HOME/internal/ before the release, so the record hook
@@ -268,10 +269,10 @@ def run_internal(args, *, cwd, env, timeout, stdin_text=None, minted=(), spare=(
     and reaps the child before ForkFailed. Its JSON result, read from the
     last `{` line of its stdout, is returned when it exited 0, reported no
     error and answered something; ForkFailed otherwise, `what` naming it in
-    the reason. Whatever the outcome, a transcript the engine wrote anyway
-    under a `minted` session id, or under the id its result names, is
-    deleted (never one of `spare`, a session it resumed), and so is the
-    marker."""
+    the reason. Whatever the outcome, `cleanup(result or None)` removes
+    what the engine wrote anyway (the caller knows where: a transcript under
+    the id it minted), and the marker is removed after it, even when the
+    cleanup raises."""
     gate_r, gate_w = os.pipe()
     marker = ""
     out = err = ""
@@ -323,15 +324,15 @@ def run_internal(args, *, cwd, env, timeout, stdin_text=None, minted=(), spare=(
     finally:
         if gate_w != -1:
             os.close(gate_w)
-        for sid in set(minted) | {str((obj or {}).get("session_id") or "")}:
-            path = S.transcript_now(sid) if S.UUID_RE.fullmatch(sid) and sid not in spare else ""
-            if path:
-                os.unlink(path)
-        if marker:
-            try:
-                os.unlink(marker)
-            except FileNotFoundError:
-                pass
+        try:
+            if cleanup is not None:
+                cleanup(obj)
+        finally:
+            if marker:
+                try:
+                    os.unlink(marker)
+                except FileNotFoundError:
+                    pass
 
 
 def headless_fork(project, m, prompt, *, tools, cache, timeout):
@@ -353,8 +354,15 @@ def headless_fork(project, m, prompt, *, tools, cache, timeout):
             "--no-session-persistence"]
     args += ["--permission-mode", "auto", "--tools", HEADLESS_TOOLS] if tools else ["--tools", ""]
     args += ["--output-format", "json", prompt]
-    obj = run_internal(args, cwd=S.member_cwd(project, m), env=env, timeout=timeout, minted=(fork,),
-                       spare=(m.session,))
+
+    def cleanup(obj):
+        # The minted id, and the one its result names (an engine that ignored --session-id), looked up as the
+        # machine's transcripts are; never the session it resumed.
+        for sid in {fork, str((obj or {}).get("session_id") or "")}:
+            path = S.transcript_now(sid) if S.UUID_RE.fullmatch(sid) and sid != m.session else ""
+            if path:
+                os.unlink(path)
+    obj = run_internal(args, cwd=S.member_cwd(project, m), env=env, timeout=timeout, cleanup=cleanup)
     return ForkAnswer(str(obj.get("result") or ""), "headless fork", _result_usage(obj.get("usage")), False)
 
 
@@ -395,11 +403,22 @@ def ask_model(prompt, *, model="haiku", effort="medium", timeout=120):
     mode: no plugins, hooks, MCP servers or CLAUDE.md, the machine's own
     login (bare mode would read an API key alone). Its session id is minted
     only so a transcript the engine wrote despite --no-session-persistence
-    is found and deleted. ForkFailed as headless_fork raises it."""
+    is found and deleted: that id alone, under the config dir the child ran
+    under (its CLAUDE_CONFIG_DIR, else the default), never an id its result
+    names, which could be any session's. ForkFailed as headless_fork raises
+    it."""
     minted = str(uuidlib.uuid4())
+    env = model_env()
+
+    def cleanup(_obj):
+        for path in glob.glob(os.path.join(glob.escape(S.config_dir(env)), "projects", "*", minted + ".jsonl")):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
     args = ["claude", "-p", "--safe-mode", "--no-session-persistence", "--session-id", minted, "--model", model,
             "--effort", effort, "--tools", "", "--output-format", "json"]
     os.makedirs(S.root(), exist_ok=True)
-    obj = run_internal(args, cwd=S.root(), env=model_env(), timeout=timeout, stdin_text=prompt, minted=(minted,),
+    obj = run_internal(args, cwd=S.root(), env=env, timeout=timeout, stdin_text=prompt, cleanup=cleanup,
                        what="model call")
     return ForkAnswer(str(obj.get("result") or ""), "model", _result_usage(obj.get("usage")), False)

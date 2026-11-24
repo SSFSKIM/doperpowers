@@ -231,13 +231,14 @@ PY
 }
 
 # `-p` with no `--resume` (find's model call, a fresh internal process): the
-# find-env line records whether it was marked internal and the transport and
-# login variables it was given, its standard input is kept in
+# find-env line records whether it was marked internal and which transport and
+# login variables it was given (never a value: `set`, and for the OAuth token
+# whether it is the suite's own `first-party`), its standard input is kept in
 # find-prompt.txt, and STUB_FIND_RESULT is its answer; it fails
 # (STUB_FORK_FAIL=1), crashes (STUB_FORK_CRASH=1) or is slow (STUB_FORK_SLEEP)
 # on the switches the fork reads.
 if [ "${1:-}" = "-p" ] && [ -z "$resume_uuid" ]; then
-  echo "find-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) base=${ANTHROPIC_BASE_URL:-} token=${ANTHROPIC_AUTH_TOKEN:-} key=${ANTHROPIC_API_KEY:-} model=${ANTHROPIC_MODEL:-} bedrock=${CLAUDE_CODE_USE_BEDROCK:-} gateway=${GATEWAY_ONLY_KEY:-} clodex=${CLODEX_SETTINGS:-} oauth=${CLAUDE_CODE_OAUTH_TOKEN:-} config=${CLAUDE_CONFIG_DIR:-} cwd=$PWD" >> "$STUB_STATE/log/calls.log"
+  echo "find-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) base=${ANTHROPIC_BASE_URL:+set} token=${ANTHROPIC_AUTH_TOKEN:+set} key=${ANTHROPIC_API_KEY:+set} model=${ANTHROPIC_MODEL:+set} bedrock=${CLAUDE_CODE_USE_BEDROCK:+set} gateway=${GATEWAY_ONLY_KEY:+set} clodex=${CLODEX_SETTINGS:+set} oauth=$([ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = first-party ] && echo first-party || echo "${CLAUDE_CODE_OAUTH_TOKEN:+other}") cwd=$PWD" >> "$STUB_STATE/log/calls.log"
   cat > "$STUB_STATE/log/find-prompt.txt"
   if [ "${STUB_FORK_CRASH:-0}" = "1" ]; then echo "stub: the engine crashed" >&2; exit 3; fi
   [ -n "${STUB_FORK_SLEEP:-}" ] && sleep "$STUB_FORK_SLEEP"
@@ -4868,7 +4869,7 @@ assert_rc 4 "$RC" "find with no match exits 4"
 assert_contains "$OUT" "no session matches: nobody translates dictionaries" "and says so with the model's note"
 STUB_FORK_CRASH=1 run "$SMINOS" find anyone
 assert_rc 1 "$RC" "a crashed call exits 1"
-assert_contains "$OUT" "sminos: find: the model call failed (exit 3): stub: the engine crashed" "with its reason"
+assert_contains "$OUT" "sminos: find: the model call failed (exit 3): stub: the engine crashed; list --org <words> lists the sessions some words match" "with its reason, and the keyword filter named"
 STUB_FIND_RESULT='I found nobody.' run "$SMINOS" find anyone
 assert_rc 1 "$RC" "an answer with no JSON object exits 1"
 run "$SMINOS" find

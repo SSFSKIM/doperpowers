@@ -19444,7 +19444,14 @@ def list_scope(a):
             p = find_project(q)
             picked.setdefault(p.id, p)
         return list(picked.values()), words, True
-    return sorted((p for p in known_projects() if not has_left(p)), key=lambda p: (p.name, p.id)), words, False
+    return widened_scope(), words, False
+
+
+def widened_scope():
+    """The projects a widened list reads (--org, any filter, find's corpus):
+    every project known here but one that has left this machine (has_left),
+    by name."""
+    return sorted((p for p in known_projects() if not has_left(p)), key=lambda p: (p.name, p.id))
 
 
 def row_matches(m, project, a, words):
@@ -19927,6 +19934,7 @@ CORPUS_CHANNELS_MAX = 10        # channel names an entry lists
 FIND_QUESTION_MAX = CORPUS_FIELD_MAX * 5
 FIND_PROMPT_MAX = 400_000
 FIND_MATCHES_MAX = 5
+FIND_KEYWORDS = "list --org <words> lists the sessions some words match"   # what a failed find points to (§3e)
 FIND_PROMPT = (
     "You are the directory of an organization of Claude Code sessions. Below are its sessions, then a question "
     "one of them asks. Pick the sessions best placed to answer the question or to own what it asks about: at "
@@ -19951,33 +19959,22 @@ def corpus_text(value, cap):
 
 def find_corpus(caller_session, include_ended):
     """[(project, member)] find may name (§3a): the rows list --org shows —
-    the projects known here but one that has left this machine, the rows
-    project_rows yields in each, so a session withdrawn from this machine's
-    view is none — whose state is live (FILLED) or held (HELD_STATES) and
-    that has not ended; with `include_ended`, the retired rows and the
-    project's ended threads too. One entry a session, the first project
-    (by name) that shows it, and never the caller: its session, the
-    sessions its thread has had, its thread's other rows."""
-    projects = sorted((p for p in known_projects() if not has_left(p)), key=lambda p: (p.name, p.id))
+    its projects (widened_scope), the rows project_rows yields in each, so a
+    session withdrawn from this machine's view is none — whose state is live
+    (FILLED) or held (HELD_STATES) and that has not ended; with
+    `include_ended`, the retired rows and the project's ended threads too.
+    One entry a session, in the project it joined last (one_per_session, as
+    a name resolves during a move's dual membership), and never the caller:
+    its session, and the rows of the thread it is the current session of
+    now (sminos_threads.stamp), not a thread it has left."""
     rows = []
-    for p in projects:
+    for p in widened_scope():
         every = project_rows(p) + (list(view_of(p).ended) if include_ended else [])
         rows += [(p, m) for m in every if m.session and m.short and (
             (m.state in FILLED + HELD_STATES and not m.end) or (include_ended and m.state != "vacant"))]
-    mine = {caller_session} if caller_session else set()
-    threads = set()
-    for _, m in rows:
-        if caller_session and (m.session == caller_session or caller_session in m.former
-                               or caller_session in m.thread_sessions):
-            mine |= {m.session, *m.former, *m.thread_sessions}
-            threads |= {m.thread} - {""}
-    out, seen = [], set()
-    for p, m in rows:
-        if m.session in mine or (m.thread and m.thread in threads) or m.session in seen:
-            continue
-        seen.add(m.session)
-        out.append((p, m))
-    return out
+    thread = threads_module().stamp(caller_session) if caller_session else ""
+    return [(p, m) for p, m in one_per_session(rows)
+            if m.session != caller_session and not (thread and m.thread == thread)]
 
 
 def summary_lines(m, indent="  "):
@@ -20044,7 +20041,7 @@ def parse_find(text):
     """(matches [{short, why}], note) read from the model's answer (§3c):
     each item an object with a string `short` kept, its `why` one line of
     at most CORPUS_FIELD_MAX characters ("" when not a string); `note` one
-    line ("" when not a string). FindFailed for no JSON object, no `matches`
+    line, control characters dropped ("" when not a string). FindFailed for no JSON object, no `matches`
     list, or a non-empty one none of whose items is valid: only a valid
     empty list is "no match"."""
     obj = first_json_object(str(text or ""))
@@ -20059,15 +20056,15 @@ def parse_find(text):
     if items and not matches:
         raise FindFailed("none of the model's %d matches names a session" % len(items))
     note = obj.get("note")
-    return matches, " ".join(note.split()) if isinstance(note, str) else ""
+    return matches, corpus_text(note, None) if isinstance(note, str) else ""
 
 
 def find_lines(project, m, why):
     """A match as find prints it (§3d): its list row with its project, why
     it fits, its summary, how to reach it."""
     cells, rest = row_cells(m, project)
-    return (["  ".join([c for c in cells if c] + rest)] + (["  why: " + why] if why else []) + summary_lines(m)
-            + reach_lines(project, m))
+    return ["  ".join([c for c in cells if c] + rest), ("  why: " + why).rstrip()] + summary_lines(m) \
+        + reach_lines(project, m)
 
 
 def cmd_find(a):
@@ -20082,6 +20079,13 @@ def cmd_find(a):
     question = corpus_text(" ".join(a.question), FIND_QUESTION_MAX)
     if not question:
         die("find: ask a question: sminos find <question...>")
+    raw = os.environ.get("SMINOS_FIND_TIMEOUT") or "120"
+    try:
+        timeout = float(raw)
+    except ValueError:
+        timeout = 0.0
+    if not (0 < timeout < float("inf")):
+        die("find: SMINOS_FIND_TIMEOUT is %r, not a number of seconds above 0" % raw, 1)
     corpus = find_corpus(os.environ.get("CLAUDE_CODE_SESSION_ID", ""), a.all)
     entries = [find_entry(p, m) for p, m in corpus]
     prompt = find_prompt(entries, question)
@@ -20090,12 +20094,10 @@ def cmd_find(a):
             % (len(prompt), FIND_PROMPT_MAX), 1)
     fork = sibling_module("sminos_fork")
     try:
-        answer = fork.ask_model(prompt, timeout=float(os.environ.get("SMINOS_FIND_TIMEOUT") or 120))
+        answer = fork.ask_model(prompt, timeout=timeout)
         named, note = parse_find(answer.text)
-    except fork.ForkFailed as e:
-        die("find: %s" % e.reason, 1)
-    except FindFailed as e:
-        die("find: %s" % e, 1)
+    except (fork.ForkFailed, FindFailed) as e:
+        die("find: %s; %s" % (getattr(e, "reason", None) or e, FIND_KEYWORDS), 1)
     by_short = {}
     for p, m in corpus:
         by_short.setdefault(m.short, (p, m))
