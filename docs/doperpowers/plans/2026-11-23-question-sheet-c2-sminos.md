@@ -59,8 +59,17 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   (21 cases, 6 examples). Its high-rung review ran two passes: eleven
   findings repaired, then seven, five repaired and two logged in
   `docs/doperpowers/TECH-DEBT.md` (#37, #38). MAWS pins this commit.
-- [ ] M2 — The record: the step, the lock, the command's other verbs.
-  Blocked by: M1.
+- [x] (2026-11-24) M2 — The record: the step, the lock, the command's
+  other verbs. Commits `97218983c`, `09b485a94` (the I8 ruling on reading
+  registrations), fix waves `17c2827c2` and `b204a4e56`; sminos 1.58.0
+  (the one bump of this pull request). Task review: one Critical (a late
+  call applying again across the acknowledgement's replace), six
+  Important, three Minor, then one Critical of the first fix (a start's
+  identity, now its nonce) and three Important, all repaired; clean on
+  the third pass. Every published fixture and all seven envelopes replay
+  byte for byte; `test_sheet_step: 79 passed`; gates GREEN (run
+  45375809111). Also repaired: M1's reader printing a queued entry's
+  field of another kind (the composite's writer's ruling).
 - [ ] M3 — Asking: the start choice, the sheet's schema, a call. Blocked
   by: M2.
 - [ ] M4 — Delivering: the routes, landing, a start, subagents. Blocked
@@ -111,7 +120,11 @@ envelope. Added here:
 - **The published set** is `sminos/types/sheet/` as M1 merges it (I1).
 - **The stand-in surface** is `sminos/tests/sheet_surface.py`, which
   writes and heartbeats a surface registration so a session offers the
-  sheet where no page runs yet (C4 builds the page).
+  sheet where no page runs yet (C4 builds the page). As built: name
+  `standin`, url `http://sheet.localhost:47590`, reach `local` by
+  default; a heartbeat every 10 s (`--every`); written at 0600 from a
+  temporary file, as `mawsd` writes; removed on SIGTERM and SIGINT;
+  `--once` leaves a registration whose pid is gone.
 
 ## Verification
 
@@ -546,7 +559,8 @@ In the plugin:
 
 | path | holds | from |
 |---|---|---|
-| `S/sminos_sheet.py` | the door, the reader, the step with its composer, the projection, removal, the surfaces' liveness, the command's `sheet` verbs | M1, M2, M6 |
+| `S/sminos_sheet.py` | the door, the reader, the step's shell (lock, staging, replace), the projection, removal, the surfaces' liveness, the command's `sheet` verbs | M1, M2, M6 |
+| `S/sminos_sheet_step.py` | the step as a pure function, `apply(state, tail, event, now, …)`, and its composers: the view, the envelopes, I10's context (M2) | M2 |
 | `H/sheet-model.tsx` | what takes no `$`: the input's schema and validation, the block's parser, the result's parser, the notices, the lines of the row and of the band | M3 to M5 |
 | `H/sheet.tsx` | the hooks and everything that takes `$` | M3 to M6 |
 | `sminos/types/sheet/` | the published set | M1 |
@@ -794,6 +808,22 @@ question whatever its revision.
 X2's open point, C2's side of it: MAWS reaches the writer by running the
 command. Nothing is served over the daemon's socket by this child.
 
+**As built (M2).** The command's keys are `cli-` and 16 hex digits; an
+`answer`'s image is copied to `uploads/cli-<16 hex>.<ext>` after the
+refusals are checked. `answer` and `dismiss` refuse a question `show` does
+not list (a queued dismissal still counts as listed for `dismiss`), so the
+human hears it at once rather than as a `closed` verdict later. A `--pick`
+number is ASCII decimal only, so a label such as `²` still matches as a
+label. `remove` takes the lock, checks again under it that the session
+does not run (unless `--cleared`), renames the staging and then the
+record aside to `sheet/.removed-<epoch>-<uuid>` (renaming back what it
+detached when a rename fails), deletes them after the lock, exits non-zero
+naming what it could not delete, and deletes leftovers older than 60 s at
+the next `remove`. `show --json` projects a queued `sent` entry by its
+kind as the show schema's variants say, whatever extra field the line
+carries (the composite's writer's ruling of 2026-11-24 on a defect of
+M1's reader); the door still accepts the field.
+
 ### I4 · What a reader computes
 
 One rule for `sminos sheet show`, MAWS's reader and the page; `show
@@ -978,6 +1008,69 @@ notice (I9). Only once it holds one of these does it acknowledge the id.
 
     sminos sheet probe --session <id> [--remote]     read-only, no lock; one JSON object
     { "record": true, "open": 3, "pending": 1, "queued": 0, "surface": { "name", "url", "reach" } | null, "surfaces": 2 }
+
+**As built (M2), what the mod (M3, M4) relies on.**
+
+- **A start's identity.** The `start` event carries `start.nonce`: one per
+  actual start, unchanged on every retry of it (the same name as its
+  `start-<nonce>/` staging; not starting with `.` or `start-`, no `/`).
+  Before its replace a start writes `.staging/<session>/.start-receipt.json`,
+  `{nonce, empty, imported}`; a start whose nonce equals the receipt's is
+  a retry and answers the same `empty` and `imported`, so the fork, lost
+  and import lines of its context read the same. Everything else, `before`
+  and the context's list included, is recomputed every time. A start with
+  no nonce (a shell's) is always new. A start keeps its own staged asks
+  until the next start or the day's sweep; a staged ask an event names
+  that is missing is `bad-event`.
+- **`effects.start.before`** holds at most the first 200 keys, with
+  `beforeCount` beside it; it is the trigger of I9's search, not its
+  list (I9). It is what is pending ahead of the step's drain, so a
+  retry's also names what the first attempt's drain applied.
+- **The acknowledgement window.** What a replace makes the record forget
+  (an acknowledged call's staging; at a start every call's and an earlier
+  start's) is renamed to `.gone-<uuid>` before the replace and deleted
+  after it, or by the next step's sweep. A late step of such a call
+  answers `gone` on either side of a death. A call id may not begin with
+  `.` or `start-`. `gone`, like `busy`, `no-record` and `bad-event`,
+  changes nothing, the drain included.
+- **Inline events.** Only a staged call can be told `gone`; an inline
+  call (a shell, a test) ordered again after its acknowledgement applies
+  again. The mod never orders inline. A `call` or `settle` whose id is in
+  the same event's `acked` is `bad-event`; so is an event's `keys` over
+  200, and an inline call of more than 20 entries.
+- **Refusals.** A mod-refused entry's `call.json` holds `{"refused":
+  "<clause>"}` without its `entry <n>, ` prefix; the step adds it. The
+  step checks U14 itself too, with the same clauses, so an entry the mod
+  missed is refused alone; a lone surrogate reads `a string holds a lone
+  UTF-16 surrogate` (the door's words; `grammar/result.md`'s clause list
+  does not carry it, the first-line grammar is unaffected). Each clause's
+  free text is cut at its source: a path at 200, the engine's reason at
+  500, a mod-written clause at 500, a subagent's name at 200; the
+  withdrawals' clauses stop at 32,000 characters of the `Not done:` line
+  and end `And N more withdrawals not done.` `never asked` has no time:
+  `q9 is not open (never asked)`.
+- **The floor** raises `nextId` to `max(nextId, floor + 1)` whenever the
+  record has assigned no id (none open, none closed), at a `call` or a
+  `start`. `effects.start.empty` is `fork` when a fork's start made the
+  record, `lost` when a resume's start made it with a floor of at least
+  1, else `null`.
+- **The answer.** `step` exits 0 for every answer, `ok: false` included;
+  the mod reads the JSON. Everything the answer needs is composed before
+  the replace, so a composer's failure never follows a committed state.
+  The whole serialized answer is held under 3 MiB, cutting in order
+  `ready` (from the last recipient back), `closed` (oldest first), `open`
+  (newest first), `answered`; a call's result has a fixed maximum.
+- **Times.** A line's `at` that matches the pattern but is no calendar
+  date (the door takes it: its behaviour is frozen) is tolerated by every
+  composer: a time that does not parse is written as stored and its age
+  left out. An outcome's `at` is the line's, or the step's clock for a
+  line with none.
+- **Order.** "Closed last" and "answered last" are by closing order, ties
+  of one drain kept in the order the drain closed them. The view also
+  cuts an asker's name at 200, a closed entry's header at 60 and its
+  receipt at 200. `owedAcrossStop` counts dismissals too. A revise of an
+  imported question drops `importedFrom`. `effects.verdicts` answers the
+  event's `keys` whatever the event.
 
 ### I6 · A call: its input, its refusals, its result (X7)
 
@@ -1331,6 +1424,10 @@ that fails lands nothing, and the outcomes go again, owed across a stop.
 Where the stored row says less than the live event did, its form
 decides, which is U13's limit.
 
+The search hands `landed` every key it finds in a stored block of those
+kinds, not only the first 200 that `before` lists (`beforeCount` may be
+larger): `landed` of a key that is not pending does nothing.
+
 **To a subagent** (§6): the view's `ready` holds one envelope for each
 running subagent with outcomes `taken`. The mod sends it with
 `$.session.send({ to: { agentId }, text })`, from the same
@@ -1398,6 +1495,20 @@ these, each one line:
   earlier are no longer open. New ids start at q12.`
 - an import (M5): `Moved onto the sheet from the earlier question tool:
   q1 "…" (call <id>, question 1), …`
+
+**As built (M2).** The step composes the whole context, the import line
+included (the step imports; M5 only stages the asks). Its first line reads
+`after a resume` for a resume's start, `after a compaction` for a drain
+with `context: compact`, and `after a start` for any other start. A
+subagent asker follows the revision: `, asked by the subagent <name>
+(<agentId>)`, the header after it as a JSON string. Only the main
+conversation's pending outcomes are listed; a pending dismissal reads
+`Dismissed, not yet told to you: q9 (revision 1) …`. The import line,
+each question cut at 200 with `…`, stands before `New ids continue from
+q<n>.`, which always ends the context, and has its own budget of 10,000
+UTF-16 units, stopping with a count and the `sminos sheet show` pointer.
+`and N more open` counts open and pending left out together; one left
+out reads `q41`.
 
 **The floor** of a record that has assigned no id, in a conversation that
 may already have used some (§3): the highest `q<n>` the mod finds in the
