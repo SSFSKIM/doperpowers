@@ -467,6 +467,32 @@ def _regular(path):
         return False
 
 
+# What a record holds at each of its own paths: a link, or another kind of file, there would carry a write (a
+# human's answer, the state, a reference's body) outside the record.
+RECORD_KINDS = (("inbox.jsonl", stat.S_ISREG, "file"), ("state.json", stat.S_ISREG, "file"),
+                ("refs", stat.S_ISDIR, "directory"), ("texts", stat.S_ISDIR, "directory"),
+                ("uploads", stat.S_ISDIR, "directory"))
+
+
+def record_problem(rec):
+    """Why the record at `rec` cannot be written as one, by lstat (no link followed): the record directory, or a
+    file or directory of it, is a link or another kind than the record keeps there. None when it is sound, or not
+    there yet. Checked under the lock, before anything is written."""
+    try:
+        if not stat.S_ISDIR(os.lstat(rec).st_mode):
+            return "the record %s is not a directory" % rec
+    except FileNotFoundError:
+        return None
+    for rel, kind, name in RECORD_KINDS:
+        try:
+            mode = os.lstat(os.path.join(rec, rel)).st_mode
+        except FileNotFoundError:
+            continue
+        if not kind(mode):
+            return "the record's %s is not a %s" % (rel, name)
+    return None
+
+
 def append(session, lines):
     """Appends the lines under the lock, whole or not at all. Returns the lines as written."""
     batch = uuid.uuid4().hex if len(lines) > 1 else None
@@ -485,6 +511,9 @@ def append(session, lines):
     rec = record_dir(session)
     try:
         with Lock(session):
+            why = record_problem(rec)
+            if why:
+                S.die("sheet put: %s; nothing appended" % why, 1)
             try:
                 state = _read_json(os.path.join(rec, "state.json"))
             except FileNotFoundError:
@@ -500,14 +529,18 @@ def append(session, lines):
                 if why:
                     S.die("sheet put: line %d refused: %s; nothing appended" % (n, why))
             data = "".join(json.dumps(x, ensure_ascii=False, separators=(",", ":")) + "\n" for x in stamped).encode()
-            fd = os.open(os.path.join(rec, "inbox.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             try:
-                size = os.fstat(fd).st_size
-                if size:
-                    with open(os.path.join(rec, "inbox.jsonl"), "rb") as f:
-                        f.seek(size - 1)
-                        if f.read(1) != b"\n":
-                            data = b"\n" + data       # what an unfinished write left becomes a line of its own
+                fd = os.open(os.path.join(rec, "inbox.jsonl"),
+                             os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            except OSError as e:
+                S.die("sheet put: the inbox could not be opened (%s); nothing appended" % e, 1)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    S.die("sheet put: the record's inbox.jsonl is not a file; nothing appended", 1)
+                size = st.st_size
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    data = b"\n" + data       # what an unfinished write left becomes a line of its own
                 # One write; should it come back short, the rest follows while the lock is still held, so no drain
                 # sees part of the call. Should the file refuse more, it is cut back to its length before the call:
                 # nothing of the call stays, and the caller is told so.
@@ -957,6 +990,10 @@ def _start_dirs(norm):
 def _step_locked(session, event, now, tz):
     STEP_ = STEP()
     rec, stage = record_dir(session), staging_dir(session)
+    why = record_problem(rec)
+    if why:
+        # Nothing read through it, nothing written: the record is not one this step can keep.
+        return _bad("bad-record", why)
     _sweep(rec, stage)
     path = os.path.join(rec, "state.json")
     try:
@@ -1144,6 +1181,9 @@ def copy_upload(session, src):
     if not os.path.isfile(src):
         S.die("sheet answer: %s is not a file" % src, 2)
     rec = record_dir(session)
+    why = record_problem(rec)
+    if why:
+        S.die("sheet answer: %s; nothing copied" % why, 1)
     if not os.path.isfile(os.path.join(rec, "state.json")):
         S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
     uploads = os.path.join(rec, "uploads")
