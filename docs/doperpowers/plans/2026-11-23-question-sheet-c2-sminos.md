@@ -1413,6 +1413,25 @@ Found, it orders `landed`; not found, the envelope is ready again. This
 is the exit for a context a hook outside this plugin dropped on the
 result route, which no return value reports.
 
+**Which turn a flight belongs to** (a critic's pointer, relayed by the
+composite's writer, 2026-11-24; M4 verifies it and records here what it
+found). An idle submit can wait behind another prompt already queued (a
+peer's message, a notice, another plugin's submit, the human typing):
+that prompt's turn starts and completes before the mod's prompt has
+entered. Taken as the flight's turn, its completion would find no block,
+ready the envelope again and submit it a second time, and the first
+submit would then land as well: the record right, the conversation
+holding the answers twice. So an idle flight is settled only by its own
+landing row, its submit's failure, or the completion of a turn that its
+own prompt opened (known by the prompt's row having entered, or the
+`turn.start` that follows it); a turn that completes while the flight's
+prompt has not entered settles nothing and readies nothing. The result
+and prompt routes are held to the same rule where a second turn can
+interleave: a flight is settled at the completion of the turn its
+context entered. Pinned by a test that queues a foreign prompt ahead of
+the idle submit and asserts one envelope in the conversation, and by a
+live case if a scripted one cannot show the ordering.
+
 **At a `start`** whose effects name outcomes pending before its drain
 (`start.before`), the mod searches the transcript for `<sheet-delivery>`
 (the one `perl` pass of `ask.tsx`'s `searchArgs`, given this form) and
