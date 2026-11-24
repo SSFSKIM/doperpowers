@@ -2,10 +2,11 @@
 
 > **Composite:** `docs/doperpowers/specs/2026-11-23-question-sheet-design.md`
 > in the MAWS repository, child **C2** (The sheet in sminos). **Parent pin:**
-> MAWS commit `be9a8b749` (the composite with this plan's first entries
-> folded in at `d5cdf48b8`, §5.2 reworded, C0's verdicts written in and
-> §2.4 ruled on after). **Ticket:** MAWS board #867, a child of #600. The child's section in the composite ("###
-> C2: The sheet in sminos") is its spec; the composite's §1 to §7, §8.3,
+> MAWS commit `277d8a520` (the composite with C0's verdicts, the owner's
+> ruling on §2.4, and the rulings on this plan's first review, in the
+> shapes this plan gave them). **Ticket:** MAWS board #867, a child of
+> #600. The child's section in the composite ("### C2: The sheet in
+> sminos") is its spec; the composite's §1 to §7, §8.3,
 > §9's import and §11 are its design, binding where the composite's
 > "Grades" paragraph says; X1, X2, X3 (the block's schema and the terminal
 > form), X4 (the schema), X6 and X7 are the contracts it owns. This
@@ -43,11 +44,15 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   taken into the composite (`d5cdf48b8`).
 - [x] (2026-11-23) The plan's buildability review: eighteen findings; the
   composite's writer ruled on what was the composite's, and this revision
-  repairs the rest. A narrower review of what M1 freezes follows it.
+  repairs the rest.
 - [x] (2026-11-23) C0's verdicts for P1 to P5 (engine 2.1.331) written
   in where each decision stood ("What the probes settled").
-- [ ] M1 — The contracts, published (G1). Blocked by: that narrower
-  review.
+- [x] (2026-11-23) The narrower review of what M1 freezes: twelve
+  findings, ruled on and repaired in this revision. No third review of
+  the document follows: M1's task review and the high-rung review of its
+  pull request check the published set from here, and a change to the
+  set after M1 is a ruling and a re-pin (K2).
+- [ ] M1 — The contracts, published (G1). Blocked by: nothing.
 - [ ] M2 — The record: the step, the lock, the command's other verbs.
   Blocked by: M1.
 - [ ] M3 — Asking: the start choice, the sheet's schema, a call. Blocked
@@ -104,7 +109,7 @@ envelope. Added here:
 ## Verification
 
 - This document: one buildability review, then a narrower one of what M1
-  freezes ("What M1 freezes", below), before M1 is dispatched.
+  freezes ("What M1 freezes", below); both are done (Progress).
 - Each milestone: the task review of doperpowers:subagent-driven-execution
   at its boundary. M1 (it freezes X1), M2 (the transition table) and M4
   (delivery) are reviewed before anything downstream starts on them.
@@ -184,7 +189,8 @@ engine's declarations or measured:
   written to the log (I12).
 - K2 · **The published set is frozen at M1.** After M1 merges,
   `sminos/types/sheet/` changes only on a ruling of the composite's
-  writer (X1). Vectors a later milestone needs go under
+  writer (X1); such a change raises the manifest's `version`, and MAWS
+  pins again. Vectors a later milestone needs go under
   `sminos/tests/sheet-vectors/`.
 - K3 · **Today's tool is not edited beyond its yield** (M3), its
   search's forms as a parameter (M4) and the definiteness of its
@@ -230,11 +236,11 @@ place below, so it can be read before M1 is dispatched:
 | frozen at M1 | where |
 |---|---|
 | the record's files and what a reader may look at | I1 |
-| `state.json`: structure without the input's bounds; `calls`; `log`; `import`; an outcome's `textFile` and `part`; the verdict of a key never seen | I2 |
+| `state.json`: structure without the input's bounds; `calls`; `log`; `import`; an outcome's `textFile`; a closed question's `answer`; the verdict of a key never seen | I2 |
 | the inbox line and its bounds; the door's exits and output | I3 |
-| what a reader computes, and that it stops at the last newline whatever a probe says | I4 |
-| the first line of a call's result | I6 |
-| the envelope: its budget, a long text's file, the block's `textCut`, `textFile` and `part`, and the published examples | I7 |
+| what a reader computes: that it stops at the last newline whatever a probe says; `closed`; a pending outcome's question | I4 |
+| the three first lines of a call's result | I6 |
+| the envelope: its two limits, a long text's file, the block's places for `picks`, its `textCut`, `textFile` and `more`, and the published examples with their inputs | I7 |
 | the fixture cases | M1 |
 
 ## The state machine
@@ -317,8 +323,8 @@ verdict before any line carrying it arrives: U1.
       └────── fails ───────────┘
 
 with attributes a step sets: `recipient` (`main`, or a running subagent),
-`taken` (the mod itself sends it to that subagent), `acrossStop`, and
-`part` once a step has split its batch (I7). `ready` and `in flight` are
+`taken` (the mod itself sends it to that subagent) and `acrossStop`.
+`ready` and `in flight` are
 the mod's memory; on disk both are "in `pending`". In a MAWS-run session
 an outcome whose recipient is `main` is MAWS's to deliver and leaves on a
 `delivered` line.
@@ -333,8 +339,10 @@ A foreclosed id commits nothing, whenever its step runs.
 ### Transitions
 
 **The drain** is §4.2's table, in this order, over the lines from the
-recorded offset to the end of the inbox (the lock excludes the door, so
-the tail is whole):
+recorded offset to the inbox's last newline. Bytes after the last newline
+are a write that did not finish (a door killed inside it, which the lock
+does not prevent): the drain leaves them, as a reader does (I4), and the
+offset stays just past a newline.
 
 1. A line that is not valid is skipped (U2).
 2. A line whose key has a verdict, or occurred earlier in this tail, is
@@ -359,7 +367,7 @@ the tail is whole):
    | dismiss | open, any revision | → dismissed; an outcome joins `pending` | `applied` |
    | delivered, keys K… | — | each K in `pending` leaves it; any other K is left alone | `applied` |
 
-5. The offset moves to the end of the tail.
+5. The offset moves to just past the last newline.
 
 An outcome that joins `pending` takes: `recipient` the asker when the
 asker is a subagent, the step's `agents.running` names it and
@@ -375,7 +383,7 @@ owed (I12) in the same replace.
 |---|---|---|
 | any, with `acked` ids | — | each id's entry leaves `calls`; its staging directory is deleted |
 | `call`, a call id in `calls` | — | nothing; the recorded outcome again (its result, or foreclosed) |
-| `call`, a call id whose staging directory is gone | — | nothing; `gone` (the mod acked it, or a `start` cleared it) |
+| `call`, a call id whose staging directory is gone | — | nothing; `gone` (the mod acked it, or a `start` cleared it: every fresh call has one, I5) |
 | `call`, an entry without `id` | fewer than 500 open (U7); the mod refused nothing of it | a question `open(1)`, id `q<nextId>`, `nextId` + 1; the `question` event the log is owed |
 | `call`, an entry with `id` | the id is open; the caller asked it; the mod refused nothing of it | the entry replaces the question; revision + 1 |
 | `call`, a `withdraw` id | the id is open; the caller asked it, or the caller is the main conversation | → withdrawn; the `answered` event the log is owed |
@@ -390,9 +398,9 @@ owed (I12) in the same replace.
 
 Entries apply in the call's order, then the withdrawals; an id occurs at
 most once in a call (§2.1), so the order among them decides nothing.
-After its event a step composes the ready envelopes (I7); the first time
-a batch must be split it writes each outcome's `part`, in the same
-replace.
+After its event a step composes the ready envelopes (I7), which writes
+nothing. A question that an answer closes gets its `answer` line, and
+the oldest of more than 32 such lines is dropped, in the same replace.
 
 ### Where a change becomes durable and visible
 
@@ -421,11 +429,11 @@ record and the engine at a start.
 | who dies | where | what is left | what restores it |
 |---|---|---|---|
 | the door | before its write | nothing | the surface sends again, with the same keys |
-| the door | inside its write | a last line without its newline, or (a batch that spans pages) some whole lines of the batch | the next appender starts on a new line; the drain skips the torn line; the surface's resend completes the batch (U6) |
+| the door | inside its write | bytes after the inbox's last newline, and before them (a batch that spans pages) perhaps some whole lines of the batch | no reader and no drain takes the unfinished bytes; the whole lines are applied. The next appender first ends the fragment with a newline, which makes it a line: not valid, it is skipped; a whole object that lacked only its newline is applied like any line. The surface's resend, under the same keys, completes the batch and reads the first verdict of what was applied (U6) |
 | the door | after its write | a line the surface has no answer for | the resend carries a key the record knows: the first verdict again |
-| a step | before its replace | a `.tmp-` file; for a call, its staged input still there | the next step removes the file; the mod orders `settle`, then decides |
+| a step | before its replace | a `.tmp-` file; for a call, its staged call still there | the next step removes the file; the mod orders `settle`, then decides |
 | a step | after its replace, its answer lost | a record ahead of the mod's view; for a call, its result in `calls` | a drain, a `landed`, a `reroute` and a `start` are ordered again and set what they set before; a call is settled: the mod reads its recorded result and answers the model with it |
-| a step | it runs late, after the mod gave up on it | for a call: an id that `settle` foreclosed, or one the mod acked | the late step finds the id in `calls`, or its staging gone, and commits nothing |
+| a step | it runs late, after the mod gave up on it | for a call: an id that `settle` foreclosed, or one the mod acked | the late step finds the id in `calls`, or its staged call gone, and commits nothing |
 | the engine | after a call's step, before the model read its result | a question whose id the model never read | I10's context at the next start names it |
 | the engine | an outcome ready | the outcome in `pending` | the next start: owed across a stop |
 | the engine | a flight to the main conversation in the air, or landed and the `landed` step not yet made | the outcome in `pending`; its row in the transcript or not | the next start searches the transcript for the envelope's keys (I9): found, `landed`; not found, owed across a stop |
@@ -500,7 +508,7 @@ Paths are from the repository's root. `S/` is
     $SMINOS_HOME/sheet/
       <session>/              the record (composite §3): state.json, inbox.jsonl, refs/, uploads/, texts/
       <session>.lock          the record's lock: an empty file, flock'd exclusively; never removed
-      .staging/<session>/     what the mod hands a step: <callId>/entry-<n>.json, <callId>/ref-<n>-<m>, start-<nonce>/ask-<n>.json
+      .staging/<session>/     what the mod hands a step: <callId>/call.json, entry-<n>.json, ref-<n>-<m>; start-<nonce>/ask-<n>.json
       surfaces/<name>.json    a surface's registration (X4)
 
 `texts/<sha256>.txt` holds a human's answer text longer than 2,000
@@ -538,17 +546,14 @@ In the plugin:
 
     sminos/types/sheet/
       README.md                      what each file is, and how the set is pinned
-      MANIFEST.json                  { "v": 1, "files": { "<path>": "<sha256>" }, "digest": "<sha256>" }
+      MANIFEST.json                  { "v": 1, "version": 1, "files": { "<path>": "<sha256>" }, "digest": "<sha256>" }
       schema/state.schema.json       I2
       schema/inbox-line.schema.json  I3
       schema/show.schema.json        I4: what `sminos sheet show --json` prints
-      schema/delivery.schema.json    I7: the <sheet-delivery> block, both forms
+      schema/delivery.schema.json    I7: the <sheet-delivery> block, one for both forms
       schema/surface.schema.json     composite §7's file
       schema/tool-input.schema.json  composite §2.1 with §1's limits, without descriptions
-      examples/envelope.terminal.txt        I7's first example
-      examples/envelope.terminal.long.txt   a text carried by its head and its file
-      examples/envelope.terminal.part-1.txt, part-2.txt   one Send split in two
-      examples/envelope.steer.txt           I7's steer example
+      examples/<name>/…              I7's envelopes, each with the record it was composed from
       examples/surface.json
       grammar/result.md              I6's grammar and the pattern a reader matches
       grammar/result.examples.json   stored calls: { "input", "result", "parsed" }
@@ -583,14 +588,16 @@ fails here first.
       "session": "<engine session id>",
       "seq": 41,                         // + 1 at every replace
       "nextId": 12,                      // the n of the next q<n>
-      "inbox": { "offset": 5321, "skipped": 0 },   // bytes applied; always at a line's start
+      "inbox": { "offset": 5321, "skipped": 0 },   // bytes applied; always just past a newline
       "questions": [ Question ],         // the open ones, by id ascending: the order asked
       "pending":   [ Outcome ],          // accepted, not delivered, in the order accepted
       "closed":    { "q3": Closed },     // every closed question, for the record's life
       "verdicts":  { "<key>": Verdict }, // every key's first verdict, for the record's life
       "calls":     [ { "callId": "…", "result": "…" } | { "callId": "…", "foreclosed": true } ],
-      "log":       { "next": 18, "owed": [ { "n": 17, "kind": "question" | "answered", "src": "sheet:q7",
-                                             "text": …, "choices": ["…"], "closed": "dismissed" } ] },
+      "log":       { "next": 18,
+                     "owed": [ { "n": 17, "kind": "question" | "answered", "src": "sheet:<session>:q7",
+                                 "text": …, "choices": ["…"], "closed": "dismissed" } ],
+                     "projects": { "q7": "<the id of the project its question went to>" } },
       "import":    { "never": true, "calls": { "<today's call id>": ["q1", "q2"] } }
     }
 
@@ -608,16 +615,17 @@ fails here first.
 
     Outcome = { "key": "…", "kind": "answer" | "dismiss", "id": "q7", "revision": 2,
                 "picks": ["OAuth"], "text": "…", "textFile": "texts/<sha256>.txt", "images": ["uploads/a.png"],
-                "by": "page", "at": "<the line's>", "acceptedAt": "…", "batch": "…", "part": { "n": 1, "of": 2 },
+                "by": "page", "at": "<the line's>", "acceptedAt": "…", "batch": "…",
                 "recipient": "main" | { "agentId": "…" }, "taken": false, "acrossStop": false,
                 "question": { "asker": …, "header": "…", "question": "…", "options": ["OAuth", "Passkeys"],
                               "multiSelect": true, "askedAt": "…" } }
-              // textFile only for a text past 2,000 characters; part only once a step split the batch (I7)
+              // picks are labels, as the line gave them; textFile only for a text past 2,000 characters (I7)
 
     Closed  = { "how": "answered" | "dismissed" | "withdrawn", "at": "…", "revision": 2,
                 "asker": …, "header": "…", "question": "<its first 200 characters>",
-                "receipt": "OAuth, Passkeys", "key": "…", "deliveredAt": "…" }
-              // receipt: the picks joined by ", ", else the text's first 80 characters; none for withdrawn
+                "receipt": "OAuth, Passkeys", "key": "…", "deliveredAt": "…", "answer": "…" }
+              // receipt: the picks joined by ", ", else the text's first 80 characters; none for withdrawn;
+              // answer: I7's line after the id, at most 2,000 characters, kept on the 32 questions answered last (I13)
 
     Verdict = { "verdict": "applied" | "stale" | "closed" | "retracted" | "too-late",
                 "kind": "answer" | "dismiss" | "retract" | "delivered" | "unseen", "at": "…", "id": "q7",
@@ -635,7 +643,9 @@ fails here first.
   multi-select question are all valid in a record. A surface draws what
   the record holds. A later revise of such a question is a call like any
   other, under the input's rules. Today's tool already refuses two
-  options with one label, so a pick still names one option.
+  options with one label, so a pick still names one option. What leaves
+  the record for the model is bounded where it is composed (I7), not
+  here.
 - **`calls`** holds the outcome of each call the mod has not yet
   acknowledged: its result text, or that `settle` foreclosed it. An entry
   leaves when the mod acknowledges that id, and all leave at a `start`.
@@ -643,11 +653,11 @@ fails here first.
   hook dispatch that holds that call; it orders `call` and `settle` and
   nothing else for the id until it has an answer, and acknowledges only
   then; and a step of that id still on its way after the acknowledgement
-  finds its staged input gone and commits nothing. A `start` is a new
+  finds its staged call gone and commits nothing. A `start` is a new
   process, or a new session of the same one: no dispatch of the old
   conversation remains to order an old id.
-- **`log.owed`** is what the project's log has not yet taken (I12). A
-  reader ignores it.
+- **`log`** is what the project's log has not yet taken, and where each
+  question's events go (I12). A reader ignores it.
 - A question's order on a surface is its id's: a revise keeps the place.
   `askedAt` and `callId` are the current revision's, as §1 says.
 
@@ -660,8 +670,9 @@ ending in `png`, `jpg`, `jpeg`, `gif` or `webp`; a `delivered` line's
 `keys` at most 200; a call of the door at most 50 lines. Required: `v`,
 `key`, `kind`, `by`; with `answer`, `id`, `revision` and one of `picks`
 and `text` non-empty; with `dismiss`, `id`; with `retract`, `target`; with
-`delivered`, `keys`. The door fills `at` when absent and sets one `batch`
-on the lines of a call of more than one line.
+`delivered`, `keys`. A pick is a label and has the label's length, which
+for an imported question no bound limits. The door fills `at` when absent
+and sets one `batch` on the lines of a call of more than one line.
 
     sminos sheet put (<member> | --session <id>) [--no-wait]     lines on stdin, one JSON object each
 
@@ -671,7 +682,8 @@ as regular files, and, where it answers an open question at its current
 revision, pick only that question's labels, one unless it is multi-select
 (else exit 2, the reason on stderr, nothing appended: a call is appended
 whole or not at all); a file that does not end in a newline gets one
-first; then one `write` of all the lines, synced. After the lock: unless
+first, which turns what an unfinished write left into a line of its own
+(the drain's rule decides it); then one `write` of all the lines, synced. After the lock: unless
 `--no-wait`, it tells the session's bridge (`POST /command` on
 `$SMINOS_HOME/bridge/<session>.sock`, `{"op": "sheet", "keys": [...]}`,
 waiting 10 s) and prints what came back. Output, one JSON object:
@@ -693,7 +705,7 @@ joins `OPS` and stays out of `CONTROL_OPS` in `H/bridge.tsx`.
 The other verbs (M2), each taking `<member>`, resolved as the control
 verbs resolve one, or `--session <id>`, which reads no registry:
 
-    sminos sheet show    <who> [--json]                     the reader's model (I4), or its text
+    sminos sheet show    <who> [--json [--keys <k,…>]]      the reader's model (I4), or its text
     sminos sheet answer  <who> <q>[@<revision>] [--pick <label|n>]... [--text <t>] [--image <file>]...
     sminos sheet dismiss <who> <q>...                       one call of the door: one batch
     sminos sheet retract <who> <key>
@@ -728,11 +740,12 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
 
 1. Read `state.json`, then the inbox from `inbox.offset` to its last
    newline, then `state.json` again; if `seq` moved, start over (three
-   times at most, then keep the last pair). A reader takes only what ends
-   in a newline and reads the rest next time, on every filesystem and
-   whatever a probe observed: C0's P4 saw no partial write on APFS, which
-   is an observation and not a promise, and nothing published depends on
-   it.
+   times at most, then keep the last pair). Bytes after the last newline
+   are a write that did not finish: a reader takes none of them, on every
+   filesystem and whatever a probe observed, and so does a drain, so the
+   two never disagree on where the inbox ends. C0's P4 saw no partial
+   write on APFS, which is an observation and not a promise, and nothing
+   published depends on it.
 2. From the tail drop what is not valid, and every line whose key has a
    verdict or occurred earlier in the tail. Each line that remains is
    **queued**. A queued answer or dismissal that a queued retract names
@@ -751,13 +764,29 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
 5. A reference reads `changed: true` when the file at `abs` is missing or
    its size or modification time differs from the record's; `null` where
    the reader is not on the session's machine.
+6. `closed` is the record's, by id: how each closed question closed, at
+   which revision, and its receipt. It is what a call's row draws once
+   the question has left the sheet (`q7 Auth method → OAuth`,
+   `Withdrawn`): a withdrawal never passed through the inbox, and a
+   delivered answer is in `pending` no longer.
+7. A pending outcome carries its question as the record's snapshot has
+   it, the question cut at 2,000 characters and each label at 200 (cuts
+   only an imported question can need): what a deliverer needs to tell a
+   conversation that does not hold the question what was asked and which
+   option a place names (§5.4).
 
     show --json = { "v": 1, "session": "…", "seq": 41,
                     "open":   [ Question + { "handle": "q7@2",
                                              "queued": { "key", "kind": "answer", "picks", "text", "images", "revision", "by", "at" } } ],
                     "hidden": [ { "id": "q9", "key": "…" } ],            // open, with a queued dismissal
                     "sent":   [ { "key", "kind", "id", "state", "cancelled", …the Verdict's fields } ],
-                    "pending": [ Outcome ] }
+                    "pending": [ Outcome, its question bounded as in 7 ],
+                    "closed":  { "q3": { "how", "at", "revision", "asker", "header", "receipt", "deliveredAt" } } }
+
+`show --json --keys <k1,k2,…>` (at most 50) prints the same with `pending`
+and `sent` held to those keys and `open`, `hidden` and `closed` left out:
+a few kilobytes an outcome, which a hook can take through
+`$.process.run`.
 
 ### I5 · The step
 
@@ -772,9 +801,12 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
             "context": "compact",                // a drain after a compaction: compose I10's context too
             "start": { "source": "startup" | "resume" | "fork" | "clear", "floor": 11,
                        "today": { "definite": true, "asks": [ { "file": "<a staged ask>" } ] } },
-            "call":  { "callId": "toolu_…", "asker": "main" | { "agentId": "…", "name": "…" }, "floor": 11,
-                       "entries": [ { "file": "<a staged entry>", "captures": [ Capture ] } | { "refused": "<I6's clause>" } ],
-                       "withdraw": ["q3"] } }
+            "call":  { "callId": "toolu_…", "floor": 11 } }          // call and settle alike name the call by callId
+
+    <staging>/<callId>/call.json =
+          { "asker": "main" | { "agentId": "…", "name": "…" },
+            "entries": [ { "file": "entry-1.json", "captures": [ Capture ] } | { "refused": "<I6's clause>" } ],
+            "withdraw": ["q3"] }
 
     Capture = { "ok": true, "abs": "…", "kind": "text", "file": "<a staged file: Read's result.file.content>",
                 "startLine": 40, "numLines": 41, "totalLines": 212, "size": 5678, "mtimeMs": 1763900000000 }
@@ -788,12 +820,12 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
                 "pending": [ { "key", "id", "kind", "recipient", "taken", "acrossStop" } ],      // the first 200, in order
                 "pendingCount": 3, "owedAcrossStop": 2,
                 "closed":  { "q3": { "how", "revision", "header", "receipt" } },                 // the 500 closed last
+                "answered": [ { "id", "header", "question", "answer" } ], "answeredCount": 14,   // I13: the 32 answered last, question cut at 300;
+                                                                                                 // the count is of every question ever answered
                 "ready":   [ { "recipient": "main" | { "agentId": "…" }, "keys": ["…"], "text": "<an envelope, I7>",
                                "wakes": true, "more": false } ],                                 // at most 4 recipients
-                "surfaces": [ { "name", "url", "reach" } ] }                                     // alive at this step
+                "surface": { "name", "url", "reach" }, "surfaces": 2 }                           // the first alive that suits, or null; how many are alive
     Effects = { "applied": ["<key>"],            // outcomes that joined `pending` in this step
-                "accepted": [ { "id", "header", "question", "answer": "<I7's line after the id, at most 2,000 characters>" } ],
-                                                 // the answers among them, for I13
                 "skipped": 0,                    // lines this drain skipped (U2)
                 "verdicts": { "<key>": Verdict },                       // for `keys`
                 "result": "<the call's result text, I6>", "foreclosed": true,     // call, settle
@@ -813,21 +845,33 @@ lock; answer. C0's P4 read such a replace 26,743 times from a process
 without the lock and never saw a torn or missing file, where a hook's own
 `$.fs.write` in place tore 3 reads in 225,781.
 
+**A call is staged before it is ordered, always.** The mod writes
+`<callId>/call.json` for every call, also one that only withdraws or
+whose entries it all refused, and beside it a file for each entry that
+passed and each captured body. The event on stdin names the call by its
+id and nothing more. So the staging directory is there for every fresh
+call, and its absence means one thing: the mod acknowledged that id, or a
+`start` cleared it.
+
 **Everything that crosses is bounded.** Into the step: the event on stdin
-names its large parts and holds none, so it stays in the tens of
-kilobytes; an entry at every bound of the input's schema is under 1 MiB
-as JSON (some 123,000 characters, at four bytes each or six as an
-escape), and a captured text is at most the 256 KB Read itself returns.
-Out of the step: the view leaves out options, descriptions, previews,
+is a few hundred bytes; `call.json` names its entries and holds none; an
+entry at every bound of the input's schema is under 1 MiB as JSON (some
+123,000 characters, at four bytes each or six as an escape), and a
+captured text is at most the 256 KB Read itself returns. Out of the step:
+nothing in the answer grows with what one step applied or with the
+record's history. The view leaves out options, descriptions, previews,
 context, reference bodies and answer texts; it cuts what it keeps and
-counts what it leaves out; and the step measures its answer before it
-writes it: past 3 MiB it leaves out ready envelopes from the last
-recipient back, then `closed` entries from the oldest, until it is
-under, so the 4 MiB `$.process.run` returns is never reached. The mod
-never needs more: it draws from `open` and `closed`, routes `ready`, and
-the next view after a landing carries the next envelope. An event given inline (a shell, the suite, a fixture's
-`case.json`) may hold its entries and asks in place of files; the mod
-never does.
+counts what it leaves out; what a consumer needs of many things is a
+count and the last few (`answered` and its count, `pendingCount`,
+`surfaces`); and the step measures its answer before it writes it: past
+3 MiB it leaves out ready envelopes from the last recipient back, then
+`closed` entries from the oldest, until it is under, so the 4 MiB
+`$.process.run` returns is never reached. Everything in the view is read
+from the record, so an answer that was lost is had again from the next
+step: nothing the mod needs exists only in one step's effects but a
+call's result, which `calls` keeps. An event given inline (a shell, the
+suite, a fixture's `case.json`) may hold a call's body, its entries and
+a start's asks in place of files; the mod never does.
 
 **A step never fails a session.** The mod reads `ok: false`, a process
 that did not start, or output that is not JSON as "no answer". For a
@@ -835,14 +879,13 @@ drain, a `landed`, a `reroute` and a `start` it orders the event again at
 the next trigger. For a call it orders `settle` for that id, at most
 three times in the same dispatch: a recorded result is the call's answer
 (the first step committed and its answer was lost); `foreclosed` lets the
-mod tell the model the call changed nothing; and if `settle` too gives no
-answer, the mod tells the model that what the call did is not yet known
-and will be told to it, goes on settling at every trigger, and sends the
-outcome as a notice (I9). Only once it holds one of these does it
-acknowledge the id.
+mod answer that nothing was done; and if `settle` too gives no answer,
+the mod answers that the outcome is not known yet (I6's two fixed
+lines), goes on settling at every trigger, and sends the outcome as a
+notice (I9). Only once it holds one of these does it acknowledge the id.
 
     sminos sheet probe --session <id> [--remote]     read-only, no lock; one JSON object
-    { "record": true, "open": 3, "pending": 1, "queued": 0, "surfaces": [ { "name", "url", "reach" } ] }
+    { "record": true, "open": 3, "pending": 1, "queued": 0, "surface": { "name", "url", "reach" } | null, "surfaces": 2 }
 
 ### I6 · A call: its input, its refusals, its result (X7)
 
@@ -855,15 +898,19 @@ plugin tool's input). Two kinds of rule:
   that breaks any is denied whole, in the words `ask.tsx`'s `formatted`
   uses for today's tool (`InputValidationError: AskUserQuestion failed
   due to the following issue…`, one line an issue), and reaches no step.
+  A denial is the engine's error result and has no first line of the
+  grammar below.
 - **One entry** (U14): labels unique within the entry; `preview` only
   without `multiSelect`; `multiSelect` only with options; `lines` as `[a,
   b]` with `1 <= a <= b`; every reference captured. An entry that breaks
-  one is refused alone: the mod hands the step its clause in the entry's
-  place, and the others apply.
+  one is refused alone: the mod writes its clause in the entry's place in
+  `call.json`, and the others apply.
 
-The result's first line:
+The result's first line is one of three, and a stored call that was not
+denied always has one:
 
-    first-line = "Nothing done." / sentence *( " " sentence )
+    first-line = sentences / "Nothing done." / "Outcome not known yet."
+    sentences  = sentence *( " " sentence )
     sentence   = added / revised / withdrew              ; in this order, each at most once
     added      = "Added " item *( ", " item ) "."
     revised    = "Revised " ritem *( ", " ritem ) "."
@@ -872,10 +919,22 @@ The result's first line:
     ritem      = id " (" [ "entry " n ", " ] "revision " n ")"
     id         = "q" 1*DIGIT        n = 1*DIGIT
 
-Ids stand in the order of the call's entries; `n` is an entry's place in
-`ask`, from 1, and every `item` and `ritem` carries it exactly when some
-entry or withdrawal of the call was refused. A second line, present then,
-reads `Not done: ` and one clause per refusal, each closed by a period:
+- **The sentences**, for a call that changed the sheet. Ids stand in the
+  order of the call's entries; `n` is an entry's place in `ask`, from 1,
+  and every `item` and `ritem` carries it exactly when some entry or
+  withdrawal of the call was refused.
+- **`Nothing done.`**, for a call every part of which was refused, and
+  for a call that was foreclosed (I5): the sheet is as it was.
+- **`Outcome not known yet.`**, for a call whose step and whose settling
+  gave no answer. Its second line reads `The sheet did not answer. Do not
+  repeat this call: what it did will be told to you.`, and the outcome
+  reaches the model later as context (I9's notice). A reader of a stored
+  call with this first line draws no ids for it and does not look for the
+  notice: whatever the call added is on the sheet and in later calls and
+  envelopes under its own ids.
+
+A second line, present when anything was refused, reads `Not done: ` and
+one clause per refusal, each closed by a period:
 
     entry <n>, the reference <path> could not be read: <reason>
     entry <n>, two options share the label "<label>"
@@ -887,19 +946,23 @@ reads `Not done: ` and one clause per refusal, each closed by a period:
     entry <n>, the sheet holds 500 open questions
     <id> is not open (<how> at <HH:MM>)
     <id> was asked by <…>; only its asker or the main conversation withdraws it
+    the sheet could not be written (<why>); call again                 a foreclosed call's one clause
 
-A reference's `<reason>` is the engine's own: the check's when it did not
-allow the Read (a deny rule's, a guard's, or, for a path outside the
-session's working directories, that permission was not granted: C0's P3
-found the check answers `ask` there in every permission mode and opens
-no dialog, so such a reference is always refused and the agent puts the
-excerpt in `context`), and Read's when it failed (a missing file; a file
-over 256 KB named without a range, whose reason tells the agent to name
-one).
+A label in a clause is cut at 200 characters. A reference's `<reason>` is
+the engine's own: the check's when it did not allow the Read (a deny
+rule's, a guard's, or, for a path outside the session's working
+directories, that permission was not granted: C0's P3 found the check
+answers `ask` there in every permission mode and opens no dialog, so such
+a reference is always refused and the agent puts the excerpt in
+`context`), and Read's when it failed (a missing file; a file over 256 KB
+named without a range, whose reason tells the agent to name one).
 
 A last line, when the step's view names no surface alive whose reach suits
 the session (I8): `No surface can show these questions right now; they
-wait on the sheet and show when one returns.` The step writes the text;
+wait on the sheet and show when one returns.`
+
+The step writes every result but the two the mod must write because no
+step answered: a foreclosed call's and `Outcome not known yet.`
 `H/sheet-model.tsx` and MAWS parse the first line.
 
 ### I7 · The envelope (X3)
@@ -914,12 +977,14 @@ send to a subagent and the fixtures. The terminal form:
     q8 (asked 2026-11-23 14:02, answered 2026-11-23 16:40, while this session was stopped) "What should the empty state say?" → their text: "Nothing waiting for you."
     q12 (from the subagent reviewer, a1b2c3, which has ended) "Ship the migration today?" → Yes.
     Dismissed: q9, q11.
-    <sheet-delivery>{"v":1,"keys":["page-7f3a91c2","page-7f3a91c3","cli-20c41d07","page-7f3a91c4","page-7f3a91c5"],"answered":[{"id":"q7","revision":2,"picks":["OAuth","Passkeys"],"text":"passkeys only on mobile","images":["/Users/me/.claude/sminos/sheet/5eed0000-0000-4000-8000-0000000000e1/uploads/sketch.png"]},{"id":"q8","revision":1,"picks":[],"text":"Nothing waiting for you.","images":[]},{"id":"q12","revision":1,"picks":["Yes"],"text":"","images":[]}],"dismissed":["q9","q11"]}</sheet-delivery>
+    <sheet-delivery>{"v":1,"keys":["page-7f3a91c2","page-7f3a91c3","cli-20c41d07","page-7f3a91c4","page-7f3a91c5"],"answered":[{"id":"q7","revision":2,"picks":[1,2],"text":"passkeys only on mobile","images":["/Users/me/.claude/sminos/sheet/5eed0000-0000-4000-8000-0000000000e1/uploads/sketch.png"]},{"id":"q8","revision":1,"picks":[],"text":"Nothing waiting for you.","images":[]},{"id":"q12","revision":1,"picks":[1],"text":"","images":[]}],"dismissed":["q9","q11"]}</sheet-delivery>
 
 - The head reads `[sheet v1] The human dismissed questions on your sheet;
   no answer will come for them.` when the envelope answers nothing. An
-  envelope sent to a subagent opens, above the head, with `From the human,
-  through the question tool, not from your coordinator: answers to
+  envelope that does not carry everything now owed to its recipient ends
+  its head line with ` More follows.` and its block holds `"more": true`.
+  An envelope sent to a subagent opens, above the head, with `From the
+  human, through the question tool, not from your coordinator: answers to
   questions you put on the sheet.`: the engine frames a plugin's send as
   the coordinator's (C0's P2), as it does the bridge's `TELL_LINE`.
 - An answer's line: the id; then, when the recipient is the main
@@ -927,11 +992,12 @@ send to a subagent and the fixtures. The terminal form:
   has ended`, or `which could not be sent it` for one still running whose
   send was not delivered); then, when the outcome is owed across a stop,
   its times in the machine's local time; then the question as a JSON
-  string, cut at 200 characters with `…`; then `→` and the picks joined
-  by `, ` with a period, and `Their text: ` with the text as a JSON string
-  (`→ their text: ` when nothing was picked). One `[Image source:
-  <absolute path>]` line follows per image, the engine's own form for a
-  picture known by its file.
+  string, cut at 200 characters with `…`; then `→` and the picked labels
+  joined by `, ` with a period, each label cut at 200 characters with
+  `…`, and `Their text: ` with the text as a JSON string (`→ their text:
+  ` when nothing was picked). One `[Image source: <absolute path>]` line
+  follows per image, the engine's own form for a picture known by its
+  file.
 - The block is the last line: compact JSON, its keys in the order shown,
   with `<`, `>`, `&`, U+2028 and U+2029 written as `\u` escapes, so
   neither the closing tag nor a system-reminder tag (the one thing the
@@ -939,6 +1005,13 @@ send to a subagent and the fixtures. The terminal form:
   is one line. `keys` holds the answered outcomes' keys in the order of
   `answered`, then the dismissed ones' in the order of `dismissed`: as
   many keys as the two lists have entries.
+- **`picks` holds places**, integers from 1 among the question's options
+  as the answered revision had them, in the terminal form and in the
+  steer alike: one block for both, and a pick that is bounded whatever
+  its label is. A label is at most 200 characters in every question the
+  sheet's input accepted, so the prose's cut can only ever shorten a
+  label today's tool let through, and there the place still names the
+  option.
 - A reader reads the block and nothing above it.
 
 **The budget** (the composite's §5.3 rule, in exact shapes). The engine
@@ -948,65 +1021,67 @@ characters.
 - An envelope is at most **60,000** UTF-16 code units, the larger of the
   ways to count a string, so it is under the engine's cut however the
   engine counts, with room for a notice above it and the engine's own
-  wrapper.
+  wrapper; and it carries at most **200** keys, what one `delivered` line
+  can name (I3), so whoever delivered it can always say so in one line.
 - A text longer than **2,000** characters has a file, `texts/<sha256>.txt`,
   from the moment its answer is accepted.
 - The block's `text` is the text's first **500** characters, with
   `"textCut": true` when the text is longer and `"textFile": "<absolute
   path>"` when it has a file. So no text is in an envelope twice in full.
-- The step composes a recipient's next envelope from that recipient's
-  pending outcomes in the order accepted, batch by batch (an outcome
-  with no `batch` is a batch of one):
-  1. The first batch, every text in full in the prose. If it fits,
-     following batches join it, each whole and in full, while the
-     envelope still fits; the first that does not waits for the next
-     envelope.
-  2. If the first batch does not fit, its longest text that has a file
-     is carried by its head and its file instead (`→ their text, 18,214
-     characters, is in <absolute path> and begins: "<its first 500
-     characters>…"`), then the next longest, until it fits.
-  3. If it still does not fit, the batch is split: the envelope takes its
-     outcomes in order while they fit, and the rest follow in the next
-     envelopes. Each outcome's `part` is written to the record then, so
-     later envelopes number themselves the same. A part's head ends
-     `(part 1 of 2 of one Send; the rest follows)`, the last one's
-     `(part 2 of 2 of one Send)`, and its block carries `"part": {
-     "batch": "…", "n": 1, "of": 2 }`.
-  One outcome always fits alone: at every bound of the line and of the
-  question it is under 40,000 units.
+- A composer, the step's or MAWS's for its steer, makes a recipient's
+  next envelope from what is pending for that recipient, batch by batch
+  (an outcome with no `batch` is a batch of one). Batches that hold an
+  outcome that wakes (I9) come first, in the order accepted; then the
+  others, in the order accepted.
+  1. Batches join whole, every text in full in the prose, while the
+     envelope stays within both limits; the first that would pass one
+     ends the envelope.
+  2. If not even the first batch fits in full, its longest text that has
+     a file is carried by its head and its file instead (`→ their text,
+     20,000 characters, is in <absolute path> and begins: "<its first 500
+     characters>…"`), then the next longest (of equal lengths, the
+     earlier), until it fits. An envelope that came to this takes no
+     second batch.
+  3. If it still does not fit, the envelope takes that batch's outcomes
+     in order while they fit. The rest stay pending and are packed later
+     like anything else pending.
+  `more` is true when anything stays pending for that recipient after
+  the packing. Nothing about a packing is recorded: the next envelope is
+  composed afresh from what is pending then.
+  One outcome always fits alone: at every bound of the line it is under
+  30,000 units.
 - A route carries one envelope each time it opens; what remains leaves
   with the next opening.
 
-A text carried by its file, and a Send split in two, as published:
-
-    [sheet v1] The human answered questions on your sheet.
-    q14 "Paste the error you see." → their text, 18,214 characters, is in /Users/me/.claude/sminos/sheet/5eed0000-0000-4000-8000-0000000000e2/texts/3f0c9a51d2e84b6f7a10c5d9e8b7a6f4c3d2e1f00112233445566778899aabbc.txt and begins: "Traceback (most recent call last):\n  File \"app.py\", line 12, in <module>…"
-    <sheet-delivery>{"v":1,"keys":["page-88a0b1d4"],"answered":[{"id":"q14","revision":1,"picks":[],"text":"Traceback (most recent call last):\n  File \"app.py\", line 12, in <module>","textCut":true,"textFile":"/Users/me/.claude/sminos/sheet/5eed0000-0000-4000-8000-0000000000e2/texts/3f0c9a51d2e84b6f7a10c5d9e8b7a6f4c3d2e1f00112233445566778899aabbc.txt","images":[]}],"dismissed":[]}</sheet-delivery>
-
-    [sheet v1] The human answered questions on your sheet (part 1 of 2 of one Send; the rest follows).
-    q20 "Which regions first?" → EU, US.
-    <sheet-delivery>{"v":1,"keys":["page-a1000001"],"answered":[{"id":"q20","revision":1,"picks":["EU","US"],"text":"","images":[]}],"dismissed":[],"part":{"batch":"b-5c1e77a0","n":1,"of":2}}</sheet-delivery>
-
-    [sheet v1] The human answered questions on your sheet (part 2 of 2 of one Send).
-    q21 "Who signs off?" → their text: "Dana, after the audit."
-    Dismissed: q22.
-    <sheet-delivery>{"v":1,"keys":["page-a1000002","page-a1000003"],"answered":[{"id":"q21","revision":1,"picks":[],"text":"Dana, after the audit.","images":[]}],"dismissed":["q22"],"part":{"batch":"b-5c1e77a0","n":2,"of":2}}</sheet-delivery>
-
-(The published `long` example's block holds the text's first 500
-characters; it is shortened here. The published split is of a Send whose
-answers do not fit one envelope; these two show the form.)
-
-The steer form (§5.4) is C5's to send, under the same budget and with the
-same block; in it `picks` holds places, integers from 1, where the
-terminal form holds labels. The set publishes this example, the same
-outcomes as the first one above:
+The steer form (§5.4) is C5's to send, under the same two limits and
+with the same block. Its prose holds no text a model wrote: places for
+labels, no question, and a subagent named by its id. For the record of
+the first example above:
 
     [sheet v1] The human answered questions on your sheet.
     q7 → option 1, option 2. Their text: "passkeys only on mobile"
     q8 → their text: "Nothing waiting for you."
-    q12 → option 1.
+    q12 (asked by the subagent a1b2c3, which has ended) → option 1.
     Dismissed: q9, q11.
     <sheet-delivery>{"v":1,"keys":["page-7f3a91c2","page-7f3a91c3","cli-20c41d07","page-7f3a91c4","page-7f3a91c5"],"answered":[{"id":"q7","revision":2,"picks":[1,2],"text":"passkeys only on mobile","images":["/Users/me/.claude/sminos/sheet/5eed0000-0000-4000-8000-0000000000e1/uploads/sketch.png"]},{"id":"q8","revision":1,"picks":[],"text":"Nothing waiting for you.","images":[]},{"id":"q12","revision":1,"picks":[1],"text":"","images":[]}],"dismissed":["q9","q11"]}</sheet-delivery>
+
+**The published examples** each come with what they were composed from,
+so a composer in either repository is held to bytes it can reproduce:
+
+    examples/<name>/input/sheet/<session>/…    a record (state.json, and its texts/ and uploads/ where it has them)
+    examples/<name>/case.json                  { "recipient": "main" | { "agentId": "…" }, "runner": "terminal", "tz": "UTC" }
+    examples/<name>/envelope.txt               the envelope for that recipient, `{HOME}` standing for $SMINOS_HOME
+
+| name | its record | what the envelope shows |
+|---|---|---|
+| `terminal` | the first example's five outcomes; also `steer.txt`, the steer for the same record | the plain form; an image; an outcome owed across a stop; an ended subagent's |
+| `long` | one Send of four answers of 20,000 characters each | in full they pass the budget, and with one carried by its file still do: the first two are carried by head and file, the other two stand in full; each file's name is the hash of its text |
+| `more` | five Sends of fifty dismissals each | four Sends, 200 keys; `More follows.` and `"more": true`; the fifth Send stays pending |
+| `imported` | an answer that picks the 201-character label of an imported question | the label cut at 200 in the prose, its place in the block |
+| `subagent` | one answer for a running subagent, `taken` | the opening line |
+
+Times are composed in the zone `case.json` names; paths under the home
+the composer is run with.
 
 ### I8 · The start choice (X6), and surfaces (X4)
 
@@ -1073,7 +1148,10 @@ the notices; and whether a main turn runs (`turn.start` and
 `turn.complete` without an `agentId`, as `ask.tsx` tracks it). The view's
 `ready` holds, for the main conversation, at most one envelope: its text,
 its keys, whether it **wakes** (it holds an answer that is not owed
-across a stop) and whether more is pending behind it. An envelope is
+across a stop) and whether more is pending behind it. What wakes is
+packed first (I7), so the ready envelope wakes exactly when anything
+pending for the main conversation does: a fresh answer is never held
+behind an envelope of old ones that starts no turn. An envelope is
 **ready** when none of its keys is in a flight.
 
 | trigger | condition | route |
@@ -1169,7 +1247,8 @@ sends to running subagents, and takes `delivered` lines; the step
 composes no envelope for the main conversation there. The context §5.4
 has the tool add to a steer that carries an ended subagent's answer is
 C5's to build; C0's P1 showed the hook sees the steer and can add to it,
-and a step's view and `probe` are what it reads.
+and `show --json --keys` (I4) gives it each outcome's question and
+labels, bounded.
 
 ### I10 · What the tool supplies at a start (§5.5)
 
@@ -1276,23 +1355,42 @@ that owes it:
 
 | the change | the event owed |
 |---|---|
-| a question added (an import included) | `{ "kind": "question", "src": "sheet:<id>", "text": [<question>], "choices": [<labels>] }`; a revise owes nothing |
-| an answer applied | `{ "kind": "answered", "src": "sheet:<id>", "text": <I7's line after the id> }` |
-| a dismissal applied | `{ "kind": "answered", "src": "sheet:<id>", "text": "dismissed", "closed": "dismissed" }` |
+| a question added (an import included) | `{ "kind": "question", "src": "sheet:<session>:<id>", "text": [<question>], "choices": [<labels>] }`; a revise owes nothing |
+| an answer applied | `{ "kind": "answered", "src": "sheet:<session>:<id>", "text": <I7's line after the id> }` |
+| a dismissal applied | `{ "kind": "answered", "src": …, "text": "dismissed", "closed": "dismissed" }` |
 | a withdrawal | `…, "text": "withdrawn", "closed": "withdrawn"` |
 
+- **The source names the session.** `q1` is every session's first
+  question, and `append_host` files an `answered` whose question the
+  session's own events do not hold under whichever other session of the
+  machine holds that `src` (`_askers` in `S/sminos.py`). Within one
+  project that lookup never runs for a sheet's answer, because the
+  question is always written before its answer and to the same writer.
+  It would run after a move to another project, and find another
+  session's `q1` there; with the session in the source no other session
+  can hold it.
+- **A question's events go to the project its question went to.** When
+  the projection writes a `question`, it records the project's id under
+  the question's id (`log.projects`), in the replace that takes the event
+  off `log.owed`; every later event of that question goes to that
+  project, whatever project the session is in by then, as
+  `close_questions` already closes a question where it was asked.
+
 **The projection**, `sminos sheet log --session <id>` (M6): under the
-lock it reads `log.owed`; outside it, it appends those events for the
+lock it reads `log`; outside it, it appends each owed event for the
 session's writer through `append_host`, which adds `from` and `to` and
-whose `(kind, src)` rule appends nothing twice; under the lock again it
-removes from `log.owed` the numbers it wrote and replaces `state.json`.
-The mod orders it, not awaited, after a step whose effects say something
-is owed; the Stop hook's `sminos record` runs it for a session that has a
-record; removal runs it first and then appends, for each question still
-open, `…, "text": "removed with its sheet", "closed": "removed"`. A
-session in no project keeps what it is owed until it has one or the
-record goes. `close_questions` in `S/sminos.py` passes over a `src` that
-starts `sheet:`: a sheet question outlives its process.
+whose `(kind, src)` rule appends nothing twice, a `question` to the
+session's project as `sminos record` resolves it and any other event to
+its question's recorded project; under the lock again it removes from
+`log.owed` the numbers it wrote, records the projects, and replaces
+`state.json`. The mod orders it, not awaited, after a step whose effects
+say something is owed; the Stop hook's `sminos record` runs it for a
+session that has a record; removal runs it first and then appends, for
+each question still open, `…, "text": "removed with its sheet",
+"closed": "removed"`. A question owed while its session is in no project
+waits until the session has one or the record goes. `close_questions` in
+`S/sminos.py` passes over a `src` that starts `sheet:`: a sheet question
+outlives its process.
 
 ### I13 · The snapshot (§11)
 
@@ -1305,13 +1403,13 @@ appeal and reload read it unchanged:
   reads `questions[].question` and `answer` of each ask whose `status` is
   `answered`): one ask a question, `{ id: "sheet:<id>", questions: [{
   question, header, options: [], multiSelect: false }], status:
-  "answered", answer }`, `answer` being I7's line after the id, from the
-  step's `effects.accepted`. The 32 answered last are kept; a reloaded
-  module takes them up from the kept snapshot. A dismissal is no answer
-  and adds none.
+  "answered", answer }`, from the view's `answered`: the 32 questions
+  answered last, which the record keeps (`Closed.answer`), so a lost
+  answer of a step, a reload and a resume all read the same. A dismissal
+  is no answer and adds none.
+- `answered` is the view's `answeredCount`, which only rises.
 - `undelivered: []`, `isDialogUp: false` (the sheet raises no dialog),
-  `isTurnRunning`, and `answered` raised by the answers each step's
-  effects name.
+  `isTurnRunning`.
 - One field more, for the open ones:
 
       sheet?: { open: { id: string, revision: number, header?: string, question: string, asker: string }[], owed: number }
@@ -1395,13 +1493,13 @@ examples, the surface's schema. Consumes nothing.
   | `answer-applied` | §4.2 row 1; a pick with text; an image |
   | `answer-stale` | row 2: an answer to revision 1 of a question at revision 2 |
   | `two-surfaces` | rows 1 and 3: two answers to one question in one tail, from `page` and `cli` |
-  | `closed-withdrawn` | row 3: an answer and a dismissal for a withdrawn question |
+  | `closed-withdrawn` | row 3: an answer and a dismissal for a withdrawn question; `show`'s `closed` reads `withdrawn` for a question no line ever touched |
   | `dismiss-applied` | row 4 |
   | `retract-queued` | row 5: a retract after its target (`cancelled` before the step), and an edit (a retract and a new answer) |
-  | `retract-too-late` | row 6: the target applied by an earlier step; another refused as stale |
+  | `retract-too-late` | row 6: the target applied by an earlier step; another refused as stale; a retract that names a retract, and one that names a `delivered` line |
   | `retract-unseen` | U1: a retract whose target no line carried; after it the target's own verdict, `kind: "unseen"`, and its entry in `sent` |
   | `retract-unseen-late` | U1, from the state above: the target's line arrives and is set aside, the verdict unchanged, its question still open; a second retract of the same target reads `too-late` |
-  | `delivered-mixed` | row 7: one key pending, one delivered before, one unknown |
+  | `delivered-mixed` | row 7: one key pending, one delivered before, one unknown; after it `show`'s `closed` holds the delivered answer's receipt, and `pending` holds it no longer |
   | `resent-key` | row 8 |
   | `resent-then-retract` | a resent copy of an applied line, then a retract of it |
   | `batch` | one Send of three lines, two answers and a dismissal, a main recipient and a running subagent's (`taken`) |
@@ -1410,15 +1508,22 @@ examples, the surface's schema. Consumes nothing.
   | `imported-legacy` | event `start` carrying an ask valid only under today's tool: a 2,001-character question, a 201-character label, a preview on a multi-select question; after it the three as questions with `importedFrom`, unchanged |
   | `skipped-and-unknown` | U2, U3 |
   | `references` | a text reference with lines, one without, an image; their bodies under `refs/` |
+  | `torn-tail` | an inbox that ends in bytes without a newline (a whole answer object that lacks only it): no reader lists it, the drain applies nothing and leaves the offset at the last newline |
+  | `torn-tail-resent` | the same after the surface sent again: a newline, then the answer under the same key; the first copy is applied, the second set aside, one verdict |
 
   `grammar/result.examples.json` holds: a call that added eight; one that
   added, revised and withdrew; one that partly succeeded with an added
   and a revised entry and a refused one (the composite's own example);
   one whose entry was refused for two options with one label; one with a
-  refused withdrawal only (`Nothing done.`).
-- The envelope's examples are I7's, whole and concrete: no key, entry or
-  path is elided, and each terminal example's `answered` and `dismissed`
-  name exactly the questions its prose does.
+  refused withdrawal only (`Nothing done.`); a foreclosed call (`Nothing
+  done.` and its clause); and one whose outcome was not known (`Outcome
+  not known yet.`), whose `parsed` holds no id.
+- The envelope's examples are I7's five, each with its input record,
+  whole and concrete: no key, entry or path is elided but for `{HOME}`,
+  and each example's `answered` and `dismissed` name exactly the
+  questions its prose does. The generator writes each `envelope.txt` by
+  hand from I7's rules, as it writes the fixtures; it derives every
+  `texts/` file's name from the text it wrote there.
 - The door's telling of the bridge is built now, though no mod answers
   `sheet` before M3: a bridge that does not know the op reads as
   `queued`, which is what a surface must handle anyway. It reuses
@@ -1440,9 +1545,15 @@ schema, the examples included; the manifest is the files'; the generator
 reproduces the set; `show --json` over every `before` and `after` equals
 the fixture's; each envelope example has as many keys as answered and
 dismissed entries together, in that order, names in its block the ids
-its prose names and no others, is at most 60,000 UTF-16 units, holds no
-text past 500 characters in its block, and the two parts name one batch
-and number themselves 1 and 2 of 2; `state.schema.json` accepts the
+its prose names and no others, is at most 60,000 UTF-16 units and 200
+keys, holds no text past 500 characters and no pick that is not a place
+in its block, and names only outcomes pending for its recipient in its
+input record; every `texts/` file is named by the hash of its bytes;
+`more` is set exactly where the input record holds more for that
+recipient than the envelope's keys; for `long`, the four texts in full,
+and with one carried by its file, measure over the budget, and with two
+under; for `more`, the fifth Send would make 250 keys;
+`state.schema.json` accepts the
 `imported-legacy` record and `tool-input.schema.json` refuses the same
 question as an entry; `put` to a fixture copy appends exactly its lines,
 one batch id on a call of several, `at` filled, and prints `queued`; a
@@ -1462,12 +1573,13 @@ whole from a shell with no engine: order a `call`, read it with `show`,
 its ready envelope, order `landed`, see it delivered. Every published
 fixture replays: the step applied to `before` gives `after`, byte for
 byte once both are written in the generator's serialization, and the
-envelopes it composes for the examples' records are the published texts.
+envelope it composes from each example's input record is that example's
+published text.
 
 **Touches.** `S/sminos_sheet.py`; `S/sminos.py` (the parser's other
 verbs); `T/test_sheet_step.py` (new), `T/sheet-vectors/` (new: vectors
 for the events the published set does not carry: `call`, `settle`,
-`landed`, `reroute`, the acknowledgement, the `agents` rule, a split),
+`landed`, `reroute`, the acknowledgement, the `agents` rule),
 `T/sheet_surface.py` (the stand-in surface); `S/CLAUDE.md`, `SKILL.md`.
 
 **Interfaces.** Exposes I5 whole (`step`, `probe`), I7's composer, I10's
@@ -1527,12 +1639,27 @@ first half. Tests also pin:
   option; a handle naming a revision no longer current is refused;
 - a record at every bound (500 open questions of four-byte characters at
   the input's limits, 300 pending answers of 20,000, 2,000 closed)
-  answers a step in under 3 MiB, and `probe` in under 4 KiB;
-- the composer: a batch of fifty answers of 20,000 characters leaves in
-  envelopes none over the budget, each text whole or carried by head and
-  file, no text twice in full, the parts numbered and recorded; two
-  batches that fit together leave together, two that do not leave apart;
-  the context cut and stopped at its budget;
+  and 40 registered surfaces answers a step in under 3 MiB, and `probe`
+  in under 4 KiB;
+- the composer: for each published example, the envelope composed from
+  its input record under its `case.json` is its `envelope.txt`, byte for
+  byte once `{HOME}` is filled; a batch of fifty answers of 20,000
+  characters leaves in envelopes none over the budget, each text whole
+  or carried by head and file, no text twice in full, each but the last
+  saying more follows, and nothing in the record changed by composing;
+  what one envelope left packs with a batch accepted after it; two
+  batches that fit together leave together; 201 keys leave as 200 and
+  one; a fresh answer accepted after sixty old ones that fill an
+  envelope is in the first envelope; the context cut and stopped at its
+  budget;
+- a `start` that applies 500 queued answers of 20,000 characters to
+  questions at the input's bounds answers in under 3 MiB, and the step
+  after it carries the same `answered` and `answeredCount`;
+- a call that only withdraws, and one whose every entry the mod refused,
+  each staged as `call.json` alone, apply; the same ordered again after
+  its acknowledgement answers `gone`;
+- an inbox ending in an unfinished write: the offset stops at the last
+  newline, and the fixtures `torn-tail` and `torn-tail-resent` replay;
 - a reader looping `show --json` through two hundred doors and fifty
   steps at once never reads a `state.json` that does not parse, sees
   `seq` only rise, and at the end every key has one verdict and every
@@ -1571,15 +1698,16 @@ I3's op.
 
 - A call, in order: validate the whole call (I6); check each entry's own
   rules and capture its references, one after another, before any step,
-  since a capture is slow and a step is not; stage what passed; read the
+  since a capture is slow and a step is not; stage the call (`call.json`
+  always, and a file for each entry that passed and each body); read the
   running agents when the caller or the view has a subagent; order
   `call`; raise one `$.ui.notify` for a call that added something (its
   first added question, `(+N more)`), as today's tool announces an ask;
   answer the step's `result`. With no answer from the step the mod
-  settles (I5) and then answers one of: the recorded result; `The sheet
-  could not be written (<why>); nothing changed. Call again.`; or `The
-  sheet did not answer, so what this call did is not known yet. Do not
-  repeat it: you will be told.`
+  settles (I5) and then answers one of: the recorded result; a
+  foreclosed call's `Nothing done.` with its clause; or `Outcome not
+  known yet.` with its second line (I6). All three are results, not
+  denials, so each stored call has a first line of the grammar.
 - **Capture** (C0's P3): `$.tool.check({ tool: 'Read', input })`, and
   only on `allow` a `$.tool.call` of Read; `lines: [a, b]` is Read's
   `offset` a and `limit` b − a + 1. The body kept is `result.file.content`
@@ -1650,9 +1778,10 @@ choice, by its table, and the live case `nested`). Tests pin:
   stub, with nothing of the file in the staging or under `refs/`;
 - a step that commits and whose answer is lost: the mod settles and
   answers the model the recorded result, once; a step that never ran:
-  foreclosed, the model told nothing changed, and that step run late
-  commits nothing; `settle` unanswered three times: the third sentence,
-  then the notice once a later settle answers;
+  foreclosed, the model answered `Nothing done.` with the clause, and
+  that step run late commits nothing; `settle` unanswered three times:
+  `Outcome not known yet.`, then the notice once a later settle answers;
+  a call that only withdraws is staged and applied;
 - an answer of an older `seq` arriving after a newer one changes no
   view, and its own result is still returned; a bridge hello and a tick
   that come before a fork's `start` order nothing, and the fork's record
@@ -1673,8 +1802,8 @@ age, once. After a compaction, a resume and in a fork the agent is told
 its sheet (I10). A running subagent receives the answer to its own
 question; an ended one's goes to the main conversation naming it; a
 subagent that stops with questions open is named to the main
-conversation. A Send larger than an envelope arrives whole, in parts or
-by its files.
+conversation. A Send larger than an envelope arrives whole, by its
+files or in more than one envelope.
 
 **Touches.** `H/sheet.tsx`, `H/sheet-model.tsx`; `H/ask.tsx`
 (`searchArgs` takes the forms to search for; no behaviour of today's
@@ -1711,7 +1840,9 @@ subagent's. Tests pin:
 - each row of I9's table; an envelope that does not wake opens no idle
   route and leaves with the next that opens; an outcome owed across a
   stop and a fresh answer, before any prompt, leave together on the
-  fresh answer's idle turn (§5.2); a view adopted inside a `tool.call`
+  fresh answer's idle turn (§5.2); when the old ones fill an envelope
+  and the fresh answer does not fit beside them, the first envelope
+  holds the fresh answer and wakes; a view adopted inside a `tool.call`
   dispatch submits from the hop, not from the dispatch;
 - a refused route makes its envelope ready again; a prompt whose
   resolved `context` lacks the envelope does too; a result route's
@@ -1773,7 +1904,10 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   the one this call set. A withdrawal the call made draws `q2 ·
   Withdrawn`. A session with no record (a fork, a record removed), and a
   question older than the 500 a view's `closed` holds, draw the lines
-  without receipts.
+  without receipts. A stored call whose first line is `Nothing done.`
+  draws that; one whose first line is `Outcome not known yet.` draws
+  `outcome not known` and no id, and is not matched to the notice that
+  followed.
 - A read is definite when the whole file was read, or the search ran and
   its output was not cut. Indefinite, the `start` event says so, nothing
   is imported or recorded, and the next start reads again. A fork's first
@@ -1810,8 +1944,8 @@ daemon, with its questions closed in the log.
 repository's `tests/mods/` on appeal's evidence; `S/CLAUDE.md`,
 `H/README.md`.
 
-**Interfaces.** Exposes I12's projection, I13. Consumes `log.owed` and
-`effects.accepted`.
+**Interfaces.** Exposes I12's projection, I13. Consumes `log` and the
+view's `answered`.
 
 **Decisions.**
 
@@ -1831,7 +1965,12 @@ requests: a sheet question is raised to no desk client by this child
 
 **Proves.** G3's first clause, and Acceptance 6's last. Tests pin: stop,
 resume, answer leaves one `question` and one `answered` with the real
-answer; a projection run twice appends nothing; a projection that fails
+answer; a session that asks `q1` in one project, moves to another where
+another session's `q1` is open, and is then answered: the answer is in
+the first project under the asker's writer, and the other session's
+question is untouched; two sessions of one project, each with a `q1`,
+keep each its own answer; a projection run twice appends nothing; a
+projection that fails
 after a question was added, then a withdrawal, then a removal, still
 leaves that question with its text and choices and its closing in the
 log; a subagent's question and an answer accepted at a start are in the
@@ -1898,7 +2037,7 @@ and by hand, the door and the reader on a record nobody runs:
 The last prints `{"session": "5eed0000-…", "results": [{"key":
 "demo-0001", "state": "queued"}]}`, and `show` then no longer lists
 `q1`. The test file ends `test_sheet_contract: N passed`; the generator
-prints `sheet-contract: 19 cases, digest <sha256>`. After the merge,
+prints `sheet-contract: 21 cases, 5 examples, digest <sha256>`. After the merge,
 M1's Progress line is completed with the merge commit, the sminos
 version and that digest: the three things MAWS pins.
 
@@ -1949,7 +2088,7 @@ rests on it fails, and names the probe.
 | `rendering` | sends one envelope by each route; reads it at `session.append` with its door and origin, and in the transcript | I9's evidence |
 | `many` | asks for eight questions, one referencing a file; the result is `Added q1, q2, q3, q4, q5, q6, q7, q8.`; the line reads `8 open questions` and the stand-in's link; `show` lists eight and the file's text as captured, also after the file is edited (`changed`) | Acceptance 1 |
 | `subset` | `put`s three answers as one call while a turn runs: one row of the transcript holds an envelope with three keys, the agent quotes the three, five remain; then three more while idle: a turn starts by itself and quotes them | Acceptance 2 |
-| `max-send` | `put`s fifty answers of 20,000 characters each in one call: every envelope the model's requests hold is whole (the engine cut none to a head and a path), each text is there in full or by its head and a file that exists, every key lands, and the parts are numbered | I7's budget |
+| `max-send` | `put`s fifty answers of 20,000 characters each in one call: every envelope the model's requests hold is whole (the engine cut none to a head and a path), each text is there in full or by its head and a file that exists, every key lands, every envelope has at most 200 keys, and each but the last says more follows | I7's limits |
 | `revise` | `show`, then has the agent revise `q2`; `answer q2 --pick 1` is refused and names `q2@2`; a line `put` with revision 1 prints `stale` with `current` 2; `answer q2@2 --pick 1` is applied to the new first option | Acceptance 3 |
 | `note` | answers with a pick and a text; the agent repeats both | Acceptance 4 |
 | `dismiss` | dismisses a question in an idle session: no turn starts within 20 s; after another answer the agent names the dismissal | Acceptance 5 |
@@ -1984,144 +2123,75 @@ Pending — written at finish.
 ## For the composite's writer
 
 State, like Progress: each sentence of the composite, as it stands at
-`be9a8b749`, that this plan makes false or incomplete, with the
-replacement proposed. A binding sentence stands until its writer rules;
-the rulings already given on the buildability review are cited where an
-entry only gives them their exact shape.
+`277d8a520`, that this plan makes false or incomplete, with the
+replacement proposed. Each entry gives a ruling on the second review its
+exact shape, or names what a repair of this plan's own changed.
 
-**What M1 freezes** (X1, X3; settle these before the set is published).
+**What M1 freezes.**
 
-1. §5.3, the envelope: it states no bound. By the writer's ruling on the
-   review's first finding, in the shapes of I7. Proposed, after "it does
-   not repeat what is still open": "An envelope is at most 60,000 UTF-16
-   code units, under the 100,000 characters past which the engine hands
-   the model only a head and a path. A text longer than 2,000 characters
-   is kept as a file in the record (`texts/<sha256>.txt`) from the moment
-   it is accepted. A human's text stands in the prose in full while the
-   envelope fits; when it does not, the longest texts that have a file
-   are carried, one by one, as their first 500 characters and the file's
-   absolute path. The block's `text` is at most the first 500 characters,
-   with `textCut` when the text is longer and `textFile` when it has a
-   file, so no text is in an envelope twice in full. Distinct batches
-   share an envelope only while they fit; a batch that cannot fit alone
-   is split across consecutive envelopes, each saying which part it is
-   (`part`: the batch, n, of)." And in §3's directory: `texts/`.
-2. §4.1, "(The one exception is a writer killed inside its single write
-   …)". A second exception, by the same ruling: "and a Send too large for
-   one envelope, which leaves in numbered parts (§5.3)."
-3. §3, "and the results of the last 64 calls by call id, so a call
-   ordered twice answers the same result." Proposed: "and, for each call
-   the mod has not yet acknowledged, its outcome: its result, or that it
-   was foreclosed. Before the tool tells the model a call failed it
-   settles that call id under the lock, which answers a result already
-   committed or forecloses the id, so a step of it that runs late commits
-   nothing; the mod then acknowledges the id, and its staged input and
-   its outcome go together. A start forgets them all." Why this horizon
-   is enough is I2's.
-4. §2.2: a result the composite does not have. When neither the call's
-   step nor its settling gives an answer, the tool's result says that
-   what the call did is not yet known and will be told, and the outcome
-   follows as a line of context. Proposed: one sentence saying so.
-5. §3, "`state.json` holds the open questions with every field of §1",
-   and §9, "those asks are imported once as sheet questions". By the
-   ruling on the third finding. Proposed, in §1: "The lengths, the twelve
-   options and the rule on previews are rules of the tool's input,
-   checked at the call; the record's schema states structure and not
-   these bounds." And in §9: "each kept as it was asked, marked as
-   imported, also where today's tool allowed what the sheet's input does
-   not; a later revise of it is a call under the input's rules."
-6. §3, "`state.json` holds …", and "**One writer.** `state.json` changes
-   only on the tool's order, and each change is one *step*". By the
-   ruling on the fourth finding, the file also holds what the project's
-   log is owed, added in the same replace as the change that owes it; and
-   one other operation rewrites the file, under the same lock: the log's
-   projection, which removes what it has written to the log and changes
-   nothing else. Proposed: both, as two sentences; and in §11, after "are
-   written from the sheet's record": "which keeps each until the log has
-   it."
-7. §4.2, the row "retract with target K | the record has never seen K".
-   Its verdict column needs the target's shape, which no line supplies:
-   proposed, "`retracted` for the retract; for K a verdict of its own,
-   kind `unseen`, naming the retract and no question, which stands when
-   K's line arrives; a second retract of K reads `too-late`." And §4.3:
-   a queued answer or dismissal that a queued retract names reads
-   `queued` and `cancelled`.
-8. §3, "A stored reference holds, beside §2.3's fields, its absolute
-   path, its kind and media type, its byte count and whether Read cut
-   it." Read cuts nothing (P3). Proposed: "… its byte count and, for a
-   text, Read's start line, line count and the file's total lines." What
-   is kept is `result.file.content`, the field a guard's hook rewrites.
-9. C2's Acceptance, G1: the fixture list and the examples. Added: a
-   retract of a key never seen and the late arrival of its line; an
-   answer whose text has a file; an import valid only under today's
-   tool; an envelope carrying a text by its file, and a Send in two
-   parts. Proposed: name them.
-
-**Delivery.**
-
-10. §5.2, "For the tool a delivery is known when it sees, stored in the
-    main conversation, a row one of its own routes wrote that carries the
-    envelope's keys". Proposed addition: "It tells such a row by what the
-    engine says of it, its door and its origin, read once the row is
-    stored; a flight still unsettled when its turn ends is settled there
-    against the conversation the model holds. Where the engine says
-    nothing of a row's author, its form decides: a text quoting a whole
-    envelope with keys still pending could only be written by a process
-    that can read the record, which §8.2 already trusts."
-11. §5.2, "For a subagent it is known when the engine has queued the
-    send (§6)." Proposed: "when the send answers that it was delivered";
-    a send that answers otherwise, or rejects, goes to the main
-    conversation.
-12. §6 (or §5.1), by the ruling on the sixth finding. Proposed: "Across a
-    process death an answer to a subagent's question may reach the main
-    conversation as well: a send the engine delivered just before the
-    process died is owed again at the next start, and the subagent is
-    gone."
-13. §5.2, "a prompt the plugin submits when the session is idle", and
-    "Outcomes accepted together go in one envelope." Two details P1 and
-    the budget add: the prompt is submitted from outside every hook's
-    dispatch (inside a `tool.call` hook the host refuses it); and a route
-    carries one envelope each time it opens, the rest leaving with the
-    next opening.
-14. §5.5: the context has the envelope's budget (I10 cuts each question
-    and label, then stops the list and names what is left); and a fork's
-    context states the next id only when the conversation could be read
-    by then, which over the wire it cannot (P5): the floor then reaches
-    the record with the first call.
-
-**The call and the command.**
-
-15. §1, "Option labels are unique within a question, checked at add and
-    at revise as today's tool checks them". Today's tool refuses the
-    whole call; under §2.1 this is one entry's own fault. Proposed:
-    "checked at add and at revise; an entry that breaks it is refused
-    alone", and the same for a preview on a multi-select question,
-    `multiSelect` without options and a line range out of order (U14).
-16. §8.3, "`answer`, `dismiss` and `retract` append a line". By the
-    ruling on the tenth finding. Proposed: "`answer` names the question
-    with the revision the human saw, `q7` or `q7@2`: a bare id is taken
-    only while the question is at revision 1, and at a higher one the
-    command refuses and says to show it again; numbered picks are places
-    in the named revision."
-17. §3, "The tool drains the inbox at session start, …". Proposed
-    addition: "Only a session's start makes its record: a drain ordered
-    before it changes nothing."
-18. §3: nothing says a lock file is never removed. Proposed, with the
-    sweep's sentence: "The lock file beside a record is left when the
-    record goes: unlinking it would let two holders in."
-
-**The other readers.**
-
-19. §11, "The snapshot keeps its shape and gains one optional field for
-    the sheet, so its readers need no change." True for the counter; the
-    appeal's judge reads the human's answers from the snapshot's answered
-    asks. Proposed: "… and carries the sheet's answered questions as
-    answered asks in today's shape, so the appeal's judge reads them."
-
-**Still open from before.**
-
-20. U8: two processes holding one session id lose no update and may both
-    deliver. Not in the composite; proposed as one sentence of §3's "One
-    writer".
-21. C2's Edges and Status: C0's verdicts are in, so nothing of G2 waits
-    on a probe; M1 waits on the narrower review of what it freezes.
+1. §5.3, "`picks` holds labels in the terminal form and places (integers
+   from 1) in the steer form". Proposed: "`picks` holds places (integers
+   from 1 among the options of the answered revision) in both forms; in
+   the terminal form's prose a picked label is cut at 200 characters,
+   which can only shorten a label today's tool let through."
+2. §5.3, "a batch that cannot fit alone is split across consecutive
+   envelopes, each saying which part it is (`part`: the batch, n, of)",
+   and §4.1, "it leaves in numbered parts (§5.3)". Proposed: "an envelope
+   that does not carry everything now owed to its recipient says so, by
+   `More follows.` at the end of its head line and `more` in its block;
+   what it left stays pending and is packed later like anything else, and
+   nothing of a packing is recorded." And in §4.1: "it leaves in more
+   than one envelope, each but the last saying that more follows."
+3. §5.3: a second limit. Proposed, beside the budget: "and at most 200
+   keys, what one `delivered` line can name."
+4. §5.3: the order of packing, which the idle route rests on. Proposed:
+   "Batches that hold an answer that may start a turn are packed first,
+   so a fresh answer is never behind an envelope that starts none."
+5. §2.2, "Its first line has a fixed grammar (contract X7): the sentences
+   …" and "When neither the call's step nor its settling (§3) gives an
+   answer, the result says that what the call did is not yet known and
+   will be told". Proposed: "The first line is one of three: the
+   sentences; `Nothing done.`, which also answers a call that was
+   foreclosed, with the reason on the next line; and `Outcome not known
+   yet.`, for a call whose step and settling gave no answer, after which
+   the outcome reaches the model as context. A reader of a stored call
+   with that last line draws no ids for it and does not look for the
+   later context."
+6. §11, "The project log's events are written from the sheet's record
+   …", and §3, "It holds, too, what the project log is owed". Proposed
+   addition: "An event's source names the session and the question
+   (`sheet:<session>:<id>`), since every session has a q1; and the record
+   keeps, for each question, the project its `question` event went to,
+   so its closing event goes there whatever project the session is in by
+   then." The record's project is the one the session was in when the
+   projection wrote the question, which follows the step that added it
+   by a moment; resolving it inside the step would make every step read
+   the registry.
+7. §3, "It also keeps, for the directory's life, how each closed question
+   closed (with its revision, header, first 200 characters and receipt
+   …)". Proposed addition: "and, for the 32 questions answered last, the
+   answer's line as the envelope words it (at most 2,000 characters),
+   which the snapshot's answered asks are read from (§11)."
+8. §4.2 and §3: where the inbox ends. Proposed, with §4.2's sentence on a
+   drain: "A drain, like a reader, takes the inbox only through its last
+   newline: what follows is a write that did not finish. The next writer
+   starts on a new line, which makes that fragment a line of its own: not
+   valid, it is skipped; a whole line that lacked only its newline is
+   applied like any other."
+9. §4.3 and X1, the reader's model. Proposed addition: "The model also
+   carries how each closed question closed, with its receipt (a
+   withdrawal never passed through the inbox), and, for a pending
+   outcome, the question's text and option labels as the outcome's
+   snapshot has them, cut at the input's bounds."
+10. §5.4, "(built by C5, in the sminos plugin, from the view C2's step
+    answers)". The step's view no longer holds a pending outcome's
+    question. Proposed: "from the reader's model, asked for by key
+    (`sminos sheet show --json --keys`)."
+11. C2's Acceptance, G1, "an example of the envelope in its terminal form
+    and in its steer form". Proposed: "examples of the envelope, each
+    with the record it was composed from: the terminal form with its
+    steer, a text carried by its file, an envelope that leaves more
+    behind at 200 keys, an imported label, a subagent's"; and among the
+    fixtures, a write that did not finish, before and after its resend,
+    and stored calls for a foreclosed call and for one whose outcome was
+    not known.
