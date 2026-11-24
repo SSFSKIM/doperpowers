@@ -52,7 +52,13 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   the document follows: M1's task review and the high-rung review of its
   pull request check the published set from here, and a change to the
   set after M1 is a ruling and a re-pin (K2).
-- [ ] M1 — The contracts, published (G1). Blocked by: nothing.
+- [x] (2026-11-24) M1 — The contracts, published (G1): merged to main as
+  `2594002af` (pull request #628, head `a45f529ee`), sminos 1.57.0, set
+  version 1, digest
+  `594200ae4e539c0688c67b511968861d8ebf03c87d1c45b512903a538326e277`
+  (21 cases, 6 examples). Its high-rung review ran two passes: eleven
+  findings repaired, then seven, five repaired and two logged in
+  `docs/doperpowers/TECH-DEBT.md` (#37, #38). MAWS pins this commit.
 - [ ] M2 — The record: the step, the lock, the command's other verbs.
   Blocked by: M1.
 - [ ] M3 — Asking: the start choice, the sheet's schema, a call. Blocked
@@ -64,7 +70,8 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
 - [ ] M6 — The other readers, and the sheet's end of life. Blocked by: M4.
 - [ ] M7 — The description, what is written beside the code, the
   acceptance (G2, G3). Blocked by: M5, M6; C1.
-- [ ] The merges (M1's alone and first; the rest as its gates hold).
+- [ ] The merges (M1's alone and first: done, `2594002af`; the rest as
+  its gates hold).
 
 ## Words this document adds
 
