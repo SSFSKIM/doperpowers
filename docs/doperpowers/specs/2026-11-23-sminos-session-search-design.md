@@ -232,7 +232,7 @@ Live, after the release reaches both Macs (the orchestrator runs these):
 
 - The sminos plugin only, plus the documentation named below; nothing in doperpowers' own `hooks/` or skills changes. The CLI stays `sminos.py` and its sibling modules, standard library only.
 - Verify a commit with `ci-gate` from the worktree; do not run the gates' commands locally. One focused Python test file while iterating is fine.
-- Version: `scripts/bump-version.sh --plugin sminos` once on the branch, minor (1.56.0 → 1.57.0), in M1's commit; M2 ships in the same release and needs no second bump.
+- Version: `scripts/bump-version.sh --plugin sminos` once on the branch, minor (1.56.0 → 1.57.0), in M1's commit; M2 ships in the same release and needs no second bump. As landed: main shipped 1.57.0 (the question sheet's C2) while this branch ran, so the merge of `origin/main` moved this release to 1.58.0.
 - The sminos skill's text (`sminos/skills/sminos/SKILL.md`) changes only to document `find`'s and `who @`'s interface and that a summary exists. That documents a verb; it shapes no behavior the skill asks of sessions, so it needs no writing-skills evaluation. A line that tells sessions when to search would need one, and is out of scope (§5).
 - The repository is public: no hostnames other than the org's machine names already used in its specs, no IPs, accounts, secret names or values, or local absolute paths in code comments, tests' committed fixtures or docs.
 - A test that runs real `claude` is not added: the stub stands in, as it does for derive.
