@@ -172,8 +172,10 @@ type Gen = {
   named: Set<string>
   /** The keys a send handed to a subagent, and to whom: owned by that agent from the hand-over until the step their receipt orders (`landed` or `reroute`) has answered, retries included. */
   sentTo: Map<string, string>
-  /** The record's answered count when the idle route last failed: a count past it is a fresh answer, wherever the view lists it. */
+  /** The record's answered count when the idle route last failed, or last opened on a count past that: a count past it is a fresh answer, wherever the view lists it. */
   idleFailedAt?: number
+  /** Keys that opened an idle route handed to the engine: each wakes the session once, delivered or not (a failed retry is not retried for them). */
+  woke: Set<string>
 }
 
 /**
@@ -197,7 +199,12 @@ type Flight = {
   turnsAt: number
   /** An idle prompt or a send given to the engine; until then it is a reservation, which the hop checks again and a route that opens first takes over. */
   handed?: boolean
+  /** An idle reservation's wake: the fresh keys that opened it, and the answered count it was opened on; spent at the hand-over, given back if it is let go. */
+  wake?: Wake
 }
+
+/** What opens the idle route (I9): fresh keys, or, past what the view lists, the record's answered count. */
+type Wake = { keys: string[]; answeredCount?: number }
 
 /** A start's answer, and the context it gives the conversation (I10): the start's own, or after the search's landing, the start's again. */
 type Started = { answer: Answer; context?: string }
@@ -259,6 +266,7 @@ const newGen = (session: string): Gen => ({
   isStartRouted: false,
   named: new Set(),
   sentTo: new Map(),
+  woke: new Set(),
 })
 
 let sheet: Sheet = fresh()
@@ -567,8 +575,10 @@ function deliver(port: Port, gen: Gen) {
   }
   if (isTerminal() && sheet.mainTurn === undefined) {
     const envelope = readyFor(gen, 'main')
-    if (envelope !== undefined && envelope.wakes && hasFreshAnswer(gen, envelope)) {
-      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
+    const wake = envelope !== undefined && envelope.wakes ? freshWake(gen, envelope) : undefined
+    if (envelope !== undefined && wake !== undefined) {
+      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns, wake }
+      spend(gen, wake)
       gen.flights.push(flight)
       port.after(() => void submitIdle(port, gen, flight))
     }
@@ -594,24 +604,45 @@ function isWaking(view: View | undefined, key: string): boolean {
 }
 
 /**
- * Whether the main conversation has an answer the idle route has not failed
- * on: in its ready envelope, or anywhere the view lists as pending (the
- * envelope packs the failed work first, and may be full of it), or, past
- * what the view lists, an answer the record accepted since the last failure.
- * Failed work alone never opens the route again.
+ * What may open the idle route: the main conversation's answers that have
+ * not failed on it and have not yet woken it, in its ready envelope or
+ * anywhere the view lists as pending (the envelope packs the failed work
+ * first, and may be full of it), or, past what the view lists, an answer
+ * the record accepted since the last failure. Failed work alone, or a wake
+ * already spent, never opens the route again.
  */
-function hasFreshAnswer(gen: Gen, envelope: Envelope): boolean {
+function freshWake(gen: Gen, envelope: Envelope): Wake | undefined {
   const view = gen.held
-  const fresh = (key: string) => !gen.noIdle.has(key) && isWaking(view, key)
-  if (envelope.keys.some(fresh)) return true
-  if (view === undefined) return false
-  if (view.pending.some((o) => o.recipient === 'main' && fresh(o.key))) return true
-  return view.pendingCount > view.pending.length && gen.idleFailedAt !== undefined && view.answeredCount > gen.idleFailedAt
+  const fresh = (key: string) => !gen.noIdle.has(key) && !gen.woke.has(key) && isWaking(view, key)
+  const keys = [...new Set([...envelope.keys.filter(fresh), ...(view?.pending ?? []).filter((o) => o.recipient === 'main' && fresh(o.key)).map((o) => o.key)])]
+  if (keys.length > 0) return { keys }
+  if (view !== undefined && view.pendingCount > view.pending.length && gen.idleFailedAt !== undefined && view.answeredCount > gen.idleFailedAt) {
+    return { keys: [], answeredCount: view.answeredCount }
+  }
+  return undefined
+}
+
+/** A wake taken by a reservation: its keys wake nothing more, nor does the answered count it opened on. */
+function spend(gen: Gen, wake: Wake) {
+  wake.keys.forEach((key) => gen.woke.add(key))
+  if (wake.answeredCount !== undefined) {
+    const was = gen.idleFailedAt
+    gen.idleFailedAt = wake.answeredCount
+    wake.answeredCount = was
+  }
+}
+
+/** A wake given back: its reservation was let go before the hand-over, so what opened it may open the route again. */
+function unspend(gen: Gen, wake: Wake | undefined) {
+  if (wake === undefined) return
+  wake.keys.forEach((key) => gen.woke.delete(key))
+  if (wake.keys.length === 0) gen.idleFailedAt = wake.answeredCount
 }
 
 /** A reservation the hop finds no longer good: let go, nothing failed; the routes open again for what it held. */
 function release(port: Port, gen: Gen, flight: Flight) {
   gen.flights = gen.flights.filter((other) => other !== flight)
+  unspend(gen, flight.wake)
   deliver(port, gen)
 }
 
@@ -755,7 +786,10 @@ async function orderKeys(port: Port, gen: Gen, event: 'landed' | 'reroute', keys
       chunk.forEach((key) => {
         owed.delete(key)
         gen.landing.delete(key)
-        if (event === 'landed') gen.noIdle.delete(key)
+        if (event === 'landed') {
+          gen.noIdle.delete(key)
+          gen.woke.delete(key)
+        }
         const owner = gen.sentTo.get(key)
         if (owner !== undefined) {
           gen.sentTo.delete(key)
@@ -795,6 +829,9 @@ function take(gen: Gen, route: 'result' | 'prompt'): { entries: string[]; flight
   gen.context = undefined
   if (!isTerminal()) {
     return { entries: context === undefined ? [] : [context], notices: [], ...(context !== undefined && { context }) }
+  }
+  for (const other of gen.flights) {
+    if (other.route === 'idle' && other.handed !== true) unspend(gen, other.wake)
   }
   gen.flights = gen.flights.filter((other) => other.route !== 'idle' || other.handed === true)
   const envelope = readyFor(gen, 'main')

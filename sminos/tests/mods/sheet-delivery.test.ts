@@ -257,6 +257,45 @@ describe('a flight that fails (I9)', () => {
     expect(h.submits).toHaveLength(2)
   })
 
+  test('the hidden fresh answer that opened a retry has spent its wake: an unchanged nudge or a turn that completes after the retry fails opens nothing; a newer answer opens one', async () => {
+    const rec = record([], { per: 2 })
+    const h = await started(rec, { submit: () => ({ drop: 'a hook said no' }) })
+    await answered(h, rec, out('k1', 'q1'), out('k2', 'q2'))
+    await h.hop()
+    await answered(h, rec, out('k3', 'q3'))
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    // The same view again.
+    await sheetNudge([])
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    await h.turnStart('t1')
+    await h.turnComplete('t1', 'answer')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    await answered(h, rec, out('k4', 'q4'))
+    await h.hop()
+    expect(h.submits).toHaveLength(3)
+    await h.hop()
+    expect(h.submits).toHaveLength(3)
+  })
+
+  test('an idle reservation let go before the hand-over spends no wake: the turn that took its place ends, and the idle route opens for it', async () => {
+    const rec = record()
+    const h = await started(rec)
+    await answered(h, rec, out('k1', 'q1'))
+    // A turn starts before the hop: the reservation is let go; that turn carries nothing, and its end reopens the route.
+    await h.turnStart('t1')
+    await h.hop()
+    expect(h.submits).toEqual([])
+    await h.turnComplete('t1', 'answer')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+  })
+
   test("at a turn's end only a route's framing counts: a human's prompt quoting the block lands nothing; a context holding part of the batch lands that part, the rest ready again", async () => {
     const rec = record()
     const h = await started(rec)
