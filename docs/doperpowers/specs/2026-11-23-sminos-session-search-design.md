@@ -9,7 +9,7 @@ To see it working: on the MacBook, after a session compacts, `sminos who @<its s
 ## Progress
 
 - [x] (2026-11-23) Design approved by the owner, as presented in the brainstorm.
-- [ ] Spec review (`doperpowers:adversarial-reviewer`, the spec and its execution section).
+- [x] (2026-11-23) Spec review (`doperpowers:adversarial-reviewer`, the spec and its execution section): two rounds, folded.
 - [ ] M1 — the summary: derived, recorded, shown by `who @<session>`; every compaction derives.
 - [ ] M2 — `find` as the org's search.
 - [ ] Whole-branch review (review-code, medium), merge, release.
