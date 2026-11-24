@@ -79,14 +79,14 @@ The project family, standalone: nothing of doperpowers' is needed for it to run.
 
 | Part | What it does |
 |---|---|
-| [`sminos` skill and CLI](../sminos/skills/sminos/SKILL.md) | `sminos` on every session's PATH. Who is here (`list`, `find`, `who`; `list` adds each channel the caller is in), speaking (`say`, which wakes a stopped session in the background; in a channel, `say --in <channel>`, `@<channel>/<alias>` or `say --in <channel> "@all …"`, a member's messages carrying a reply line through the channel, a non-member's through its own project, a person's post none), channels of threads from several projects (`channel create`, `add`, `show`, and `lead`, the thread a person's untagged post goes to), driving another session (`watch`, `steer`, `interrupt`, `answer`, `decide`, `model`, `compact`), spawning and retiring background sessions (`spawn`, on this machine or, with `--on`, on a devcloud VM), and a project's and machine's setup |
+| [`sminos` skill and CLI](../sminos/skills/sminos/SKILL.md) | `sminos` on every session's PATH. Who is here (`list`, `find`, `who`, whose `who @<session>` shows a session's summary of what it is doing, has made and waits on; `list` adds each channel the caller is in), speaking (`say`, which wakes a stopped session in the background; in a channel, `say --in <channel>`, `@<channel>/<alias>` or `say --in <channel> "@all …"`, a member's messages carrying a reply line through the channel, a non-member's through its own project, a person's post none), channels of threads from several projects (`channel create`, `add`, `show`, and `lead`, the thread a person's untagged post goes to), driving another session (`watch`, `steer`, `interrupt`, `answer`, `decide`, `model`, `compact`), spawning and retiring background sessions (`spawn`, on this machine or, with `--on`, on a devcloud VM), and a project's and machine's setup |
 | [`manager` skill](../sminos/skills/manager/SKILL.md) | *Manual* (`/sminos:manager`). A read-only manager session: follows the sessions you name and tells you what they need from you and what you missed, in a ledger |
 | bridge | Makes a session watchable and steerable from outside it: its live stream for a reader, its control for a client |
 | ask tool | `mcp__sminos__AskUserQuestion`: the built-in question tool plus `async`, so a session asks and keeps working |
 | address | Ends every commit and PR a session writes with its `Sminos-Session:` line, which `sminos who` reads back |
 | backtick guard | Refuses a Bash call that would hand `sminos` a backtick the shell runs (a code span in a double-quoted message), and says how to send the text verbatim on stdin |
 | clear | Records the session a `/clear` left, so the new session takes its alias and the one left goes by its short id |
-| names | Renames a session with a generated name after what it is in charge of, its line derived again every third compaction |
+| names | Renames a session with a generated name after what it is in charge of, its line (and its summary) derived again at every compaction |
 | daemon | Syncs a project's log across machines, through a git mirror or the desk hub (over RL10, through the machine's MAWS endpoint) |
 
 ## to-human

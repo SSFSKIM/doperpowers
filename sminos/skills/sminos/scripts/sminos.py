@@ -112,7 +112,8 @@ back by a fill.
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
-    sminos derive   <member> | --all [--refreshes N]      # ask a session its line, by its bridge's side question
+    sminos derive   <member> | --all [--refreshes N]      # ask a session its line and its summary (doing:,
+                   made:, next:), by its bridge's side question
                    (btw), else a headless internal fork, once its model made ten tool calls; a session under a
                    name the engine made up (or one sminos gave it) is also asked for a charge name, handed to
                    its name mod as $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five
@@ -233,8 +234,11 @@ back by a fill.
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
-                   was made by, as it is now: alias, project, machine, state, the session it went on as,
-                   how to reach or resume it. Alone, inside a session: the line its commits carry
+                   was made by, as it is now: alias, project, machine, state, the session it went on as, its
+                   in-charge line and summary, how to reach or resume it. Alone, inside a session: the line
+                   its commits carry
+    sminos who      @<short|project/alias|alias>          # the same of the session a message's tag names: who
+                   it is now, its summary, how to reach it; exit 4 when no session, or several, answer to it
     sminos who      --thread <name>                       # for a program (devcloud vm owner): the thread a
                    name is, as one line of JSON (thread, session, short, alias, opened, state, ended, local,
                    machine, project {id, name}, not_carried: why a VM's notice could not reach that project
@@ -4583,6 +4587,8 @@ class Member(NamedTuple):
                           # unstamped `joined` names, which a remote row holds no seat record to give
     channels: tuple = ()  # the declared channels it is in, as the log states them (CH1's §5: its statement in effect,
                           # sminos_threads.stated_set); () for none
+    summary: dict | None = None        # its latest summary, {doing, made, next} (summary_of); None for none
+    summary_age: float | None = None   # seconds since the event that carried it; None with none
 
 
 def project_kind(project):
@@ -4612,7 +4618,8 @@ def member_json(m, project=None, private=True):
     `principal`, `inference` and `controller` too for one of this machine,
     from its record (null when it has none), unless the view is the org's
     (`private` False: the listing's public fields alone). `channels`, the
-    declared channels its log states, only for a row in one (CH1, §8)."""
+    declared channels its log states, only for a row in one (CH1, §8).
+    `summary` and `summary_age` (null for none: summary_of)."""
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
          "kind": m.kind or None, "machine": m.machine, "local": m.local, "state": m.state,
          "state_age": m.state_age, "active_age": m.active_age, "charge": m.charge,
@@ -4621,7 +4628,8 @@ def member_json(m, project=None, private=True):
          "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former),
          "thread": m.thread or None, "opened": m.opened or None,
          "owners": list(m.owners or DEFAULT_OWNERS) if m.session else None,
-         "origin": dict(m.origin or DEFAULT_ORIGIN) if m.session else None}
+         "origin": dict(m.origin or DEFAULT_ORIGIN) if m.session else None,
+         "summary": dict(m.summary) if m.summary else None, "summary_age": m.summary_age}
     if m.local and private:
         rec = m.record or {}
         d.update(ownersProof=rec.get("ownersProof"), principal=rec.get("principal"), inference=rec.get("inference"),
@@ -7218,6 +7226,32 @@ def charge_of(member, events, title=True, published=""):
     return "", "", ""
 
 
+def summary_of(member, events, info):
+    """(summary, ts): the latest summary of a member's visible sessions —
+    the latest, by latest_across_writers, of their in-charge events that
+    carry a well-formed one (a dict of SUMMARY_LABELS, each a non-empty
+    string) — and that event's ts; (None, "") for none. Visible: its own
+    session, those it continues (`former`) and its thread's other sessions
+    (`thread_sessions`), less any the log shows unlisted to this reader
+    (unlisted_here, `info` the projection): a summary names paths, PRs and
+    decisions, and a withdrawal of a session's view hides them, through a
+    session that continues it too, and in `who`'s history of a retired one.
+    A later set line does not clear it; its age says how old it is."""
+    visible = {x for x in (member.session,) + tuple(member.former) + tuple(member.thread_sessions)
+               if x in info and not unlisted_here(x, info[x])}
+    e = latest_across_writers([x for x in events if x["kind"] == "in-charge" and x.get("session") in visible
+                               and well_formed_summary(x.get("summary"))])
+    return (dict(e["summary"]), str(e.get("ts") or "")) if e else (None, "")
+
+
+def well_formed_summary(summary):
+    """Whether an in-charge event's `summary` is one: a dict holding each of
+    SUMMARY_LABELS as a non-empty string (another machine's sminos wrote it,
+    or an older or newer one)."""
+    return isinstance(summary, dict) and all(isinstance(summary.get(k), str) and summary[k].strip()
+                                             for k in SUMMARY_LABELS)
+
+
 def charge_shown(m):
     """The in-charge line a row draws: not a name the alias column already shows."""
     return "" if m.charge_source == "name" else m.charge
@@ -7346,7 +7380,9 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
         end=end, end_by=str(latest.get("by") or "") if ended else "", named=thread_mark,
         channels=threads_module().stated_set(r["stated"]) if r and r.get("stated") else ())   # no call for none
     charge, source, ts = charge_of(m, in_charge, title, published_title(own))
-    return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None)
+    summary, said = summary_of(m, in_charge, info)
+    return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None,
+                      summary=summary, summary_age=ts_age(said) if said else None)
 
 
 def vacant_member(s):
@@ -9548,21 +9584,18 @@ def unreachable_hint(raw, name, short, projects, at="@", ids_only=False):
             seat = next((r.seat for r in view.rows if r.seat and r.seat["status"] == "retired" and id_reach(r, name)),
                         None)
             if seat is not None:
-                return '%s is retired — a fill returns it: sminos fill %s/%s "<task>"' % (
-                    raw, seat["group"], seat["alias"])
+                return "%s is retired — %s" % (raw, fill_words(seat))
             m = next((m for m in [m for m in view.members if m.end == "machine"] + list(view.ended)
                       if id_reach(m, name)), None)
             if m is not None and m.end == "machine":
-                return ("%s: %s's machine %s was retired; its sessions there have ended, and nothing reaches them"
-                        % (raw, m.alias, m.machine))
+                return "%s: %s" % (raw, retired_machine_words(m))
             if m is not None and m.thread:
                 return ended_refusal(raw, m)
             continue
         for s in project_seats(p):
             if s["alias"] == name and s["current"][:8].startswith(short):
                 if s["status"] == "retired":
-                    return '%s is retired — a fill returns it: sminos fill %s/%s "<task>"' % (
-                        raw, s["group"], s["alias"])
+                    return "%s is retired — %s" % (raw, fill_words(s))
                 if not s["current"]:
                     return "%s is vacant — fill it to reach it" % raw
         view = view_of(p)
@@ -9570,8 +9603,7 @@ def unreachable_hint(raw, name, short, projects, at="@", ids_only=False):
             if not (alias_reach(m, name, short) if short else id_reach(m, name) or alias_reach(m, name)):
                 continue
             if m.end == "machine":
-                return ("%s: %s's machine %s was retired; its sessions there have ended, and nothing reaches them"
-                        % (raw, m.alias, m.machine))
+                return "%s: %s" % (raw, retired_machine_words(m))
             if m.thread:
                 return ended_refusal(raw, m)
         for alias, sh, reason, moved_to in retired_sessions(p):
@@ -9587,13 +9619,31 @@ def unreachable_hint(raw, name, short, projects, at="@", ids_only=False):
 
 def ended_refusal(raw, m):
     """What a sender is told of a message to a thread that has ended (T1's
-    M4): why, and what returns it — its human reopening its session, or for
-    a spawned one, a fill."""
+    M4): why, and what returns it (ended_words)."""
+    why, back = ended_words(m)
+    return "%s: %s %s; nothing was recorded for it — %s" % (raw, m.alias, why, back)
+
+
+def ended_words(m):
+    """(why, back): why a thread has ended, and what returns it — its human
+    reopening its session, or for a spawned one, a fill. A refusal
+    (ended_refusal) and `who`'s reach lines (reach_lines) say the same."""
     why = "was retired" + (" by %s" % m.end_by if m.end_by else "") if m.end == "retire" \
         else "has ended (it stopped and was not reopened)"
     back = ("a fill of its seat%s returns it" % ("" if m.local else " on %s" % m.machine)) \
         if m.opened == "spawned" else "it returns when its human reopens its session"
-    return "%s: %s %s; nothing was recorded for it — %s" % (raw, m.alias, why, back)
+    return why, back
+
+
+def fill_words(seat):
+    """What returns a retired seat, as a refusal and `who` say it."""
+    return 'a fill returns it: sminos fill %s/%s "<task>"' % (seat["group"], seat["alias"])
+
+
+def retired_machine_words(m):
+    """A member of a machine the org retired, as a refusal and `who` say it."""
+    return "%s's machine %s was retired; its sessions there have ended, and nothing reaches them" % (
+        m.alias, m.machine)
 
 
 BARE_NAME = "a bare name reaches only your project; %s reaches anyone"
@@ -12405,7 +12455,6 @@ def chat_host(project, a):
 
 DERIVE_QUESTION = ("In one line of at most 120 characters: what is this session in charge of in this project — its "
                    "standing responsibility, not its latest step?")
-DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
 # A member that has a line is shown it, with the bar for changing it: other
 # sessions and the human find a session by its line and its name, so a line
 # reworded at every derive (1,005 of 1,018 re-derives, 2026-11-08 to 11-19,
@@ -12415,10 +12464,6 @@ DERIVE_KEEP = ("\nIts current line is: %s\nOther sessions and your human partner
                "responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.")
 DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
-# A compaction derives the member's line again only at every this many
-# compactions since its last derived line (counted in $SMINOS_HOME/compactions/;
-# SMINOS_DERIVE_COMPACTIONS overrides it).
-DERIVE_COMPACTIONS = 3
 DERIVE_LINE_MAX = 120
 # A member whose fork failed is held out of `derive --all` this long (the
 # daemon runs it every five minutes, and a fork that timed out tends to time
@@ -12439,6 +12484,24 @@ NAMING_TAKEN = " Taken by other sessions: %s."
 CHARGE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){1,3}")
 CHARGE_NAME_MAX = 48
 NAME_LINE_RE = re.compile(r"\s*name:", re.IGNORECASE)
+# Every derive asks for the session's summary after its line (and its name),
+# for a reader in another project who has none of the conversation: what it
+# is doing, what it has made, what comes next. Unlike the line it has no
+# keep-bar: it is the session's state, meant to change at each derive
+# (docs/doperpowers/specs/2026-11-23-sminos-session-search-design.md §1).
+SUMMARY_LABELS = ("doing", "made", "next")
+SUMMARY_LINE_MAX = 200
+SUMMARY_ASK = (
+    "Then three lines that summarize this session's work now, for a session in another project that has never "
+    "seen this conversation and is deciding whether to ask you about something:\n"
+    "doing: the task in hand and how far it has got\n"
+    "made: what you own or have produced, named so that session can find it: file and spec paths, PR and issue "
+    "numbers with their repository, the decisions taken\n"
+    "next: what you are waiting on, and what comes next\n"
+    "Name everything by what it is, never by a label coined in this conversation (a milestone, finding or step "
+    "number, a nickname for a piece of work) unless you say what it stands for. At most 200 characters a line. "
+    "Write the three lines afresh each time, whether or not the line above changes.")
+SUMMARY_LINE_RE = re.compile(r"\s*(doing|made|next):", re.IGNORECASE)
 # A pending name its session never took up in a week (no prompt reached it)
 # is swept by `derive --all`; its next derive writes a fresh one.
 PENDING_NAME_STALE = 7 * 86400
@@ -12585,31 +12648,69 @@ def member_cwd(project, m):
                 project.root or os.getcwd())
 
 
-def answer_text(text):
-    """The fork's answer as it is read: its first mark span's text when it
-    has marks (the fork runs under the session's output style), else the
-    whole text, tags stripped."""
-    spans = extract_marks(text)
-    return sminos_marks.TAG.sub("", spans[0]["text"] if spans else text)
+class AnswerFields(NamedTuple):
+    line: str               # the in-charge line, "" for none
+    name: str | None        # the charge name its `name:` line gives, None for no such line
+    summary: dict | None    # {"doing", "made", "next"}, None unless all three are there
+
+
+def answer_fields(text):
+    """A derive's answer read (§1b of the session-search design): the fork
+    may answer under the session's output style, its lines in `<message>`
+    spans, split across several, some marked and some not, with commentary
+    around them. Each labelled line (`name:`, `doing:`, `made:`, `next:`)
+    is the first of its label in the marked text (every span, in order),
+    else in the unmarked; the line is the first non-empty unlabelled line of
+    the marked text when a span holds one, else of the unmarked, so
+    commentary outside the marks is never the line while a mark holds one.
+    An unmarked answer reads as before the summary: the line its first
+    unlabelled line, the name its first `name:` line."""
+    marked = [x for s in extract_marks(text) for x in sminos_marks.TAG.sub("", s["text"]).splitlines()]
+    whole = sminos_marks.TAG.sub("", text).splitlines()
+
+    def first(test):
+        return next((x for x in marked if test(x)), None) or next((x for x in whole if test(x)), None)
+
+    def labelled(x):
+        return NAME_LINE_RE.match(x) or SUMMARY_LINE_RE.match(x)
+
+    line = (first(lambda x: x.strip() and not labelled(x)) or "").strip()[:DERIVE_LINE_MAX]
+    held = first(NAME_LINE_RE.match)
+    name = None
+    if held is not None:
+        name = held[NAME_LINE_RE.match(held).end():].strip().strip("`'\"")
+        name = name[:-1] if name.endswith(".") else name
+        name = name.strip("`'\"").lower()
+    summary = {}
+    for label in SUMMARY_LABELS:
+        held = first(lambda x: (m := SUMMARY_LINE_RE.match(x)) is not None and m.group(1).lower() == label)
+        value = unwrapped(held[SUMMARY_LINE_RE.match(held).end():]) if held is not None else ""
+        if value:
+            summary[label] = value[:SUMMARY_LINE_MAX]
+    return AnswerFields(line, name, summary if len(summary) == len(SUMMARY_LABELS) else None)
+
+
+def unwrapped(value):
+    """A summary value as the model wrote it, trimmed of whitespace and of
+    the backticks or quotes it wrapped the whole value in: a pair at its
+    ends, the character in neither of its insides (so `a.py` and `b.py`
+    keeps both its spans)."""
+    value = value.strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "`'\"" and value[0] not in value[1:-1]:
+        value = value[1:-1].strip()
+    return value
 
 
 def answer_line(text):
-    """The fork's answer as an in-charge line: its first line that is not a
-    `name:` line, at most 120 characters."""
-    return next((x.strip() for x in answer_text(text).splitlines()
-                 if x.strip() and not NAME_LINE_RE.match(x)), "")[:DERIVE_LINE_MAX]
+    """The fork's answer as an in-charge line (answer_fields)."""
+    return answer_fields(text).line
 
 
 def answer_name(text):
-    """The name the answer's first `name:` line gives, lowercased, its
-    surrounding backticks and quotes and one trailing period trimmed; None
-    when it has no such line."""
-    line = next((x for x in answer_text(text).splitlines() if NAME_LINE_RE.match(x)), None)
-    if line is None:
-        return None
-    name = line[NAME_LINE_RE.match(line).end():].strip().strip("`'\"")
-    name = name[:-1] if name.endswith(".") else name
-    return name.strip("`'\"").lower()
+    """The name the answer's first `name:` line gives (answer_fields),
+    lowercased, its surrounding backticks and quotes and one trailing
+    period trimmed; None when it has no such line."""
+    return answer_fields(text).name
 
 
 def charge_name_refusal(name, taken):
@@ -12672,15 +12773,16 @@ def charge_naming(project, m):
 def derive_prompt(naming, current=""):
     """The derive prompt: the question, the member's `current` line to keep
     (DERIVE_KEEP) when it has one, and, where it may be named (a
-    ChargeNaming), the ask for a charge name with the line; the taken list
-    names only what could be answered (the kept form)."""
+    ChargeNaming), the ask for a charge name with the line, the taken list
+    naming only what could be answered (the kept form); then, on every
+    prompt, the ask for the summary (SUMMARY_ASK)."""
     question = DERIVE_QUESTION + (DERIVE_KEEP % current if current else "")
     if naming is None:
-        return question + ("\n" if current else " ") + "Answer with the line only."
+        return "%s\n%s\nAnswer with these four lines only." % (question, SUMMARY_ASK)
     shown = sorted(t for t in naming.taken if CHARGE_NAME_RE.fullmatch(t) and len(t) <= CHARGE_NAME_MAX)
-    return "%s\n%s%s%s\nAnswer with the two lines only." % (
+    return "%s\n%s%s%s\n%s\nAnswer with these five lines only." % (
         question, NAMING_ASK, NAMING_KEEP % naming.current if naming.current else "",
-        NAMING_TAKEN % ", ".join(shown) if shown else "")
+        NAMING_TAKEN % ", ".join(shown) if shown else "", SUMMARY_ASK)
 
 
 def current_line(project, m):
@@ -12766,7 +12868,7 @@ def derive_failed_mark(session, failed):
         warn("the failed derive of %s could not be %s: %s" % (session[:8], "stamped" if failed else "cleared", e))
 
 
-def derive_line(project, m, prompt=DERIVE_PROMPT):
+def derive_line(project, m, prompt):
     """Ask the member's session `prompt` through a fork and return (line,
     answer): its one-line answer (answer_line) and the whole text the
     answer's name is read from. A live session whose bridge offers `btw` is
@@ -12820,9 +12922,10 @@ def _derive_said(m, got):
 
 def cmd_derive(a):
     """`derive <member> [--compacted] | --all`: ask a local member what it is
-    in charge of, by a headless internal fork, and record the answer as a
-    derived line — only where §5 allows (derive_refusal). --compacted (the
-    compaction hook's, smns-derive.sh): the member just compacted, so the
+    in charge of, and its summary, by a headless internal fork, and record
+    the answer as a derived line — only where §5 allows (derive_refusal).
+    --compacted (the compaction hook's, smns-derive.sh, at every compaction):
+    the member just compacted, so its `now:` status is cleared and the
     pacing rules are waived. --all: every local member of every
     project known here, as the daemon runs it every five minutes, but a
     member whose fork failed within the hour (DERIVE_RETRY); first lines
@@ -12852,14 +12955,12 @@ def cmd_derive(a):
     if a.all:
         sweep_pending_names()
         sweep_older("derive-failed", DERIVE_RETRY)
-        sweep_older("compactions", 30 * 86400)
         targets = derive_order(targets)
     else:
         targets = [(p, m, False) for p, m in targets]
     if a.compacted:
         for project, m, _ in targets:
             clear_status(project, m)
-        targets = [(p, m, r) for p, m, r in targets if compaction_due(m)]
     forked_refreshes = failed = 0
     for project, m, refresh in targets:
         spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
@@ -12869,38 +12970,6 @@ def cmd_derive(a):
         forked_refreshes += refresh and outcome in ("derived", "failed")
     if failed:
         sys.exit(1)
-
-
-def compactions_path(session):
-    return os.path.join(root(), "compactions", session)
-
-
-def compaction_due(m):
-    """Count one more compaction of the member and say whether its line is
-    due again: at every DERIVE_COMPACTIONS-th since its last derived line
-    (derive_member resets the count). A count that cannot be kept derives,
-    as every compaction did before."""
-    try:
-        every = int(os.environ.get("SMINOS_DERIVE_COMPACTIONS") or DERIVE_COMPACTIONS)
-    except ValueError:
-        every = DERIVE_COMPACTIONS
-    path = compactions_path(m.session)
-    try:
-        try:
-            with open(path) as f:
-                n = int(f.read().strip() or 0) + 1
-        except FileNotFoundError:
-            n = 1
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        with open(path, "w") as f:
-            f.write(str(n))
-    except (OSError, ValueError) as e:
-        warn("the compactions of %s could not be counted: %s" % (m.session[:8], e))
-        return True
-    if n < every:
-        print("%s: not derived — compaction %d of %d since its last line" % (m.alias, n, every))
-        return False
-    return True
 
 
 def clear_status(project, m):
@@ -12935,8 +13004,11 @@ def derive_order(targets):
 
 
 def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=False):
-    """Derive one member's line where §5 allows (derive_refusal), and, where
-    it may be named (charge_naming), its charge name with it: kept only when
+    """Derive one member's line where §5 allows (derive_refusal), with its
+    summary (answer_fields: on the in-charge event when the answer gives all
+    three lines, the line alone when not — the summary never fails a
+    derive), and, where it may be named (charge_naming), its charge name
+    with it: kept only when
     the answer gives one in the charge-name form and free, and when the
     engine name it would replace, read before the fork, is still the
     session's after it (an owner's /rename meanwhile wins). A kept name rides
@@ -12997,11 +13069,9 @@ def derive_member(project, m, held_off=False, refreshes_spent=None, compacted=Fa
             name = answer_name(answer)
             why_not = charge_name_refusal(name, naming.taken)
             name = "" if why_not else name
-    lifecycle(project, m.session, "in-charge", text=line, source="derived", **({"name": name} if name else {}))
-    try:
-        os.unlink(compactions_path(m.session))   # the compactions count from this line
-    except OSError:
-        pass
+    summary = answer_fields(answer).summary
+    lifecycle(project, m.session, "in-charge", text=line, source="derived", **({"name": name} if name else {}),
+              **({"summary": summary} if summary else {}))
     print("%s: %s" % (m.alias, line))
     if name:
         print("%s: name %s" % (m.alias, name))
@@ -20910,59 +20980,102 @@ def who_lines(addr):
                                                  addr["machine"]))
         return out
     for p, m, how in hits:
-        label = "%s#%s" % (m.alias, m.short)
-        if how == "continued":
-            out.append("  went on as %s (%s), %s on %s: %s" % (label, m.kind or "?", p.name, m.machine, m.state or "?"))
-        elif how == "moved":
-            out.append("  %s left %s for a project not known here (%s on %s)" % (label, p.name, m.state or "?", m.machine))
-        else:
-            out.append("  now %s, %s on %s: %s%s" % (label, p.name, m.machine, m.state or "?",
-                                                     " (its session %s)" % how if how else ""))
-        if addr["alias"] and m.alias != addr["alias"]:
-            out.append("  (the line names it %s; it goes by %s now)" % (addr["alias"], m.alias))
-        if charge_shown(m):
-            out.append("  in charge: %s" % charge_shown(m))
-        if m.state in FILLED or (m.seat and m.state != "retired"):
-            # A stopped seat by this machine's hold of it, as a view reads it (hold_for): one a wake would not start
-            # is said held and why (T2's §5), never resumed.
-            why = "" if m.state in FILLED else hold_for(m.session)
-            out.append('  reach: sminos say "@%s ..."%s' % (m.short, "" if m.state in FILLED else
-                                                             "  (the stopped seat is not woken: %s; the message is "
-                                                             "held until a process of it runs)"
-                                                             % hold_words(why, m.session) if why else
-                                                             "  (the stopped seat is resumed)"))
-        elif m.state != "gone" or not m.local:
-            where = "here" if m.local else "on %s" % m.machine
-            out.append("  resume it %s: cd %s && claude --resume %s" % (where, shlex.quote(m.cwd or "."), m.session))
-            # What its machine published (on a `gone` state too, state_wake); a sender here meets this machine's
-            # hold, which `read-only` is not: it refuses only what comes from another machine.
-            wakes = wake_of(m) if m.thread and m.state in HELD_STATES else None
-            why = why_of(m) if wakes == "held" else ""
-            if m.local and why == "read-only":
-                wakes, why = wake_here(m.session)
-            if wakes == "woken" and m.state == "stopped":
-                # A stopped thread its machine wakes (T2): an addressed message starts it again.
-                out.append('  or message it, which wakes it: sminos say "@%s ..."' % m.short)
-            elif why == "read-only":
-                # Its machine refuses what this one sends it (T2's §5): nothing to leave it from here.
-                out.append("  no message from here reaches it: %s admits nothing from another machine, and refuses "
-                           "it there" % m.machine)
-            elif wakes == "held":
-                # One its machine holds: an addressed message waits for a process of it (T1's M3, T2's §5).
-                out.append('  or leave it a message, held until a process of it runs%s: sminos say "@%s ..."' % (
-                    " (%s)" % (hold_words(why, m.session if m.local else "") if why in HOLD_WORDS else why)
-                    if why else "", m.short))
-            else:
-                out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."' % tag_project(p))
+        out += session_lines(p, m, how, addr["alias"])
+    return out
+
+
+def session_lines(p, m, how="", named=""):
+    """Who a session is now, as `who` says it (indented under what named
+    it): its alias, project, machine and state, `how` it answers to the name
+    (who_matches: "", `continued`, `moved`, or why its session was retired),
+    the alias the name gave it (`named`) when it goes by another now, its
+    in-charge line, its summary with the summary's age (summary_of: none
+    for a session withdrawn from this reader's view), and how to reach it
+    (reach_lines)."""
+    out = []
+    label = "%s#%s" % (m.alias, m.short)
+    if how == "continued":
+        out.append("  went on as %s (%s), %s on %s: %s" % (label, m.kind or "?", p.name, m.machine, m.state or "?"))
+    elif how == "moved":
+        out.append("  %s left %s for a project not known here (%s on %s)" % (label, p.name, m.state or "?", m.machine))
+    else:
+        out.append("  now %s, %s on %s: %s%s" % (label, p.name, m.machine, m.state or "?",
+                                                 " (its session %s)" % how if how else ""))
+    if named and m.alias != named:
+        out.append("  (the line names it %s; it goes by %s now)" % (named, m.alias))
+    if charge_shown(m):
+        out.append("  in charge: %s" % charge_shown(m))
+    if m.summary:
+        age = " (%s)" % short_age(m.summary_age) if m.summary_age is not None else ""
+        out.append("  doing%s: %s" % (age, m.summary["doing"]))
+        out.append("  made: %s" % m.summary["made"])
+        out.append("  next: %s" % m.summary["next"])
+    return out + reach_lines(p, m)
+
+
+def reach_lines(p, m):
+    """How member `m` of project `p` is reached from here, as `who` and
+    `find` say it (§3d of the session-search design): a member of a machine
+    the org retired, a retired seat and an ended thread in the words a
+    message to them is refused in; a live one by its short; a stopped seat
+    by this machine's hold of it, as a view reads it (hold_for): one a wake
+    would not start is said held and why (T2's §5), never resumed; a local
+    session with no conversation here, by nothing; any other by its resume
+    command and what a message to it meets — except one its machine holds
+    for having no conversation of it (`transcript`), which there is nothing
+    to resume."""
+    if m.end == "machine":
+        return ["  %s" % retired_machine_words(m)]
+    if m.seat and m.state == "retired":
+        return ["  it is retired — %s" % fill_words(m.seat)]
+    if m.end in END_REASONS and m.thread:
+        return ["  it %s; %s" % ended_words(m)]
+    if m.state in FILLED:
+        return ['  reach: sminos say "@%s ..."' % m.short]
+    if m.seat:
+        why = hold_for(m.session)
+        return ['  reach: sminos say "@%s ..."%s' % (m.short, "  (the stopped seat is not woken: %s; the message is "
+                                                               "held until a process of it runs)"
+                                                     % hold_words(why, m.session) if why else
+                                                     "  (the stopped seat is resumed)")]
+    if m.local and m.state == "gone":
+        return ["  nothing on this machine resumes it"]
+    # What its machine published (on a `gone` state too, state_wake); a sender here meets this machine's
+    # hold, which `read-only` is not: it refuses only what comes from another machine.
+    wakes = wake_of(m) if m.thread and m.state in HELD_STATES else None
+    why = why_of(m) if wakes == "held" else ""
+    if m.local and why == "read-only":
+        wakes, why = wake_here(m.session)
+    held = ('leave it a message, held until a process of it runs%s: sminos say "@%s ..."' % (
+        " (%s)" % (hold_words(why, m.session if m.local else "") if why in HOLD_WORDS else why)
+        if why else "", m.short))
+    if wakes == "held" and why == "transcript" and not m.local:
+        # No conversation of it is on its machine: nothing there to resume, and a message waits.
+        return ["  " + held]
+    where = "here" if m.local else "on %s" % m.machine
+    out = ["  resume it %s: cd %s && claude --resume %s" % (where, shlex.quote(m.cwd or "."), m.session)]
+    if wakes == "woken" and m.state == "stopped":
+        # A stopped thread its machine wakes (T2): an addressed message starts it again.
+        out.append('  or message it, which wakes it: sminos say "@%s ..."' % m.short)
+    elif why == "read-only":
+        # Its machine refuses what this one sends it (T2's §5): nothing to leave it from here.
+        out.append("  no message from here reaches it: %s admits nothing from another machine, and refuses "
+                   "it there" % m.machine)
+    elif wakes == "held":
+        # One its machine holds: an addressed message waits for a process of it (T1's M3, T2's §5).
+        out.append("  or " + held)
+    else:
+        out.append('  or leave it a note it reads when resumed: sminos say --in %s "..."' % tag_project(p))
     return out
 
 
 def cmd_who(a):
     """`who [<commit|PR>]`: the session a commit or pull request names in its
-    Sminos-Session line, as it is now and how to reach it. Without a target,
-    the line this session's commits carry (`--session` names another of this
-    machine's: the address mod's call), nothing when it has none. With
-    `--thread`, the thread a name is, for a program (who_thread)."""
+    Sminos-Session line, as it is now and how to reach it. `who @<session>`:
+    the session a message's tag names, the same way (who_tag). Without a
+    target, the line this session's commits carry (`--session` names another
+    of this machine's: the address mod's call), nothing when it has none.
+    With `--thread`, the thread a name is, for a program (who_thread)."""
     if a.thread is not None:
         if a.target or a.session or not a.thread:
             die("usage: sminos who --thread <name>  (alone: it names a thread, not a commit or a session)")
@@ -20976,12 +21089,33 @@ def cmd_who(a):
         if line:
             print(line)
         return
+    if a.target.startswith("@"):
+        if a.session:
+            die("usage: sminos who @<short|project/alias|alias>  (alone: it names a session)")
+        who_tag(a.target)
+        return
     what, found = addresses_of(a.target)
     if not found:
         die("who: %s carries no %s line" % (what, ADDRESS_KEY), EXIT_UNKNOWN)
     print("%s:" % what)
     for addr in found:
         print("\n".join(who_lines(addr)))
+
+
+def who_tag(target):
+    """`who @<session>`: who the session a message's one tag names is now,
+    and how to reach it (session_lines) — `@<short>` anywhere in the org,
+    `@<project>/<alias>`, a bare `@<alias>` in the caller's project and its
+    channels, resolved as `say` resolves a tag (_resolve_tag, from the
+    caller's project: caller_scope), recording nothing and delivering
+    nothing. A tag no session answers to, or several, exits 4 in say's
+    words."""
+    tags, end = _leading_run(target)
+    if len(tags) != 1 or target[end:].strip() or is_all(tags[0]):
+        die("usage: sminos who @<short|project/alias|alias>  (one session, named as a message tags it)")
+    p, m = _resolve_tag(caller_scope(), tags[0])
+    print("%s:" % target.strip())
+    print("\n".join(session_lines(p, m)))
 
 
 def who_thread(name):

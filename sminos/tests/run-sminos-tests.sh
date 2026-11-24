@@ -595,6 +595,8 @@ run_suites_c() {
   else fail "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_git_isolation.py"; then pass "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; else
     fail "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_summary.py"; then pass "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; else
+    fail "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
@@ -6002,6 +6004,18 @@ tx "$TC" custom-title ""
 assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기록" "an empty one clears it: the generated title again"
 
 # derive: a headless internal fork answers; nothing of it stays.
+# Every derive prompt asks the question, then the summary (SUMMARY_ASK, the
+# session-search design's §1a), and closes on the lines it asks for.
+DERIVE_QUESTION_NOW="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step?"
+SUMMARY_ASK_NOW="$(cat <<'SUMMARY_ASK'
+Then three lines that summarize this session's work now, for a session in another project that has never seen this conversation and is deciding whether to ask you about something:
+doing: the task in hand and how far it has got
+made: what you own or have produced, named so that session can find it: file and spec paths, PR and issue numbers with their repository, the decisions taken
+next: what you are waiting on, and what comes next
+Name everything by what it is, never by a label coined in this conversation (a milestone, finding or step number, a nickname for a piece of work) unless you say what it stands for. At most 200 characters a line. Write the three lines afresh each time, whether or not the line above changes.
+SUMMARY_ASK
+)"
+DERIVE_PROMPT_NOW="$DERIVE_QUESTION_NOW"$'\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these four lines only.'
 HD=5f000006-0000-4000-8000-00000000005f
 TD="$TXD/$HD.jsonl"
 hp_peer hd "$HD" derived interactive
@@ -6082,30 +6096,23 @@ assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls
 tx "$TD" asst f3000001 "one more turn"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"
-# A compaction derives again at once (smns-derive.sh runs derive --compacted):
-# the pacing rules are waived, nothing else is
-# (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2).
+# Every compaction derives again at once (smns-derive.sh runs derive --compacted):
+# the pacing rules are waived, nothing else is, and nothing is counted (the
+# session-search design's §2, replacing the every-third count of
+# docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §4).
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "a plain derive right after its line refuses"
-# Every third compaction since the member's last derived line derives it
-# (DERIVE_COMPACTIONS, §4); the others only count.
-STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "a first compaction only counts"
-STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 2 of 3 since its last line" "as does a second"
+HD_FORKS="$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)"
 STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
 assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derives a member whose line is minutes old"
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
+STUB_FORK_RESULT="Owns the compacted stub, again." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: Owns the compacted stub, again." "and so does the compaction right after it"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$((HD_FORKS + 2))" \
+  "two compactions in a row, two forks"
+assert_file_absent "$SMINOS_HOME/compactions" "and no compaction is counted"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
-run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "and the count of compactions"
-# A count that cannot be kept derives, as every compaction did before.
-printf 'garbage' > "$SMINOS_HOME/compactions/$HD"
-STUB_FORK_RESULT="Owns the stub, uncounted." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: Owns the stub, uncounted." "a count that cannot be read derives"
-# The cases below are a compaction's derive itself, each at its due compaction.
-export SMINOS_DERIVE_COMPACTIONS=1
 # A set line (a spawn's brief, an operator's charge) is a placeholder: the
 # next derived line replaces it, whatever runs the derive
 # (2026-11-08-sminos-derive-on-compact-design.md §6).
@@ -6204,7 +6211,6 @@ printf '{"session_id":"%s","source":"compact"}' "$HD" | SMNS_INTERNAL=1 CLAUDE_P
 printf '{"session_id":"not-a-session","source":"compact"}' | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK"
 sleep 1
 assert_equals "$(hd_forks)" "$HD_FORKS" "in an internal fork, or with no session id, the hook starts nothing"
-unset SMINOS_DERIVE_COMPACTIONS
 # A user-named session with tool calls enough and no line set: its name is its
 # line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e
@@ -6214,8 +6220,7 @@ run "$SMINOS" list --json
 assert_equals "$(json_row hu charge)|$(json_row hu charge_source)" "hu|name" "an owner-named member with no derived line has its name as its line"
 STUB_FORK_RESULT=$'Owns the user-named fixture.\nname: user-fixture-owner' run "$SMINOS" derive hu
 assert_contains "$OUT" "hu: Owns the user-named fixture." "a user-named session is derived"
-assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only." \
-  "with today's question, verbatim"
+assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "$DERIVE_PROMPT_NOW" "with today's question, verbatim"
 assert_not_contains "$OUT" "hu: name" "and no name proposed"
 assert_not_contains "$OUT" "no name" "nor anything said of one"
 assert_not_contains "$(grep '"in-charge"' "$HPLOG/testhost.$HU.jsonl")" '"name"' "its derived line carries none"
@@ -6278,7 +6283,6 @@ standin() { # session config — the session's bridge, until standin_stop
 }
 standin_stop() { kill "$STANDIN_PID" 2>/dev/null || true; wait "$STANDIN_PID" 2>/dev/null || true; }
 forks() { grep -c -- '--fork-session' "$STUB_STATE/log/calls.log" || true; }
-DERIVE_PROMPT_NOW="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 HV=7e000001-0000-4000-8000-00000000007e
 hp_peer dbtw "$HV" user interactive
 tx "$TXD/$HV.jsonl" tool v0000001 10
@@ -6487,7 +6491,7 @@ CTX="$HOME/.claude/projects/cn-proj"
 mkdir -p "$CTX"
 cd "$R4"
 FORK_PROMPT="$STUB_STATE/log/fork-prompt.txt"
-DERIVE_PROMPT_TODAY="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+DERIVE_PROMPT_TODAY="$DERIVE_PROMPT_NOW"
 cn_record() { printf '%s' "$HOME/.claude/sessions/cn-${1:0:8}.json"; }
 cn_peer() { # name session nameSource [cwd] — the session's running engine record, one file per session
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"interactive","status":"idle","cwd":"%s"}\n' \
@@ -6565,7 +6569,7 @@ assert_equals "$(mode_of "$SMINOS_HOME/names")|$(mode_of "$SMINOS_HOME/names/$CA
 assert_contains "$(cat "$FORK_PROMPT")" 'On a second line, name the session after that responsibility: `name: ` followed by 2 to 4 lowercase English words joined by hyphens' "the fork is asked for a name"
 assert_contains "$(cat "$FORK_PROMPT")" "Taken by other sessions: cnrepo-b2, elsewhere-session." "told the names the project's other members and this machine's other sessions hold"
 assert_not_contains "$(cat "$FORK_PROMPT")" "Its current name is" "with no name proposed yet, none to keep"
-assert_contains "$(cat "$FORK_PROMPT")" $'\nAnswer with the two lines only.' "and asked for two lines"
+assert_contains "$(cat "$FORK_PROMPT")" $'\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these five lines only.' "and asked for five lines: the line, the name, and the summary's three"
 
 # Acceptance 7, then 5: name-due, and the name applied, read as the engine
 # reads it (user), its line still the derived one.
@@ -6630,7 +6634,7 @@ assert_equals "$(json_row my-own-desk name_source)" "user" "the owner's name lis
 cn_age "$CA"
 STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-renamer' run "$SMINOS" derive my-own-desk
 assert_not_contains "$OUT" "not derived" "its next derive runs"
-assert_equals "$(cat "$FORK_PROMPT")" "${DERIVE_PROMPT_TODAY% Answer with the line only.}"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\nAnswer with the line only.' \
+assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_QUESTION_NOW"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these four lines only.' \
   "with today's question and its current line to keep, verbatim, and no name asked for"
 assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|<none>" "its line recorded with no name"
 assert_equals "$(pending "$CA" name)" "desk-uplink-keeper" "and no new name handed over"
