@@ -410,7 +410,8 @@ def model_env():
 def ask_model(prompt, *, model="haiku", effort="medium", timeout=120):
     """One fresh, tool-less `claude -p` call of `model`, `prompt` on its
     standard input, as an internal process (run_internal) on the caller's
-    own first-party login (model_env: no gateway, no API key); its working
+    own first-party login (model_env: no gateway, API key or provider
+    inherited from the caller's environment); its working
     directory $SMINOS_HOME, never a protected folder or a project's. Safe
     mode: no plugins, hooks, MCP servers or CLAUDE.md, the machine's own
     login (bare mode would read an API key alone). Its session id is minted
