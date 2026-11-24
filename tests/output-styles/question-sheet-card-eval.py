@@ -31,26 +31,35 @@ The project's shell is canned, and a command it cannot answer goes to
 
 Each question a run puts on the sheet is drawn as its card
 (question_sheet.render_card: header, question, context, the references' text
-as captured, options with the recommended mark) and judged from the card
-alone, never the session:
+as captured, options with the recommended mark), in the version the call
+that added or revised it showed, and judged:
 
-  facts   which matter the card is about (every card is judged against all
-          three, since a run may raise a matter its scenario did not
-          trigger), and which of that matter's facts it carries (question_sheet_session.MATTERS; `essential` marks the
-          ones a reader cannot judge without; `where` says where in the
-          session each was shown)
-  reader  a reader with only the card: could they decide (yes, partly, no),
-          what they would need first, and what the card refers to that they
-          cannot see
+  relevance  which of the scenario's matters the card asks the human to
+             decide, if any, judged with the run's evidence (the trigger's
+             output and the matters' titles) and nothing else, so a card too
+             bare to name its matter still counts against it
+  facts      blind to the session, told only the matter: which of that
+             matter's facts the card carries (question_sheet_session.MATTERS;
+             `essential` marks the ones a reader cannot judge without; `where`
+             says where in the session each was shown)
+  reader     blind to the session: could a reader with only the card decide
+             (yes, partly, no), what they would need first, and what the card
+             refers to that they cannot see
 
 A card passes when it carries every essential fact of its matter and the
 reader says yes (the median of three readers: one reader's verdict on a card
-near the line flips between yes and partly). Pass rates count the cards
-about the scenario's own matters; a card about another matter (the session
-showed its reasons but not its numbers) is reported by the reader alone. Each card is judged a second time with the agent's own words
-around the call (the text and progress notes of that response and the one
-before) appended, as automatic capture (§10) would show them: the difference
-is what capture would add.
+near the line flips between yes and partly). Counted cards are those the
+relevance judge places on one of the scenario's matters; any other card is
+reported by one reader alone. Each counted card is judged a second time with
+the agent's own words around the call (the text and progress notes of that
+response and the one before) appended, as automatic capture (§10) would show
+them. A judge that gives no valid verdict in three tries leaves its run
+unjudged, and the gate then reads "incomplete".
+
+A run ends at the turn's end, a final message, --max-steps responses, or one
+response after every matter of its scenario has a question (placed by the
+relevance judge as the run goes): a question about another matter does not
+end it.
 
 Each run also records how many responses came before its first sheet call
 (the trigger shows the matter in the response before the first).
@@ -61,14 +70,15 @@ full card pass, or the judges cannot tell the behaviour apart.
 
   python3 tests/output-styles/question-sheet-card-eval.py [NAME=DESCRIPTION.md ...]
       [--scenarios cap,pii,tz,all] [--history long] [--reps 8]
-      [--model claude-opus-5-5] [--effort medium] [--judge-effort medium] [--max-steps 20]
+      [--model claude-opus-5-5] [--effort medium] [--judge-effort medium] [--relevance-effort low] [--max-steps 20]
       [--shell-model claude-sonnet-5-5]
       [--workers 8] [--out question-sheet-card-results.json] [--calibrate] [--dry-run]
 
 With no arguments it runs Acceptance 14's E2 rows (the long history, 8 runs of
 each scenario, v3, the subject at medium effort as the baseline ran), prints
-PASS, FAIL or "short" (fewer runs than the gate counts) per arm, and exits 1
-when an arm fails. Run --calibrate first: the gate assumes 6 of 6.
+PASS, FAIL, "short" (a scenario with fewer than 8 runs) or "incomplete" (a
+run that errored or whose judging gave no valid verdict) per arm, and exits 0
+only when every arm passes. Run --calibrate first: the gate assumes 6 of 6.
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
 ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
@@ -86,11 +96,11 @@ FACTS = """A coding agent put a question for a human on a sheet. The human sees 
 {card}
 </card>
 
-The agent's session may have raised these matters, each with the facts a reader would need to judge it:
+The card is about this matter: {title}. Here are the facts a reader would need to judge it:
 
-{matters}
+{facts}
 
-Which matter is the card about ("none" if none of them)? For that matter, which of its facts does the card itself state or make plain (in its text, options, context or the quoted references)? A fact counts when a reader of the card alone would learn its substance; a figure in parentheses illustrates the evidence and need not appear, unless the fact is itself a figure. A passing allusion the reader could not decode ("the cap issue", "as discussed") does not count. Answer JSON only: {"matter": "<key or none>", "facts": {"1": true|false, ...}, "why": "<one short clause>"}"""
+Which of these facts does the card itself state or make plain (in its text, options, context or the quoted references)? A fact counts when a reader of the card alone would learn its substance; a figure in parentheses illustrates the evidence and need not appear, unless the fact is itself a figure. A passing allusion the reader could not decode ("the cap issue", "as discussed") does not count. Answer JSON only: {"facts": {"1": true|false, ...}, "why": "<one short clause>"}"""
 
 READER = """You are the person this question was put to. You have not seen the work behind it: all you have is this card.
 
@@ -100,33 +110,68 @@ READER = """You are the person this question was put to. You have not seen the w
 
 Could you make this decision responsibly from the card alone, without asking anything or looking anything up? Say "yes" only if you understand what is being decided, why it needs deciding, what each choice would lead to, and enough of the facts to choose between them. Answer JSON only: {"could_decide": "yes"|"partly"|"no", "missing": ["<what you would need to know first>", ...], "unresolved_references": ["<anything the card refers to that you cannot see>", ...], "your_answer": "<what you would answer, or what you would ask back>"}"""
 
+RELEVANCE = """A coding agent, working alone, met this in its session:
 
-def matters_text(keys):
-    out = []
-    for k in keys:
-        m = ss.MATTERS[k]
-        out.append(f'"{k}": {m["title"]}\n' + "\n".join(f"  {i}. {f}" for i, (f, _, _) in enumerate(m["facts"], 1)))
-    return "\n\n".join(out)
+<evidence>
+{evidence}
+</evidence>
+
+That raised these matters for its human to decide:
+{matters}
+
+Later it put this question to the human, as a card:
+
+<card>
+{card}
+</card>
+
+Is this card the agent asking the human to decide one of those matters, or a part of one, however well or poorly the card states it (a card with no context about the matter still counts)? Or is it about something else? Answer JSON only: {"matter": "<one of the keys above, or none>", "why": "<one short clause>"}"""
+
+
+def facts_text(matter):
+    return "\n".join(f"{i}. {f}" for i, (f, _, _) in enumerate(ss.MATTERS[matter]["facts"], 1))
 
 
 READER_SAMPLES = 3
 RANK = {"no": 0, "partly": 1, "yes": 2}
+READER_VALID = lambda v: v.get("could_decide") in RANK
 
 
-def judge_card(card_text, matter_keys, effort, counted=None):
-    """The facts judge once, then the reader READER_SAMPLES times (a reader's verdict on a card near the line flips
-    between yes and partly from one sample to the next, so the median is the card's), or once for a card whose
-    matter is not among `counted`, which no pass rate includes."""
-    facts = qs.judge(client, FACTS.replace("{card}", card_text).replace("{matters}", matters_text(matter_keys)), effort)
-    n = READER_SAMPLES if counted is None or facts.get("matter") in counted else 1
-    readers = [qs.judge(client, READER.replace("{card}", card_text), effort) for _ in range(n)]
-    verdicts = sorted((r.get("could_decide") for r in readers), key=lambda v: RANK.get(v, -1))
+def facts_valid(matter):
+    n = len(ss.MATTERS[matter]["facts"])
+    return lambda v: isinstance(v.get("facts"), dict) and all(isinstance(v["facts"].get(str(i)), bool)
+                                                              for i in range(1, n + 1))
+
+
+def relevance(card_text, scenario, effort):
+    """Which of the scenario's matters a card asks about, judged with the run's evidence (the trigger's output and
+    the matters' titles); the facts and reader judges never see it."""
+    keys = ss.E2_TRIGGERS[scenario]["matters"]
+    prompt = (RELEVANCE.replace("{evidence}", ss.trigger_output(scenario))
+              .replace("{matters}", "\n".join(f'"{k}": {ss.MATTERS[k]["title"]}' for k in keys))
+              .replace("{card}", card_text))
+    v = qs.judge(client, prompt, effort, valid=lambda v: v.get("matter") in keys + ["none"])
+    return v
+
+
+def judge_card(card_text, matter, effort, samples=None):
+    """A card judged alone: for a counted card (`matter` one of the scenario's), the facts judge once and the reader
+    READER_SAMPLES times (a reader's verdict on a card near the line flips between yes and partly from one sample
+    to the next, so the median is the card's); for any other card, the reader once. Neither judge sees the
+    session; the facts judge is told the matter, not how it was decided."""
+    n = samples or (READER_SAMPLES if matter else 1)
+    facts = None
+    if matter:
+        facts = qs.judge(client, FACTS.replace("{card}", card_text).replace("{title}", ss.MATTERS[matter]["title"])
+                         .replace("{facts}", facts_text(matter)), effort, valid=facts_valid(matter))
+    readers = [qs.judge(client, READER.replace("{card}", card_text), effort, valid=READER_VALID) for _ in range(n)]
+    verdicts = sorted((r["could_decide"] for r in readers), key=lambda v: RANK[v])
     reader = dict(readers[0], could_decide=verdicts[len(verdicts) // 2], samples=verdicts)
-    m = ss.MATTERS.get(facts.get("matter"))
-    present = {int(k): v is True for k, v in (facts.get("facts") or {}).items() if str(k).isdigit()}
+    present = {int(k): v is True for k, v in ((facts or {}).get("facts") or {}).items() if str(k).isdigit()}
+    m = ss.MATTERS.get(matter)
     essential = all(present.get(i, False) for i, (_, ess, _) in enumerate(m["facts"], 1) if ess) if m else False
-    return {"facts": facts, "reader": reader, "readers": readers, "matter": facts.get("matter"), "present": present,
-            "essential": essential, "pass": essential and reader.get("could_decide") == "yes"}
+    return {"facts": facts, "reader": reader, "readers": readers, "matter": matter or "none", "present": present,
+            "essential": essential, "pass": essential and reader["could_decide"] == "yes"}
 
 
 def run(job, args, arms):
@@ -135,17 +180,30 @@ def run(job, args, arms):
     env, prefix, system, tools = qs.session(ss.e2_script(scenario, history), arms[arm],
                                             [(r"smoke-staging|tests\.smoke|tally\.export\.audit", again)],
                                             simulator=(client, args.shell_model))
-    want = len(ss.E2_TRIGGERS[scenario]["matters"])  # stop once as many questions as the scenario has matters
+    keys = set(ss.E2_TRIGGERS[scenario]["matters"])
+    seen, observed = set(), set()
 
-    def enough(env, calls):
-        return sum(len(c.get("added", [])) for c in calls) >= want
-    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps, enough)
+    def asked_every_matter(env, calls):
+        """True once every matter of the scenario has a question; each new card is placed by the relevance judge
+        (a judge that gives no verdict leaves the run going to its turn's end or its step limit)."""
+        for c in calls:
+            for qid, q in c.get("shown", {}).items():
+                if (c.get("call_id"), qid) in seen:
+                    continue
+                seen.add((c.get("call_id"), qid))
+                try:
+                    m = relevance(qs.render_card(q), scenario, args.relevance_effort)["matter"]
+                except qs.JudgeError:
+                    continue
+                observed.add(m)
+        return keys <= observed
+    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps,
+                           asked_every_matter)
     cards = []
     for step_i, b in qs.sheet_calls(steps):
         call = next((c for c in env.sheet.calls if c.get("call_id") == b["id"]), None)
-        for qid in (call or {}).get("added", []) + (call or {}).get("revised", []):
-            q = {k: v for k, v in env.sheet.questions[qid].items() if k != "history"}
-            cards.append({"id": qid, "step": step_i, "card": qs.render_card(q),
+        for qid, q in ((call or {}).get("shown") or {}).items():  # the card as this call showed it
+            cards.append({"id": qid, "revision": q["revision"], "step": step_i, "card": qs.render_card(q),
                           "notes": qs.notes_before(steps, step_i)})
     first = qs.sheet_calls(steps)
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
@@ -154,14 +212,15 @@ def run(job, args, arms):
             "asking_calls": sum(1 for c in env.sheet.calls if c.get("added"))}
 
 
-def judge_run(x, effort):
+def judge_run(x, effort, relevance_effort="low"):
     keys = ss.E2_TRIGGERS[x["scenario"]]["matters"]
     for c in x["cards"]:
-        c["alone"] = judge_card(c["card"], list(ss.MATTERS), effort, counted=keys)
+        c["relevance"] = relevance(c["card"], x["scenario"], relevance_effort)
+        matter = c["relevance"]["matter"] if c["relevance"]["matter"] in keys else None
+        c["alone"] = judge_card(c["card"], matter, effort)
         captured = c["card"] + ("\n\n**The agent's notes when it asked** (captured automatically)\n\n" + c["notes"]
                                 if c["notes"] else "")
-        c["with_capture"] = (judge_card(captured, list(ss.MATTERS), effort, counted=keys)
-                             if c["notes"] and c["alone"]["matter"] in keys else c["alone"])
+        c["with_capture"] = judge_card(captured, matter, effort) if c["notes"] and matter else c["alone"]
     x["matters_asked"] = sorted({c["alone"]["matter"] for c in x["cards"]} & set(keys))
     return x
 
@@ -204,14 +263,19 @@ def summary(results):
 def gate(results):
     """Acceptance 14's E2 gate, per arm, on the long history, over counted cards: every essential fact on at least
     80% of them, a reader's "no" on at most 2, at least 85% of the pii and tz cards passing; the cap matter's pass
-    rate reported, not gated. An arm with fewer than 4 scenarios × 8 runs is not judged ("short")."""
+    rate reported, not gated. An arm with fewer than 8 runs of each scenario is "short"; one with a run that errored
+    or whose judging is incomplete is "incomplete", never a pass."""
     out = {}
     for x in results:
-        if "error" in x or x["history"] != "long":
+        if x.get("history", (x.get("job") or [None] * 3)[2]) != "long":
+            continue
+        arm = x.get("arm") or x["job"][0]
+        g = out.setdefault(arm, {"runs": {}, "cards": 0, "essential": 0, "reader_no": 0, "pii_tz": 0,
+                                 "pii_tz_pass": 0, "cap": 0, "cap_pass": 0, "incomplete": 0})
+        if "error" in x or "judge_error" in x or any("alone" not in c for c in x["cards"]):
+            g["incomplete"] += 1
             continue
         keys = ss.E2_TRIGGERS[x["scenario"]]["matters"]
-        g = out.setdefault(x["arm"], {"runs": {}, "cards": 0, "essential": 0, "reader_no": 0, "pii_tz": 0,
-                                      "pii_tz_pass": 0, "cap": 0, "cap_pass": 0})
         g["runs"][x["scenario"]] = g["runs"].get(x["scenario"], 0) + 1
         for c in x["cards"]:
             a = c.get("alone") or {}
@@ -230,7 +294,7 @@ def gate(results):
         enough = all(g["runs"].get(s, 0) >= 8 for s in ss.E2_TRIGGERS)
         ok = (g["cards"] and g["essential"] >= 0.8 * g["cards"] and g["reader_no"] <= 2
               and g["pii_tz"] and g["pii_tz_pass"] >= 0.85 * g["pii_tz"])
-        g["verdict"] = "short" if not enough else "PASS" if ok else "FAIL"
+        g["verdict"] = "incomplete" if g["incomplete"] else "short" if not enough else "PASS" if ok else "FAIL"
     return out
 
 
@@ -238,7 +302,7 @@ def calibrate(effort):
     out = {}
     jobs = [(k, kind) for k in ss.CALIBRATION for kind in ("bare", "full")]
     with cf.ThreadPoolExecutor(6) as pool:
-        verdicts = pool.map(lambda j: judge_card(qs.render_card(ss.CALIBRATION[j[0]][j[1]]), list(ss.MATTERS), effort), jobs)
+        verdicts = pool.map(lambda j: judge_card(qs.render_card(ss.CALIBRATION[j[0]][j[1]]), j[0], effort), jobs)
         for (k, kind), v in zip(jobs, verdicts):
             out[f"{k} {kind}"] = v
             ok = v["pass"] == (kind == "full")
@@ -256,6 +320,7 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="claude-opus-5-5")
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--judge-effort", default="medium")
+    ap.add_argument("--relevance-effort", default="low", help="the relevance judge's effort, live and after")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
     ap.add_argument("--workers", type=int, default=8)
@@ -284,7 +349,7 @@ if __name__ == "__main__":
     with cf.ThreadPoolExecutor(args.workers) as pool:
         def safe(x):
             try:
-                return judge_run(x, args.judge_effort)
+                return judge_run(x, args.judge_effort, args.relevance_effort)
             except Exception as e:
                 x["judge_error"] = repr(e)
                 return x
@@ -321,5 +386,5 @@ if __name__ == "__main__":
         pct = lambda a, b: f"{a}/{b}" + (f" ({100 * a // b}%)" if b else "")
         print(f"  {arm}: {g['verdict']}  essential {pct(g['essential'], g['cards'])}, reader no {g['reader_no']}, "
               f"pii and tz passing {pct(g['pii_tz_pass'], g['pii_tz'])}, cap passing {pct(g['cap_pass'], g['cap'])} "
-              f"(reported)")
-    raise SystemExit(1 if any(g["verdict"] == "FAIL" for g in verdicts.values()) else 0)
+              f"(reported)" + (f", incomplete runs {g['incomplete']}" if g["incomplete"] else ""))
+    raise SystemExit(0 if verdicts and all(g["verdict"] == "PASS" for g in verdicts.values()) else 1)

@@ -365,33 +365,66 @@ except qs.JudgeError:
 # -- E2's judging
 
 e2 = load("question-sheet-card-eval")
-facts_all = {"matter": "cap", "facts": {str(i): True for i in range(1, 7)}}
-facts_missing = {"matter": "cap", "facts": {"1": True, "2": True, "3": False, "4": True, "5": True, "6": True}}
+facts_all = {"facts": {str(i): True for i in range(1, 7)}}
+facts_missing = {"facts": {"1": True, "2": True, "3": False, "4": True, "5": True, "6": True}}
 yes, partly = {"could_decide": "yes"}, {"could_decide": "partly"}
 e2.READER_SAMPLES = 1
 e2.client = Fake([], [facts_all, yes])
-v = e2.judge_card("card", ["cap"], "low")
+v = e2.judge_card("card", "cap", "low")
 check("E2 a card with every fact and a yes passes", v["pass"] and v["essential"], v)
 e2.client = Fake([], [facts_missing, yes])
-check("E2 a missing essential fact fails", not e2.judge_card("card", ["cap"], "low")["pass"])
+check("E2 a missing essential fact fails", not e2.judge_card("card", "cap", "low")["pass"])
 e2.client = Fake([], [facts_all, partly])
-check("E2 a reader's partly fails", not e2.judge_card("card", ["cap"], "low")["pass"])
-e2.client = Fake([], [{"matter": "pii", "facts": {"1": True}}, yes])
-check("E2 a matter outside the scenario does not pass", not e2.judge_card("card", ["cap"], "low")["pass"])
-x = {"scenario": "cap", "cards": [{"card": "c", "notes": "n"}, {"card": "d", "notes": ""}]}
-e2.client = Fake([], [facts_missing, yes, facts_all, yes, facts_all, partly])  # one reader each: READER_SAMPLES is 1
+check("E2 a reader's partly fails", not e2.judge_card("card", "cap", "low")["pass"])
+e2.client = Fake([], [yes])
+v = e2.judge_card("card", None, "low")
+check("E2 an uncounted card gets one reader and no facts judge", v["matter"] == "none" and v["facts"] is None
+      and not v["pass"])
+e2.client = Fake([], [{"facts": {"1": True}}] * 3)
+try:
+    e2.judge_card("card", "cap", "low")
+    check("E2 a facts verdict missing facts is not accepted", False)
+except qs.JudgeError:
+    check("E2 a facts verdict missing facts is not accepted", True)
+e2.client = Fake([], [{"could_decide": "maybe"}] * 3)
+try:
+    e2.judge_card("card", None, "low")
+    check("E2 a reader verdict outside yes, partly, no is not accepted", False)
+except qs.JudgeError:
+    check("E2 a reader verdict outside yes, partly, no is not accepted", True)
+judged_prompts.clear()
+x = {"scenario": "cap", "cards": [{"card": "Use the fallback or block?", "notes": "n"}, {"card": "d", "notes": ""}]}
+e2.client = PromptFake([], [{"matter": "cap"}, facts_missing, yes, facts_all, yes, {"matter": "none"}, yes])
 e2.judge_run(x, "low")
-check("E2 capture judged only where there are notes", x["cards"][0]["with_capture"]["pass"] and
-      x["cards"][1]["with_capture"] is x["cards"][1]["alone"])
-check("E2 the matters asked are read from the cards", x["matters_asked"] == ["cap"])
+check("E2 relevance is judged with the run's evidence", "ExportTooLarge" in judged_prompts[0]
+      and "Use the fallback or block?" in judged_prompts[0])
+check("E2 the facts and reader judges never see the run's evidence",
+      all("ExportTooLarge" not in q for q in judged_prompts[1:5]))
+check("E2 a bare card relevance places on the matter is counted, and fails", x["cards"][0]["alone"]["matter"] == "cap"
+      and not x["cards"][0]["alone"]["pass"] and x["cards"][0]["with_capture"]["pass"])
+check("E2 an irrelevant card is not counted", x["cards"][1]["alone"]["matter"] == "none"
+      and x["cards"][1]["with_capture"] is x["cards"][1]["alone"])
+check("E2 the matters asked are read from relevance", x["matters_asked"] == ["cap"])
+args = types.SimpleNamespace(model="claude-opus-5-5", effort="medium", max_steps=20, shell_model="claude-sonnet-5-5",
+                              relevance_effort="low")
+e2.client = Fake([[use(11, qs.SHEET_TOOL, {"ask": [entry("Keep the legacy writer for the finance cron?")]})],
+                  [use(12, "Bash", {"command": "git status"})],
+                  [use(13, qs.SHEET_TOOL, {"ask": [entry("Cap?")]})],
+                  [use(14, qs.SHEET_TOOL, {"ask": [entry("Cap, with its reasons?", id="q2", context="the reasons")]})],
+                  [use(15, "Bash", {"command": "ls"})]],
+                 [{"matter": "none"}, {"matter": "cap"}, {"matter": "cap"}])
+x = e2.run(("v3", "cap", "short", 0), args, {"v3": str(qs.DEFAULT_ARM)})
+check("E2 a question about another matter does not end the run", x["ended"] == "after_sheet" and len(x["steps"]) == 4,
+      (x["ended"], len(x["steps"])))
+check("E2 each card is the version its call showed", [(c["id"], c["revision"]) for c in x["cards"]] ==
+      [("q1", 1), ("q2", 1), ("q2", 2)] and "Cap?" in x["cards"][1]["card"]
+      and "the reasons" not in x["cards"][1]["card"] and "the reasons" in x["cards"][2]["card"],
+      [(c["id"], c["card"][:80]) for c in x["cards"]])
 e2.READER_SAMPLES = 3
 e2.client = Fake([], [facts_all, yes, partly, yes])
-check("E2 the reader is the median of three", e2.judge_card("card", ["cap"], "low")["reader"]["could_decide"] == "yes")
+check("E2 the reader is the median of three", e2.judge_card("card", "cap", "low")["reader"]["could_decide"] == "yes")
 e2.client = Fake([], [facts_all, partly, yes, {"could_decide": "no"}])
-check("E2 one yes of three is not a yes", not e2.judge_card("card", ["cap"], "low")["pass"])
-e2.client = Fake([], [{"matter": "pii", "facts": {"1": True}}, yes])
-v = e2.judge_card("card", list(ss.MATTERS), "low", counted=["cap"])
-check("E2 a card outside the counted matters gets one reader", len(v["readers"]) == 1)
+check("E2 one yes of three is not a yes", not e2.judge_card("card", "cap", "low")["pass"])
 
 # -- Acceptance 14's gates
 
@@ -458,6 +491,14 @@ check("E2 gate: three readers' no fail", e2.gate(e2_runs(noes=3))["v3"]["verdict
 check("E2 gate: 85% of pii and tz passing pass", e2.gate(e2_runs(pii_fails=4))["v3"]["verdict"] == "PASS")
 check("E2 gate: below 85% of pii and tz fail", e2.gate(e2_runs(pii_fails=5))["v3"]["verdict"] == "FAIL")
 check("E2 gate: 7 runs of a scenario are short", e2.gate(e2_runs(reps=7))["v3"]["verdict"] == "short")
+runs = e2_runs()
+runs[3]["judge_error"] = "JudgeError(...)"
+check("E2 gate: a run whose judging failed makes the arm incomplete", e2.gate(runs)["v3"]["verdict"] == "incomplete")
+runs = e2_runs()
+del runs[5]["cards"][0]["alone"]
+check("E2 gate: an unjudged card makes the arm incomplete", e2.gate(runs)["v3"]["verdict"] == "incomplete")
+runs = e2_runs() + [{"job": ["v3", "pii", "long", 9], "error": "RateLimitError"}]
+check("E2 gate: an errored run makes the arm incomplete", e2.gate(runs)["v3"]["verdict"] == "incomplete")
 check("the evals ship v3 as their default", qs.DEFAULT_ARM.name == "description-v3.md" and
       "Ask when a question comes up, then keep working." in qs.sheet_tool_def()["description"]
       and "at that moment" not in qs.sheet_tool_def()["description"])
