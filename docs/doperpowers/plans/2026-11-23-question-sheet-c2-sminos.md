@@ -70,8 +70,14 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   byte for byte; `test_sheet_step: 79 passed`; gates GREEN (run
   45375809111). Also repaired: M1's reader printing a queued entry's
   field of another kind (the composite's writer's ruling).
-- [ ] M3 — Asking: the start choice, the sheet's schema, a call. Blocked
-  by: M2.
+- [x] (2026-11-24) M3 — Asking: the start choice, the sheet's schema, a
+  call. Commits `63c6ba718`, `7ea4a11ed`, fix waves `9a75c18c2`,
+  `586d91dc2`, `8236347a1`. The live check found the engine's two starts
+  unordered (As built, M3). Task review: six Important and three Minor,
+  then four Important and one Minor, then two Important (one fixed, one
+  deferred to M6's sweep); the last fix, a six-line guard, verified by
+  the controller. `run.sh` 948 passed; gates GREEN (run 45397387138);
+  live, the whole M3 set 22 passed with the owner's guard loaded.
 - [ ] M4 — Delivering: the routes, landing, a start, subagents. Blocked
   by: M3.
 - [ ] M5 — The terminal's drawing, and the import of today's asks. Blocked
@@ -2005,6 +2011,68 @@ I3's op.
   already keeps. Each runs `sminos sheet remove --session <left>
   --cleared`.
 - The timer of K4 starts at `session.start` and ends with the module.
+
+**As built (M3), what M4 to M6 build on.**
+
+- **The engine does not order the two starts.** At a terminal launch
+  (2.1.331) the classic SessionStart can settle before the plugin's
+  `session.start` has made the choice (which awaits `probe`), or after
+  it. An early SessionStart is kept (`sheet.early`) and ordered by
+  `session.start` once the choice is the sheet; dropped otherwise. Its
+  context then cannot ride the SessionStart's own result (M4's
+  compaction decision says where it goes).
+- **The ask waits for the choice.** The sheet declares at registration
+  that the ask's adoption of a resumed session's asks waits for the
+  choice (`deferAskToChoice`); the ask's SessionStart returns at once,
+  reads, and checks the yield again after its read. On 'today' and
+  'none' it adopts as before; on 'sheet' it adopts and publishes nothing
+  and keeps what it read, `asksReadWhileYielded()`, for M5's import.
+- **One start at a time.** `SheetKept.starting` (`{nonce, source,
+  floor?}`) is kept from the moment a start is owed until it answers, so
+  a reload orders the same start under the same nonce; a trigger during
+  an attempt joins it; a new attempt is made only after the last settled
+  with no answer.
+- **Generations.** Per-session work (the view, acks, unsettled calls,
+  notices, the floor, the drain queue, the start in flight) lives in a
+  generation, retired at every session change (`/clear`, `/branch`, a
+  fork). Every step, settle, drain, failure recovery and notification
+  belongs to the generation that ordered it and publishes only into it.
+  `/clear`'s removal of the left record runs in the background after the
+  old start in flight, one at a time, never ahead of the new session's
+  start, which is kept before anything is awaited. A failed overlapping
+  removal leaves the record to M6's sweep, the third chance.
+- **The floor's sources.** Only the tool's own results (paired with
+  their calls by id), what the engine marks as a plugin's context
+  (`hook_additional_context` attachments; text behind the engine's
+  `<event> hook additional context:` prefix, also inside another tool's
+  result blocks) and this plugin's prompt. Within those, a
+  `<sheet-delivery>` block, and a `[sheet v1]` text read by position: the
+  `New ids … q<n>.` footer as its last line, and the inline sentence only
+  in the fork and lost-record lines. Nothing the human, the model or
+  another tool wrote counts, whatever it quotes.
+- **A call before the start has answered**, or one whose staging write
+  failed, answers `Nothing done.` with the foreclosed clause, `the sheet
+  could not be written (the sheet is still starting); call again.` (or
+  the write's error), and orders no step. A refused capture refuses its
+  whole entry; captures are staged only once the entry has passed. The
+  running agents are read after staging, right before the step.
+- **The check (K4)** runs first in every hook that sees a tool call, the
+  tool's own and the built-in's refusal included. A compaction's drain is
+  queued on the single-flight queue with `context: "compact"` and is
+  owed on failure; M4 changes how its context reaches the model.
+- **Notices** of late settles wait in memory (`sheetNotices()`) for M4's
+  routes. The bridge's `sheet` op joins `OPS`, not the control ops; the
+  hello nudge is `sheetNudge([])`.
+- **The registered schema** is the published one less its `title`, with
+  C1's field descriptions (checked against `question_sheet.py`); a
+  reference's `path` and `lines` have none, as in C1's stub.
+- **The live check** (`live-sheet-check.py`) runs `many` first (later
+  cases act on its questions), each case in scratch homes with its own
+  tmux server; `--guard-plugin <dir>` loads the owner's secrets guard
+  for `secret`, found at run time. A today session's blocking call is
+  seen in the debug log (`$.tool.call (sminos): AskUserQuestion
+  (questions)`), since the engine stores it only once answered. The
+  door's verdict to a live session measured 0.50 to 0.56 s.
 
 **Does not touch.** The routes, landing, the contexts (M4): M3 orders
 `start` and drains and uses nothing of a view's `ready`. The band and the
