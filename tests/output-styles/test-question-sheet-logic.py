@@ -171,8 +171,10 @@ class SimClient:
 sim = SimClient()
 env.simulator = (sim, "claude-sonnet-5-5", ss.SIM_FACTS)
 out = sh("uv run python -c 'print(1)' && git status")
-check("an unknown command goes to the simulator, whole", out == "1" and "uv run python -c 'print(1)' && git status"
-      in sim.prompts[0] and "1,204 of them" in sim.prompts[0] and env.simulated[-1]["output"] == "1", out)
+check("an unknown command goes to the simulator alone", out.startswith("1\nOn branch") and
+      sim.prompts[0].endswith("Command line:\nuv run python -c 'print(1)'")
+      and "1,204 of them" in sim.prompts[0] and env.simulated[-1]["output"] == "1", out)
+check("2>&1 is a redirection, not a separator", qs.simple_commands("pytest -q 2>&1 | tail -3") == [["pytest", "-q", "2>&1"]])
 check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 1)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 env.simulator = None

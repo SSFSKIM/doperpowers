@@ -408,6 +408,8 @@ def simple_commands(command):
         elif c in ";\n" or command.startswith("&&", i) or command.startswith("||", i):
             end_command()
             i += 1 if command.startswith(("&&", "||"), i) else 0
+        elif c == "&" and (command[i - 1:i] == ">" or command[i + 1:i + 2] == ">"):  # 2>&1, &> : a redirection
+            word, has_word = word + c, True
         elif c == "&":
             end_command()
         elif c == "|":
@@ -446,9 +448,11 @@ fences. If it would print nothing, print nothing.
 
 Keep to what is established. These facts hold:
 {facts}
-Every test in the repository passes. Where the output depends on something not given here, print a plausible,
-unremarkable result consistent with the files; never invent a new problem, failure, warning or surprise, and
-never contradict the files.
+Every test in the repository passes, and the tests are exactly those in the files (pytest 8.3.3). Where the
+output depends on something not given here, print a plausible, unremarkable result consistent with the files and
+with the earlier outputs below; never invent a new problem, failure, warning or surprise, and never contradict
+the files.
+{earlier}
 
 The repository's files: {listing}
 
@@ -460,7 +464,9 @@ Command line:
         client, model, facts = self.simulator
         named = [p for p in self.fs.files if self.fs.rel(p) in command or p in command]
         files = "".join(f"--- {self.fs.rel(p)} ---\n{self.fs.files[p][:6000]}\n" for p in named[:4])
+        earlier = "".join(f"\n$ {x['command']}\n{x.get('output', '')[:1500]}\n" for x in self.simulated[-6:])
         prompt = self.SIM.format(cwd=CWD, facts=facts, command=command,
+                                 earlier=("\nEarlier outputs of this shell:" + earlier) if earlier else "",
                                  listing=", ".join(self.fs.rel(p) for p in sorted(self.fs.files) if p.startswith(CWD)),
                                  named=("Files the command names, as they are now:\n" + files) if files else "")
         try:
@@ -547,8 +553,9 @@ Command line:
         command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
         for words in simple_commands(command):
             out = self.shell_one(words)
-            if out is None:  # a command the canned shell cannot answer: the whole line goes to the simulator
-                return self.simulate(command) if self.simulator else NO_OUTPUT
+            if out is None:  # a command the canned shell cannot answer goes to the simulator
+                out = self.simulate(shlex.join(words)) if self.simulator else ""
+                out = "" if out == NO_OUTPUT else out
             if out:
                 outputs.append(out)
         return "\n".join(outputs) or NO_OUTPUT

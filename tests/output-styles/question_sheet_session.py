@@ -307,13 +307,20 @@ def test_rows_are_consumed_lazily():
 
 
 @pytest.mark.slow
-def test_memory_flat_at_2m_rows(usage_2m, peak_rss):
+def test_memory_flat_at_2m_rows(usage_2m, peak_rss, monkeypatch):
+    monkeypatch.setattr("tally.export.writer.MAX_EXPORT_ROWS", usage_2m.count)  # memory, not the cap, is tested
     with open("/dev/null", "w") as out, peak_rss() as rss:
         write_csv(usage_2m.rows(), usage_2m.columns, out, timezone="Europe/Berlin", total=usage_2m.count)
     assert rss.peak_mb < 128
 '''
 
-CONFTEST_PY = '''import pytest
+CONFTEST_PY = '''import contextlib
+import resource
+from pathlib import Path
+
+import pytest
+
+from tests.fixtures.usage import UsageFixture
 
 
 @pytest.fixture
@@ -325,6 +332,30 @@ def report_factory():
     def make(kind, account_id=1):
         return Report(id=1, account_id=account_id, type=kind, period_start=date(2026, 10, 1), period_end=date(2026, 11, 1))
     return make
+
+
+@pytest.fixture(scope="session")
+def usage_2m():
+    """The 2M-row usage fixture `make fixtures` writes, streamed from disk."""
+    path = Path(".fixtures/usage_2m.sql")
+    if not path.exists():
+        pytest.skip("run `make fixtures` first")
+    return UsageFixture(path)
+
+
+@pytest.fixture
+def peak_rss():
+    """A context manager whose result's peak_mb is the process's peak RSS while it ran, above the baseline."""
+    class Peak:
+        peak_mb = 0.0
+
+    @contextlib.contextmanager
+    def measure():
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        p = Peak()
+        yield p
+        p.peak_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 2**20 + 71.0
+    return measure
 '''
 
 PYTEST_V = """============================= test session starts ==============================
