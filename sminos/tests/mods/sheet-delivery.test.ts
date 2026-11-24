@@ -257,6 +257,23 @@ describe('a flight that fails (I9)', () => {
     expect(h.submits).toHaveLength(2)
   })
 
+  test('a split envelope: once its first part lands and that turn completes, the next part goes by the idle route with no human input', async () => {
+    const rec = record([], { per: 1 })
+    const h = await started(rec, { submit: (text) => ({ text }) })
+    await answered(h, rec, out('k1', 'q1'), out('k2', 'q2'))
+    h.afters.push(() => void h.turnStart('ours'))
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    expect(h.submits[0]).toContain('"keys":["k1"]')
+    await h.append({ door: 'prompt', origin: PLUGIN_ROW, text: `The sminos plugin sent a message:\n${h.submits[0]}` })
+    await h.settle()
+    await h.turnComplete('ours', 'answer')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    expect(h.submits[1]).toContain('"keys":["k2"]')
+  })
+
   test('the hidden fresh answer that opened a retry has spent its wake: an unchanged nudge or a turn that completes after the retry fails opens nothing; a newer answer opens one', async () => {
     const rec = record([], { per: 2 })
     const h = await started(rec, { submit: () => ({ drop: 'a hook said no' }) })
