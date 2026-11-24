@@ -216,7 +216,7 @@ describe('the routes (I9)', () => {
 })
 
 describe('a flight that fails (I9)', () => {
-  test("a submit dropped, or one that rejects, makes the envelope ready again with today's toast; it starts no turn again by itself", async () => {
+  test("a submit dropped, or one that rejects, makes the envelope ready again with today's toast; it is not retried by itself, but a fresh answer wakes the session and takes it along", async () => {
     for (const refusal of [() => ({ drop: 'a hook said no' }), () => Promise.reject(new Error('host refused'))]) {
       const rec = record()
       const h = await started(rec, { submit: refusal })
@@ -224,13 +224,60 @@ describe('a flight that fails (I9)', () => {
       await h.hop()
       expect(h.submits).toHaveLength(1)
       expect(h.calls.filter((c) => c.op === 'ui.toast').map((c) => c.args)).toEqual([expect.stringContaining('it goes with the next message')])
-      await answered(h, rec, out('k2', 'q2'))
+      // A dismissal wakes nothing: the failed answer is not retried for it.
+      await answered(h, rec, out('d1', 'q3', { kind: 'dismiss' }))
       await h.hop()
       expect(h.submits).toHaveLength(1)
+      // A fresh answer wakes the session, the failed one along.
+      await answered(h, rec, out('k2', 'q2'))
+      await h.hop()
+      expect(h.submits).toHaveLength(2)
+      expect(h.submits[1]).toContain('"keys":["k1","k2","d1"]')
+      await h.hop()
+      expect(h.submits).toHaveLength(2)
       await h.turnStart('t1')
-      expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
+      expect(contextOf(await h.call('Read', {}))).toEqual([rec.envelope('main')?.text])
     }
   })
+
+  test("at a turn's end only a route's framing counts: a human's prompt quoting the block lands nothing; a context holding part of the batch lands that part, the rest ready again", async () => {
+    const rec = record()
+    const h = await started(rec)
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'), out('k2', 'q2'))
+    expect(contextOf(await h.call('Read', {}))).toHaveLength(1)
+    h.converse({ rows: [], api: [{ role: 'user', content: envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main') }] })
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    expect(steps(h, 'landed')).toEqual([])
+    await h.turnStart('t2')
+    expect(contextOf(await h.call('Read', {}))).toHaveLength(1)
+    const part = `<system-reminder>\ntool.call hook additional context: ${envelopeOf([out('k1', 'q1')], 'main')}\n</system-reminder>`
+    h.converse({ rows: [], api: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: [{ type: 'text', text: 'read' }, { type: 'text', text: part }] }] }] })
+    await h.turnComplete('t2', 'aborted')
+    await h.settle()
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
+    await h.turnStart('t3')
+    expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k2', 'q2')], 'main')])
+  })
+
+  test('a prompt that keeps the envelope but drops a context waiting, or drops a context it carried alone, puts that context back for the next route', async () => {
+    let fails = true
+    const rec = record()
+    const h = await started(rec, { step: (event, n) => (event.context === 'compact' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
+    await h.classicStart('compact')
+    fails = false
+    await h.tick()
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'))
+    const isContext = (c: string) => c.startsWith('[sheet v1] context')
+    const kept = (await h.prompt('first', { turnId: 't1' }, async (e) => ({ text: e.text, context: (e.context as string[]).filter((c) => !isContext(c)) }))) as { context?: string[] }
+    expect(kept.context).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+    const alone = (await h.prompt('second', { turnId: 't1' }, async (e) => ({ text: e.text, context: [] }))) as { context?: string[] }
+    expect(alone.context).toEqual([])
+    expect(contextOf(await h.call('Read', {}))).toEqual([expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
+  })
+
 
   test('a notice the prompt that entered still carries is not put back with the envelope a hook took out', async () => {
     const rec = record([], { open: [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }] })
@@ -338,6 +385,65 @@ describe('which turn a flight belongs to (I9)', () => {
     await h.settle()
     expect(h.calls.filter((c) => c.op === 'ui.toast')).toHaveLength(1)
   })
+
+  test("a prompt typed over a turn whose end is still reading the conversation when the next turn starts belongs to that next turn", async () => {
+    let holding = false
+    let read: () => void = () => {}
+    const rec = record()
+    const h = await started(rec, { apiRead: () => (holding ? new Promise<void>((resolve) => (read = resolve)) : Promise.resolve()) })
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'))
+    expect(((await h.prompt('also this', { turnId: 't1' })) as { context?: string[] }).context).toHaveLength(1)
+    h.converse({ rows: [], api: [] })
+    holding = true
+    await h.turnComplete('t1', 'answer')
+    await h.turnStart('t2')
+    holding = false
+    read()
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'ui.toast')).toEqual([])
+    await h.turnComplete('t2', 'answer')
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'ui.toast')).toHaveLength(1)
+  })
+})
+
+describe('a reservation, checked again at the hop (I9)', () => {
+  const A1 = { id: 'a1', description: 'reviewer', type: 'general', status: 'running' }
+
+  test('a prompt that enters before the idle hop takes the envelope; the hop then submits nothing', async () => {
+    const rec = record()
+    const h = await started(rec)
+    await answered(h, rec, out('k1', 'q1'))
+    const entered = (await h.prompt('hello')) as { context?: string[] }
+    expect(entered.context).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+    await h.hop()
+    expect(h.submits).toEqual([])
+  })
+
+  test('a session change before the idle hop: the hop submits nothing for the session left', async () => {
+    const rec = record()
+    const h = await started(rec)
+    await answered(h, rec, out('k1', 'q1'))
+    await h.classicStart('clear', '5eed0000-0000-4000-8000-0000000000c2')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toEqual([])
+  })
+
+  test('a subagent that stops before the send hop is not sent to (a send would resume it); the stop hands its answer to the main conversation', async () => {
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1] })
+    await answered(h, rec, out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    await h.hop()
+    expect(h.sends).toEqual([])
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    expect(h.submits[0]).toContain('"keys":["k1"]')
+  })
 })
 
 describe('landing (I9)', () => {
@@ -418,24 +524,18 @@ describe('landing (I9)', () => {
 })
 
 describe('a start (I9, I10)', () => {
-  const stored = (key: string, kind: 'tool.call' | 'prompt.submit' | 'plugin' | 'human') =>
-    JSON.stringify(
-      kind === 'plugin'
-        ? { type: 'user', origin: PLUGIN_ROW, message: { role: 'user', content: `The sminos plugin sent a message:\n${envelopeOf([out(key, 'q')], 'main')}` } }
-        : kind === 'human'
-          ? { type: 'user', origin: { kind: 'composer' }, message: { role: 'user', content: envelopeOf([out(key, 'q')], 'main') } }
-          : { type: 'attachment', attachment: { type: 'hook_additional_context', content: [envelopeOf([out(key, 'q')], 'main')], hookName: kind } },
-    )
+  /** A line of the search's evidence (the stored rows are read by the real search: test-sheet-step.sh). */
+  const stored = (key: string, kind: 'tool.call' | 'prompt.submit' | 'plugin') => JSON.stringify({ keys: [key], kind })
 
   test("the search finds one of two pending outcomes: it lands, the start is ordered again, and its context is the SessionStart's; the other goes owed across a stop", async () => {
     const rec = record([out('k1', 'q1'), out('k2', 'q2')])
     const searched: string[][] = []
-    const h = sheetOn({ step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n${stored('k2', 'human')}\n` }) })
+    const h = sheetOn({ step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
     await h.start()
     const answered = (await h.classicStart('resume')) as { additionalContext?: string[] }
     expect(searched).toHaveLength(1)
-    expect(searched[0]?.slice(0, 2)).toEqual(['perl', '-e'])
-    expect(searched[0]?.slice(3)).toEqual(['--', '<sheet-delivery>', `/t/${S1}.jsonl`])
+    expect(searched[0]?.slice(0, 3)).toEqual(['perl', '-MJSON::PP', '-e'])
+    expect(searched[0]?.slice(4)).toEqual(['--', `/t/${S1}.jsonl`])
     expect(h.steps.map((s) => s.event)).toEqual(['start', 'landed', 'start'])
     expect(h.steps[2]?.start).toEqual(h.steps[0]?.start)
     expect(steps(h, 'landed')[0]?.keys).toEqual(['k1'])
@@ -452,6 +552,31 @@ describe('a start (I9, I10)', () => {
     await h.start()
     await h.classicStart('resume')
     expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k0', 'k1', 'k2', 'k249']])
+  })
+
+  test('a search output cut at its bound counts its whole lines: the newest rows, printed first', async () => {
+    const rec = record([out('k1', 'q1'), out('k2', 'q2')])
+    const h = sheetOn({ step: rec.script, exec: () => ({ exitCode: 0, stdout: `${stored('k2', 'plugin')}\n{"keys":["k1"],"ki`, isStdoutTruncated: true }) })
+    await h.start()
+    await h.classicStart('resume')
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k2']])
+  })
+
+  test("a reload before the start answered: its retry searches the transcript it was given, lands what it found, and its context goes by the next route", async () => {
+    let fails = true
+    const rec = record([out('k1', 'q1'), out('k2', 'q2')])
+    const first = sheetOn({ step: (event, n) => (fails ? Promise.reject(new Error('the command did not start')) : rec.script(event, n)) })
+    await first.start()
+    await first.classicStart('resume')
+    fails = false
+    const searched: string[][] = []
+    const reloaded = sheetOn({ kept: first.kept, step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
+    await reloaded.start()
+    await reloaded.settle()
+    expect(searched.map((argv) => argv.at(-1))).toEqual([`/t/${S1}.jsonl`])
+    expect(steps(reloaded, 'landed').map((s) => s.keys)).toEqual([['k1']])
+    await reloaded.turnStart('t1')
+    expect(contextOf(await reloaded.call('Read', {}))).toEqual([envelopeOf([out('k2', 'q2', { acrossStop: true })], 'main'), expect.stringMatching(/^\[sheet v1\] context \d+: k2$/)])
   })
 
   test("a search that fails lands nothing, and the start's own context is the SessionStart's", async () => {
@@ -535,6 +660,21 @@ describe('a compaction (E12)', () => {
     await h.turnStart('t1')
     expect(contextOf(await h.call('Read', {}))).toEqual([expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
     expect(contextOf(await h.call('Read', {}))).toEqual([])
+  })
+
+  test('in a MAWS-run session the context with no answer at the SessionStart rides the next prompt alone: no answer goes by a route there', async () => {
+    let fails = true
+    const rec = record()
+    const h = await started(rec, { env: { MAWS_QUESTION_SHEET: S1 }, step: (event, n) => (event.context === 'compact' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
+    await h.classicStart('compact')
+    fails = false
+    await h.tick()
+    await answered(h, rec, out('k1', 'q1'))
+    await h.turnStart('t1')
+    expect(contextOf(await h.call('Read', {}))).toEqual([])
+    const entered = (await h.prompt('steer', { turnId: 't1' })) as { context?: string[] }
+    expect(entered.context).toEqual([expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
+    expect(((await h.prompt('again', { turnId: 't1' })) as { context?: string[] }).context).toBeUndefined()
   })
 })
 
@@ -629,5 +769,55 @@ describe('subagents (§6, I9)', () => {
     await h.settle()
     await h.turnStart('t1')
     expect(contextOf(await h.call('Read', {}))).toEqual([])
+  })
+
+  test('a stop while a send to it is awaited: every step until its receipt passes the agent as running, so the stop takes nothing back; after, it is not', async () => {
+    let receipt: (value: unknown) => void = () => {}
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1], send: () => new Promise((resolve) => (receipt = resolve)) })
+    await answered(h, rec, out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    await h.hop()
+    expect(h.sends).toHaveLength(1)
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    expect(steps(h, 'drain').at(-1)?.agents).toEqual({ running: ['a1'], direct: true })
+    expect(rec.pending.map((o) => o.recipient)).toEqual([{ agentId: 'a1' }])
+    receipt({ isDelivered: true })
+    await h.settle()
+    expect(steps(h, 'landed').at(-1)).toMatchObject({ keys: ['k1'], agents: { running: ['a1'], direct: true } })
+    await sheetNudge([])
+    await h.settle()
+    expect(steps(h, 'drain').at(-1)?.agents).toEqual({ running: [], direct: true })
+  })
+
+  test('a notice waiting when the idle route opens goes in its prompt, above the envelope, and on no route after', async () => {
+    const open = [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1] })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    await answered(h, rec, out('k1', 'q1'))
+    await h.hop()
+    const notice = '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.'
+    expect(h.submits).toEqual([`${notice}\n\n${envelopeOf([out('k1', 'q1')], 'main')}`])
+    await h.turnStart('t1')
+    expect(contextOf(await h.call('Read', {}))).toEqual([])
+  })
+
+  test('a second stop names only the questions not named before', async () => {
+    const open: unknown[] = [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1] })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    open.push({ id: 'q6', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'And the tests?', askedAt: '2026-11-24T10:00:00.000Z' })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    await h.turnStart('t1')
+    expect(contextOf(await h.call('Read', {}))).toEqual([
+      '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.',
+      '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q6 "And the tests?". Their answers will come to you; withdraw what you no longer need.',
+    ])
   })
 })

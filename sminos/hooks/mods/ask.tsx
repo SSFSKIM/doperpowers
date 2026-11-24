@@ -1372,15 +1372,13 @@ const SEARCH =
   'binmode STDOUT; my $path = pop @ARGV; my $re = join "|", map { quotemeta } @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /$re/o) { print $line; $found = 1 } } exit($found ? 0 : 1);'
 
 /**
- * The search for the stored forms in the transcript at `path`: today's
- * tool's, unless another reader of the transcript names its own (the
- * question sheet's, sheet.tsx). Not grep: the macOS one slows with each
- * `-e`, and on a transcript of 144 MiB took 7 s for the five forms there
- * were then, where perl takes 0.3 s (2026-10-19), while a resumed session's
- * questions waited for it.
+ * The search for the stored forms in the transcript at `path`. Not grep: the
+ * macOS one slows with each `-e`, and on a transcript of 144 MiB took 7 s
+ * for the five forms there were then, where perl takes 0.3 s (2026-10-19),
+ * while a resumed session's questions waited for it.
  */
-export function searchArgs(path: string, forms: readonly string[] = STORED_FORMS): string[] {
-  return ['perl', '-e', SEARCH, '--', ...forms, path]
+export function searchArgs(path: string): string[] {
+  return ['perl', '-e', SEARCH, '--', ...STORED_FORMS, path]
 }
 
 /**

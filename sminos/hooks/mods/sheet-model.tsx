@@ -881,34 +881,55 @@ export function contentTexts(content: unknown): string[] {
 }
 
 /**
- * The keys a stored transcript row delivered (I9, a start's search): an
- * attachment of type `hook_additional_context` whose `hookName` is
- * `tool.call` or `prompt.submit`, or a user row whose origin is this
- * plugin's prompt; told by what the stored row holds, which says less of
- * authorship than the live event did (U13). Anything else names none.
+ * A start's search (I9) of the transcript at `path` for the envelopes the
+ * routes delivered, printing compact evidence, never the rows: for each
+ * stored row of a route's kind that holds a valid block (I7's shape, as
+ * `blocksOf` reads it), a line `{"kind":…,"keys":[…]}`, newest row first,
+ * each key once (at its newest row). A row of a route's kind: an attachment
+ * of type `hook_additional_context` whose `hookName` is `tool.call` or
+ * `prompt.submit`, or a user row whose origin is this plugin's prompt; told
+ * by what the stored row holds, which says less of authorship than the live
+ * event did (U13). Only lines holding the block's tag are decoded. Perl
+ * (JSON::PP is core), one pass; its exit code is grep's: 0 found, 1 none,
+ * 2 unreadable. Newest first, so an output cut at its bound keeps the rows
+ * most likely still pending and loses only the oldest.
  */
-export function storedKeys(row: unknown): string[] {
-  if (!isRecord(row)) return []
-  if (row.type === 'attachment' && isRecord(row.attachment)) {
-    const a = row.attachment
-    if (a.type !== 'hook_additional_context' || (a.hookName !== 'tool.call' && a.hookName !== 'prompt.submit')) return []
-    const content = Array.isArray(a.content) ? a.content.filter((x): x is string => typeof x === 'string') : typeof a.content === 'string' ? [a.content] : []
-    return keysIn(content)
-  }
-  if (row.type === 'user' && isRecord(row.origin) && row.origin.kind === 'plugin' && row.origin.name === PLUGIN) {
-    const prompt = isRecord(row.pluginPrompt) && typeof row.pluginPrompt.text === 'string' ? [row.pluginPrompt.text] : []
-    return keysIn([...prompt, ...contentTexts(isRecord(row.message) ? row.message.content : undefined)])
-  }
-  return []
+export function landedSearchArgs(path: string): string[] {
+  return ['perl', '-MJSON::PP', '-e', LANDED_SEARCH, '--', path]
 }
 
-/** The keys a start's search found: each printed line a stored row (a line that is not JSON names none). */
+const LANDED_SEARCH = [
+  'binmode STDOUT; my $path = pop @ARGV; open(my $fh, "<:raw", $path) or exit 2;',
+  'my $json = JSON::PP->new->utf8; my $text = JSON::PP->new->utf8(0); my @rows;',
+  'sub strs { my ($c) = @_; return ref $c eq "ARRAY" ? (grep { defined $_ && !ref $_ } @$c) : (defined $c && !ref $c) ? ($c) : () }',
+  'sub texts { my ($c) = @_; return ($c) if defined $c && !ref $c; return () unless ref $c eq "ARRAY";',
+  '  return map { ref $_ ne "HASH" ? () : ($_->{type} // "") eq "text" && defined $_->{text} && !ref $_->{text} ? ($_->{text}) : ($_->{type} // "") eq "tool_result" ? texts($_->{content}) : () } @$c }',
+  'sub keys_of { my @keys; for my $t (@_) { for my $l (split /\\n/, $t) { $l =~ s/\\r$//; next unless $l =~ /^<sheet-delivery>(.*)<\\/sheet-delivery>$/;',
+  '  my $b = eval { $text->decode($1) }; next unless ref $b eq "HASH" && defined $b->{v} && !ref $b->{v} && $b->{v} eq "1" && ref $b->{keys} eq "ARRAY" && ref $b->{answered} eq "ARRAY" && ref $b->{dismissed} eq "ARRAY";',
+  '  my @k = grep { defined $_ && !ref $_ } @{$b->{keys}}; my $n = (grep { ref $_ eq "HASH" && defined $_->{id} && !ref $_->{id} } @{$b->{answered}}) + (grep { defined $_ && !ref $_ } @{$b->{dismissed}});',
+  '  next unless @k == @{$b->{keys}} && @k >= 1 && @k <= 200 && @k == $n; push @keys, @k } } return @keys }',
+  'while (my $line = <$fh>) { next if index($line, "<sheet-delivery>") < 0; my $row = eval { $json->decode($line) }; next unless ref $row eq "HASH"; my ($kind, @t); my $type = $row->{type} // "";',
+  '  if ($type eq "attachment" && ref $row->{attachment} eq "HASH") { my $a = $row->{attachment}; next unless ($a->{type} // "") eq "hook_additional_context"; $kind = $a->{hookName} // ""; next unless $kind eq "tool.call" || $kind eq "prompt.submit"; @t = strs($a->{content}) }',
+  '  elsif ($type eq "user" && ref $row->{origin} eq "HASH" && ($row->{origin}{kind} // "") eq "plugin" && ($row->{origin}{name} // "") eq "sminos") { $kind = "plugin"; @t = ((ref $row->{pluginPrompt} eq "HASH" ? strs($row->{pluginPrompt}{text}) : ()), (ref $row->{message} eq "HASH" ? texts($row->{message}{content}) : ())) }',
+  '  else { next } my @k = keys_of(@t); push @rows, [$kind, [@k]] if @k }',
+  'my $out = JSON::PP->new->utf8->canonical; my %seen; for my $r (reverse @rows) { my @k = grep { !$seen{$_}++ } @{$r->[1]}; print $out->encode({ kind => $r->[0], keys => [@k] }), "\\n" if @k } exit(@rows ? 0 : 1);',
+].join('\n')
+
+/**
+ * The keys a start's search found: each line of its compact evidence that
+ * is a row's kind and its keys (anything else, a line the cut ended inside
+ * included, names none).
+ */
 export function searchedKeys(lines: readonly string[]): string[] {
+  const kinds = new Set(['tool.call', 'prompt.submit', 'plugin'])
   return [
     ...new Set(
       lines.flatMap((line) => {
         try {
-          return storedKeys(JSON.parse(line))
+          const found: unknown = JSON.parse(line)
+          if (!isRecord(found) || typeof found.kind !== 'string' || !kinds.has(found.kind) || !Array.isArray(found.keys)) return []
+          const keys = found.keys.filter((key): key is string => typeof key === 'string' && key !== '')
+          return keys.length === found.keys.length ? keys : []
         } catch {
           return []
         }
@@ -917,12 +938,26 @@ export function searchedKeys(lines: readonly string[]): string[] {
   ]
 }
 
-/** The forms a start's search looks for in a transcript: a stored envelope's block (`searchArgs` of ask.tsx). */
-export const DELIVERY_FORMS: readonly string[] = ['<sheet-delivery>']
+/**
+ * A route's text as the conversation the model holds renders it (the api
+ * form, which keeps no origin): a hook's context of `tool.call` or
+ * `prompt.submit` behind the engine's prefix (bare, or in a reminder), or
+ * this plugin's prompt behind its frame; read from the start of an item (a
+ * text block, or a text block inside a tool result), as the floor reads it.
+ * A human's prompt or a tool's output that quotes a block is no route's.
+ */
+const ROUTE_CONTEXT = /^(?:<system-reminder>\n)?(?:tool\.call|prompt\.submit) hook additional context: /
+function routeText(text: string): string | undefined {
+  if (ROUTE_CONTEXT.test(text)) return text.replace(ROUTE_CONTEXT, '')
+  return text.startsWith(PLUGIN_PROMPT) ? sheetTextOf(text) : undefined
+}
 
-/** The keys the conversation the model holds names in a block (`$.session.messages({ as: 'api' })`), on its human's side. */
+/** The keys the conversation the model holds names in a block a route put there (`$.session.messages({ as: 'api' })`), on its human's side. */
 export function heldKeys(api: readonly { role: string; content: unknown }[]): Set<string> {
-  return new Set(keysIn(api.filter((message) => message.role !== 'assistant').flatMap((message) => contentTexts(message.content))))
+  const items = api
+    .filter((message) => message.role !== 'assistant')
+    .flatMap((message) => [...textsOf(message.content), ...blocksIn(message.content, 'tool_result').flatMap((block) => textsOf(block.content))])
+  return new Set(keysIn(items.flatMap((text) => routeText(text) ?? [])))
 }
 
 /**

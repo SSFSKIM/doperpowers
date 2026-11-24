@@ -732,14 +732,17 @@ class Sheet(LB.Live):
         sub_text = "".join(open(p, errors="replace").read() for p in self.sub_files(sid) if p not in subs)
         main_rows = self.envelopes(sid)
         main_keys = {k for _, _, _, bs in main_rows for b in bs for k in b[0]}
-        if keys and self.wants("subagent"):
+        # Asserted whatever the setup gave: a question that never appeared, or a put that failed, is a failure here.
+        took = len(keys) == 2
+        if self.wants("subagent"):
             self.check("subagent: answered while it runs, its own transcript holds the envelope under its opening line, the main one does not",
-                       keys[0] in sub_text and SUBAGENT_OPENING in sub_text and keys[0] not in main_keys,
-                       "sub has key %s, opening %s; main has it %s" % (keys[0] in sub_text, SUBAGENT_OPENING in sub_text, keys[0] in main_keys))
-        if keys and self.wants("both"):
+                       took and keys[0] in sub_text and SUBAGENT_OPENING in sub_text and keys[0] not in main_keys,
+                       "question %s; keys %s; sub has key %s, opening %s; main has it %s" % (
+                           q and q["id"], keys, took and keys[0] in sub_text, SUBAGENT_OPENING in sub_text, took and keys[0] in main_keys))
+        if self.wants("both"):
             self.check("both: one put answers the main agent's question and a running subagent's; each conversation holds its own key only",
-                       keys[0] in sub_text and keys[1] not in sub_text and keys[1] in main_keys and keys[0] not in main_keys,
-                       "sub %s; main %s" % ([k in sub_text for k in keys], [k in main_keys for k in keys]))
+                       took and keys[0] in sub_text and keys[1] not in sub_text and keys[1] in main_keys and keys[0] not in main_keys,
+                       "question %s; keys %s; sub %s; main %s" % (q and q["id"], keys, [k in sub_text for k in keys], [k in main_keys for k in keys]))
         # A subagent asks and ends: the main conversation's next route names its open question; the answer given after
         # it ended goes to the main conversation, naming it, and does not resume it.
         inner = call_prompt({"ask": [{"question": "Sub-B: which metal?", "options": [{"label": "Gold"}, {"label": "Iron"}]}]})
@@ -763,7 +766,7 @@ class Sheet(LB.Live):
         if self.wants("agent-open"):
             self.check("agent-open: a subagent that ends with a question open is named on the main conversation's next "
                        "route (its completion's prompt, or a tool result), once",
-                       q and len(noticed) == 1 and noticed[0][0] in ("prompt.submit", "tool.call") and q["id"] in noticed[0][1],
+                       q and len(noticed) == 1 and noticed[0][0] in ("prompt.submit", "tool.call", "plugin") and q["id"] in noticed[0][1],
                        "question %s; notices %r" % (q and q["id"], [(k, t[:160]) for k, t in noticed]))
         if q is None:
             return

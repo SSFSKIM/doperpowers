@@ -71,6 +71,8 @@ export function harness(
     agents?: { id: string; description: string; type: string; status: string }[]
     /** The conversation the engine holds; rejects when absent (C0's P5). */
     messages?: { rows: { role: string; text: string; toolUses: { tool: string; text?: string }[] }[]; api: { role: string; content: unknown }[] }
+    /** Awaited before the conversation's api form is answered: a read the test holds. */
+    apiRead?: () => Promise<void>
     files?: Record<string, string>
     remove?: number
     /** What `$.prompt.submit` answers for a text (the idle route); `{ text }` otherwise. */
@@ -114,6 +116,7 @@ export function harness(
       },
       messages: async (opts?: { as?: string }) => {
         calls.push({ op: 'session.messages', args: opts })
+        if (opts?.as === 'api' && options.apiRead !== undefined) await options.apiRead()
         if (conversation === undefined) throw new Error('not available in this mode: no session is bound in this process')
         return opts?.as === 'api' ? conversation.api : conversation.rows
       },

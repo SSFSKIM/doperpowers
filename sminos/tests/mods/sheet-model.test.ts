@@ -31,7 +31,6 @@ import {
   readInput,
   searchedKeys,
   settingOf,
-  storedKeys,
   unreadClause,
   validateCall,
 } from '../../hooks/mods/sheet-model'
@@ -468,24 +467,32 @@ describe('the block (I7) and the rows that land one (I9)', () => {
     expect(isRouteRow({ door: 'delivery', origin: { kind: 'plugin', name: 'sminos' } })).toBe(false)
   })
 
-  test("a stored row lands what it holds when it is of those kinds, as the transcript keeps it (2.1.331)", async () => {
-    const text = envelope(['k1'], ['q1'])
-    const attachment = (hookName: string) => ({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['other', text], hookName, toolUseID: 'x', hookEvent: 'PostToolUse' } })
-    expect(storedKeys(attachment('tool.call'))).toEqual(['k1'])
-    expect(storedKeys(attachment('prompt.submit'))).toEqual(['k1'])
-    expect(storedKeys(attachment('SessionStart'))).toEqual([])
-    const prompt = (origin: unknown) => ({ type: 'user', origin, pluginPrompt: { name: 'sminos', text }, message: { role: 'user', content: `The sminos plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` } })
-    expect(storedKeys(prompt({ kind: 'plugin', name: 'sminos' }))).toEqual(['k1'])
-    expect(storedKeys(prompt({ kind: 'composer' }))).toEqual([])
-    expect(storedKeys({ type: 'user', message: { role: 'user', content: text } })).toEqual([])
-    expect(searchedKeys([JSON.stringify(attachment('tool.call')), 'not json', JSON.stringify(prompt({ kind: 'plugin', name: 'sminos' }))])).toEqual(['k1'])
+  test("a start's search evidence: each line a route's kind and its keys; anything else, a cut line included, names none", async () => {
+    expect(
+      searchedKeys([
+        '{"keys":["k3"],"kind":"plugin"}',
+        '{"keys":["k1","k2"],"kind":"tool.call"}',
+        '{"keys":["k9"],"kind":"SessionStart"}',
+        '{"keys":["k8",3],"kind":"prompt.submit"}',
+        'not json',
+        '{"keys":["k4"],"kind":"prompt.su',
+      ]),
+    ).toEqual(['k3', 'k1', 'k2'])
   })
 
-  test('the keys the conversation holds, on its human side: a context in a tool result, a prompt; never the model\'s own text', async () => {
+  test("the keys the conversation holds are a route's: a context of tool.call or prompt.submit behind the engine's prefix (in a tool result too), this plugin's prompt; never a bare block a human or a tool's output quotes, nor the model's own text", async () => {
     const text = envelope(['k1'], ['q1'])
-    expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: `<system-reminder>\ntool.call hook additional context: ${text}\n</system-reminder>` }] }] }])]).toEqual(['k1'])
-    expect([...heldKeys([{ role: 'user', content: text }])]).toEqual(['k1'])
-    expect([...heldKeys([{ role: 'assistant', content: [{ type: 'text', text }] }])]).toEqual([])
+    const reminder = (hook: string) => `<system-reminder>\n${hook} hook additional context: ${text}\n</system-reminder>`
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: 'output' }, { type: 'text', text: reminder('tool.call') }] }] }])]).toEqual(['k1'])
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'text', text: reminder('prompt.submit') }] }])]).toEqual(['k1'])
+    expect([...heldKeys([{ role: 'system', content: `tool.call hook additional context: ${text}` }])]).toEqual(['k1'])
+    expect([...heldKeys([{ role: 'user', content: `The sminos plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` }])]).toEqual(['k1'])
+    // A human's prompt quoting the block, a tool's output holding it, another hook's context, another plugin's prompt.
+    expect([...heldKeys([{ role: 'user', content: text }])]).toEqual([])
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: text }] }])]).toEqual([])
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'text', text: reminder('SessionStart') }] }])]).toEqual([])
+    expect([...heldKeys([{ role: 'user', content: `The other plugin sent a message:\n${text}` }])]).toEqual([])
+    expect([...heldKeys([{ role: 'assistant', content: [{ type: 'text', text: reminder('tool.call') }] }])]).toEqual([])
   })
 
   test("a subagent's ended notice names it and each open question's first 200 characters", async () => {

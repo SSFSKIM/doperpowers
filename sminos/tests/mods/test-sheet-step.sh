@@ -23,7 +23,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs } from '$root/hooks/mods/sheet-model.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs, landedSearchArgs, searchedKeys } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -226,6 +226,36 @@ const s2 = JSON.parse(readFileSync(\`\${HOME}/sheet/\${S2}/state.json\`, 'utf8')
 check('the delivered answer landed; the quoted one is still owed, across the stop', s2.pending.map((o: { key: string }) => o.key).join() === 'kb000002' && s2.pending[0].acrossStop === true && s2.closed.q1?.deliveredAt !== undefined, s2.pending)
 check("the start's context lists only what is still owed", typeof context === 'string' && context.includes('q2 (revision 1)') && !context.includes('q1 (revision 1)'), context)
 check('nothing went by a route while the start searched', submitted.length === 0 && hops.length === 0, { submitted, hops: hops.length })
+
+// The search prints compact evidence, a row's kind and keys, newest first and each key once: a recent row behind more
+// than 4 MiB of older matches is its first line, and an output cut at 4 MiB still holds it. A human's prompt quoting a
+// block, another hook's context and an invalid block name nothing.
+const blockOf = (key: string, id: string) => \`<sheet-delivery>{"v":1,"keys":[\${key.split(',').map((k) => JSON.stringify(k)).join(',')}],"answered":[{"id":"\${id}","revision":1,"picks":[],"text":"\${'x'.repeat(300)}","images":[]}],"dismissed":[]}</sheet-delivery>\`
+const head = '[sheet v1] The human answered questions on your sheet.'
+const contextRow = (hookName: string, key: string) => JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['another hook', \`\${head}\\n\${blockOf(key, 'q1')}\`], hookName } })
+const olds = Array.from({ length: 12_000 }, (_, i) => contextRow(i % 2 === 0 ? 'tool.call' : 'prompt.submit', \`old-\${i}\`))
+const envelopeText = \`\${head}\\n\${blockOf('recent-1', 'q2')}\`
+const newer = [
+  contextRow('tool.call', 'old-0'),
+  JSON.stringify({ type: 'user', origin: { kind: 'composer' }, message: { role: 'user', content: \`\${head}\\n\${blockOf('quoted-1', 'q3')}\` } }),
+  contextRow('SessionStart', 'session-1'),
+  // Two keys for one answered entry: no block.
+  contextRow('tool.call', 'bad,worse'),
+  JSON.stringify({ type: 'user', origin: { kind: 'plugin', name: 'sminos' }, pluginPrompt: { name: 'sminos', text: envelopeText }, message: { role: 'user', content: \`The sminos plugin sent a message:\\n\${envelopeText}\\n\\nThis is how Claude Code surfaces a prompt a plugin submits between turns.\` } }),
+]
+writeFileSync('$work/big.jsonl', [...olds, ...newer].join('\n') + '\n')
+const bigSize = statSync('$work/big.jsonl').size
+const evidence = execFileSync(landedSearchArgs('$work/big.jsonl')[0] as string, landedSearchArgs('$work/big.jsonl').slice(1), { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+const evidenceLines = evidence.split('\n')
+const allFound = searchedKeys(evidenceLines)
+check('the transcript searched is past 4 MiB of older matches', bigSize > 4 * 1024 * 1024, bigSize)
+check('the newest row is the first line, its kind and keys', evidenceLines[0] === '{"keys":["recent-1"],"kind":"plugin"}', evidenceLines.slice(0, 3))
+check('a key is printed once, at its newest row', evidenceLines[1] === '{"keys":["old-0"],"kind":"tool.call"}' && allFound.filter((k) => k === 'old-0').length === 1 && allFound.length === 12_001, [evidenceLines[1], allFound.length])
+check("a human's quote, another hook's context and an invalid block name nothing", !['quoted-1', 'session-1', 'bad', 'worse'].some((k) => allFound.includes(k)), allFound.slice(0, 5))
+const cut = evidence.slice(0, 4096)
+check('an output cut short still holds the newest rows', searchedKeys(cut.split('\n').slice(0, -1)).slice(0, 2).join() === 'recent-1,old-0', cut.slice(0, 120))
+check('the evidence is compact: a small part of what it searched', evidence.length < bigSize / 10, [evidence.length, bigSize])
+check('a transcript with no envelope exits 1', spawnSync('perl', landedSearchArgs('$work/none.jsonl').slice(1)).status === 1)
 
 // A fresh answer after two hundred owed across a stop that fill an envelope: the composer packs it first, so the
 // envelope the mod takes wakes and goes by the idle route, from the hop.
