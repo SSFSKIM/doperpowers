@@ -146,6 +146,12 @@ check("git diff shows the edit", '+        return format(value.normalize(), "g")
 out = sh("git add -A && git commit -m 'wip: two tests'")
 check("a commit cleans the tree", "2 files changed" in out and "nothing to commit" in sh("git status"), out)
 check("git log shows the commit", sh("git log --oneline -3").split("\n")[0].endswith("wip: two tests"))
+check("git log honours -N", len(sh("git log --oneline -3").split("\n")) == 3)
+check("commands split outside quotes only", qs.simple_commands('git commit -m "a; b" && git log | head -2') ==
+      [["git", "commit", "-m", "a; b"], ["git", "log"]])
+env_p, *_ = qs.session(ss.e1_script("premise", "far"), qs.DEFAULT_ARM)
+check("the branch's scripted commits sit on main's new one", env_p.shell("git log --oneline -4").split("\n")[3]
+      .startswith("5d0e7a9"), env_p.shell("git log --oneline -4"))
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 check("staging answers the numbers the session showed",
       "1204" in sh('psql "$STAGING_RO_URL" -c "select count(*) from accounts where timezone is null"'))

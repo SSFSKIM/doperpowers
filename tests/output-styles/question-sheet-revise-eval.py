@@ -57,7 +57,7 @@ whether a revision still asks for the decision it replaced, is judged
 
   python3 tests/output-styles/question-sheet-revise-eval.py [NAME=DESCRIPTION.md ...]
       [--scenarios option_gone,premise,subagent,distinct] [--history far,near,short] [--reps 5]
-      [--model claude-opus-5-5] [--effort high] [--judge-effort low] [--max-steps 8]
+      [--model claude-opus-5-5] [--effort high] [--judge-effort low] [--max-steps 20]
       [--workers 8] [--out question-sheet-revise-results.json] [--dry-run]
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
@@ -170,7 +170,7 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="claude-opus-5-5")
     ap.add_argument("--effort", default="high")
     ap.add_argument("--judge-effort", default="low")
-    ap.add_argument("--max-steps", type=int, default=8)
+    ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default="question-sheet-revise-results.json")
     ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")

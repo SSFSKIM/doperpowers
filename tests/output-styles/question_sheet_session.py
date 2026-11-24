@@ -18,6 +18,7 @@ matter are read in EXPLORE, at the session's start, and only the numbers
 arrive with the trigger, so a long history puts WORK between them.
 """
 import sysconfig
+import zlib
 from pathlib import Path
 
 from question_sheet import CWD, FS, MESSAGE_TOOL, SHEET_TOOL
@@ -472,6 +473,10 @@ def _premise_pull(env):
         '    },\n'
         '    "usage_events": {')
     env.fs.files[P("migrations/0042_pii_column_grants.py")] = MIGRATION_0042
+    lines = env.git_log.split("\n")  # the branch's commits now sit on main's new one
+    base = GIT_LOG.split("\n")
+    env.git_log = "\n".join([l for l in lines if l not in base] + [
+        "5d0e7a9 auth: billing contacts' email and phone readable by admins only (#230)"] + base)
 
 
 MIGRATION_0042 = '''"""Billing contacts' email and phone become admin-only (#230).
@@ -728,12 +733,13 @@ INJECTION_FIX_NEW = '''    if isinstance(value, Decimal):
 
 TEST_INJECTION = '''
 
-@pytest.mark.parametrize("text", ["=HYPERLINK(\\\"http://x\\\")", "+1", "-cmd", "@SUM(A1)"])
+
+@pytest.mark.parametrize("text", ["=1+1", "+1", "-cmd", "@SUM(A1)"])
 def test_formula_text_is_neutralised(text):
     row = {"invoices.issued_at": None, "invoice_lines.amount": Decimal("-12.50"), "invoices.currency": text}
     out = io.StringIO()
     write_csv([row], COLS, out, timezone="UTC", total=1)
-    assert out.getvalue().splitlines()[1] == ",-12.50,'" + text.replace('"', '""') if '"' in text else ",-12.50,'" + text
+    assert out.getvalue().splitlines()[1] == ",-12.50,'" + text
 '''
 
 def _suite_listing():
@@ -754,7 +760,7 @@ def _suite_listing():
                                         "test_ambiguous_hour_keeps_its_offset", "test_newlines_and_commas_are_quoted",
                                         "test_exponent_decimals_are_written_plain"] +
                                        [f"test_formula_text_is_neutralised[{t}]" for t in
-                                        ('=HYPERLINK("http://x")', "+1", "-cmd", "@SUM(A1)")],
+                                        ("=1+1", "+1", "-cmd", "@SUM(A1)")],
         "tests/http/test_downloads.py": ["test_link_needs_done_job", "test_link_expires_after_a_day",
                                          "test_link_is_signed_for_the_key"],
         "tests/http/test_print_view.py": ["test_print_view_renders", "test_print_view_download_link",
@@ -782,11 +788,11 @@ def _suite_listing():
             i += 1
             status = "SKIPPED (" + skip[t] + ")" if t in skip else "PASSED"
             lines.append(f"{mod}::{t} {status}".ljust(78) + f"[{100 * i // n:>3}%]")
-    head = ("============================= test session starts ==============================\\n"
-            "platform darwin -- Python 3.12.7, pytest-8.3.3, pluggy-1.5.0 -- /Users/dev/tally/.venv/bin/python\\n"
-            "rootdir: /Users/dev/tally\\nconfigfile: pyproject.toml\\nplugins: postgresql-6.1.1, hypothesis-6.118.8\\n"
-            f"collecting ... collected {n + 1} items / 1 deselected / {n} selected\\n\\n")
-    return head + "\\n".join(lines) + (f"\\n\\n=========== {n - 2} passed, 2 skipped, 1 deselected in 46.71s ===========")
+    head = ("============================= test session starts ==============================\n"
+            "platform darwin -- Python 3.12.7, pytest-8.3.3, pluggy-1.5.0 -- /Users/dev/tally/.venv/bin/python\n"
+            "rootdir: /Users/dev/tally\nconfigfile: pyproject.toml\nplugins: postgresql-6.1.1, hypothesis-6.118.8\n"
+            f"collecting ... collected {n + 1} items / 1 deselected / {n} selected\n\n")
+    return head + "\n".join(lines) + (f"\n\n=========== {n - 2} passed, 2 skipped, 1 deselected in 46.71s ===========")
 
 
 def _branch_diff(env):
@@ -797,10 +803,10 @@ def _branch_diff(env):
         body = env.fs.files.get(P(rel))
         if body is None:
             continue
-        lines = body.rstrip("\\n").split("\\n")
-        out.append(f"diff --git a/{rel} b/{rel}\\nnew file mode 100644\\nindex 0000000..{abs(hash(rel)) % 16**7:07x}\\n"
-                   f"--- /dev/null\\n+++ b/{rel}\\n@@ -0,0 +1,{len(lines)} @@\\n" + "\\n".join("+" + l for l in lines))
-    return "\\n".join(out)
+        lines = body.rstrip("\n").split("\n")
+        out.append(f"diff --git a/{rel} b/{rel}\nnew file mode 100644\nindex 0000000..{zlib.crc32(rel.encode()) % 16**7:07x}\n"
+                   f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + l for l in lines))
+    return "\n".join(out)
 
 
 EXPORT_DOC = """# CSV export

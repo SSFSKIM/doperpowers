@@ -369,6 +369,63 @@ class FS:
 NO_OUTPUT = "(Bash completed with no output)"
 
 
+def simple_commands(command):
+    """The words of each command a command line runs, split on ;, &&, ||, & and newlines outside quotes; of a
+    pipeline only its first command."""
+    out, words, word, quote, piped, i = [], [], "", None, False, 0
+    has_word = False
+
+    def end_word():
+        nonlocal word, has_word
+        if has_word:
+            words.append(word)
+        word, has_word = "", False
+
+    def end_command():
+        nonlocal words, piped
+        end_word()
+        if words and not piped:
+            out.append(words)
+        words, piped = [], False
+    while i < len(command):
+        c = command[i]
+        if quote:
+            if c == quote:
+                quote = None
+            elif c == "\\" and quote == '"' and i + 1 < len(command):
+                i += 1
+                word += command[i]
+            else:
+                word += c
+        elif c in "'\"":
+            quote, has_word = c, True
+        elif c == "\\" and i + 1 < len(command):
+            i += 1
+            if command[i] != "\n":
+                word, has_word = word + command[i], True
+        elif c in " \t":
+            end_word()
+        elif c in ";\n" or command.startswith("&&", i) or command.startswith("||", i):
+            end_command()
+            i += 1 if command.startswith(("&&", "||"), i) else 0
+        elif c == "&":
+            end_command()
+        elif c == "|":
+            end_word()
+            if words and not piped:
+                out.append(words)
+            words, piped = [], True
+        elif c == "#" and not has_word:
+            while i < len(command) and command[i] != "\n":
+                i += 1
+            continue
+        else:
+            word, has_word = word + c, True
+        i += 1
+    end_command()
+    return out
+
+
 class Env:
     """Canned results for every tool the sessions have; scripted steps may override a result."""
 
@@ -450,18 +507,14 @@ class Env:
                 self.fs.files[self.fs.resolve(path.strip("'\""))] = m.group(4) + "\n"
             command = command[:m.start()] + "\n" + command[m.end():]
         command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
-        for segment in re.split(r"&&|\|\||;|\n", command):
-            first = segment.split("|")[0].strip()
-            try:
-                words = shlex.split(first)
-            except ValueError:
-                words = first.split()
+        for words in simple_commands(command):
             out = self.shell_one(words)
             if out:
                 outputs.append(out)
         return "\n".join(outputs) or NO_OUTPUT
 
     def shell_one(self, words):
+        """One simple command's output; the first command of a pipeline stands for the pipeline."""
         while words and re.match(r"\w+=", words[0]):
             words = words[1:]
         if not words:
@@ -552,11 +605,18 @@ class Env:
             self.git_log = f"{sha} {msg.splitlines()[0]}\n" + self.git_log
             return f"[csv-export {sha}] {msg.splitlines()[0]}\n {len(mod) + len(new)} files changed"
         if sub == "log":
-            return self.git_log
+            n = next((int(a[1:]) for a in args if re.fullmatch(r"-\d+", a)), None)
+            n = next((int(args[i + 1]) for i, a in enumerate(args) if a in ("-n", "--max-count") and i + 1 < len(args)
+                      and args[i + 1].isdigit()), n)
+            return "\n".join(self.git_log.split("\n")[:n])
         if sub == "rev-parse":
             return (self.git_log.split()[0] if self.git_log else "b81f2c4") + "9d04c2e51f7a3b86e0d12c4f9a7e5b3d01"
         if sub == "branch":
-            return "* csv-export\n  main"
+            head = self.git_log.split("\n")[0]
+            return f"* csv-export {head}\n  main       b81f2c4 reports: pin a report to the dashboard (#196)"
+        if sub == "reflog":
+            return "\n".join(f"{l.split()[0]} HEAD@{{{i}}}: commit: {l.split(' ', 1)[1]}"
+                             for i, l in enumerate(self.git_log.split("\n")[:8]))
         if sub in ("pull", "fetch"):
             return "Already up to date."
         if sub == "show":
@@ -676,6 +736,9 @@ def build(script, env):
                         out, err = env.tool(name, inp, tid)
                 else:
                     out, err = env.tool(name, inp, tid)
+                if name == "Bash":  # a scripted commit joins the history a live `git log` shows
+                    for sha, msg in re.findall(r"^\[csv-export (\w+)\] (.+)$", out, re.M):
+                        env.git_log = f"{sha} {msg}\n" + env.git_log
                 results.append({"type": "tool_result", "tool_use_id": tid, "content": out, **({"is_error": True} if err else {})})
             msgs.append({"role": "assistant", "content": content})
             if results:
