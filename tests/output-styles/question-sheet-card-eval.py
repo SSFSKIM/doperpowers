@@ -11,7 +11,8 @@ agent reads the spec and the code (where the reasons behind each matter
 below are), works, and then a step of its own shows a matter only the human
 can decide; the model continues live, under the to-human style, with the stub
 of the sheet's tool described by the arm (question_sheet.py; arms are
-description files, default question-sheet/description-v1.md):
+description files, default question-sheet/description-v3.md, the wording the
+composite ships):
 
   cap   a staging smoke run: acme-logistics' 1,412,903-row report is over the
         spec's 1,000,000-row cap
@@ -59,10 +60,15 @@ question_sheet_session.CALIBRATION instead: each bare card must fail and each
 full card pass, or the judges cannot tell the behaviour apart.
 
   python3 tests/output-styles/question-sheet-card-eval.py [NAME=DESCRIPTION.md ...]
-      [--scenarios cap,pii,tz,all] [--history long,short] [--reps 5]
-      [--model claude-opus-5-5] [--effort high] [--judge-effort medium] [--max-steps 20]
+      [--scenarios cap,pii,tz,all] [--history long] [--reps 8]
+      [--model claude-opus-5-5] [--effort medium] [--judge-effort medium] [--max-steps 20]
       [--shell-model claude-sonnet-5-5]
       [--workers 8] [--out question-sheet-card-results.json] [--calibrate] [--dry-run]
+
+With no arguments it runs Acceptance 14's E2 rows (the long history, 8 runs of
+each scenario, v3, the subject at medium effort as the baseline ran), prints
+PASS, FAIL or "short" (fewer runs than the gate counts) per arm, and exits 1
+when an arm fails. Run --calibrate first: the gate assumes 6 of 6.
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
 ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
@@ -195,6 +201,39 @@ def summary(results):
     return rows
 
 
+def gate(results):
+    """Acceptance 14's E2 gate, per arm, on the long history, over counted cards: every essential fact on at least
+    80% of them, a reader's "no" on at most 2, at least 85% of the pii and tz cards passing; the cap matter's pass
+    rate reported, not gated. An arm with fewer than 4 scenarios × 8 runs is not judged ("short")."""
+    out = {}
+    for x in results:
+        if "error" in x or x["history"] != "long":
+            continue
+        keys = ss.E2_TRIGGERS[x["scenario"]]["matters"]
+        g = out.setdefault(x["arm"], {"runs": {}, "cards": 0, "essential": 0, "reader_no": 0, "pii_tz": 0,
+                                      "pii_tz_pass": 0, "cap": 0, "cap_pass": 0})
+        g["runs"][x["scenario"]] = g["runs"].get(x["scenario"], 0) + 1
+        for c in x["cards"]:
+            a = c.get("alone") or {}
+            if a.get("matter") not in keys:
+                continue
+            g["cards"] += 1
+            g["essential"] += bool(a["essential"])
+            g["reader_no"] += a["reader"].get("could_decide") == "no"
+            if a["matter"] == "cap":
+                g["cap"] += 1
+                g["cap_pass"] += bool(a["pass"])
+            else:
+                g["pii_tz"] += 1
+                g["pii_tz_pass"] += bool(a["pass"])
+    for g in out.values():
+        enough = all(g["runs"].get(s, 0) >= 8 for s in ss.E2_TRIGGERS)
+        ok = (g["cards"] and g["essential"] >= 0.8 * g["cards"] and g["reader_no"] <= 2
+              and g["pii_tz"] and g["pii_tz_pass"] >= 0.85 * g["pii_tz"])
+        g["verdict"] = "short" if not enough else "PASS" if ok else "FAIL"
+    return out
+
+
 def calibrate(effort):
     out = {}
     jobs = [(k, kind) for k in ss.CALIBRATION for kind in ("bare", "full")]
@@ -213,9 +252,9 @@ if __name__ == "__main__":
     ap.add_argument("arms", nargs="*", help="NAME=PATH to a description file (default v1)")
     ap.add_argument("--scenarios", default=",".join(ss.E2_TRIGGERS))
     ap.add_argument("--history", default="long")
-    ap.add_argument("--reps", type=int, default=5)
+    ap.add_argument("--reps", type=int, default=8)
     ap.add_argument("--model", default="claude-opus-5-5")
-    ap.add_argument("--effort", default="high")
+    ap.add_argument("--effort", default="medium")
     ap.add_argument("--judge-effort", default="medium")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
@@ -224,7 +263,7 @@ if __name__ == "__main__":
     ap.add_argument("--calibrate", action="store_true", help="judge the calibration cards only")
     ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")
     args = ap.parse_args()
-    arms = dict(a.split("=", 1) for a in args.arms) or {"v1": str(qs.DEFAULT_ARM)}
+    arms = dict(a.split("=", 1) for a in args.arms) or {"v3": str(qs.DEFAULT_ARM)}
     jobs = [(a, s, h, r) for a in arms for s in args.scenarios.split(",") for h in args.history.split(",")
             for r in range(args.reps)]
     if args.dry_run:
@@ -275,3 +314,12 @@ if __name__ == "__main__":
                   "facts", a.get("present"), "| with capture: pass", w.get("pass"))
         if not x["cards"]:
             print(x["arm"], x["scenario"], x["history"], x["rep"], "no question asked; ended", x["ended"])
+    print("\nAcceptance 14, E2 (long history, counted cards: essential facts on at least 80%, a reader's no on at "
+          "most 2, at least 85% of pii and tz cards passing; cap reported, not gated; timing reported above):")
+    verdicts = gate(out)
+    for arm, g in sorted(verdicts.items()):
+        pct = lambda a, b: f"{a}/{b}" + (f" ({100 * a // b}%)" if b else "")
+        print(f"  {arm}: {g['verdict']}  essential {pct(g['essential'], g['cards'])}, reader no {g['reader_no']}, "
+              f"pii and tz passing {pct(g['pii_tz_pass'], g['pii_tz'])}, cap passing {pct(g['cap_pass'], g['cap'])} "
+              f"(reported)")
+    raise SystemExit(1 if any(g["verdict"] == "FAIL" for g in verdicts.values()) else 0)

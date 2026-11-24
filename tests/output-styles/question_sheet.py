@@ -38,7 +38,7 @@ from mid_turn import (CC_BETA, CC_SYSTEM, FINAL_ANSWER, MESSAGE_RESULT, MESSAGE_
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 WORLD = HERE / "question-sheet" / "world"
-DEFAULT_ARM = HERE / "question-sheet" / "description-v1.md"
+DEFAULT_ARM = HERE / "question-sheet" / "description-v3.md"  # the wording the composite ships (§2.4)
 STYLE = REPO / "output-styles" / "to-human.md"
 SHEET_TOOL = "mcp__sminos__AskUserQuestion"
 CWD = "/Users/dev/tally"

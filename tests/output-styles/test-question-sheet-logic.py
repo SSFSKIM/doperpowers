@@ -315,5 +315,67 @@ e2.client = Fake([], [{"matter": "pii", "facts": {"1": True}}, yes])
 v = e2.judge_card("card", list(ss.MATTERS), "low", counted=["cap"])
 check("E2 a card outside the counted matters gets one reader", len(v["readers"]) == 1)
 
+# -- Acceptance 14's gates
+
+
+def e1_runs(fails=0, repurposed=0, changed=30, control=10, history="far"):
+    out = []
+    for i in range(changed):
+        out.append({"arm": "v3", "history": history, "scenario": ["option_gone", "premise", "subagent"][i % 3],
+                    "outcome": "duplicated" if i < fails else "revised"})
+    for i in range(control):
+        out.append({"arm": "v3", "history": history, "scenario": "distinct",
+                    "outcome": "repurposed" if i < repurposed else "added"})
+    return out
+
+
+check("E1 gate: 1 failure in 30 passes", e1.gate(e1_runs(fails=1))["v3"]["verdict"] == "PASS")
+check("E1 gate: 2 failures in 30 fail", e1.gate(e1_runs(fails=2))["v3"]["verdict"] == "FAIL")
+check("E1 gate: a repurposed control fails", e1.gate(e1_runs(repurposed=1))["v3"]["verdict"] == "FAIL")
+check("E1 gate: 29 changed runs are short", e1.gate(e1_runs(changed=29))["v3"]["verdict"] == "short")
+check("E1 gate: other histories are not counted", e1.gate(e1_runs(history="near")) == {})
+
+
+def card(matter, essential=True, reader="yes"):
+    return {"alone": {"matter": matter, "essential": essential, "reader": {"could_decide": reader},
+                      "pass": essential and reader == "yes"}}
+
+
+def e2_runs(essential_misses=0, noes=0, pii_fails=0, reps=8, cap_pass=False):
+    out = []
+    for sc in ("cap", "pii", "tz", "all"):
+        for r in range(reps):
+            cards = [card(m) for m in ss.E2_TRIGGERS[sc]["matters"]] + [card(None)]
+            out.append({"arm": "v3", "history": "long", "scenario": sc, "cards": cards})
+    counted = [c for x in out for c in x["cards"][:-1]]
+    for c in counted:
+        if c["alone"]["matter"] == "cap" and not cap_pass:
+            c["alone"].update(reader="partly", pass_=False)
+            c["alone"]["reader"] = {"could_decide": "partly"}
+            c["alone"]["pass"] = False
+    for c in counted[:essential_misses]:
+        c["alone"].update(essential=False, **{"pass": False})
+    for c in [c for c in counted if c["alone"]["matter"] == "tz"][:noes]:
+        c["alone"]["reader"] = {"could_decide": "no"}
+        c["alone"]["pass"] = False
+    for c in [c for c in counted if c["alone"]["matter"] == "pii"][:pii_fails]:
+        c["alone"]["reader"] = {"could_decide": "partly"}
+        c["alone"]["pass"] = False
+    return out  # 48 counted cards: 16 cap, 16 pii, 16 tz
+
+
+g = e2.gate(e2_runs())["v3"]
+check("E2 gate: cap failing alone does not fail the gate", g["verdict"] == "PASS" and g["cap_pass"] == 0, g)
+check("E2 gate: essential facts on 80% pass", e2.gate(e2_runs(essential_misses=9))["v3"]["verdict"] == "PASS")
+check("E2 gate: essential facts below 80% fail", e2.gate(e2_runs(essential_misses=10))["v3"]["verdict"] == "FAIL")
+check("E2 gate: two readers' no pass", e2.gate(e2_runs(noes=2))["v3"]["verdict"] == "PASS")
+check("E2 gate: three readers' no fail", e2.gate(e2_runs(noes=3))["v3"]["verdict"] == "FAIL")
+check("E2 gate: 85% of pii and tz passing pass", e2.gate(e2_runs(pii_fails=4))["v3"]["verdict"] == "PASS")
+check("E2 gate: below 85% of pii and tz fail", e2.gate(e2_runs(pii_fails=5))["v3"]["verdict"] == "FAIL")
+check("E2 gate: 7 runs of a scenario are short", e2.gate(e2_runs(reps=7))["v3"]["verdict"] == "short")
+check("the evals ship v3 as their default", qs.DEFAULT_ARM.name == "description-v3.md" and
+      "Ask when a question comes up, then keep working." in qs.sheet_tool_def()["description"]
+      and "at that moment" not in qs.sheet_tool_def()["description"])
+
 print("\n%d failed" % len(FAILED) if FAILED else "\nall passed")
 sys.exit(1 if FAILED else 0)

@@ -13,7 +13,8 @@ contacts' email and phone; q3 accounts with no time zone), and works. Then
 the scenario's trigger arrives and the model continues the session live,
 under the to-human style, with the stub of the sheet's tool described by the
 arm (question_sheet.py; arms are description files, default
-question-sheet/description-v1.md):
+question-sheet/description-v3.md, the wording the composite ships; v1 and v2
+are the wordings the baseline compared):
 
   option_gone  reading the downloads code: a job owns exactly one file, so
                q1's recommended option (several files) cannot be built
@@ -69,10 +70,15 @@ Each run also records how many responses came before its first sheet call:
 for the turn's end to ask what it knew at its first step.
 
   python3 tests/output-styles/question-sheet-revise-eval.py [NAME=DESCRIPTION.md ...]
-      [--scenarios option_gone,premise,subagent,distinct] [--history far,near,short] [--reps 5]
-      [--model claude-opus-5-5] [--effort high] [--judge-effort low] [--max-steps 20]
+      [--scenarios option_gone,premise,subagent,distinct] [--history far] [--reps 10]
+      [--model claude-opus-5-5] [--effort medium] [--judge-effort low] [--max-steps 20]
       [--shell-model claude-sonnet-5-5]
       [--workers 8] [--out question-sheet-revise-results.json] [--dry-run]
+
+With no arguments it runs Acceptance 14's E1 rows (the far history, 10 runs
+of each scenario, v3, the subject at medium effort as the baseline ran),
+prints PASS, FAIL or "short" (fewer runs than the gate counts) per arm, and
+exits 1 when an arm fails.
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
 ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
@@ -171,6 +177,28 @@ def classify(x, judge_effort):
 FAIL = {"duplicated", "revised+duplicated", "untouched", "cut_off", "repurposed"}
 
 
+def gate(results):
+    """Acceptance 14's E1 gate, per arm, on the far history: at most 1 failure in 30 changed-scenario runs, and no
+    repurposed question in 10 control runs. An arm with fewer runs than that is not judged ("short")."""
+    out = {}
+    for x in results:
+        if "error" in x or x["history"] != "far":
+            continue
+        g = out.setdefault(x["arm"], {"changed": 0, "failures": 0, "control": 0, "repurposed": 0})
+        if ss.E1_TRIGGERS[x["scenario"]]["target"] is None:
+            g["control"] += 1
+            g["repurposed"] += x["outcome"] == "repurposed"
+        else:
+            g["changed"] += 1
+            g["failures"] += x["outcome"] in FAIL
+    for g in out.values():
+        if g["changed"] < 30 or g["control"] < 10:
+            g["verdict"] = "short"
+        else:
+            g["verdict"] = "PASS" if g["failures"] <= 1 and g["repurposed"] == 0 else "FAIL"
+    return out
+
+
 def summary(results):
     rows = {}
     for x in results:
@@ -192,10 +220,10 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("arms", nargs="*", help="NAME=PATH to a description file (default v1)")
     ap.add_argument("--scenarios", default=",".join(ss.E1_TRIGGERS))
-    ap.add_argument("--history", default="far,near")
-    ap.add_argument("--reps", type=int, default=5)
+    ap.add_argument("--history", default="far")
+    ap.add_argument("--reps", type=int, default=10)
     ap.add_argument("--model", default="claude-opus-5-5")
-    ap.add_argument("--effort", default="high")
+    ap.add_argument("--effort", default="medium")
     ap.add_argument("--judge-effort", default="low")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
@@ -203,7 +231,7 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="question-sheet-revise-results.json")
     ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")
     args = ap.parse_args()
-    arms = dict(a.split("=", 1) for a in args.arms) or {"v1": str(qs.DEFAULT_ARM)}
+    arms = dict(a.split("=", 1) for a in args.arms) or {"v3": str(qs.DEFAULT_ARM)}
     jobs = [(a, s, h, r) for a in arms for s in args.scenarios.split(",") for h in args.history.split(",")
             for r in range(args.reps)]
     if args.dry_run:
@@ -243,3 +271,9 @@ if __name__ == "__main__":
         else:
             print(x["arm"], x["scenario"], x["history"], x["rep"], x["outcome"], x["ended"],
                   [(c.get("added"), c.get("revised"), c.get("withdrew"), c.get("error")) for c in x["calls"]])
+    print("\nAcceptance 14, E1 (far history; at most 1 failure in 30 changed-scenario runs, no repurposed question in "
+          "10 control runs; timing reported above, not gated):")
+    verdicts = gate(out)
+    for arm, g in sorted(verdicts.items()):
+        print(f"  {arm}: {g['verdict']}  failures {g['failures']}/{g['changed']}, repurposed {g['repurposed']}/{g['control']}")
+    raise SystemExit(1 if any(g["verdict"] == "FAIL" for g in verdicts.values()) else 0)
