@@ -21,6 +21,8 @@ bench_open.py's runs and bench_scale.py's opens.
   `read_tees`): the plane's code wrapped, not changed. Everything the rig starts is its own from the
   moment it exists, so a construction that fails part way leaves nothing.
 """
+import os.path, runpy  # noqa: E401 — the caller's repository kept out first (#623)
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "git_isolation.py"))
 
 import base64
 import collections

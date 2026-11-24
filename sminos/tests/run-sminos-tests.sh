@@ -593,6 +593,8 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_vm_info.py"; then
     pass "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"
   else fail "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_git_isolation.py"; then pass "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; else
+    fail "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a

@@ -20,6 +20,8 @@ environment does.
 
     sminos/tests/mods/live-bridge-check.py [--keep]     # --keep: leave the temp dir (minus the env file)
 """
+import os.path, runpy  # noqa: E401 — the caller's repository kept out first (#623)
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../git_isolation.py"))
 
 import http.client
 import json

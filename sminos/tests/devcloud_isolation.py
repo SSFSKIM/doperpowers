@@ -12,8 +12,11 @@ The engine (T2's M3: a delivery may wake a stopped thread, and a wake lists
 the engine's jobs and launches `claude`): `no-engine/claude` is first on
 PATH, an empty job list and nothing started, so no test reaches the real
 `claude` or what it reads; a suite that drives an engine of its own puts it
-first ahead of this and checks it is the one found (test_wake.Engine)."""
+first ahead of this and checks it is the one found (test_wake.Engine).
+
+The caller's repository: git_isolation.py, run from here."""
 import os
+import runpy
 
 _HERE = os.path.dirname(os.path.realpath(__file__))
 for _var in [v for v in os.environ if v.startswith("DEVCLOUD_")]:
@@ -22,3 +25,4 @@ os.environ["SMINOS_DEVCLOUD"] = os.path.join(_HERE, "devcloud_standin.py")
 _NO_ENGINE = os.path.join(_HERE, "no-engine")
 if _NO_ENGINE not in os.environ.get("PATH", "").split(os.pathsep):   # once, never ahead of a test's own engine
     os.environ["PATH"] = _NO_ENGINE + os.pathsep + os.environ.get("PATH", "")
+runpy.run_path(os.path.join(_HERE, "git_isolation.py"))
