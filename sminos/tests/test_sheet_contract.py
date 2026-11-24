@@ -234,6 +234,14 @@ class TheSet(unittest.TestCase):
                                                 "state.json"))[0])["closed"]["q2"]
         self.assertEqual(sheet_schema.errors(closed, withdrawn), [])
         self.assertNotEqual(sheet_schema.errors(closed, dict(withdrawn, receipt="Yes")), [])
+        self.assertNotEqual(sheet_schema.errors(closed, dict(withdrawn, deliveredAt=T)), [], "a withdrawal is delivered "
+                                                                                            "to nobody (U5)")
+        sent = {"$ref": "#/$defs/sent", "$defs": SCHEMA["show"]["$defs"]}
+        own = {"key": "maws-1101d003", "state": "delivered", "verdict": "applied", "kind": "delivered", "at": T}
+        self.assertEqual(sheet_schema.errors(sent, own), [])
+        self.assertNotEqual(sheet_schema.errors(sent, dict(own, state="accepted")), [], "never pending itself")
+        self.assertNotEqual(sheet_schema.errors(SCHEMA["inbox-line"], {"v": 1, "key": "page-00000001", "kind": "dismiss",
+                                                                     "id": "q1234567890", "by": "page"}), [])
         answered = after["closed"]["q1"]
         self.assertNotEqual(sheet_schema.errors(closed, {k: v for k, v in answered.items() if k != "places"}), [])
         # Patterns end at the end of input (ECMA-262): a key with a newline after it is no key.
@@ -334,7 +342,11 @@ class TheReader(unittest.TestCase):
                '{"v":1,"key":"maws-00000003","kind":"dismiss","id":"q1","by":"maws","text":NaN}\n',
                '{"v":1,"key":"maws-00000004","kind":"answer","id":"q2","revision":1,"text":"\\ud83d","by":"maws"}\n',
                '{"v":1,"key":"maws-0000005\\n","kind":"dismiss","id":"q1","by":"maws"}\n',
-               '{"v":1,"key":"maws-00000006","kind":"answer","id":"q2","revision":1,"picks":["Yes","No"],"by":"maws"}\n']
+               '{"v":1,"key":"maws-00000006","kind":"answer","id":"q2","revision":1,"picks":["Yes","No"],"by":"maws"}\n',
+               '{"v":1,"key":"maws-00000007","kind":"dismiss","id":"q1","by":"maws","x":%s1%s}\n' % ("[" * 100000,
+                                                                                                    "]" * 100000),
+               '{"v":1,"key":"maws-00000008","kind":"dismiss","id":"q1","by":"maws","x":[%s]}\n' % (
+                   "[" * 700 + '"\\ud83d"' + "]" * 700)]
         write(os.path.join(h, "sheet", s, "inbox.jsonl"), "".join(bad) + good)
         m = sheet.model(s)
         self.assertEqual([x["key"] for x in m["sent"]], ["maws-00000002"], "each bad line skipped (U2), the good read")
@@ -374,10 +386,15 @@ class TheReader(unittest.TestCase):
         big = dict(big, text="short", picks=[huge + "1"], question=dict(
             big["question"], header=huge, options=[huge + "1", huge + "2"], asker={"agentId": "a1b2c3", "name": huge}))
         rec["pending"] = [dict(big, key="page-%08d" % n) for n in range(50)]
+        rec["verdicts"] = {"page-%08d" % n: {"verdict": "applied", "kind": "answer", "at": big["acceptedAt"],
+                                             "id": "q999999999"} for n in range(50)}
         write(path, json.dumps(rec, ensure_ascii=False))
         rc, out, err = run(["sheet", "show", "--session", c["session"], "--json", "--keys", keys])
         self.assertEqual(rc, 0, err)
         self.assertLess(len(out.encode()), 4 * 1024 * 1024 // 2)
+        sent = json.loads(out)["sent"]
+        self.assertEqual(len(sent), 50)
+        self.assertTrue(all(len(json.dumps(x, ensure_ascii=False)) < 400 for x in sent), "each sent entry bounded")
         o = json.loads(out)["pending"][0]
         self.assertEqual((o["places"], len(o["picks"][0]), len(o["question"]["header"]),
                           len(o["question"]["options"][1]), len(o["question"]["asker"]["name"])), ([1], 200, 60, 200, 200))
@@ -700,6 +717,7 @@ class TheDoor(unittest.TestCase):
         self.assertEqual((got["text"], got["revision"], type(got["revision"])), ("a\u2028b\u2029c\u0085d", 1, int))
 
     def test_lines_no_other_reader_could_read_are_refused(self):
+        write(os.path.join(self.h, "sheet", self.s, "uploads", "a" * 251 + ".png"), b"x", "wb")   # it is there
         for why, data in (
                 ("an infinity", '{"v":1e999,"key":"cli-test0001","kind":"dismiss","id":"q2","by":"cli"}'),
                 ("NaN", '{"v":1,"key":"cli-test0001","kind":"answer","id":"q2","revision":NaN,"text":"x","by":"cli"}'),
@@ -707,7 +725,11 @@ class TheDoor(unittest.TestCase):
                                      '"text":"half \\ud83d","by":"cli"}'),
                 ("a key ending in a newline", '{"v":1,"key":"test-key-1\\n","kind":"dismiss","id":"q2","by":"cli"}'),
                 ("an upload name past 250", '{"v":1,"key":"cli-test0001","kind":"answer","id":"q1","revision":1,'
-                                            '"text":"x","images":["uploads/%s.png"],"by":"cli"}' % ("a" * 251))):
+                                            '"text":"x","images":["uploads/%s.png"],"by":"cli"}' % ("a" * 251)),
+                ("an id past q999999999", '{"v":1,"key":"cli-test0001","kind":"dismiss","id":"q1234567890",'
+                                          '"by":"cli"}'),
+                ("a value nested past the decoder", '{"v":1,"key":"cli-test0001","kind":"dismiss","id":"q2",'
+                                                    '"by":"cli","x":%s1%s}' % ("[" * 100000, "]" * 100000))):
             with self.subTest(why):
                 rc, _, err = run(["sheet", "put", "--session", self.s, "--no-wait"], (data + "\n").encode())
                 self.assertEqual(rc, 2, err)
@@ -717,8 +739,16 @@ class TheDoor(unittest.TestCase):
     def test_a_short_write_is_completed_under_the_lock(self):
         real, calls = os.write, []
 
+        import fcntl
+
         def short(fd, data):
             calls.append(len(data))
+            probe = os.open(sheet.lock_path(self.s), os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError, msg="the lock is held while the write goes on"):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(probe)
             return real(fd, bytes(data)[:max(1, len(data) // 3)])
         lines = [answer("cli-test0001", "q2", picks=["Yes"]), answer("cli-test0002", "q1", picks=["OAuth"])]
         os.write = short
@@ -736,8 +766,8 @@ class TheDoor(unittest.TestCase):
 
         def failing(fd, data):
             calls.append(1)
-            if len(calls) == 1:
-                return real(fd, bytes(data)[:40])
+            if len(calls) == 1:              # a whole first line reaches the file, then the disk is full
+                return real(fd, bytes(data)[:bytes(data).index(b"\n") + 1])
             raise OSError(28, "No space left on device")
         os.write = failing
         err = io.StringIO()

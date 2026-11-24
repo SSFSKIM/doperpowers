@@ -132,9 +132,6 @@
       "at": {
        "$ref": "#/$defs/time"
       },
-      "deliveredAt": {
-       "$ref": "#/$defs/time"
-      },
       "header": {
        "type": "string"
       },
@@ -162,7 +159,7 @@
    ]
   },
   "id": {
-   "pattern": "^q[1-9][0-9]*$",
+   "pattern": "^q[1-9][0-9]{0,8}$",
    "type": "string"
   },
   "key": {
@@ -934,7 +931,7 @@
         "type": "integer"
        },
        "src": {
-        "pattern": "^sheet:[^:]+:q[1-9][0-9]*$",
+        "pattern": "^sheet:[^:]+:q[1-9][0-9]{0,8}$",
         "type": "string"
        },
        "text": {

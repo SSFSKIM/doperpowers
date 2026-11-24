@@ -1,7 +1,7 @@
 {
- "digest": "e515f2e1fbe8a2620c42f6c9ae6f72d66cbcd66d676887187223117f35fb8792",
+ "digest": "550b09dce06dc54dd3c6413a5360a37fc87ab12819cac46c65e5ec732f9dddd4",
  "files": {
-  "README.md": "879905991551c766d235ce9b19ceeb3e2b57af964458b010ccf92e259ecde50f",
+  "README.md": "dfe947827a95c625cb5182d5e6cc79641d91c19c2f9f946976336c60b1c766dd",
   "examples/imported/case.json": "f973ced83a6f05b2491530faf0cf70349c299880de8bcad3b42c40d5a234d6d8",
   "examples/imported/envelope.txt": "96934b5677f3aa63b3c3a5ef642473cf6408c8fa60a83b6a23f6592e4618ad1f",
   "examples/imported/input/sheet/5eed0000-0000-4000-8000-0000000000e4/state.json": "359fefd5353fa8f4aed1036224cd2a32ed82f9415d5b5a97febf411a91e86c6e",
@@ -147,11 +147,11 @@
   "fixtures/retract-unseen/case.json": "60a51d8981ecc52446eab0b8106120727bf140fbec53656d3d499caa305adb7e",
   "fixtures/retract-unseen/show.after.json": "9a6330bab1440dd298d0a2c2226560b70a826c1204417abec9f1fd900f5ed11d",
   "fixtures/retract-unseen/show.before.json": "90bdfd6a3478eba9df8a5b8b218552ea5fd09d7bbb45f747b57f4e2a696a0427",
-  "fixtures/skipped-and-unknown/after/sheet/5eed0000-0000-4000-8000-000000000018/inbox.jsonl": "c1aa438c37abb7c4f5983dc110f6ab5ab9f8eac63869a3b392ca525c175c195d",
-  "fixtures/skipped-and-unknown/after/sheet/5eed0000-0000-4000-8000-000000000018/state.json": "62d671337b6fe595330998a6a3f62b29581b053f55d985bad05a832fafa69220",
-  "fixtures/skipped-and-unknown/before/sheet/5eed0000-0000-4000-8000-000000000018/inbox.jsonl": "c1aa438c37abb7c4f5983dc110f6ab5ab9f8eac63869a3b392ca525c175c195d",
+  "fixtures/skipped-and-unknown/after/sheet/5eed0000-0000-4000-8000-000000000018/inbox.jsonl": "dae241c78decc007b387d0aa4e71290bba6a07a274c2594c2d07d1b5940c91e4",
+  "fixtures/skipped-and-unknown/after/sheet/5eed0000-0000-4000-8000-000000000018/state.json": "646a648dd562ac8ae31313c2f0db44b9fde74ee3019487eaca37e2beb0fe4e9e",
+  "fixtures/skipped-and-unknown/before/sheet/5eed0000-0000-4000-8000-000000000018/inbox.jsonl": "dae241c78decc007b387d0aa4e71290bba6a07a274c2594c2d07d1b5940c91e4",
   "fixtures/skipped-and-unknown/before/sheet/5eed0000-0000-4000-8000-000000000018/state.json": "8db1c602a4e1df8c384e669ff0f75f1e0664d345364d9c9d3e98eee6f34d3b1d",
-  "fixtures/skipped-and-unknown/case.json": "5ec69268e39767ca3bea1a654ea2affb91887199fcd88b8d1fa7f4fedf7f6388",
+  "fixtures/skipped-and-unknown/case.json": "9dd82ff07b8a563eb9358b073d576a1203125d200f38670e97d3f82102a078cc",
   "fixtures/skipped-and-unknown/show.after.json": "5d05b12b474400726000926f146d505d7b9fdfe09772ce3d21990dc645738734",
   "fixtures/skipped-and-unknown/show.before.json": "1cbf87020c46968d5db687c40204e9bca7d82609af050385fd16ccc1438bed37",
   "fixtures/stopped-queue/after/sheet/5eed0000-0000-4000-8000-000000000016/inbox.jsonl": "ba950c1bf95c06caf82d23d27fde6e50e49c5b153bc53033adb2124515fdee8e",
@@ -184,12 +184,12 @@
   "fixtures/two-surfaces/show.before.json": "cb5f24938065598b8ab3c1cf661bec12f1699a16f7c5b35fbb4e41559c58a129",
   "grammar/result.examples.json": "ffdae081559c0b84840fc9e501eeae52b32ae7add42211b473ecc8f7458968df",
   "grammar/result.md": "18d63baf0dacf6a36e70a6a60cb62f7ec1ba36b2f4721c115bd9ddeae61c9934",
-  "schema/delivery.schema.json": "b8de737b81dd8499c7dce7fc8757cbb4c20bfdcf1827f3653bd199d282811b7a",
-  "schema/inbox-line.schema.json": "e72bf4a559c11872392bdd97c8f2e82db1d8d33fd7d922d0be94d8a1d4db68ed",
-  "schema/show.schema.json": "7172b19bc225f40ebc5d8d7fba95fe2a61fbdd8453f0643647e8eb537a158747",
-  "schema/state.schema.json": "c362999ccb742c8a2c05effdd12f87f536cee1ac2d5d6def2bb8961a1a11c46e",
+  "schema/delivery.schema.json": "2ccd398d97793a3d3466b729d6dd309355a1ca8db1c986b82a848a81f8f930d8",
+  "schema/inbox-line.schema.json": "e9625a75548e42e87930d6aa92710fd3a3dae72944f6bc9a3b42a1124ff2e674",
+  "schema/show.schema.json": "b7ad4441d89ca26fc5d351092a51f2fdbfb169327e80cfb1e73f8eceeb562ab5",
+  "schema/state.schema.json": "63547459e834a06575a834d7c153dec1d04a51f8c2d5d609e63c9009bb507abb",
   "schema/surface.schema.json": "22e1095ce9b0c200405a07c2f327385c31c69ad4b4195949025967be8635bcb6",
-  "schema/tool-input.schema.json": "166d3c95d936389e93344081c6ba8459dc78ea8fec079a9d87d3a3a920759b20"
+  "schema/tool-input.schema.json": "1821bd4d308e36e858d69a5bb7215c00512a83c4e98e986ee68962374f25bf7b"
  },
  "v": 1,
  "version": 1

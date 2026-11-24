@@ -42,7 +42,7 @@ NUDGE_WAIT_MS = 10000
 KEYED_TEXT = 500
 
 KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
-ID_RE = re.compile(r"^q[1-9][0-9]*$")
+ID_RE = re.compile(r"^q[1-9][0-9]{0,8}$")       # an id names at most q999999999: bounded, never cut
 TIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$")
 UPLOAD_RE = re.compile(r"^uploads/[A-Za-z0-9._-]{1,250}\.(png|jpg|jpeg|gif|webp)$")
 KINDS = ("answer", "dismiss", "retract", "delivered")
@@ -116,8 +116,12 @@ def _no_constant(name):
 
 
 def loads(text):
-    """JSON as a line is read: NaN and the infinities, which Python's decoder takes, are refused."""
-    return json.loads(text, parse_constant=_no_constant)
+    """JSON as a line is read: NaN and the infinities, which Python's decoder takes, are refused, and so is a value
+    nested past what the decoder can follow."""
+    try:
+        return json.loads(text, parse_constant=_no_constant)
+    except RecursionError:
+        raise ValueError("nested too deep")
 
 
 def _surrogate(v):
@@ -135,8 +139,6 @@ def line_error(line):
     """Why an inbox line fails its schema (inbox-line.schema.json), or None."""
     if not isinstance(line, dict):
         return "a line is a JSON object"
-    if _surrogate(line):
-        return "a string holds a lone UTF-16 surrogate"
     extra = sorted(set(line) - set(FIELDS))
     if extra:
         return "unknown field %s" % extra[0]
@@ -154,7 +156,7 @@ def line_error(line):
     if "at" in line and not (isinstance(line["at"], str) and TIME_RE.fullmatch(line["at"])):
         return "at is a UTC time with milliseconds"
     if "id" in line and not (isinstance(line["id"], str) and ID_RE.fullmatch(line["id"])):
-        return "id is q<n>"
+        return "id is q<n>, n at most 999999999"
     if "revision" in line and not _count(line["revision"], 1):
         return "revision is an integer from 1"
     if "picks" in line and not (isinstance(line["picks"], list) and len(line["picks"]) <= 12
@@ -171,6 +173,8 @@ def line_error(line):
     if "keys" in line and not (isinstance(line["keys"], list) and 1 <= len(line["keys"]) <= 200
                                and all(isinstance(k, str) and KEY_RE.fullmatch(k) for k in line["keys"])):
         return "keys are 1 to 200 keys"
+    if _surrogate(line):          # last: every field is known by now, each a string or a list of strings
+        return "a string holds a lone UTF-16 surrogate"
     kind = line["kind"]
     if kind == "answer":
         if "id" not in line or "revision" not in line:

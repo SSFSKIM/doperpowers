@@ -69,7 +69,7 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   (those belong to a delivery). The log's is whole; `Closed.answer` is its first 2,000 characters. `receipt` is
   written for an answered question only. A closed question keeps the `key` of the line that closed it.
 - **A `delivered` line** (I2) sets `closed[id].deliveredAt` for each key it takes out of `pending`, as `landed`
-  does.
+  does. Only an answered or a dismissed question has a `deliveredAt`: a withdrawal is delivered to nobody (U5).
 - **`sent`** (I4) lists the keys with a verdict, sorted by key, then the queued lines in inbox order. A queued
   retract carries its `target`. A `delivered` line's own key reads `delivered` (verdict `applied`, never pending).
 - **A line a reader drops** (I4) is one a drain skips (U2): it is not JSON (NaN and the infinities are not), it
@@ -87,8 +87,9 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   times; if `seq` moved every time it returns nothing unverified: `sminos sheet show` exits 75, and a reader reads
   again.
 - **Cuts in `show`'s pending outcomes** (I4), in both forms: the question at 2,000 characters, its header at 60,
-  each label and each pick at 200, a subagent's name at 200. An agent id is the engine's, at most 128 characters,
-  never cut.
+  each label and each pick at 200, a subagent's name at 200. An agent id is at most 128 characters, a bound of this
+  contract (the engine's ids are far shorter), and is never cut; nor is a question's id, which is at most
+  `q999999999`.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
 - **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome under the cuts
   above and its `text` as its first 500 characters, with `textCut: true` when it was longer and the record's

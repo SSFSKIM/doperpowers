@@ -1,5 +1,5 @@
 {
- "covers": "U2: a line that is not JSON, one with no key, one that fails the line's schema and one that picks no label of its question are skipped with no verdict, inbox.skipped raised by four; U3: an answer and a dismissal naming ids the record never assigned read closed, how unknown",
+ "covers": "U2: a line that is not JSON, one with no key, one that fails the line's schema, one that picks no label of its question, one whose text holds a lone UTF-16 surrogate and one with two picks on a single-select question are skipped with no verdict, inbox.skipped raised by six; U3: an answer and a dismissal naming ids the record never assigned read closed, how unknown",
  "event": {
   "acked": [],
   "agents": {

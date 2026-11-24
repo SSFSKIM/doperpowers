@@ -88,10 +88,36 @@
        "type": "string"
       },
       "how": {
-       "enum": [
-        "dismissed",
-        "withdrawn"
-       ],
+       "const": "dismissed",
+       "type": "string"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      }
+     },
+     "required": [
+      "how",
+      "at",
+      "revision",
+      "asker"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "asker": {
+       "$ref": "#/$defs/asker"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "header": {
+       "type": "string"
+      },
+      "how": {
+       "const": "withdrawn",
        "type": "string"
       },
       "revision": {
@@ -110,7 +136,7 @@
    ]
   },
   "id": {
-   "pattern": "^q[1-9][0-9]*$",
+   "pattern": "^q[1-9][0-9]{0,8}$",
    "type": "string"
   },
   "key": {
@@ -574,10 +600,7 @@
        "type": "string"
       },
       "state": {
-       "enum": [
-        "accepted",
-        "delivered"
-       ],
+       "const": "delivered",
        "type": "string"
       },
       "verdict": {
@@ -912,7 +935,7 @@
       "type": "string"
      },
      "handle": {
-      "pattern": "^q[1-9][0-9]*(@[1-9][0-9]*)?$",
+      "pattern": "^q[1-9][0-9]{0,8}(@[1-9][0-9]{0,8})?$",
       "type": "string"
      },
      "header": {

@@ -695,9 +695,12 @@ fails here first.
   answered question only; a closed question keeps the `key` of the line
   that closed it.
 - A `delivered` line sets `closed[id].deliveredAt` for each key it takes
-  out of `pending`, as `landed` does.
-- An agent id (an asker's, a recipient's) is the engine's, at most 128
-  characters, and is never cut.
+  out of `pending`, as `landed` does. Only an answered or a dismissed
+  question has a `deliveredAt`: a withdrawal is delivered to nobody (U5).
+- An agent id (an asker's, a recipient's) is at most 128 characters, a
+  bound of this contract (the engine's ids are far shorter), and is never
+  cut; nor is a question's id, which is at most `q999999999` (`q` and 1
+  to 9 digits) in every schema and at the door.
 
 ### I3 · The inbox line, the door, the command
 
@@ -829,15 +832,14 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
                     "hidden": [ { "id": "q9", "key": "…" } ],            // open, with a queued dismissal
                     "sent":   [ { "key", "kind", "id", "state", "cancelled", …the Verdict's fields } ],
                     "pending": [ Outcome, its question bounded as in 7 ],
-                    "closed":  { "q3": { "how", "at", "revision", "asker", "header", "receipt", "deliveredAt" } } }
+                    "closed":  { "q3": { "how", "at", "revision", "asker", "header", "receipt", "places", "deliveredAt" } } }
 
 - `sent` lists the keys with a verdict, sorted by key (a JS reader would
   put an integer-like key of an object first), then the queued lines in
   inbox order. A queued retract carries its `target`; a `delivered` line's
   own key reads `delivered`.
-- A line a reader drops in step 2 is one a drain skips (U2): it fails the
-  line's schema, or it answers an open question at its current revision
-  with a pick that is no label of it.
+- A line a reader drops in step 2 is one a drain skips: every case U2
+  lists, and nothing else.
 - A session with no record: `show` exits 3, `no sheet`.
 
 `show --json --keys <k1,k2,…>` (at most 50) prints the same with `pending`

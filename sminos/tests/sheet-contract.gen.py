@@ -72,7 +72,7 @@ PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001
 # ------------------------------------------------------------------ schemas (I1: JSON Schema 2020-12, a subset)
 
 T_TIME = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"}
-T_ID = {"type": "string", "pattern": "^q[1-9][0-9]*$"}
+T_ID = {"type": "string", "pattern": "^q[1-9][0-9]{0,8}$"}
 T_KEY = {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"}
 T_UPLOAD = {"type": "string", "pattern": "^uploads/[A-Za-z0-9._-]{1,250}\\.(png|jpg|jpeg|gif|webp)$"}
 T_SHA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
@@ -89,7 +89,7 @@ def arr(items, **bounds):
     return {"type": "array", "items": items, **bounds}
 
 
-T_AGENT = {"type": "string", "minLength": 1, "maxLength": 128}     # the engine's agent id, never cut
+T_AGENT = {"type": "string", "minLength": 1, "maxLength": 128}     # an agent id: the contract's bound, never cut
 ASKER = {"oneOf": [{"type": "string", "const": "main"},
                    obj({"agentId": T_AGENT, "name": {"type": "string"}}, ["agentId", "name"])]}
 RECIPIENT = {"oneOf": [{"type": "string", "const": "main"}, obj({"agentId": T_AGENT}, ["agentId"])]}
@@ -136,16 +136,18 @@ SHOW_OUTCOME = variants(OUTCOME_COMMON, OUTCOME_REQ, [
      ["picks", "text", "images", "places"]), (DISMISS_FIELDS, [])])
 HOW = {"type": "string", "enum": ["answered", "dismissed", "withdrawn"]}
 CLOSED_COMMON = {"at": {"$ref": "#/$defs/time"}, "revision": T_INT1, "asker": {"$ref": "#/$defs/asker"},
-                 "header": {"type": "string"}, "question": {"type": "string"}, "deliveredAt": {"$ref": "#/$defs/time"}}
+                 "header": {"type": "string"}, "question": {"type": "string"}}
+DELIVERED_AT = {"deliveredAt": {"$ref": "#/$defs/time"}}      # an answer and a dismissal are delivered; no withdrawal
 CLOSED = variants(CLOSED_COMMON, ["how", "at", "revision", "asker", "question"], [
     ({"how": {"type": "string", "const": "answered"}, "receipt": {"type": "string"}, "places": arr(T_INT1),
-      "key": {"$ref": "#/$defs/key"}, "answer": {"type": "string"}}, ["receipt", "places", "key"]),
-    ({"how": {"type": "string", "const": "dismissed"}, "key": {"$ref": "#/$defs/key"}}, ["key"]),
+      "key": {"$ref": "#/$defs/key"}, "answer": {"type": "string"}, **DELIVERED_AT}, ["receipt", "places", "key"]),
+    ({"how": {"type": "string", "const": "dismissed"}, "key": {"$ref": "#/$defs/key"}, **DELIVERED_AT}, ["key"]),
     ({"how": {"type": "string", "const": "withdrawn"}}, [])])
 SHOW_CLOSED = variants({k: v for k, v in CLOSED_COMMON.items() if k != "question"}, ["how", "at", "revision", "asker"], [
-    ({"how": {"type": "string", "const": "answered"}, "receipt": {"type": "string"}, "places": arr(T_INT1)},
-     ["receipt", "places"]),
-    ({"how": {"type": "string", "enum": ["dismissed", "withdrawn"]}}, [])])
+    ({"how": {"type": "string", "const": "answered"}, "receipt": {"type": "string"}, "places": arr(T_INT1),
+      **DELIVERED_AT}, ["receipt", "places"]),
+    ({"how": {"type": "string", "const": "dismissed"}, **DELIVERED_AT}, []),
+    ({"how": {"type": "string", "const": "withdrawn"}}, [])])
 
 
 def verdict_shapes(extra=None, states=None):
@@ -154,7 +156,8 @@ def verdict_shapes(extra=None, states=None):
     one = lambda v, kinds, own, req: (  # noqa: E731
         {"verdict": {"type": "string", "const": v},
          "kind": {"type": "string", "enum": kinds} if len(kinds) > 1 else {"type": "string", "const": kinds[0]},
-         **own, **({} if extra is None else extra), **({} if states is None else {"state": states[v]})}, req)
+         **own, **({} if extra is None else extra),
+         **({} if states is None else {"state": states.get((v, kinds[0]), states.get(v))})}, req)
     ID, KEYREF = {"id": {"$ref": "#/$defs/id"}}, {"$ref": "#/$defs/key"}
     return [one("applied", ["answer", "dismiss"], ID, ["id"]),
             one("applied", ["delivered"], {}, []),
@@ -176,6 +179,7 @@ SENT = variants({"key": {"$ref": "#/$defs/key"}}, ["key", "kind", "state"], [
     + [(shape, req + ["verdict", "at"]) for shape, req in verdict_shapes(
         {"at": {"$ref": "#/$defs/time"}},
         {"applied": {"type": "string", "enum": ["accepted", "delivered"]},
+         ("applied", "delivered"): {"type": "string", "const": "delivered"},     # its own key is never pending
          **{v: {"type": "string", "const": v} for v in ("stale", "closed", "retracted", "too-late")}})])
 
 COMMON_DEFS = {"time": T_TIME, "id": T_ID, "key": T_KEY, "asker": ASKER, "recipient": RECIPIENT, "option": OPTION,
@@ -202,7 +206,7 @@ STATE_SCHEMA = schema(
                                      "foreclosed": {"type": "boolean", "const": True}}, ["callId", "foreclosed"])]}),
         "log": obj({"next": T_INT1,
                     "owed": arr(obj({"n": T_INT1, "kind": {"type": "string", "enum": ["question", "answered"]},
-                                     "src": {"type": "string", "pattern": "^sheet:[^:]+:q[1-9][0-9]*$"},
+                                     "src": {"type": "string", "pattern": "^sheet:[^:]+:q[1-9][0-9]{0,8}$"},
                                      "text": {"type": ["string", "array"], "items": {"type": "string"}},
                                      "choices": arr({"type": "string"}),
                                      "closed": {"type": "string", "enum": ["dismissed", "withdrawn", "removed"]}},
@@ -251,7 +255,7 @@ SHOW_SCHEMA = schema(
     obj({
         "v": {"type": "integer", "const": 1}, "session": {"type": "string", "minLength": 1}, "seq": T_INT0,
         "open": arr(obj({**QUESTION_PROPS, "references": arr({"$ref": "#/$defs/reference"}),
-                         "handle": {"type": "string", "pattern": "^q[1-9][0-9]*(@[1-9][0-9]*)?$"},
+                         "handle": {"type": "string", "pattern": "^q[1-9][0-9]{0,8}(@[1-9][0-9]{0,8})?$"},
                          "queued": {"$ref": "#/$defs/queued"}}, QUESTION_REQ + ["handle"])),
         "hidden": arr(obj({"id": {"$ref": "#/$defs/id"}, "key": {"$ref": "#/$defs/key"}}, ["id", "key"])),
         "sent": arr({"$ref": "#/$defs/sent"}),
@@ -915,16 +919,21 @@ bad = ["not json at all\n",
        jline({"v": 1, "kind": "dismiss", "id": "q1", "by": "page", "at": "2026-11-23T09:59:00.000Z"}) + "\n",
        jline(L("page-1801a003", "answer", "page", "2026-11-23T09:59:01.000Z", id="q1")) + "\n",
        jline(L("page-1801a004", "answer", "page", "2026-11-23T09:59:02.000Z", id="q1", revision=1,
-               picks=["Maybe"])) + "\n"]
+               picks=["Maybe"])) + "\n",
+       jline(L("page-1801a007", "answer", "page", "2026-11-23T09:59:02.500Z", id="q1", revision=1,
+               text="half an emoji: \ud83d")).replace("\ud83d", "\\ud83d") + "\n",
+       jline(L("page-1801a008", "answer", "page", "2026-11-23T09:59:02.700Z", id="q1", revision=1,
+               picks=["Yes", "No"])) + "\n"]
 u1 = L("page-1801a005", "answer", "page", "2026-11-23T09:59:03.000Z", id="q99", revision=1, text="whenever")
 u2 = L("page-1801d006", "dismiss", "page", "2026-11-23T09:59:04.000Z", id="q42")
 tail = bad + [u1, u2]
 before = {"state.json": record(S, 2, 2, 0, [q1]), "inbox.jsonl": inbox(tail)}
 vs = {u1["key"]: V("closed", "answer", NOW, id="q99", how="unknown"),
       u2["key"]: V("closed", "dismiss", NOW, id="q42", how="unknown")}
-after = {"state.json": record(S, 3, 2, offset(*tail), [q1], verdicts=vs, skipped=4), "inbox.jsonl": inbox(tail)}
-case("skipped-and-unknown", "U2: a line that is not JSON, one with no key, one that fails the line's schema and one "
-     "that picks no label of its question are skipped with no verdict, inbox.skipped raised by four; U3: an answer "
+after = {"state.json": record(S, 3, 2, offset(*tail), [q1], verdicts=vs, skipped=6), "inbox.jsonl": inbox(tail)}
+case("skipped-and-unknown", "U2: a line that is not JSON, one with no key, one that fails the line's schema, one "
+     "that picks no label of its question, one whose text holds a lone UTF-16 surrogate and one with two picks on a "
+     "single-select question are skipped with no verdict, inbox.skipped raised by six; U3: an answer "
      "and a dismissal naming ids the record never assigned read closed, how unknown", 18, NOW,
      drain([u1["key"], u2["key"]]), vs, before, after,
      show(S, 2, [shown(q1)], sent=[q_sent(u1), q_sent(u2)]),
@@ -1385,7 +1394,7 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   (those belong to a delivery). The log's is whole; `Closed.answer` is its first 2,000 characters. `receipt` is
   written for an answered question only. A closed question keeps the `key` of the line that closed it.
 - **A `delivered` line** (I2) sets `closed[id].deliveredAt` for each key it takes out of `pending`, as `landed`
-  does.
+  does. Only an answered or a dismissed question has a `deliveredAt`: a withdrawal is delivered to nobody (U5).
 - **`sent`** (I4) lists the keys with a verdict, sorted by key, then the queued lines in inbox order. A queued
   retract carries its `target`. A `delivered` line's own key reads `delivered` (verdict `applied`, never pending).
 - **A line a reader drops** (I4) is one a drain skips (U2): it is not JSON (NaN and the infinities are not), it
@@ -1403,8 +1412,9 @@ Where the plan's shapes left a choice, the set takes one, the same in the plan's
   times; if `seq` moved every time it returns nothing unverified: `sminos sheet show` exits 75, and a reader reads
   again.
 - **Cuts in `show`'s pending outcomes** (I4), in both forms: the question at 2,000 characters, its header at 60,
-  each label and each pick at 200, a subagent's name at 200. An agent id is the engine's, at most 128 characters,
-  never cut.
+  each label and each pick at 200, a subagent's name at 200. An agent id is at most 128 characters, a bound of this
+  contract (the engine's ids are far shorter), and is never cut; nor is a question's id, which is at most
+  `q999999999`.
 - **No record** (I4). `show` exits 3 (`no sheet`); a fixture writes that as `null`.
 - **The keyed form** (I4). `show --json --keys` (at most 50 keys) carries each pending outcome under the cuts
   above and its `text` as its first 500 characters, with `textCut: true` when it was longer and the record's
