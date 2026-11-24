@@ -634,6 +634,12 @@ describe("the terminal's drawing (M5, §8.3)", () => {
     expect([...deliveriesHeld([{ role: 'assistant', content: steer }]).keys()]).toEqual([])
     expect([...deliveriesHeld([{ role: 'user', content: `As said: ${steer}` }]).keys()]).toEqual([])
     expect([...heldKeys([{ role: 'user', content: steer }])]).toEqual([])
+    // In the conversation's order: the newest block of a question wins, a steer's or a route's.
+    const pick = (n: number) => `<sheet-delivery>${JSON.stringify({ v: 1, keys: ['k'], answered: [{ id: 'q7', revision: 1, picks: [n], text: '', images: [] }], dismissed: [] })}</sheet-delivery>`
+    const steerOf = (n: number) => `[sheet v1] The human answered questions on your sheet.\nq7 → option ${n}.\n${pick(n)}`
+    const routeOf = (n: number) => [{ type: 'text', text: `<system-reminder>\nprompt.submit hook additional context: ${steerOf(n)}\n</system-reminder>` }]
+    expect(deliveriesHeld([{ role: 'user', content: steerOf(1) }, { role: 'user', content: routeOf(2) }]).get('q7')).toMatchObject({ picks: [2] })
+    expect(deliveriesHeld([{ role: 'user', content: routeOf(2) }, { role: 'user', content: steerOf(1) }]).get('q7')).toMatchObject({ picks: [1] })
   })
 
   describe("a call's row: one line a question, then its receipt in the line's place", () => {

@@ -586,15 +586,15 @@ class Sheet(LB.Live):
         if len(asked) < 2:
             return
         # A read that cannot be whole: the transcript padded past what one read takes (a row of a type the engine
-        # does not know), so it is searched, and the asks' search fails: first on PATH, a perl that exits 2 for it (it
-        # names its stored forms, more than the floor's four arguments) and runs the real one for the rest, and a grep
-        # that exits 2.
+        # does not know), so it is searched, and the asks' search fails: first on PATH, a perl that exits 2 for it (the
+        # one search run as `perl -e`; the floor's and the landing's load modules first) and runs the real one for the
+        # rest, and a grep that exits 2.
         path = glob.glob(os.path.join(self.cfg, "projects", "*", sid + ".jsonl"))[0]
         with open(path, "a") as f:
             f.write(json.dumps({"type": "live-check-padding", "padding": "x" * (READ_LIMIT + 65536)}) + "\n")
         stubs = os.path.join(self.root, "failing-search")
         os.makedirs(stubs, exist_ok=True)
-        bodies = {"perl": '#!/bin/sh\n[ "$#" -gt 4 ] && exit 2\nexec %s "$@"\n' % shlex.quote(shutil.which("perl")),
+        bodies = {"perl": '#!/bin/sh\n[ "$1" = "-e" ] && exit 2\nexec %s "$@"\n' % shlex.quote(shutil.which("perl")),
                   "grep": "#!/bin/sh\nexit 2\n"}
         for tool, body in bodies.items():
             with open(os.path.join(stubs, tool), "w") as f:

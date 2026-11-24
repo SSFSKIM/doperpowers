@@ -22,6 +22,7 @@ import {
   entryProblem,
   floorOfLines,
   floorOfMessages,
+  floorOfSearch,
   floorSearchArgs,
   foreclosedResult,
   hasSubagent,
@@ -1302,8 +1303,9 @@ async function floorAtStart(port: Port, gen: Gen, source: StartSource, transcrip
       }
       const search = await port.exec(floorSearchArgs(transcript))
       if (search.exitCode === 1) return 0
-      if (search.exitCode === 0 && !search.isStdoutTruncated) return floorOfLines(search.stdout.split('\n'))
-      port.log(`sheet: the transcript's search ${search.isStdoutTruncated ? 'was cut' : `exited ${search.exitCode}`}; the floor goes with the calls`)
+      const floor = search.exitCode === 0 && !search.isStdoutTruncated ? floorOfSearch(search.stdout) : undefined
+      if (floor !== undefined) return floor
+      port.log(`sheet: the transcript's search ${search.exitCode === 0 ? 'printed no floor' : `exited ${search.exitCode}`}; the floor goes with the calls`)
     } catch (error) {
       port.log(`sheet: the transcript could not be read for its ids (${message(error)})`)
     }

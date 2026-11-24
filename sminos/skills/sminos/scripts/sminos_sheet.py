@@ -1295,14 +1295,16 @@ def resolve(a, verb):
         if not S.UUID_RE.fullmatch(a.session):
             S.die("sheet %s: --session takes an engine session id" % verb)
         return a.session
-    if PREFIX_RE.fullmatch(a.member) and S.find_target(a.member)[0] == "none":
-        found = recorded(a.member)
+    target = None
+    if PREFIX_RE.fullmatch(a.member):
+        target = S.find_target(a.member)
+        found = recorded(a.member) if target[0] == "none" else []
         if len(found) == 1:
             return found[0]
         if len(found) > 1:
             S.die("sheet %s: '%s' begins more than one sheet's session: %s; name it whole with --session"
                   % (verb, a.member, ", ".join(found)), S.EXIT_UNKNOWN)
-    return S.bridge_module().watch_session(a.member)
+    return S.bridge_module().watch_session(a.member, target)
 
 
 def _split_who(a, verb):

@@ -459,6 +459,23 @@ class Verbs(unittest.TestCase):
         self.assertIn(SESSION, err)
         self.assertIn(other, err)
 
+    def test_the_prefix_and_the_member_are_looked_up_once(self):
+        """The prefix fallback and the member it falls back to share one lookup (find_target reconciles projects)."""
+        real, seen = sminos.find_target, []
+        sminos.find_target = lambda q: (seen.append(q), real(q))[1]
+        try:
+            ns = type("A", (), {"member": SESSION[:8], "session": None})()
+            self.assertEqual(sheet.resolve(ns, "show"), SESSION)
+            self.assertEqual(seen, [SESSION[:8]])
+            del seen[:]
+            ns = type("A", (), {"member": "5eed0001", "session": None})()
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as err:
+                sheet.resolve(ns, "show")
+            self.assertIn("no member matching", err.getvalue())
+            self.assertEqual(seen, ["5eed0001"])
+        finally:
+            sminos.find_target = real
+
     def test_a_line_sent_against_the_old_wording_is_stale_with_current(self):
         stale = line("page-00000001", "answer", id="q2", revision=1, picks=["Yes"])
         self.assertTrue(step(inline_call("toolu_c2", [{"id": "q2", "question": "Ship today?",

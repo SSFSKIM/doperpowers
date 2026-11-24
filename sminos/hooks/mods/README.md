@@ -614,7 +614,10 @@ cut), stages each open ask under its start's nonce
 transcript) and the start step imports what it has not yet imported and
 says so in its context. A read that was not definite sends none, and so does
 a start whose conversation's ids are not known (an import takes ids), so
-nothing is recorded and the next start reads again; a copy's first start
+nothing is recorded and the next start reads again. A transcript past the
+4 MiB one read takes is searched for its floor by one perl pass that applies
+the floor's rules itself and prints the floor alone (`floorSearchArgs`), so
+however long the history, only a search that fails leaves it unknown; a copy's first start
 records that it never imports. A resume's or a copy's start is kept as being
 made ready (`preparing`: its nonce, source and transcript) before its floor
 is read and its asks staged, so a reload in between makes it ready again

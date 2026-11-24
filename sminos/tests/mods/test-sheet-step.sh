@@ -26,7 +26,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFil
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
 import { ASYNC_RESULT } from '$root/hooks/mods/ask.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, blocksOf, deliveriesHeld, floorOfLines, floorOfSheetText, floorSearchArgs, heldKeys, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, blocksOf, deliveriesHeld, floorOfLines, floorOfSearch, floorOfSheetText, floorSearchArgs, heldKeys, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -79,15 +79,18 @@ check("every property carries C1's description for its field; path and lines non
 check("every field C1 describes is a property", Object.keys(c1).every((name) => properties.some(([n]) => n === name)), Object.keys(c1))
 
 const logs: string[] = []
+const CAP = 4 * 1024 * 1024
 const port: Port = {
   run: async (args, stdin) => {
     const p = spawnSync('$root/skills/sminos/scripts/sminos', args, { input: stdin ?? '', encoding: 'utf8', env: { ...process.env, SMINOS_HOME: HOME } })
     if (p.error) throw p.error
     return { exitCode: p.status ?? 1, stdout: p.stdout, stderr: p.stderr }
   },
+  // As the engine runs a program: its output cut at 4 MiB, and said to be.
   exec: async (argv) => {
-    const p = spawnSync(argv[0] as string, argv.slice(1), { encoding: 'utf8' })
-    return { exitCode: p.status ?? 1, stdout: p.stdout, isStdoutTruncated: false }
+    const p = spawnSync(argv[0] as string, argv.slice(1), { encoding: 'utf8', maxBuffer: 1 << 30 })
+    const isCut = Buffer.byteLength(p.stdout) > CAP
+    return { exitCode: p.status ?? 1, stdout: isCut ? Buffer.from(p.stdout).subarray(0, CAP).toString('utf8') : p.stdout, isStdoutTruncated: isCut }
   },
   write: async (path, text) => (mkdirSync(dirname(path), { recursive: true }), writeFileSync(path, text)),
   read: async (path) => readFileSync(path, 'utf8'),
@@ -163,8 +166,77 @@ const lines = [
   JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Added q77.' }] } }),
 ]
 writeFileSync('$work/t.jsonl', lines.join('\n') + '\n')
-const searched = execFileSync(floorSearchArgs('$work/t.jsonl')[0] as string, floorSearchArgs('$work/t.jsonl').slice(1), { encoding: 'utf8' }).split('\n')
-check('the search finds the floor a whole read finds', floorOfLines(searched) === floorOfLines(lines) && floorOfLines(lines) === 8, [floorOfLines(searched), floorOfLines(lines)])
+const floorSearched = (path: string) => {
+  const p = spawnSync('perl', floorSearchArgs(path).slice(1), { encoding: 'utf8', maxBuffer: 1 << 30 })
+  return { status: p.status, floor: p.status === 1 ? 0 : floorOfSearch(p.stdout), bytes: Buffer.byteLength(p.stdout), stderr: p.stderr }
+}
+const searched = floorSearched('$work/t.jsonl')
+check('the search finds the floor a whole read finds', searched.floor === floorOfLines(lines) && floorOfLines(lines) === 8, [searched, floorOfLines(lines)])
+
+// The search's rules are the floor's rules written again in perl: held to the same floor as floorOfLines over every
+// form they read, each in every place the engine stores a text (a hook's context, a plugin's prompt, a system row, a
+// context inside another tool's result, the human's words), and the tool's results with and without their calls.
+const floorBlock = (ids: string[], dismissed: string[] = []) => \`<sheet-delivery>\${JSON.stringify({ v: 1, keys: [...ids, ...dismissed].map((_, i) => \`k\${i}\`), answered: ids.map((id) => ({ id, revision: 1, picks: [], text: 'x', images: [] })), dismissed })}</sheet-delivery>\`
+const envelopeOf = (ids: string[], dismissed: string[] = []) => \`[sheet v1] The human answered questions on your sheet.\nq "x"\n\${floorBlock(ids, dismissed)}\`
+const ended = '[sheet v1] The subagent r (a1) ended with questions still open on your sheet: q4 "S?". Their answers will come to you; withdraw what you no longer need.'
+const forms = [
+  envelopeOf(['q9'], ['q11']),
+  '[sheet v1] Your question sheet, after a resume.\nOpen: q3 (revision 1) "a"\nNew ids continue from q12.',
+  '[sheet v1] This conversation is a copy: its question sheet starts empty. Questions asked before the copy belong to the conversation it was copied from, and their answers will not come here; ask again what you still need. New ids start at q30.',
+  "[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open. New ids start at q8.",
+  "[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open. Quoted: New ids start at q42.",
+  '[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5, q6.',
+  'New ids continue from q41.',
+  ['[sheet v1] Your question sheet, after a resume.', 'Open: q1 (revision 1) — "x" Options: 1. yes', 'New ids continue from q42.', '[sheet v1] Your earlier call (x) did change the sheet: Added q77.; 2. no', 'New ids continue from q2.'].join('\n'),
+  '[sheet v1] Your question sheet, after a start. New ids start at q42.\nNew ids continue from q3.',
+  ['[sheet v1] The human answered questions on your sheet.', 'q3 "x" → a label', floorBlock(['q90']), 'more.', floorBlock(['q3'])].join('\n'),
+  "another plugin's context\n[sheet v1] Your question sheet, after a start.\nNew ids continue from q5.",
+  \`\${ended}\n\n\${envelopeOf(['q42'])}\`,
+  \`[sheet v1] Your earlier call (toolu_9) did change the sheet: Added q50.\n\n\${ended}\n\n\${envelopeOf(['q42'])}\`,
+  \`\${ended}\n\${envelopeOf(['q42'])}\`,
+  \`From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet.\n\${envelopeOf(['q61'])}\`,
+  \`\${envelopeOf(['q7'])}\n</system-reminder>\n \u00a0\n\`,
+  \`\${envelopeOf(['q8'])}\r\`,
+  '[sheet v1] Your question sheet, after a resume.\r\nNew ids continue from q12.',
+  '[sheet v1] Your question sheet, after a resume.\nNew ids continue from q12.\u2028',
+  envelopeOf(['q1234567890', 'qé', 'xq5', 'q5x']),
+  '[sheet v1] The human answered questions on your sheet.\n<sheet-delivery>{"v":"1","keys":["k"],"answered":[{"id":"q70"}],"dismissed":[]}</sheet-delivery>',
+  '[sheet v1] The human answered questions on your sheet.\n<sheet-delivery>{"v":1.0,"keys":["k"],"answered":[{"id":"q71"},{"id":5},"q99"],"dismissed":["q72",true]}</sheet-delivery>',
+  '[sheet v1] Your earlier call (t) did change the sheet: Withdrew q999999999.',
+  '',
+]
+const placesOf = (t: string) => [
+  { type: 'attachment', attachment: { type: 'hook_additional_context', content: [t], hookName: 'SessionStart' } },
+  { type: 'attachment', attachment: { type: 'hook_additional_context', content: t, hookName: 'x' } },
+  { type: 'user', message: { content: \`<system-reminder>\nSessionStart hook additional context: \${t}\` } },
+  { type: 'user', message: { content: [{ type: 'text', text: \`tool.call hook additional context: \${t}\` }] } },
+  { type: 'user', message: { content: \`The sminos plugin sent a message:\n\${t}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — x.\` } },
+  { type: 'user', message: { content: t } },
+  { type: 'system', content: \`SessionStart hook additional context: \${t}\` },
+  { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'r9', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: \`<system-reminder>\ntool.call hook additional context: \${t}\n</system-reminder>\` }] }] } },
+]
+const sheetCall = (id: string, name = 'mcp__sminos__AskUserQuestion') => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: { ask: [] } }] } })
+const sheetResult = (id: string, content: unknown) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] } })
+const corpus: unknown[][] = [
+  ...forms.flatMap((form) => placesOf(form).map((row) => [row])),
+  [sheetCall('t1'), sheetResult('t1', 'Added q4.'), sheetCall('t2', 'Bash'), sheetResult('t2', 'Added q90.')],
+  [sheetResult('t3', 'Added q14.'), sheetCall('t3')],
+  [sheetCall('t4'), sheetResult('t4', [{ type: 'text', text: 'Revised q3 (revision 2). Withdrew q12.' }, { type: 'text', text: 'Added q99.' }])],
+  [sheetCall('t5'), sheetResult('t5', 'Nothing done.\nAdded q50.'), sheetResult('t5', 'Added q2 (entry 3).')],
+  [sheetCall('t6'), sheetResult('t6', [{ type: 'text', text: \`tool.call hook additional context: \${forms[0]}\` }])],
+  [sheetResult('t7', [{ type: 'text', text: \`tool.call hook additional context: \${forms[0]}\` }]), sheetCall('t8'), sheetResult('t8', 'Added q1.')],
+  [{ type: 'assistant', message: { content: [{ type: 'text', text: 'Added q70.' }] } }],
+]
+const differ: unknown[] = []
+const floors = new Set<number>()
+for (const [i, rows] of corpus.entries()) {
+  const rowLines = rows.map((row) => JSON.stringify(row))
+  writeFileSync('$work/parity.jsonl', rowLines.join('\n') + '\n')
+  const theirs = floorSearched('$work/parity.jsonl')
+  floors.add(floorOfLines(rowLines))
+  if (theirs.floor !== floorOfLines(rowLines)) differ.push({ i, ours: floorOfLines(rowLines), theirs, rows })
+}
+check(\`the search's floor is floorOfLines' over \${corpus.length} transcripts of every form in every place\`, differ.length === 0 && floors.size > 12, differ.slice(0, 3))
 // The contexts M2's step composes, read back as the conversation holds them (a SessionStart's context): the fork's
 // line and the lost record's carry the New ids sentence inline.
 const contextOf = (session: string, start: Record<string, unknown>) => {
@@ -184,7 +256,7 @@ const quoting = [
 check('a tool result quoting it names nothing', floorOfLines(quoting) === 0)
 
 writeFileSync('$work/none.jsonl', JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }) + '\n')
-check('a transcript with no form exits 1', spawnSync('perl', floorSearchArgs('$work/none.jsonl').slice(1)).status === 1)
+check('a transcript with no form exits 1', floorSearched('$work/none.jsonl').status === 1)
 
 // A start's context the real step composes over a question whose text, and a label, quote the footer's sentence:
 // the floor is the real footer's, read by its place.
@@ -339,6 +411,24 @@ await sheetForTests.sessionStarted(port, 'fork', S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 check("a copy's sheet starts empty and stays empty", stateOf(S6).questions.length === 0 && stateOf(S6).import.never === true, stateOf(S6).import)
+
+// A history whose rows the floor reads run past 4 MiB (what one read takes, and what a program's output is cut at):
+// the search prints its floor in a few bytes, so the floor is found, and the open ask of today's tool is imported
+// past it. Its envelopes are what grow it; the asks' search (the tool's calls, today's results) stays small.
+const longAnswer = 'a long answer '.repeat(400)
+const history: string[] = []
+for (let n = 1; n <= 700; n++) {
+  history.push(JSON.stringify(sheetCall(\`toolu_h\${n}\`)), JSON.stringify(sheetResult(\`toolu_h\${n}\`, \`Added q\${n}.\`)))
+  history.push(JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'tool.call', content: [\`[sheet v1] The human answered questions on your sheet.\nq\${n} → their text: "\${longAnswer}"\n<sheet-delivery>\${JSON.stringify({ v: 1, keys: [\`h\${n}\`], answered: [{ id: \`q\${n}\`, revision: 1, picks: [], text: longAnswer, images: [] }], dismissed: [] })}</sheet-delivery>\`] } }))
+}
+writeFileSync('$work/long.jsonl', [...history, ...readFileSync('$work/today.jsonl', 'utf8').trimEnd().split('\n')].join('\n') + '\n')
+const matching = readFileSync('$work/long.jsonl', 'utf8').split('\n').filter((line) => /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|\[sheet v1\]|"name":"mcp__sminos__AskUserQuestion"/.test(line))
+const longSearch = floorSearched('$work/long.jsonl')
+check('the rows the floor reads run past 4 MiB; the search prints a few bytes and the floor a whole read gives', Buffer.byteLength(matching.join('\n')) > CAP && longSearch.bytes < 64 && longSearch.floor === 700, { bytes: Buffer.byteLength(matching.join('\n')), longSearch })
+const S7 = '5eed0000-0000-4000-8000-00000000c3b7'
+await resumeWith(S7, '$work/long.jsonl')
+const s7 = stateOf(S7)
+check('so a resume of it imports the open ask, its id past the floor', s7.questions.length === 1 && s7.questions[0]?.id === 'q701' && s7.import.calls.toolu_today1?.[0] === 'q701', { questions: s7.questions.map((q: { id: string }) => q.id), import: s7.import, logs: logs.filter((line) => line.includes('floor') || line.includes('today')).slice(-4) })
 
 // M5: the published steer (X3: a user row whose text is an envelope) draws its receipts, read for drawing alone;
 // landing reads routes' blocks only.

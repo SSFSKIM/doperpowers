@@ -816,19 +816,85 @@ export function floorOfMessages(
 }
 
 /**
- * The search for a transcript too large to read whole: the lines that can
- * hold an id the tool wrote (perl, one pass, lines printed as bytes), with
- * the tool's calls, which pair a result with its call. Its exit code is
- * grep's: 0 found, 1 none, 2 unreadable.
+ * The search for a transcript too large to read whole (I10), printing
+ * compact evidence, never the rows: one line `{"floor":<n>}`, the floor
+ * `floorOfLines` gives over the same rows. The pass reads the lines that can
+ * hold an id the tool wrote (and the tool's calls, which pair a result with
+ * its call), decodes them, and applies the floor's rules as `floorOfRows`
+ * does: the tool's results by their first line, the sheet's texts by their
+ * place (`floorOfSheetText`, `sheetTextOf`), a block's ids by its JSON. The
+ * output is a few bytes whatever the history holds, so no cut can make the
+ * floor unknown. Perl (JSON::PP and B are core; JSON::XS where the host has
+ * it, for speed), one pass; its exit code is grep's: 0 found, 1 none, 2
+ * unreadable. Its rules are the TypeScript ones written again: a test holds
+ * the two to the same floor over every form they read.
  */
 export function floorSearchArgs(path: string): string[] {
-  return [
-    'perl',
-    '-e',
-    'binmode STDOUT; my $path = pop @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|\\[sheet v1\\]|"name":"mcp__sminos__AskUserQuestion"/) { print $line; $found = 1 } } exit($found ? 0 : 1);',
-    '--',
-    path,
-  ]
+  return ['perl', '-MJSON::PP', '-MB', '-e', FLOOR_SEARCH, '--', path]
+}
+
+const FLOOR_SEARCH = [
+  "binmode STDOUT; my $path = pop @ARGV; open(my $fh, \"<:raw\", $path) or exit 2;",
+  "my ($json, $text) = eval { require JSON::XS; (JSON::XS->new->utf8, JSON::XS->new) }; ($json, $text) = (JSON::PP->new->utf8, JSON::PP->new) unless $json;",
+  "my $TOOL = \"mcp__sminos__AskUserQuestion\"; my $MAX = 999999999;",
+  "my $WS = qr/[\\t\\n\\x0B\\f\\r \\x{A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]/;",
+  "my $DOT = qr/[^\\n\\r\\x{2028}\\x{2029}]/;",
+  "my $START = \"[sheet v1] Your question sheet, after \";",
+  "my $FORK = \"[sheet v1] This conversation is a copy: its question sheet starts empty. Questions asked before the copy belong to the conversation it was copied from, and their answers will not come here; ask again what you still need.\";",
+  "my $LOST = \"[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open.\";",
+  "my @HEADS = (\"[sheet v1] The human answered questions on your sheet.\", \"[sheet v1] The human dismissed questions on your sheet; no answer will come for them.\");",
+  "my $SUB = \"From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet.\";",
+  "my $PROMPT = \"The sminos plugin sent a message:\\n\"; my $PROMPT_END = \"\\n\\nThis is how Claude Code surfaces a prompt a plugin submits between turns\";",
+  "my $NOTICE = qr/^\\[sheet v1\\] Your earlier call \\([^)\\n]*\\) did change the sheet: ($DOT*)\\z/;",
+  "my @OTHER = (qr/^\\[sheet v1\\] Your earlier call \\([^)\\n]*\\) changed nothing; call again if you still need it\\.\\z/,",
+  "  qr/^\\[sheet v1\\] The subagent $DOT* \\([^)\\n]*\\) ended with questions still open on your sheet: $DOT*\\. Their answers will come to you; withdraw what you no longer need\\.\\z/);",
+  "sub starts { my ($s, $p) = @_; return substr($s, 0, length $p) eq $p }",
+  "sub hi { my $m = 0; for (@_) { $m = $_ if $_ > $m } return $m < $MAX - 1 ? $m : $MAX - 1 }",
+  "sub ids { my ($t) = @_; my @n; push @n, $1 while $t =~ /(?<![A-Za-z0-9_])q([1-9][0-9]{0,8})(?![A-Za-z0-9_])/g; return @n }",
+  "sub of_result { my ($t) = @_; my ($first) = split /\\n/, $t, 2; $first //= \"\"; return $first =~ /^(?:Added|Revised|Withdrew) q[1-9]/ ? hi(ids($first)) : 0 }",
+  "sub is_num1 { my ($v) = @_; return 0 if !defined $v || ref $v; my $f = B::svref_2object(\\$v)->FLAGS; return ($f & (B::SVf_IOK() | B::SVf_NOK())) && !($f & B::SVf_POK()) && $v == 1 }",
+  "sub block_ids { my ($body) = @_; my $b = eval { $text->decode($body) }; return () unless ref $b eq \"HASH\" && is_num1($b->{v}) && ref $b->{answered} eq \"ARRAY\" && ref $b->{dismissed} eq \"ARRAY\";",
+  "  return map { defined $_ && !ref $_ && !JSON::PP::is_bool($_) && B::svref_2object(\\$_)->FLAGS & B::SVf_POK() ? ids($_) : () } ((map { ref $_ eq \"HASH\" ? $_->{id} : undef } @{$b->{answered}}), @{$b->{dismissed}}) }",
+  "sub of_item_text { my ($t) = @_; my @l = split /\\n/, $t, -1; @l = (\"\") unless @l; my ($first, $last) = ($l[0], $l[-1]);",
+  "  if (starts($first, $START)) { return @l > 1 && $last =~ /^New ids continue from q([1-9][0-9]{0,8})\\.\\z/ ? hi($1 - 1) : 0 }",
+  "  for my $line ($FORK, $LOST) { if (@l == 1 && starts($first, $line)) { return $first =~ / New ids start at q([1-9][0-9]{0,8})\\.\\z/ && substr($first, length $line) eq \" New ids start at q$1.\" ? hi($1 - 1) : 0 } }",
+  "  my $head = $first eq $SUB ? ($l[1] // \"\") : $first;",
+  "  if (grep { starts($head, $_) } @HEADS) { return @l > 1 && $last =~ /^<sheet-delivery>($DOT*)<\\/sheet-delivery>\\z/ ? hi(block_ids($1)) : 0 }",
+  "  return $first =~ $NOTICE ? of_result($1) : 0 }",
+  "sub of_sheet_text { my ($t) = @_; $t =~ s/\\n<\\/system-reminder>$WS*\\z//; $t =~ s/$WS+\\z//; my @a = split /\\n/, $t, -1; @a = (\"\") unless @a; my ($f, $at) = (0, 0);",
+  "  while ($at < @a - 2 && $a[$at + 1] eq \"\" && ($a[$at] =~ $NOTICE || grep { $a[$at] =~ $_ } @OTHER)) { my $n = of_item_text($a[$at]); $f = $n if $n > $f; $at += 2 }",
+  "  my $n = of_item_text(join \"\\n\", @a[$at .. $#a]); return $n > $f ? $n : $f }",
+  "sub own_text { my ($t) = @_; return $t if $t =~ s/^(?:<system-reminder>\\n)?[A-Za-z][A-Za-z.]* hook additional context: //;",
+  "  if (starts($t, $PROMPT)) { my $o = substr($t, length $PROMPT); my $e = rindex($o, $PROMPT_END); return $e < 0 ? $o : substr($o, 0, $e) } return undef }",
+  "sub of_item { my ($t) = @_; my $o = own_text($t); return defined $o ? of_sheet_text($o) : 0 }",
+  "sub texts { my ($c) = @_; return ($c) if defined $c && !ref $c && B::svref_2object(\\$c)->FLAGS & B::SVf_POK(); return () unless ref $c eq \"ARRAY\"; return map { ref $_ eq \"HASH\" && ($_->{type} // \"\") eq \"text\" && defined $_->{text} && !ref $_->{text} && B::svref_2object(\\$_->{text})->FLAGS & B::SVf_POK() ? ($_->{text}) : () } @$c }",
+  "sub str { my ($v) = @_; return \"undefined\" unless defined $v; return $v ? \"true\" : \"false\" if JSON::PP::is_bool($v); return ref $v ? \"[object]\" : \"$v\" }",
+  "my (%calls, %as_call, %as_other, $floor, $found); $floor = 0;",
+  "sub up { $floor = $_[0] if $_[0] > $floor }",
+  "while (my $line = <$fh>) { next unless $line =~ /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|\\[sheet v1\\]|\"name\":\"mcp__sminos__AskUserQuestion\"/;",
+  "  my $row = eval { $json->decode($line) }; next unless ref $row eq \"HASH\"; $found = 1; my $type = $row->{type} // \"\";",
+  "  my $content = ref $row->{message} eq \"HASH\" ? $row->{message}{content} : undef;",
+  "  if ($type eq \"assistant\") { if (ref $content eq \"ARRAY\") { for my $b (@$content) { $calls{str($b->{id})} = 1 if ref $b eq \"HASH\" && ($b->{type} // \"\") eq \"tool_use\" && defined $b->{name} && !ref $b->{name} && $b->{name} eq $TOOL } } }",
+  "  elsif ($type eq \"user\") { up(of_item($_)) for texts($content);",
+  "    if (ref $content eq \"ARRAY\") { for my $b (@$content) { next unless ref $b eq \"HASH\" && ($b->{type} // \"\") eq \"tool_result\"; my $id = str($b->{tool_use_id});",
+  "      my $r = of_result(join \"\\n\", texts($b->{content})); $as_call{$id} = $r if $r > ($as_call{$id} // 0);",
+  "      my $o = 0; if (ref $b->{content} eq \"ARRAY\") { for my $i (@{$b->{content}}) { next unless ref $i eq \"HASH\" && ($i->{type} // \"\") eq \"text\"; my $n = of_item(str($i->{text})); $o = $n if $n > $o } }",
+  "      $as_other{$id} = $o if $o > ($as_other{$id} // 0) } } }",
+  "  elsif ($type eq \"attachment\" && ref $row->{attachment} eq \"HASH\" && ($row->{attachment}{type} // \"\") eq \"hook_additional_context\") { my $c = $row->{attachment}{content};",
+  "    my @t = ref $c eq \"ARRAY\" ? (grep { defined $_ && !ref $_ && B::svref_2object(\\$_)->FLAGS & B::SVf_POK() } @$c) : (defined $c && !ref $c && B::svref_2object(\\$c)->FLAGS & B::SVf_POK()) ? ($c) : (); up(of_sheet_text($_)) for @t }",
+  "  elsif ($type eq \"system\" && defined $row->{content} && !ref $row->{content} && B::svref_2object(\\$row->{content})->FLAGS & B::SVf_POK()) { up(of_item($row->{content})) } }",
+  "up($calls{$_} ? ($as_call{$_} // 0) : ($as_other{$_} // 0)) for keys %as_call, keys %as_other;",
+  "print JSON::PP->new->canonical->encode({ floor => $floor + 0 }), \"\\n\"; exit($found ? 0 : 1);"
+].join('\n')
+
+/** The floor a search printed (`floorSearchArgs`): undefined for anything but its one line. */
+export function floorOfSearch(stdout: string): number | undefined {
+  try {
+    const found: unknown = JSON.parse(stdout)
+    return isRecord(found) && Number.isInteger(found.floor) && (found.floor as number) >= 0 && (found.floor as number) < ID_MAX ? (found.floor as number) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // ------------------------------------------------------------------ delivery (I7's block, I9)
@@ -1194,8 +1260,21 @@ export function deliveredIn(texts: readonly string[]): Map<string, Delivered> {
  * Landing reads routes' blocks alone (`heldKeys`): a steer settles nothing.
  */
 export function deliveriesHeld(api: readonly { role: string; content: unknown }[]): Map<string, Delivered> {
-  const steers = api.filter((message) => message.role === 'user').flatMap((message) => textsOf(message.content).filter((text) => ENVELOPE_HEADS.some((head) => text.startsWith(head))))
-  return deliveredIn([...routeItems(api), ...steers])
+  return deliveredIn(api.flatMap(drawnTexts))
+}
+
+/** A message's texts that carry blocks for drawing, in its content's order, so a question's newest block wins. */
+function drawnTexts(message: { role: string; content: unknown }): string[] {
+  if (message.role === 'assistant') return []
+  const items: unknown[] = typeof message.content === 'string' ? [message.content] : Array.isArray(message.content) ? message.content : []
+  return items.flatMap((item) => {
+    const text = typeof item === 'string' ? item : isRecord(item) && item.type === 'text' && typeof item.text === 'string' ? item.text : undefined
+    if (text !== undefined) {
+      const isSteer = message.role === 'user' && ENVELOPE_HEADS.some((head) => text.startsWith(head))
+      return [...routeTexts(text), ...(isSteer ? [text] : [])]
+    }
+    return isRecord(item) && item.type === 'tool_result' ? textsOf(item.content).flatMap(routeTexts) : []
+  })
 }
 
 /** What a row reads of the sheet beyond its own call: the view while the record lives, and the deliveries' blocks. */
