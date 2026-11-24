@@ -63,7 +63,7 @@ export type SheetKept = {
   runner?: 'terminal' | 'maws'
   session: string
   started?: string
-  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[] } }
+  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[]; floorUnknown?: boolean } }
   preparing?: { nonce: string; source: 'resume' | 'fork'; transcript: string }
   left?: string
 }

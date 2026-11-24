@@ -1352,15 +1352,14 @@ async function prepareStart(port: Port, gen: Gen): Promise<NonNullable<SheetKept
  * own under the start's nonce, its call's time where the transcript holds
  * one, else now. A read that was not definite (a search that failed or was
  * cut) sends none and says so, so nothing is recorded and the next start reads
- * again; so does a staging that fails, and so does a floor not known (an
- * import takes ids, which must not be ones the conversation used before).
+ * again; so does a staging that fails. With the conversation's ids not known
+ * (its floor's search failed) the asks go marked `floorUnknown`: an import
+ * takes ids, which must not be ones the conversation used before, so the step
+ * imports them only into a record that has assigned an id, past them, and
+ * otherwise records nothing for the next start to read again.
  */
 async function stageToday(port: Port, session: string, nonce: string, transcript: string, isFloorKnown: boolean): Promise<NonNullable<NonNullable<SheetKept['starting']>['today']>> {
   const none = { definite: false, asks: [] }
-  if (!isFloorKnown) {
-    port.log("sheet: the conversation's ids are not known; no ask of today's tool is imported at this start")
-    return none
-  }
   const read = await readTodayAsks(port, transcript).catch((error: unknown) => (port.log(`sheet: the asks of today's tool could not be read (${message(error)})`), undefined))
   if (read === undefined || !read.isDefinite) {
     port.log("sheet: the read of the session's asks of today's tool was not definite; none is imported at this start")
@@ -1375,7 +1374,10 @@ async function stageToday(port: Port, session: string, nonce: string, transcript
       await port.write(`${staging(session)}/${file}`, JSON.stringify({ callId: ask.callId, askedAt, questions: ask.questions }))
       asks.push({ file })
     }
-    return { definite: true, asks }
+    if (!isFloorKnown) {
+      port.log("sheet: the conversation's ids are not known; the asks of today's tool go marked so, imported only into a record that has assigned an id")
+    }
+    return { definite: true, asks, ...(!isFloorKnown && { floorUnknown: true }) }
   } catch (error) {
     port.log(`sheet: the asks of today's tool could not be staged (${message(error)}); none is imported at this start`)
     return none

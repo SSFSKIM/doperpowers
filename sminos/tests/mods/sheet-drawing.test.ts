@@ -228,7 +228,7 @@ describe("a resume's asks of today's tool, imported once (§9; M5)", () => {
       .map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : `u${i - 1}`, uuid: `u${i}`, ...row }))
       .join('\n') + '\n'
   const EMPTY = { rows: [], api: [] }
-  const startOf = (h: { steps: StepEvent[] }) => h.steps.find((step) => step.event === 'start')?.start as { nonce: string; source: string; today?: { definite: boolean; asks: { file: string }[] } }
+  const startOf = (h: { steps: StepEvent[] }) => h.steps.find((step) => step.event === 'start')?.start as { nonce: string; source: string; today?: { definite: boolean; asks: { file: string }[]; floorUnknown?: boolean } }
 
   test("a resume under the sheet: the ask's read of the transcript goes with the start, each open ask staged as a file of its own, its call's time kept", async () => {
     const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: transcript() } })
@@ -284,18 +284,17 @@ describe("a resume's asks of today's tool, imported once (§9; M5)", () => {
     expect((h.kept.get('sminos.sheet') as { started?: string }).started).toBe(S1)
   })
 
-  test("a conversation's ids not known (the floor's search failed) while the asks were read: none is imported, nothing recorded", async () => {
+  test("a conversation's ids not known (the floor's search failed) while the asks were read: the asks go, marked so, for the step to import only into a record that has assigned an id", async () => {
     // Past what one read takes, both are searched: the floor's search fails, the asks' finds the open one.
     const big = `${transcript()}${'x'.repeat(4 * 1024 * 1024)}`
-    // The asks' search names its stored forms after `--`; the floor's names the path alone.
-    const exec = (argv: readonly string[]) => (argv[0] === 'perl' && argv.length > 5 ? { exitCode: 0, stdout: transcript() } : { exitCode: 2, stdout: '' })
+    // The asks' search is the one run as `perl -e`; the floor's loads its modules first.
+    const exec = (argv: readonly string[]) => (argv[0] === 'perl' && argv[1] === '-e' ? { exitCode: 0, stdout: transcript() } : { exitCode: 2, stdout: '' })
     const h = sheetOn({ files: { [`/t/${S1}.jsonl`]: big }, exec })
     await h.ready('resume')
     const start = startOf(h)
-    expect(start.today).toEqual({ definite: false, asks: [] })
     expect(start).not.toHaveProperty('floor')
-    expect([...h.files.keys()].filter((path) => path.includes('/.staging/'))).toEqual([])
-    expect(h.logs().some((line) => line.includes("the conversation's ids are not known"))).toBe(true)
+    expect(start.today).toEqual({ definite: true, asks: [{ file: `start-${start.nonce}/ask-1.json` }], floorUnknown: true })
+    expect(h.staged(`${HOME}/sheet/.staging/${S1}/start-${start.nonce}/ask-1.json`)).toMatchObject({ callId: 't-open' })
   })
 
   /** A transcript read the test holds: the `n`th read of the session's transcript waits until released. */

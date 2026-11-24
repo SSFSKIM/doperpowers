@@ -861,8 +861,8 @@ def _event_error(e):
             return "start is {source, floor?, nonce?, today?}"
         t = s.get("today", {})
         if not (isinstance(t, dict) and isinstance(t.get("definite", False), bool)
-                and isinstance(t.get("asks", []), list)):
-            return "today is {definite, asks}"
+                and isinstance(t.get("asks", []), list) and isinstance(t.get("floorUnknown", False), bool)):
+            return "today is {definite, asks, floorUnknown?}"
     return None
 
 

@@ -612,9 +612,12 @@ was definite: the whole file read, or the search run and its output not
 cut), stages each open ask under its start's nonce
 (`.staging/<session>/start-<nonce>/ask-<n>.json`, its call's time from the
 transcript) and the start step imports what it has not yet imported and
-says so in its context. A read that was not definite sends none, and so does
-a start whose conversation's ids are not known (an import takes ids), so
-nothing is recorded and the next start reads again. A transcript past the
+says so in its context. A read that was not definite sends none, so
+nothing is recorded and the next start reads again. A start whose
+conversation's ids are not known (its floor's search failed) sends its asks
+marked `floorUnknown`, and the step imports them only into a record that
+has assigned an id (its next id past every id the conversation holds), else
+records nothing for the next start. A transcript past the
 4 MiB one read takes is searched for its floor by one perl pass that applies
 the floor's rules itself and prints the floor alone (`floorSearchArgs`), so
 however long the history, only a search that fails leaves it unknown; a copy's first start

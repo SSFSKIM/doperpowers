@@ -226,17 +226,29 @@ const corpus: unknown[][] = [
   [sheetCall('t6'), sheetResult('t6', [{ type: 'text', text: \`tool.call hook additional context: \${forms[0]}\` }])],
   [sheetResult('t7', [{ type: 'text', text: \`tool.call hook additional context: \${forms[0]}\` }]), sheetCall('t8'), sheetResult('t8', 'Added q1.')],
   [{ type: 'assistant', message: { content: [{ type: 'text', text: 'Added q70.' }] } }],
+  // A call whose input holds a lone surrogate (an entry refused, another added): its result still pairs.
+  [{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't27', name: 'mcp__sminos__AskUserQuestion', input: { ask: [{ question: 'bad \ud800 here' }, { question: 'ok' }] } }] } }, sheetResult('t27', 'Added q27 (entry 2).\nNot done: entry 1, …')],
+  [sheetCall('t28'), sheetResult('t28', 'Added q28.'), { type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'x', content: [\`\${forms[0]}\udc00\`] } }],
+  [sheetCall('t29'), sheetResult('t29', 'Added q29 \\\\ud800.')],
+  [{ type: 'user', message: { content: \`tool.call hook additional context: [sheet v1] The human answered questions on your sheet.\nq \ud83d\ude00 x\n\${floorBlock(['q31'])}\` } }],
+  ['MALFORMED'],
 ]
 const differ: unknown[] = []
 const floors = new Set<number>()
 for (const [i, rows] of corpus.entries()) {
-  const rowLines = rows.map((row) => JSON.stringify(row))
-  writeFileSync('$work/parity.jsonl', rowLines.join('\n') + '\n')
+  if (rows[0] === 'MALFORMED') {
+    // Bytes that are not UTF-8 inside a row the floor reads: the reader and the search both take U+FFFD for them.
+    writeFileSync('$work/parity.jsonl', Buffer.concat([Buffer.from(JSON.stringify(sheetCall('t30')) + '\n'), Buffer.from('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t30","content":"Added q30. '), Buffer.from([0xff, 0xc3]), Buffer.from('"}]}}\n')]))
+  } else {
+    writeFileSync('$work/parity.jsonl', rows.map((row) => JSON.stringify(row)).join('\n') + '\n')
+  }
+  // As a whole read gives them: the file's text.
+  const rowLines = readFileSync('$work/parity.jsonl', 'utf8').split('\n')
   const theirs = floorSearched('$work/parity.jsonl')
   floors.add(floorOfLines(rowLines))
   if (theirs.floor !== floorOfLines(rowLines)) differ.push({ i, ours: floorOfLines(rowLines), theirs, rows })
 }
-check(\`the search's floor is floorOfLines' over \${corpus.length} transcripts of every form in every place\`, differ.length === 0 && floors.size > 12, differ.slice(0, 3))
+check(\`the search's floor is floorOfLines' over \${corpus.length} transcripts of every form in every place\`, differ.length === 0 && floors.size > 12 && [27, 30].every((n) => floors.has(n)), differ.slice(0, 3))
 // The contexts M2's step composes, read back as the conversation holds them (a SessionStart's context): the fork's
 // line and the lost record's carry the New ids sentence inline.
 const contextOf = (session: string, start: Record<string, unknown>) => {
@@ -411,6 +423,25 @@ await sheetForTests.sessionStarted(port, 'fork', S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 await resumeWith(S6, '$work/today.jsonl')
 check("a copy's sheet starts empty and stays empty", stateOf(S6).questions.length === 0 && stateOf(S6).import.never === true, stateOf(S6).import)
+
+// The floor's search failing outright (exit 2) while the asks' read is whole: the asks go marked floorUnknown, and the
+// real step imports them into a record that has assigned an id, and defers them, recording nothing, in one that
+// has not; the next start, its floor known, imports.
+const floorFailing: Port = {
+  ...port,
+  size: async (path) => (path.endsWith('/today.jsonl') ? 5 * 1024 * 1024 : port.size(path)),
+  exec: async (argv) => (argv[0] === 'perl' && argv[1] === '-e' ? port.exec(argv) : { exitCode: 2, stdout: '', isStdoutTruncated: false }),
+}
+const S8 = '5eed0000-0000-4000-8000-00000000c3b8'
+await sheetForTests.sessionStarted(port, 'startup', S8, '$work/none.jsonl')
+await call('toolu_s8a', { ask: [{ question: 'Asked here first?' }] })
+await sheetForTests.sessionStarted(floorFailing, 'resume', S8, '$work/today.jsonl')
+check('floor unknown, a record that assigned an id imports past it', stateOf(S8).questions.map((q: { id: string }) => q.id).join() === 'q1,q2' && stateOf(S8).import.calls.toolu_today1?.[0] === 'q2', { questions: stateOf(S8).questions.map((q: { id: string }) => q.id), import: stateOf(S8).import })
+const S9 = '5eed0000-0000-4000-8000-00000000c3b9'
+await sheetForTests.sessionStarted(floorFailing, 'resume', S9, '$work/today.jsonl')
+check('floor unknown, a record that assigned none imports nothing and records nothing', stateOf(S9).questions.length === 0 && JSON.stringify(stateOf(S9).import.calls) === '{}' && stateOf(S9).nextId === 1, stateOf(S9))
+await resumeWith(S9, '$work/today.jsonl')
+check('and the next start, its floor known, imports', stateOf(S9).import.calls.toolu_today1?.[0] === 'q1', stateOf(S9).import)
 
 // A history whose rows the floor reads run past 4 MiB (what one read takes, and what a program's output is cut at):
 // the search prints its floor in a few bytes, so the floor is found, and the open ask of today's tool is imported

@@ -549,7 +549,10 @@ def run_start(st, start, new, session, fx):
     for o in st["pending"]:
         o.update(acrossStop=True, recipient="main", taken=False)
     today = start.get("today") or {}
-    if today.get("definite") and not st["import"]["never"]:
+    # With the conversation's ids unknown (the mod's floor search failed: `floorUnknown`, which no published event
+    # carries), an import goes only into a record whose next id is past them, one that has assigned an id; otherwise
+    # nothing is imported or recorded, and the next start reads again.
+    if today.get("definite") and not st["import"]["never"] and not (today.get("floorUnknown") and st["nextId"] == 1):
         import_asks(st, today.get("asks") or [], session, fx)
     again = start.get("again")
     if again is not None:

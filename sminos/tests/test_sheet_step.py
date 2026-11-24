@@ -1143,6 +1143,53 @@ class TheAcknowledgementWindow(unittest.TestCase):
         self.assertEqual(len(state_of(v["session"])["questions"]), 3)
 
 
+class AnImportWithTheFloorUnknown(unittest.TestCase):
+    """M5's fix wave 3: a start whose conversation's ids are not known (the mod's floor search failed) sends its asks
+    with `today.floorUnknown`; under the lock the step imports them only into a record that has assigned an id, whose
+    next id is past every id the conversation holds; into one that has not, it imports nothing and records nothing,
+    and the next start reads again. No published fixture's event carries the flag."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def start(self, nonce, asks, floor_unknown=True, floor=None):
+        s = {"source": "resume", "nonce": nonce, "today": {"definite": True, "asks": asks}}
+        if floor_unknown:
+            s["today"]["floorUnknown"] = True
+        if floor is not None:
+            s["floor"] = floor
+        return step(ev("start", start=s))
+
+    def test_a_record_that_assigned_an_id_imports(self):
+        scratch()
+        self.assertTrue(step(ev("start", start={"source": "startup"}))["ok"])
+        self.assertTrue(step(inline_call("toolu_a1", [{"question": "First?"}]))["ok"])
+        b = self.start("n-known", [an_ask("toolu_old1", "Which port?")])
+        self.assertTrue(b["ok"], b)
+        st = state_of()
+        self.assertEqual([q["id"] for q in st["questions"]], ["q1", "q2"])
+        self.assertEqual(st["import"]["calls"], {"toolu_old1": ["q2"]})
+        self.assertIn("Moved onto the sheet", b["effects"]["context"])
+
+    def test_a_record_that_assigned_none_defers_and_records_nothing(self):
+        scratch()
+        b = self.start("n-1", [an_ask("toolu_old1", "Which port?")])
+        self.assertTrue(b["ok"], b)
+        st = state_of()
+        self.assertEqual((st["questions"], st["import"]["calls"], st["nextId"]), ([], {}, 1))
+        self.assertNotIn("Moved onto the sheet", b["effects"].get("context") or "")
+        # The next start, its floor known, imports past it.
+        b = self.start("n-2", [an_ask("toolu_old1", "Which port?")], floor_unknown=False, floor=26)
+        self.assertTrue(b["ok"], b)
+        self.assertEqual(state_of()["import"]["calls"], {"toolu_old1": ["q27"]})
+
+    def test_the_flag_is_a_boolean(self):
+        scratch()
+        b = step(ev("start", start={"source": "resume", "today": {"definite": True, "asks": [], "floorUnknown": "yes"}}))
+        self.assertFalse(b["ok"])
+        self.assertEqual(b["code"], "bad-event")
+
+
 class AStartOrderedAgain(unittest.TestCase):
     """Finding 2: a start ordered again answers what the first did."""
 

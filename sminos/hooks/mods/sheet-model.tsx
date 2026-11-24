@@ -827,15 +827,19 @@ export function floorOfMessages(
  * floor unknown. Perl (JSON::PP and B are core; JSON::XS where the host has
  * it, for speed), one pass; its exit code is grep's: 0 found, 1 none, 2
  * unreadable. Its rules are the TypeScript ones written again: a test holds
- * the two to the same floor over every form they read.
+ * the two to the same floor over every form they read. A row is decoded as
+ * the TypeScript reader decodes it: its bytes as UTF-8 (a malformed sequence
+ * U+FFFD), and a lone surrogate's escape, which JSON.parse keeps and perl's
+ * decoders refuse, read as U+FFFD (no rule of the floor tells the two apart),
+ * so no row that carries evidence is passed over and no floor reads low.
  */
 export function floorSearchArgs(path: string): string[] {
-  return ['perl', '-MJSON::PP', '-MB', '-e', FLOOR_SEARCH, '--', path]
+  return ['perl', '-MJSON::PP', '-MB', '-MEncode', '-e', FLOOR_SEARCH, '--', path]
 }
 
 const FLOOR_SEARCH = [
   "binmode STDOUT; my $path = pop @ARGV; open(my $fh, \"<:raw\", $path) or exit 2;",
-  "my ($json, $text) = eval { require JSON::XS; (JSON::XS->new->utf8, JSON::XS->new) }; ($json, $text) = (JSON::PP->new->utf8, JSON::PP->new) unless $json;",
+  "my $text = eval { require JSON::XS; JSON::XS->new } || JSON::PP->new;",
   "my $TOOL = \"mcp__sminos__AskUserQuestion\"; my $MAX = 999999999;",
   "my $WS = qr/[\\t\\n\\x0B\\f\\r \\x{A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]/;",
   "my $DOT = qr/[^\\n\\r\\x{2028}\\x{2029}]/;",
@@ -871,8 +875,9 @@ const FLOOR_SEARCH = [
   "sub str { my ($v) = @_; return \"undefined\" unless defined $v; return $v ? \"true\" : \"false\" if JSON::PP::is_bool($v); return ref $v ? \"[object]\" : \"$v\" }",
   "my (%calls, %as_call, %as_other, $floor, $found); $floor = 0;",
   "sub up { $floor = $_[0] if $_[0] > $floor }",
+  "sub chars { my $c = Encode::decode(\"UTF-8\", $_[0]); $c =~ s{(\\\\\\\\)|(\\\\u[dD][89abAB][0-9a-fA-F]{2}\\\\u[dD][c-fC-F][0-9a-fA-F]{2})|\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}}{$1 // $2 // \"\\\\ufffd\"}ge if $c =~ /\\\\u[dD][89a-fA-F]/; return $c }",
   "while (my $line = <$fh>) { next unless $line =~ /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|\\[sheet v1\\]|\"name\":\"mcp__sminos__AskUserQuestion\"/;",
-  "  my $row = eval { $json->decode($line) }; next unless ref $row eq \"HASH\"; $found = 1; my $type = $row->{type} // \"\";",
+  "  my $row = eval { $text->decode(chars($line)) }; next unless ref $row eq \"HASH\"; $found = 1; my $type = $row->{type} // \"\";",
   "  my $content = ref $row->{message} eq \"HASH\" ? $row->{message}{content} : undef;",
   "  if ($type eq \"assistant\") { if (ref $content eq \"ARRAY\") { for my $b (@$content) { $calls{str($b->{id})} = 1 if ref $b eq \"HASH\" && ($b->{type} // \"\") eq \"tool_use\" && defined $b->{name} && !ref $b->{name} && $b->{name} eq $TOOL } } }",
   "  elsif ($type eq \"user\") { up(of_item($_)) for texts($content);",
@@ -884,7 +889,7 @@ const FLOOR_SEARCH = [
   "    my @t = ref $c eq \"ARRAY\" ? (grep { defined $_ && !ref $_ && B::svref_2object(\\$_)->FLAGS & B::SVf_POK() } @$c) : (defined $c && !ref $c && B::svref_2object(\\$c)->FLAGS & B::SVf_POK()) ? ($c) : (); up(of_sheet_text($_)) for @t }",
   "  elsif ($type eq \"system\" && defined $row->{content} && !ref $row->{content} && B::svref_2object(\\$row->{content})->FLAGS & B::SVf_POK()) { up(of_item($row->{content})) } }",
   "up($calls{$_} ? ($as_call{$_} // 0) : ($as_other{$_} // 0)) for keys %as_call, keys %as_other;",
-  "print JSON::PP->new->canonical->encode({ floor => $floor + 0 }), \"\\n\"; exit($found ? 0 : 1);"
+  "print JSON::PP->new->canonical->encode({ floor => $floor + 0 }), \"\\n\"; exit($found ? 0 : 1);",
 ].join('\n')
 
 /** The floor a search printed (`floorSearchArgs`): undefined for anything but its one line. */
