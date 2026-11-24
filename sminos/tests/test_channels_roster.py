@@ -1021,8 +1021,15 @@ class PoolOfOne(Roster):
                                              timeout=120, env={k: v for k, v in os.environ.items()
                                                                if k != "CLAUDE_CODE_SESSION_ID"})
                               for launcher in (here, self.base)]
-                self.assertEqual((mine.returncode, mine.stdout, mine.stderr),
-                                 (base.returncode, base.stdout, base.stderr))
+                got = mine.stdout
+                if "--json" in argv:
+                    # The members' summary (sminos 1.57.0, docs/doperpowers/specs/2026-11-23-sminos-session-search-
+                    # design.md §1d) is member_json's since the merge base: every other byte is the base's.
+                    rows = json.loads(got)
+                    for m in rows["members"]:
+                        self.assertEqual((m.pop("summary"), m.pop("summary_age")), (None, None))
+                    got = json.dumps(rows, indent=2) + "\n"
+                self.assertEqual((mine.returncode, got, mine.stderr), (base.returncode, base.stdout, base.stderr))
                 self.assertIn(sid[:8], mine.stdout)
         self.assertFalse(os.path.exists(os.path.join(os.environ["HOME"], "devcloud-standin.calls")),
                          "devcloud never asked")
