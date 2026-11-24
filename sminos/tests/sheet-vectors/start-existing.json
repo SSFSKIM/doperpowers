@@ -1,0 +1,379 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000122/inbox.jsonl": "{\"v\":1,\"key\":\"page-2201a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:40:00.000Z\"}\n{\"v\":1,\"key\":\"page-2201a002\",\"kind\":\"answer\",\"id\":\"q2\",\"revision\":1,\"picks\":[\"Yes\"],\"by\":\"page\",\"at\":\"2026-11-24T09:41:00.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000122/state.json": {
+   "calls": [],
+   "closed": {
+    "q1": {
+     "answer": "\"Which auth method should the login use?\" → OAuth.",
+     "asker": "main",
+     "at": "2026-11-24T09:42:00.000Z",
+     "header": "Auth method",
+     "how": "answered",
+     "key": "page-2201a001",
+     "places": [
+      1
+     ],
+     "question": "Which auth method should the login use?",
+     "receipt": "OAuth",
+     "revision": 1
+    },
+    "q2": {
+     "answer": "\"Ship the migration today?\" → Yes.",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "at": "2026-11-24T09:42:00.000Z",
+     "header": "Migration",
+     "how": "answered",
+     "key": "page-2201a002",
+     "places": [
+      1
+     ],
+     "question": "Ship the migration today?",
+     "receipt": "Yes",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 260,
+    "skipped": 0
+   },
+   "log": {
+    "next": 6,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa",
+     "q3": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 4,
+   "pending": [
+    {
+     "acceptedAt": "2026-11-24T09:42:00.000Z",
+     "acrossStop": true,
+     "at": "2026-11-24T09:40:00.000Z",
+     "by": "page",
+     "id": "q1",
+     "images": [],
+     "key": "page-2201a001",
+     "kind": "answer",
+     "picks": [
+      "OAuth"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:01:00.000Z",
+      "asker": "main",
+      "header": "Auth method",
+      "multiSelect": false,
+      "options": [
+       "OAuth",
+       "Passkeys",
+       "Magic link"
+      ],
+      "question": "Which auth method should the login use?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    },
+    {
+     "acceptedAt": "2026-11-24T09:42:00.000Z",
+     "acrossStop": true,
+     "at": "2026-11-24T09:41:00.000Z",
+     "by": "page",
+     "id": "q2",
+     "images": [],
+     "key": "page-2201a002",
+     "kind": "answer",
+     "picks": [
+      "Yes"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:02:00.000Z",
+      "asker": {
+       "agentId": "a1b2c3",
+       "name": "reviewer"
+      },
+      "header": "Migration",
+      "multiSelect": false,
+      "options": [
+       "Yes",
+       "No"
+      ],
+      "question": "Ship the migration today?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    }
+   ],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:03:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Empt0003",
+     "header": "Empty state",
+     "id": "q3",
+     "multiSelect": false,
+     "options": [],
+     "question": "What should the empty state say?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 10,
+   "session": "5eed0000-0000-4000-8000-000000000122",
+   "v": 1,
+   "verdicts": {
+    "page-2201a001": {
+     "at": "2026-11-24T09:42:00.000Z",
+     "id": "q1",
+     "kind": "answer",
+     "verdict": "applied"
+    },
+    "page-2201a002": {
+     "at": "2026-11-24T09:42:00.000Z",
+     "id": "q2",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "[sheet v1] Your question sheet, after a resume.\nOpen: q3 (revision 1) \"Empty state\" — \"What should the empty state say?\" No options: answered in text.\nAnswered, the answer not yet delivered to you: q1 (revision 1) \"Auth method\" — \"Which auth method should the login use?\" Options: 1. OAuth; 2. Passkeys; 3. Magic link.\nAnswered, the answer not yet delivered to you: q2 (revision 1), asked by the subagent reviewer (a1b2c3) \"Migration\" — \"Ship the migration today?\" Options: 1. Yes; 2. No.\nNew ids continue from q4.",
+   "owed": 0,
+   "skipped": 0,
+   "start": {
+    "before": [
+     "page-2201a001",
+     "page-2201a002"
+    ],
+    "empty": null,
+    "imported": []
+   },
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000122/start-0001/ask-1.json": {
+   "askedAt": "2026-11-24T09:42:00.000Z",
+   "callId": "toolu_q",
+   "questions": []
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000122/toolu_x1/call.json": {
+   "asker": "main",
+   "entries": [],
+   "withdraw": [
+    "q7"
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000122/inbox.jsonl": "{\"v\":1,\"key\":\"page-2201a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:40:00.000Z\"}\n{\"v\":1,\"key\":\"page-2201a002\",\"kind\":\"answer\",\"id\":\"q2\",\"revision\":1,\"picks\":[\"Yes\"],\"by\":\"page\",\"at\":\"2026-11-24T09:41:00.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000122/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_x1",
+     "result": "Nothing done.\nNot done: q7 is not open (never asked)."
+    }
+   ],
+   "closed": {
+    "q1": {
+     "answer": "\"Which auth method should the login use?\" → OAuth.",
+     "asker": "main",
+     "at": "2026-11-24T09:42:00.000Z",
+     "header": "Auth method",
+     "how": "answered",
+     "key": "page-2201a001",
+     "places": [
+      1
+     ],
+     "question": "Which auth method should the login use?",
+     "receipt": "OAuth",
+     "revision": 1
+    },
+    "q2": {
+     "answer": "\"Ship the migration today?\" → Yes.",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "at": "2026-11-24T09:42:00.000Z",
+     "header": "Migration",
+     "how": "answered",
+     "key": "page-2201a002",
+     "places": [
+      1
+     ],
+     "question": "Ship the migration today?",
+     "receipt": "Yes",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 260,
+    "skipped": 0
+   },
+   "log": {
+    "next": 6,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa",
+     "q3": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 4,
+   "pending": [
+    {
+     "acceptedAt": "2026-11-24T09:42:00.000Z",
+     "acrossStop": false,
+     "at": "2026-11-24T09:40:00.000Z",
+     "by": "page",
+     "id": "q1",
+     "images": [],
+     "key": "page-2201a001",
+     "kind": "answer",
+     "picks": [
+      "OAuth"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:01:00.000Z",
+      "asker": "main",
+      "header": "Auth method",
+      "multiSelect": false,
+      "options": [
+       "OAuth",
+       "Passkeys",
+       "Magic link"
+      ],
+      "question": "Which auth method should the login use?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    },
+    {
+     "acceptedAt": "2026-11-24T09:42:00.000Z",
+     "acrossStop": false,
+     "at": "2026-11-24T09:41:00.000Z",
+     "by": "page",
+     "id": "q2",
+     "images": [],
+     "key": "page-2201a002",
+     "kind": "answer",
+     "picks": [
+      "Yes"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:02:00.000Z",
+      "asker": {
+       "agentId": "a1b2c3",
+       "name": "reviewer"
+      },
+      "header": "Migration",
+      "multiSelect": false,
+      "options": [
+       "Yes",
+       "No"
+      ],
+      "question": "Ship the migration today?"
+     },
+     "recipient": {
+      "agentId": "a1b2c3"
+     },
+     "revision": 1,
+     "taken": true,
+     "text": ""
+    }
+   ],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:03:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Empt0003",
+     "header": "Empty state",
+     "id": "q3",
+     "multiSelect": false,
+     "options": [],
+     "question": "What should the empty state say?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 9,
+   "session": "5eed0000-0000-4000-8000-000000000122",
+   "v": 1,
+   "verdicts": {
+    "page-2201a001": {
+     "at": "2026-11-24T09:42:00.000Z",
+     "id": "q1",
+     "kind": "answer",
+     "verdict": "applied"
+    },
+    "page-2201a002": {
+     "at": "2026-11-24T09:42:00.000Z",
+     "id": "q2",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a start on a record that exists: calls and the session's staging emptied; every pending outcome owed across a stop and the main conversation's; the context names what is open and what is owed",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": [
+    "a1b2c3"
+   ]
+  },
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "source": "resume",
+   "today": {
+    "asks": [],
+    "definite": false
+   }
+  }
+ },
+ "name": "start-existing",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000122",
+ "tz": "UTC"
+}

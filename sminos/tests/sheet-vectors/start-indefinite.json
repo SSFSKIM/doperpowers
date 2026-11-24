@@ -1,0 +1,126 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000126/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000126/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 1,
+    "owed": [],
+    "projects": {}
+   },
+   "nextId": 6,
+   "pending": [],
+   "questions": [],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000126",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "",
+   "owed": 0,
+   "skipped": 0,
+   "start": {
+    "before": [],
+    "empty": null,
+    "imported": []
+   },
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000126/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000126/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 1,
+    "owed": [],
+    "projects": {}
+   },
+   "nextId": 1,
+   "pending": [],
+   "questions": [],
+   "seq": 1,
+   "session": "5eed0000-0000-4000-8000-000000000126",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a start whose read of today's asks was not definite: nothing imported and nothing recorded, so the next start reads again; the floor raises a record that has assigned no id",
+ "event": {
+  "acked": [],
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "floor": 5,
+   "source": "resume",
+   "today": {
+    "asks": [
+     {
+      "askedAt": "2026-11-22T18:00:00.000Z",
+      "callId": "toolu_A",
+      "questions": [
+       {
+        "header": "Gate",
+        "multiSelect": false,
+        "options": [
+         {
+          "label": "Every gate"
+         },
+         {
+          "label": "No gate"
+         }
+        ],
+        "question": "Which rollout gate?"
+       }
+      ]
+     }
+    ],
+    "definite": false
+   }
+  }
+ },
+ "name": "start-indefinite",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000126",
+ "tz": "UTC"
+}

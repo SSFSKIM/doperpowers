@@ -1,0 +1,318 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/call.json": {
+   "asker": {
+    "agentId": "a7c0ffee",
+    "name": "explorer"
+   },
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    }
+   ],
+   "withdraw": [
+    "q1",
+    "q2"
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/entry-1.json": {
+   "header": "Cache key",
+   "options": [
+    {
+     "label": "Yes"
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Should the cache key include the locale?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/entry-2.json": {
+   "id": "q1",
+   "options": [
+    {
+     "label": "OAuth"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000107/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000107/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v07",
+     "result": "Added q3 (entry 1). Withdrew q2.\nNot done: entry 2, q1 was asked by the main conversation; only its asker revises it. q1 was asked by the main conversation; only its asker or the main conversation withdraws it."
+    }
+   ],
+   "closed": {
+    "q2": {
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "at": "2026-11-24T10:00:00.000Z",
+     "header": "Migration",
+     "how": "withdrawn",
+     "question": "Ship the migration today?",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 5,
+    "owed": [
+     {
+      "choices": [
+       "Yes",
+       "No"
+      ],
+      "kind": "question",
+      "n": 3,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000107:q3",
+      "text": [
+       "Should the cache key include the locale?"
+      ]
+     },
+     {
+      "closed": "withdrawn",
+      "kind": "answered",
+      "n": 4,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000107:q2",
+      "text": "withdrawn"
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 4,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "callId": "toolu_v07",
+     "header": "Cache key",
+     "id": "q3",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes"
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Should the cache key include the locale?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 5,
+   "session": "5eed0000-0000-4000-8000-000000000107",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 2,
+   "result": "Added q3 (entry 1). Withdrew q2.\nNot done: entry 2, q1 was asked by the main conversation; only its asker revises it. q1 was asked by the main conversation; only its asker or the main conversation withdraws it.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/call.json": {
+   "asker": {
+    "agentId": "a7c0ffee",
+    "name": "explorer"
+   },
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    }
+   ],
+   "withdraw": [
+    "q1",
+    "q2"
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/entry-1.json": {
+   "header": "Cache key",
+   "options": [
+    {
+     "label": "Yes"
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Should the cache key include the locale?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000107/toolu_v07/entry-2.json": {
+   "id": "q1",
+   "options": [
+    {
+     "label": "OAuth"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000107/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000107/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:02:00.000Z",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "callId": "toolu_01Ship0002",
+     "header": "Migration",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000107",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a subagent calls: its question added with it as asker; the main conversation's question it may neither revise nor withdraw; its own it withdraws",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v07"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-subagent",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000107",
+ "tz": "UTC"
+}

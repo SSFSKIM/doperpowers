@@ -1,6 +1,6 @@
-"""The question sheet's record: its door and its reader (contracts X1 and X2 of MAWS's
-docs/doperpowers/specs/2026-11-23-question-sheet-design.md; this repository's plan
-docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I1, I3 and I4).
+"""The question sheet's record: its door, its reader, the step's shell and the command's verbs (contracts X1 and X2
+of MAWS's docs/doperpowers/specs/2026-11-23-question-sheet-design.md; this repository's plan
+docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I1 to I5).
 
 One session's sheet is a directory, `$SMINOS_HOME/sheet/<session>/`: `state.json`, which only the tool's step
 writes (by atomic replace, under the record's lock), and `inbox.jsonl`, to which every surface appends through
@@ -8,6 +8,16 @@ one door. The lock is `$SMINOS_HOME/sheet/<session>.lock` beside the record, `fc
 
     sminos sheet put  (<member> | --session <id>) [--no-wait]    the door: JSON lines on stdin
     sminos sheet show (<member> | --session <id>) [--json [--keys <k,...>]]   the reader's model, or its text
+
+From M2 (I3, I5):
+
+    sminos sheet step  --session <id>              the tool's step: one JSON event on stdin, one answer on stdout
+    sminos sheet probe --session <id> [--remote]   what the start choice asks of a record, read without the lock
+    sminos sheet answer|dismiss|retract|remove (<member> | --session <id>) ...    the command's acts on a sheet
+    sminos sheet surfaces [--json]                 the registrations, and which are alive
+
+The step's transitions and composers are sminos_sheet_step's pure function; this module is its shell (the lock,
+the staging, the files, the replace).
 
 `put` appends the lines whole or not at all, under the lock, then tells the session's bridge (`{"op": "sheet",
 "keys": [...]}`) and prints one JSON object, `{session, results: [{key, state, ...verdict}]}`, `queued` for a key
@@ -17,12 +27,14 @@ newline, and `state.json` again, starting over while `seq` moves. The published 
 contract both are held to.
 """
 
+import base64
 import errno
 import fcntl
 import json
 import math
 import os
 import re
+import shutil
 import stat
 import sys
 import time
@@ -550,6 +562,512 @@ def put(session, data, wait=True):
     return {"session": session, "results": results}
 
 
+# ------------------------------------------------------------------ surfaces (X4; I8)
+
+SURFACE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+HEARTBEAT_S = 30
+SURFACE_URL_MAX = 2000
+
+
+def surfaces_dir():
+    return os.path.join(sheet_root(), "surfaces")
+
+
+def _running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def surfaces(now=None):
+    """Every well-formed registration, by its file's name, each with `alive`: its heartbeat at most 30 s old and its
+    process running."""
+    t = STEP().when(now or _now_ms())
+    out = []
+    try:
+        names = sorted(os.listdir(surfaces_dir()))
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            r = _read_json(os.path.join(surfaces_dir(), n))
+        except (OSError, ValueError):
+            continue
+        if not (isinstance(r, dict) and r.get("v") == 1 and isinstance(r.get("name"), str)
+                and SURFACE_NAME_RE.fullmatch(r["name"]) and _count(r.get("pid"), 1)
+                and isinstance(r.get("url"), str) and 0 < len(r["url"]) <= SURFACE_URL_MAX
+                and r.get("reach") in ("local", "remote") and isinstance(r.get("heartbeatAt"), str)
+                and TIME_RE.fullmatch(r["heartbeatAt"])):
+            continue
+        age = (t - STEP().when(r["heartbeatAt"])).total_seconds()
+        reg = {f: r[f] for f in ("v", "name", "pid", "url", "reach", "heartbeatAt")}
+        reg["alive"] = age <= HEARTBEAT_S and _running(int(r["pid"]))
+        out.append(reg)
+    return out
+
+
+def suiting(regs, remote):
+    """The first alive registration whose reach suits the session (a `local` one does not, under SSH_CONNECTION),
+    or None; and how many are alive."""
+    alive = [r for r in regs if r["alive"]]
+    return next((r for r in alive if r["reach"] == "remote" or not remote), None), len(alive)
+
+
+# ------------------------------------------------------------------ the step's shell (I5)
+
+STAGED_AGE_S = 86400
+CALL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
+
+
+def STEP():
+    return S.sibling_module("sminos_sheet_step")
+
+
+def staging_dir(session):
+    return os.path.join(sheet_root(), ".staging", session)
+
+
+class Gone(Exception):
+    pass
+
+
+def _bad(code, error):
+    return {"ok": False, "code": code, "error": error}
+
+
+def _write_file(rec, rel, data):
+    """A file of the record, whole or not at all: a temporary file in the record, synced, then replaced into place.
+    A `.tmp-` file a death leaves is removed by the next step."""
+    path = os.path.join(rec, rel)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = os.path.join(rec, ".tmp-" + uuid.uuid4().hex)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+def _sweep(rec, stage):
+    """What a step that died left: `.tmp-` files in the record; staged files older than a day."""
+    try:
+        for n in os.listdir(rec):
+            if n.startswith(".tmp-"):
+                os.unlink(os.path.join(rec, n))
+    except OSError:
+        pass
+    cutoff = time.time() - STAGED_AGE_S
+    for d, _, names in os.walk(stage):
+        for n in names:
+            p = os.path.join(d, n)
+            try:
+                if os.lstat(p).st_mtime < cutoff:
+                    os.unlink(p)
+            except OSError:
+                pass
+
+
+def _rmtree(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _inside(base, rel):
+    """A staged path named relative to `base`, refused when it leaves it."""
+    if not isinstance(rel, str) or not rel or os.path.isabs(rel):
+        raise ValueError("a staged file is named relative to the staging")
+    path = os.path.normpath(os.path.join(base, rel))
+    if not path.startswith(os.path.normpath(base) + os.sep):
+        raise ValueError("a staged file stays in the staging")
+    return path
+
+
+def _staged_json(base, rel):
+    with open(_inside(base, rel), encoding="utf-8") as f:
+        return loads(f.read())
+
+
+def _capture(c, base):
+    """A capture as the pure step takes it: its body as bytes, read from its staged file (a text's content, an
+    image's base64) or given inline (`content`, `base64`)."""
+    if not isinstance(c, dict) or c.get("ok") is False:
+        return c
+    c = dict(c)
+    if "file" in c:
+        with open(_inside(base, c.pop("file")), "rb") as f:
+            raw = f.read()
+        body = raw if c.get("kind") == "text" else base64.b64decode(raw, validate=True)
+    elif isinstance(c.get("content"), str):
+        body = c.pop("content").encode()
+    elif isinstance(c.get("base64"), str):
+        body = base64.b64decode(c.pop("base64"), validate=True)
+    else:
+        raise ValueError("a capture names its body: a staged file, content or base64")
+    if c.get("kind") == "text":
+        body.decode("utf-8")
+    c["body"] = body
+    return c
+
+
+def _entry(item, base):
+    if isinstance(item, dict) and "refused" in item:
+        if not isinstance(item["refused"], str) or not item["refused"]:
+            raise ValueError("a refused entry names its clause")
+        return {"refused": item["refused"]}
+    if isinstance(item, dict) and "file" in item:
+        e, caps = _staged_json(base, item["file"]), item.get("captures", [])
+    elif isinstance(item, dict) and "entry" in item:
+        e, caps = item["entry"], item.get("captures", [])
+    else:
+        e, caps = item, []
+    STEP_ = STEP()
+    why = STEP_.entry_shape_error(e)
+    if why:
+        raise ValueError(why)
+    if not isinstance(caps, list) or len(caps) != len(e.get("references") or []):
+        raise ValueError("an entry has one capture for each reference")
+    caps = [_capture(c, base) for c in caps]
+    for c in caps:
+        why = STEP_.capture_error(c)
+        if why:
+            raise ValueError(why)
+    return {"entry": e, "captures": caps}
+
+
+def _asker_ok(a):
+    return a == "main" or (isinstance(a, dict) and set(a) == {"agentId", "name"} and isinstance(a["agentId"], str)
+                           and 0 < len(a["agentId"]) <= 128 and isinstance(a["name"], str))
+
+
+def _call_body(call, base):
+    if not _asker_ok(call.get("asker")):
+        raise ValueError("a call's asker is \"main\" or {agentId, name}")
+    entries, withdraw = call.get("entries", []), call.get("withdraw", [])
+    if not isinstance(entries, list) or not isinstance(withdraw, list) \
+            or not all(isinstance(i, str) and ID_RE.fullmatch(i) for i in withdraw):
+        raise ValueError("a call's entries are a list, its withdraw a list of ids")
+    return {"asker": call["asker"], "entries": [_entry(x, base) for x in entries], "withdraw": withdraw}
+
+
+def _event_error(e):
+    STEP_ = STEP()
+    if not isinstance(e, dict) or e.get("event") not in STEP_.EVENTS:
+        return "event is one of %s" % ", ".join(STEP_.EVENTS)
+    if e.get("runner", "terminal") not in ("terminal", "maws"):
+        return "runner is terminal or maws"
+    if not isinstance(e.get("remote", False), bool):
+        return "remote is a boolean"
+    for f in ("acked", "keys"):
+        if not (isinstance(e.get(f, []), list) and all(isinstance(x, str) for x in e.get(f, []))):
+            return "%s is a list of strings" % f
+    if "agents" in e:
+        a = e["agents"]
+        if not (isinstance(a, dict) and isinstance(a.get("running", []), list)
+                and all(isinstance(x, str) for x in a.get("running", [])) and isinstance(a.get("direct", False), bool)):
+            return "agents is {running: [agentId], direct}"
+    if "context" in e and e["context"] != "compact":
+        return "context is compact"
+    if e["event"] in ("call", "settle"):
+        c = e.get("call")
+        if not (isinstance(c, dict) and isinstance(c.get("callId"), str) and CALL_ID_RE.fullmatch(c["callId"])
+                and c["callId"].strip(".") and (c.get("floor") is None or _count(c["floor"], 0))):
+            return "call is {callId, floor?}"
+        if c["callId"] in e.get("acked", []):
+            return "a call is not acknowledged in its own step"
+    if e["event"] == "start":
+        s = e.get("start")
+        if not (isinstance(s, dict) and s.get("source") in STEP_.SOURCES
+                and (s.get("floor") is None or _count(s["floor"], 0))):
+            return "start is {source, floor?, today?}"
+        t = s.get("today", {})
+        if not (isinstance(t, dict) and isinstance(t.get("definite", False), bool)
+                and isinstance(t.get("asks", []), list)):
+            return "today is {definite, asks}"
+    return None
+
+
+def _ask(x, stage):
+    a = _staged_json(stage, x["file"]) if isinstance(x, dict) and "file" in x else x
+    if not (isinstance(a, dict) and isinstance(a.get("callId"), str) and a["callId"]
+            and isinstance(a.get("askedAt"), str) and TIME_RE.fullmatch(a["askedAt"])
+            and isinstance(a.get("questions"), list) and all(isinstance(q, dict) for q in a["questions"])):
+        raise ValueError("an ask is {callId, askedAt, questions}")
+    return a
+
+
+def _normalize(event, stage, state):
+    """The event with what the mod staged read in (I5), or given inline by a shell. Raises Gone for a call whose
+    staging is gone (the mod acknowledged it, or a start cleared it), ValueError for input that is not the event's
+    shape."""
+    e = dict(event)
+    if e["event"] in ("call", "settle"):
+        e["call"] = dict(e["call"], floor=e["call"].get("floor"))
+    if e["event"] == "call":
+        c = e["call"]
+        if any(f in c for f in ("asker", "entries", "withdraw")):
+            e["call"] = dict(c, **_call_body(c, stage))
+        elif state is not None and any(x["callId"] == c["callId"] for x in state["calls"]):
+            pass                          # its outcome is recorded; what it staged is not read again
+        else:
+            base = os.path.join(stage, c["callId"])
+            if not os.path.isdir(base):
+                raise Gone()
+            e["call"] = dict(c, **_call_body(_staged_json(base, "call.json"), base))
+    if e["event"] == "start":
+        s = dict(e["start"])
+        t = dict(s.get("today") or {"definite": False, "asks": []})
+        asks = []
+        for x in t.get("asks") or []:
+            try:
+                asks.append(_ask(x, stage))
+            except FileNotFoundError:
+                pass                      # a start ordered again: the first emptied the staging, and recorded
+        t["asks"] = asks                  # what it imported under each call id
+        s["today"] = t
+        e["start"] = s
+    return e
+
+
+def _dumps(obj):
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _bounded(out):
+    """An answer under 3 MiB (I5): ready envelopes left out from the last recipient back, then closed entries from
+    the oldest, until it is."""
+    limit = 3 << 20
+    size = len(_dumps(out).encode())
+    v = out["view"]
+    while size > limit and v["ready"]:
+        size -= len(_dumps(v["ready"].pop()).encode()) + 1
+    for k in list(v["closed"]):
+        if size <= limit:
+            break
+        size -= len(_dumps({k: v["closed"].pop(k)}).encode()) - 1
+    return out
+
+
+def run_step(session, raw, now=None, tz=None):
+    """One step (I5): the event's JSON in, the answer out. `now` and `tz` are the clock and the zone a test fixes;
+    the command passes neither."""
+    try:
+        event = loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except (ValueError, UnicodeDecodeError) as e:
+        return _bad("bad-event", "the event is not JSON: %s" % e)
+    why = _event_error(event)
+    if why:
+        return _bad("bad-event", why)
+    now = now or _now_ms()
+    try:
+        with Lock(session):
+            return _step_locked(session, event, now, tz)
+    except Busy:
+        return _bad("busy", "the sheet's lock was not had in %d s" % LOCK_WAIT_S)
+
+
+def _step_locked(session, event, now, tz):
+    STEP_ = STEP()
+    rec, stage = record_dir(session), staging_dir(session)
+    _sweep(rec, stage)
+    path = os.path.join(rec, "state.json")
+    try:
+        state = _read_json(path)
+    except FileNotFoundError:
+        state = None
+    if state is None and event["event"] != "start":
+        return _bad("no-record", "%s has no question sheet: only a start makes one" % session)
+    try:
+        norm = _normalize(event, stage, state)
+    except Gone:
+        return _bad("gone", "call %s: its staging is gone (acknowledged, or cleared by a start)"
+                    % event["call"]["callId"])
+    except (OSError, ValueError) as e:
+        return _bad("bad-event", str(e))
+    data = b""
+    if state is not None:
+        try:
+            with open(os.path.join(rec, "inbox.jsonl"), "rb") as f:
+                f.seek(state["inbox"]["offset"])
+                data = f.read()
+        except FileNotFoundError:
+            pass
+    regs = surfaces(now)
+    surface, alive = suiting(regs, event.get("remote", False))
+    new, fx, writes = STEP_.apply(state, data, norm, now, session, surface, tz)
+    if state is None:
+        os.makedirs(rec, mode=0o700, exist_ok=True)
+        if not os.path.exists(os.path.join(rec, "inbox.jsonl")):
+            _write_file(rec, "inbox.jsonl", b"")
+    for rel, body in writes.items():
+        p = os.path.join(rec, rel)
+        if not (os.path.isfile(p) and os.path.getsize(p) == len(body)):
+            _write_file(rec, rel, body)
+    unchanged = state is not None and dict(new, seq=state["seq"]) == state
+    if not unchanged:
+        new["seq"] = (state["seq"] if state is not None else 0) + 1
+        _write_file(rec, "state.json", _dumps(new).encode())
+    else:
+        new = state
+    for call_id in event.get("acked") or []:
+        if CALL_ID_RE.fullmatch(call_id) and call_id.strip("."):
+            _rmtree(os.path.join(stage, call_id))
+    if event["event"] == "start":
+        _rmtree(stage)
+    running = (event.get("agents") or {}).get("running") or []
+    where = os.path.abspath(rec)
+    if event["event"] == "start" or event.get("context") == "compact":
+        after = {"resume": "a resume"}.get(norm["start"]["source"], "a start") if event["event"] == "start" \
+            else "a compaction"
+        st = fx.get("start") or {}
+        fx["context"] = STEP_.context(new, session, after, st.get("empty"),
+                                      floor_known=event["event"] == "start" and
+                                      norm["start"].get("floor") is not None,
+                                      imported=[x["callId"] for x in st.get("imported", [])])
+    view = STEP_.view(new, event.get("runner", "terminal"), where, surface, alive, tz, running)
+    return _bounded({"ok": True, "seq": new["seq"], "view": view, "effects": fx})
+
+
+def probe(session, remote=False):
+    """What the start choice asks of a record (I5, I8): a few hundred bytes whatever the record holds."""
+    surface, alive = suiting(surfaces(), remote)
+    out = {"record": False, "open": 0, "pending": 0, "queued": 0,
+           "surface": None if surface is None else {f: surface[f] for f in ("name", "url", "reach")},
+           "surfaces": alive}
+    got = snapshot(session)
+    if got is not None:
+        state, tail = got
+        out.update(record=True, open=len(state.get("questions") or []), pending=len(state.get("pending") or []),
+                   queued=len(queued_lines(state, tail)))
+    return out
+
+
+# ------------------------------------------------------------------ the command's acts on a sheet (I3)
+
+HANDLE_RE = re.compile(r"^(q[1-9][0-9]{0,8})(?:@([1-9][0-9]*))?$")
+IMAGE_EXTS = ("png", "jpg", "jpeg", "gif", "webp")
+
+
+def _new_key():
+    return "cli-" + uuid.uuid4().hex[:16]
+
+
+def _own(session, verb):
+    """U12: a session does not act on its own sheet; its human does, from a surface."""
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") == session:
+        S.die("sheet %s: a session does not %s its own sheet; its human does, from a surface" % (verb, verb), 2)
+
+
+def _model_or_die(session, verb):
+    try:
+        m = model(session)
+    except Busy:
+        S.die("sheet %s: %s's record kept changing while it was read; try again" % (verb, session), EXIT_BUSY)
+    if m is None:
+        S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
+    return m
+
+
+def _resolve_pick(q, word):
+    """A pick as `answer` takes one: a place among the options (from 1), or a label in any case."""
+    labels = [o["label"] for o in q.get("options") or []]
+    w = word.strip()
+    if w.isdigit() and 1 <= int(w) <= len(labels):
+        return labels[int(w) - 1]
+    exact = [x for x in labels if x == w]
+    folded = [x for x in labels if x.lower() == w.lower()]
+    if exact or len(folded) == 1:
+        return (exact or folded)[0]
+    return None
+
+
+def cli_answer(session, handle, picks, text):
+    """The line `answer` sends, read against what the human saw: a bare id only at revision 1, a handle's revision
+    the current one."""
+    m = _model_or_die(session, "answer")
+    hm = HANDLE_RE.fullmatch(handle)
+    if not hm:
+        S.die("sheet answer: %s is no question's handle (q7, or q7@2 after a revise)" % handle, 2)
+    id_, rev = hm.group(1), int(hm.group(2)) if hm.group(2) else 1
+    q = next((x for x in m["open"] if x["id"] == id_), None)
+    if q is None:
+        hidden = any(h["id"] == id_ for h in m["hidden"])
+        S.die("sheet answer: %s is not open%s" % (id_, " (a dismissal of it is queued)" if hidden else ""), 2)
+    if rev != q["revision"]:
+        S.die("sheet answer: %s is at revision %d: show it again, then answer %s@%d"
+              % (id_, q["revision"], id_, q["revision"]), 2)
+    labels = []
+    for w in picks:
+        label = _resolve_pick(q, w)
+        if label is None:
+            S.die("sheet answer: %s has no option %s at revision %d" % (q["handle"], json.dumps(w, ensure_ascii=False),
+                                                                       q["revision"]), 2)
+        labels.append(label)
+    if len(labels) > 1 and not q.get("multiSelect"):
+        S.die("sheet answer: %s takes one pick" % q["handle"], 2)
+    if not labels and not text:
+        S.die("sheet answer: give --pick or --text", 2)
+    line = {"v": 1, "key": _new_key(), "kind": "answer", "id": id_, "revision": q["revision"]}
+    if labels:
+        line["picks"] = labels
+    if text:
+        line["text"] = text
+    line["by"] = "cli"
+    return line
+
+
+def copy_upload(session, src):
+    """An image copied into the record's uploads/ under a name of its own, for an answer to name."""
+    ext = os.path.splitext(src)[1][1:].lower()
+    if ext not in IMAGE_EXTS:
+        S.die("sheet answer: --image takes a %s file" % ", ".join(IMAGE_EXTS), 2)
+    if not os.path.isfile(src):
+        S.die("sheet answer: %s is not a file" % src, 2)
+    rec = record_dir(session)
+    if not os.path.isfile(os.path.join(rec, "state.json")):
+        S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
+    uploads = os.path.join(rec, "uploads")
+    if os.path.islink(uploads):
+        S.die("sheet answer: uploads/ is not a directory of the record", 2)
+    os.makedirs(uploads, mode=0o700, exist_ok=True)
+    name = "uploads/cli-%s.%s" % (uuid.uuid4().hex[:16], ext)
+    tmp = os.path.join(uploads, ".tmp-" + uuid.uuid4().hex)
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, os.path.join(rec, name))
+    return name
+
+
+def _send(session, lines):
+    """Lines through the door, as one call: the door's own output, printed."""
+    data = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines).encode()
+    print(json.dumps(put(session, data), ensure_ascii=False))
+
+
+def remove(session, cleared=False):
+    """A stopped session's record and its staging, under the lock; the lock file stays (I1)."""
+    if not cleared and S.session_running(session):
+        S.die("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)" % session, 2)
+    try:
+        with Lock(session):
+            rec = record_dir(session)
+            if not os.path.isfile(os.path.join(rec, "state.json")):
+                S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
+            _rmtree(rec)
+            _rmtree(staging_dir(session))
+    except Busy:
+        S.die("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
+
+
 # ------------------------------------------------------------------ the verbs
 
 
@@ -563,6 +1081,19 @@ def resolve(a, verb):
             S.die("sheet %s: --session takes an engine session id" % verb)
         return a.session
     return S.bridge_module().watch_session(a.member)
+
+
+def _split_who(a, verb):
+    """For a verb whose other words follow the session (`dismiss`): the member is the first word unless --session
+    names the session."""
+    words = list(a.words)
+    if not a.session:
+        if not words:
+            S.die("usage: sminos sheet %s (<member> | --session <id>) ..." % verb)
+        a.member = words.pop(0)
+    else:
+        a.member = ""
+    return resolve(a, verb), words
 
 
 def cmd_sheet(a):
@@ -589,4 +1120,67 @@ def cmd_sheet(a):
         m = printable(m)
         print(json.dumps(m, ensure_ascii=False) if a.json else text(m))
         return
-    S.die("usage: sminos sheet put|show (<member> | --session <id>) ...")
+    if op == "answer":
+        session = resolve(a, "answer")
+        _own(session, "answer")
+        if a.text and len(a.text) > 20000:
+            S.die("sheet answer: --text is at most 20,000 characters", 2)
+        if len(a.image) > 8:
+            S.die("sheet answer: at most 8 images", 2)
+        line = cli_answer(session, a.handle, a.pick, a.text or "")     # refused before anything is copied
+        images = [copy_upload(session, f) for f in a.image]
+        if images:
+            by = line.pop("by")
+            line.update(images=images, by=by)
+        _send(session, [line])
+        return
+    if op == "dismiss":
+        session, ids = _split_who(a, "dismiss")
+        _own(session, "dismiss")
+        if not ids:
+            S.die("usage: sminos sheet dismiss (<member> | --session <id>) <q>...")
+        m = _model_or_die(session, "dismiss")
+        listed = {q["id"] for q in m["open"]} | {h["id"] for h in m["hidden"]}
+        lines = []
+        for w in ids:
+            hm = HANDLE_RE.fullmatch(w)
+            if not hm:
+                S.die("sheet dismiss: %s is no question's id" % w, 2)
+            if hm.group(1) not in listed:
+                S.die("sheet dismiss: %s is not open" % hm.group(1), 2)
+            lines.append({"v": 1, "key": _new_key(), "kind": "dismiss", "id": hm.group(1), "by": "cli"})
+        _send(session, lines)
+        return
+    if op == "retract":
+        session = resolve(a, "retract")
+        _own(session, "retract")
+        if not KEY_RE.fullmatch(a.target):
+            S.die("sheet retract: %s is no key" % a.target, 2)
+        _send(session, [{"v": 1, "key": _new_key(), "kind": "retract", "target": a.target, "by": "cli"}])
+        return
+    if op == "remove":
+        session = resolve(a, "remove")
+        remove(session, cleared=a.cleared)
+        print("removed %s's question sheet" % session)
+        return
+    if op == "surfaces":
+        regs = surfaces()
+        if a.json:
+            print(json.dumps({"surfaces": regs}, ensure_ascii=False))
+        else:
+            print("\n".join("%s  %s  %s  %s" % (r["name"], r["url"], r["reach"], "alive" if r["alive"] else "stale")
+                            for r in regs) or "no surface registered")
+        return
+    if op in ("step", "probe"):
+        if not a.session or not S.UUID_RE.fullmatch(a.session):
+            S.die("sheet %s: --session takes an engine session id" % op)
+        if op == "step":
+            print(json.dumps(run_step(a.session, sys.stdin.buffer.read()), ensure_ascii=False))
+        else:
+            try:
+                out = probe(a.session, remote=a.remote)
+            except Busy:
+                S.die("sheet probe: %s's record kept changing while it was read" % a.session, EXIT_BUSY)
+            print(json.dumps(out, ensure_ascii=False))
+        return
+    S.die("usage: sminos sheet show|answer|dismiss|retract|put|remove (<member> | --session <id>) ... | surfaces")

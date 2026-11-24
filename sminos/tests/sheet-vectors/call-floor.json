@@ -1,0 +1,150 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000110/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000110/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v10",
+     "result": "Added q12."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [
+     {
+      "choices": [
+       "Yes",
+       "No"
+      ],
+      "kind": "question",
+      "n": 1,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000110:q12",
+      "text": [
+       "Ship the migration today?"
+      ]
+     }
+    ],
+    "projects": {}
+   },
+   "nextId": 13,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v10",
+     "id": "q12",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000110",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 1,
+   "result": "Added q12.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000110/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000110/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 1,
+    "owed": [],
+    "projects": {}
+   },
+   "nextId": 1,
+   "pending": [],
+   "questions": [],
+   "seq": 1,
+   "session": "5eed0000-0000-4000-8000-000000000110",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call carrying the conversation's floor to a record that has assigned no id: nextId first raised to floor + 1, so the new question is q12",
+ "event": {
+  "acked": [],
+  "call": {
+   "asker": "main",
+   "callId": "toolu_v10",
+   "entries": [
+    {
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    }
+   ],
+   "floor": 11
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-floor",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000110",
+ "tz": "UTC"
+}

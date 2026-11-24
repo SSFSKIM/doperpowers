@@ -149,10 +149,17 @@ back by a fill.
     sminos sheet    show <member>|--session <id> [--json [--keys K,..]]   # a session's question sheet as its
                    record has it: each open question by its handle (q7, q7@2 after a revise) with a queued answer;
                    --json the reader's model (sminos/types/sheet/), --keys holds it to those lines' keys
+    sminos sheet    answer <member>|--session <id> <q>[@<rev>] [--pick <label|n>]... [--text T] [--image F]...
+                   # an answer to an open question, named as `show` names it (a bare q7 only at revision 1);
+                   picks by place or by label in any case; images copied into the sheet first
+    sminos sheet    dismiss <member>|--session <id> <q>...   # dismissals, sent as one batch
+    sminos sheet    retract <member>|--session <id> <key>    # takes back a line not yet applied
+    sminos sheet    remove <member>|--session <id> [--cleared]   # a stopped session's sheet (refused while it runs)
+    sminos sheet    surfaces [--json]                     # the registered surfaces, and which are alive
     sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
-                   session told; prints each key's state, `queued` until a verdict comes. Exit 2 a line refused,
-                   3 no sheet, 75 busy
+                   session told; prints each key's state, `queued` until a verdict comes (answer, dismiss and
+                   retract print the same). Exit 2 a line refused, 3 no sheet, 75 busy
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -21464,15 +21471,37 @@ def build_parser():
     # session's own hooks and surfaces call it, and it reads no registry.
     sq = sub.add_parser("sheet", add_help=False)
     sqsub = sq.add_subparsers(dest="sheet_op")
-    for op in ("put", "show"):
+    for op in ("put", "show", "answer", "retract", "remove"):
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("member", nargs="?", default="")
         so.add_argument("--session", default="")
         if op == "put":
             so.add_argument("--no-wait", dest="no_wait", action="store_true")
-        else:
+        elif op == "show":
             so.add_argument("--json", action="store_true")
             so.add_argument("--keys", default=None)
+        elif op == "answer":
+            so.add_argument("handle")
+            so.add_argument("--pick", action="append", default=[])
+            so.add_argument("--text", default=None)
+            so.add_argument("--image", action="append", default=[])
+        elif op == "retract":
+            so.add_argument("target")
+        else:
+            so.add_argument("--cleared", action="store_true")
+        so.set_defaults(fn=cmd_sheet)
+    so = sqsub.add_parser("dismiss", add_help=False)    # its ids follow the member: words, split in sminos_sheet
+    so.add_argument("words", nargs="*")
+    so.add_argument("--session", default="")
+    so.set_defaults(fn=cmd_sheet, member="")
+    so = sqsub.add_parser("surfaces", add_help=False)
+    so.add_argument("--json", action="store_true")
+    so.set_defaults(fn=cmd_sheet, session="")
+    for op in ("step", "probe"):                        # the tool's own, in no usage text
+        so = sqsub.add_parser(op, add_help=False)
+        so.add_argument("--session", default="")
+        if op == "probe":
+            so.add_argument("--remote", action="store_true")
         so.set_defaults(fn=cmd_sheet)
 
     wa = sub.add_parser("watch", add_help=False)
@@ -21688,7 +21717,7 @@ def main(argv=None):
         # registry, so it runs no migration (which takes the registry's lock).
         cmd_bridge(a)
         return
-    if a.cmd == "sheet" and getattr(a, "session", ""):
+    if a.cmd == "sheet" and (getattr(a, "session", "") or getattr(a, "sheet_op", None) == "surfaces"):
         # The sheet's verbs given --session read no registry (the door, a reader, the tool's own step): no
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
@@ -21720,8 +21749,8 @@ def main(argv=None):
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         if a.cmd == "sheet":
-            die("usage: sminos sheet put (<member> | --session <id>) [--no-wait] | show (<member> | --session <id>) "
-                "[--json [--keys <k,...>]]")
+            die("usage: sminos sheet show|answer|dismiss|retract|put|remove (<member> | --session <id>) ... | surfaces "
+                "(sminos help)")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
                 "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine> | lead <channel> "

@@ -1,0 +1,216 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000108/toolu_v08/call.json": {
+   "asker": "main",
+   "entries": [],
+   "withdraw": [
+    "q2"
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000108/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000108/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v08",
+     "result": "Withdrew q2."
+    }
+   ],
+   "closed": {
+    "q2": {
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "at": "2026-11-24T10:00:00.000Z",
+     "header": "Migration",
+     "how": "withdrawn",
+     "question": "Ship the migration today?",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 4,
+    "owed": [
+     {
+      "closed": "withdrawn",
+      "kind": "answered",
+      "n": 3,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000108:q2",
+      "text": "withdrawn"
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000108",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 1,
+   "result": "Withdrew q2.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000108/toolu_v08/call.json": {
+   "asker": "main",
+   "entries": [],
+   "withdraw": [
+    "q2"
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000108/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000108/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:02:00.000Z",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "callId": "toolu_01Ship0002",
+     "header": "Migration",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000108",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call that only withdraws, staged as call.json alone: the main conversation withdraws a subagent's question; a withdrawal makes no pending outcome (U5) and owes the log its closing",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v08"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-withdraw-only",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000108",
+ "tz": "UTC"
+}

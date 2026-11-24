@@ -1,0 +1,270 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/entry-1.json": {
+   "header": "Auth method",
+   "id": "q1",
+   "options": [
+    {
+     "label": "OAuth"
+    },
+    {
+     "label": "Passkeys"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/entry-2.json": {
+   "id": "q2",
+   "options": [
+    {
+     "label": "Every gate"
+    },
+    {
+     "label": "None"
+    }
+   ],
+   "question": "Which rollout gate, now that the beta is over?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000104/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000104/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v04",
+     "result": "Revised q1 (revision 2), q2 (revision 2)."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v04",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "OAuth"
+      },
+      {
+       "label": "Passkeys"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 2
+    },
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v04",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "None"
+      }
+     ],
+     "question": "Which rollout gate, now that the beta is over?",
+     "references": [],
+     "revision": 2
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000104",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 0,
+   "result": "Revised q1 (revision 2), q2 (revision 2).",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/entry-1.json": {
+   "header": "Auth method",
+   "id": "q1",
+   "options": [
+    {
+     "label": "OAuth"
+    },
+    {
+     "label": "Passkeys"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000104/toolu_v04/entry-2.json": {
+   "id": "q2",
+   "options": [
+    {
+     "label": "Every gate"
+    },
+    {
+     "label": "None"
+    }
+   ],
+   "question": "Which rollout gate, now that the beta is over?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000104/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000104/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-22T18:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Legacy",
+     "header": "Gate",
+     "id": "q2",
+     "importedFrom": {
+      "callId": "toolu_01Legacy",
+      "index": 0
+     },
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000104",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call revises two of its own questions: each replaced by its entry at revision + 1, its place kept, askedAt and callId the call's; an imported question revised is no longer marked imported; a revise owes the log nothing",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v04"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-revise",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000104",
+ "tz": "UTC"
+}

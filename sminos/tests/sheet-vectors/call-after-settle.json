@@ -1,0 +1,204 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000115/toolu_s03/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000115/toolu_s03/entry-1.json": {
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000115/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000115/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_s03",
+     "foreclosed": true
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 5,
+   "session": "5eed0000-0000-4000-8000-000000000115",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "foreclosed": true,
+   "owed": 0,
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000115/toolu_s03/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000115/toolu_s03/entry-1.json": {
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000115/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000115/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_s03",
+     "foreclosed": true
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 5,
+   "session": "5eed0000-0000-4000-8000-000000000115",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "the call's own step running after settle foreclosed it: it commits nothing and answers foreclosed",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_s03"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-after-settle",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000115",
+ "tz": "UTC"
+}
