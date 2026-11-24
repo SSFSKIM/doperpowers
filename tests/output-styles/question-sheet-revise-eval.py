@@ -77,8 +77,9 @@ for the turn's end to ask what it knew at its first step.
 
 With no arguments it runs Acceptance 14's E1 rows (the far history, 10 runs
 of each scenario, v3, the subject at medium effort as the baseline ran),
-prints PASS, FAIL or "short" (fewer runs than the gate counts) per arm, and
-exits 1 when an arm fails.
+prints PASS, FAIL, "short" (a scenario with fewer than 10 runs) or
+"incomplete" (a run that errored or whose judging gave no valid verdict) per
+arm, and exits 0 only when every arm passes.
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
 ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
@@ -116,7 +117,10 @@ Does the revised question still ask for the same decision as before (reframed, w
 
 
 def card(q):
-    return qs.render_card({**q, "references": []})  # the reference bodies add nothing to these two judgments
+    return qs.render_card(q)  # the references too: a captured file can show two questions concern one decision
+
+
+SAME_VALID = lambda v: isinstance(v.get("same_decision"), bool)
 
 
 def run(job, args, arms):
@@ -139,27 +143,34 @@ def run(job, args, arms):
 
 
 def classify(x, judge_effort):
-    """The run's outcome, with the judgments it rests on written on the run."""
+    """The run's outcome, with the judgments it rests on written on the run. Each card is judged as the call that
+    made it showed it (the call's own record), never in a later version. A judge with no valid verdict raises
+    JudgeError, which the caller records as the outcome "judge_error": the arm's gate is then incomplete."""
     t = ss.E1_TRIGGERS[x["scenario"]]
     target, calls = t["target"], [c for c in x["calls"] if "error" not in c]
-    added = [q for c in calls for q in c["added"]]
-    revised = [q for c in calls for q in c["revised"]]
-    withdrew = [q for c in calls for q in c["withdrew"]]
     x["schema_errors"] = sum("error" in c for c in x["calls"])
     x["judged"] = {}
-    for q in revised:  # does each revision still ask what it asked?
-        x["judged"][f"revise {q}"] = qs.judge(client, REVISED.replace("{a}", card(x["before"][q])).replace(
-            "{b}", card(x["after"][q])), judge_effort)
-    repurposed = [q for q in revised if x["judged"][f"revise {q}"].get("same_decision") is False]
+    revised, repurposed = [], []
+    for i, c in enumerate(calls):  # does each revision still ask what the card before it asked?
+        for q in c["revised"]:
+            key = f"call {i} revise {q}"
+            x["judged"][key] = qs.judge(client, REVISED.replace("{a}", card(c["before"][q])).replace(
+                "{b}", card(c["shown"][q])), judge_effort, valid=SAME_VALID)
+            revised.append(q)
+            if x["judged"][key]["same_decision"] is False:
+                repurposed.append(q)
+    added = [(i, q) for i, c in enumerate(calls) for q in c["added"]]
+    withdrew = [q for c in calls for q in c["withdrew"]]
     if target is None:
         x["outcome"] = "repurposed" if repurposed else "added" if added else "no_ask"
+        x["repurposed"] = repurposed
         return x
     same = []
-    for q in added:
-        v = qs.judge(client, SAME.replace("{a}", card(x["before"][target])).replace("{b}", card(x["after"][q])),
-                     judge_effort)
-        x["judged"][f"added {q}"] = v
-        if v.get("same_decision") is True:
+    for i, q in added:
+        v = qs.judge(client, SAME.replace("{a}", card(x["before"][target])).replace("{b}", card(calls[i]["shown"][q])),
+                     judge_effort, valid=SAME_VALID)
+        x["judged"][f"call {i} added {q}"] = v
+        if v["same_decision"] is True:
             same.append(q)
     open_target = x["after"][target]["state"] == "open"
     if target in revised:
@@ -170,7 +181,7 @@ def classify(x, judge_effort):
         x["outcome"] = "duplicated"
     else:
         x["outcome"] = "cut_off" if x["ended"] == "max_steps" else "untouched"
-    x["repurposed"] = repurposed
+    x["repurposed"] = [q for q in repurposed if q != target]
     return x
 
 
@@ -179,12 +190,19 @@ FAIL = {"duplicated", "revised+duplicated", "untouched", "cut_off", "repurposed"
 
 def gate(results):
     """Acceptance 14's E1 gate, per arm, on the far history: at most 1 failure in 30 changed-scenario runs, and no
-    repurposed question in 10 control runs. An arm with fewer runs than that is not judged ("short")."""
+    repurposed question in 10 control runs. Each changed scenario needs 10 runs and the control 10, or the arm is
+    "short"; a run that errored or whose judging is incomplete makes the arm "incomplete", never a pass."""
     out = {}
     for x in results:
-        if "error" in x or x["history"] != "far":
+        if x.get("history", (x.get("job") or [None] * 3)[2]) != "far":
             continue
-        g = out.setdefault(x["arm"], {"changed": 0, "failures": 0, "control": 0, "repurposed": 0})
+        arm = x.get("arm") or x["job"][0]
+        g = out.setdefault(arm, {"runs": {}, "changed": 0, "failures": 0, "control": 0, "repurposed": 0,
+                                 "incomplete": 0})
+        if "error" in x or x.get("outcome") == "judge_error":
+            g["incomplete"] += 1
+            continue
+        g["runs"][x["scenario"]] = g["runs"].get(x["scenario"], 0) + 1
         if ss.E1_TRIGGERS[x["scenario"]]["target"] is None:
             g["control"] += 1
             g["repurposed"] += x["outcome"] == "repurposed"
@@ -192,7 +210,9 @@ def gate(results):
             g["changed"] += 1
             g["failures"] += x["outcome"] in FAIL
     for g in out.values():
-        if g["changed"] < 30 or g["control"] < 10:
+        if g["incomplete"]:
+            g["verdict"] = "incomplete"
+        elif any(g["runs"].get(s, 0) < 10 for s in ss.E1_TRIGGERS):
             g["verdict"] = "short"
         else:
             g["verdict"] = "PASS" if g["failures"] <= 1 and g["repurposed"] == 0 else "FAIL"
@@ -275,5 +295,6 @@ if __name__ == "__main__":
           "10 control runs; timing reported above, not gated):")
     verdicts = gate(out)
     for arm, g in sorted(verdicts.items()):
-        print(f"  {arm}: {g['verdict']}  failures {g['failures']}/{g['changed']}, repurposed {g['repurposed']}/{g['control']}")
-    raise SystemExit(1 if any(g["verdict"] == "FAIL" for g in verdicts.values()) else 0)
+        print(f"  {arm}: {g['verdict']}  failures {g['failures']}/{g['changed']}, repurposed {g['repurposed']}/{g['control']}"
+              f", runs per scenario {g['runs']}" + (f", incomplete runs {g['incomplete']}" if g["incomplete"] else ""))
+    raise SystemExit(0 if verdicts and all(g["verdict"] == "PASS" for g in verdicts.values()) else 1)

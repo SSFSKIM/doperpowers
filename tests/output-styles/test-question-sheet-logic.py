@@ -333,6 +333,34 @@ check("E1 cut off", outcome([], [], ended="max_steps") == "cut_off")
 check("E1 distinct added", outcome([{"ask": [entry("Dump?")]}], [], scenario="distinct") == "added")
 check("E1 distinct repurposed", outcome([{"ask": [entry("Dump?", id="q2")]}], [other], scenario="distinct") == "repurposed")
 check("E1 distinct no ask", outcome([], [], scenario="distinct") == "no_ask")
+e1.client = Fake([], [other, other])
+x = e1.classify(e1_run([{"ask": [entry("New bare?")]}, {"ask": [entry("New, with context?", id="q4", context="c")]}],
+                       scenario="distinct"), "low")
+check("E1 a question added and then revised in the run is judged, not a KeyError", x["outcome"] == "repurposed"
+      and "call 1 revise q4" in x["judged"], x.get("judged"))
+judged_prompts = []
+
+
+class PromptFake(Fake):
+    def create(self, **kw):
+        if "tools" not in kw:
+            judged_prompts.append(kw["messages"][0]["content"])
+        return super().create(**kw)
+
+
+e1.client = PromptFake([], [same, same])  # the revision of q4 is judged first, then the add
+e1.classify(e1_run([{"ask": [entry("Bare?"), ]}, {"ask": [entry("Fixed, with context?", id="q4")]}]), "low")
+add_prompt = judged_prompts[1].split("<B>")[1]
+check("E1 an added card is judged as its own call showed it", "Bare?" in add_prompt
+      and "Fixed, with context?" not in add_prompt, add_prompt[:200])
+check("E1 judged cards carry their references", "**Reference: docs/specs/2026-11-20-csv-export.md lines 31-40**"
+      in judged_prompts[1])
+e1.client = Fake([], [{"why": "no verdict"}] * 3)
+try:
+    e1.classify(e1_run([{"ask": [entry("Cap?", id="q1")]}]), "low")
+    check("E1 a judge without a valid verdict raises", False)
+except qs.JudgeError:
+    check("E1 a judge without a valid verdict raises", True)
 
 # -- E2's judging
 
@@ -384,6 +412,13 @@ check("E1 gate: 2 failures in 30 fail", e1.gate(e1_runs(fails=2))["v3"]["verdict
 check("E1 gate: a repurposed control fails", e1.gate(e1_runs(repurposed=1))["v3"]["verdict"] == "FAIL")
 check("E1 gate: 29 changed runs are short", e1.gate(e1_runs(changed=29))["v3"]["verdict"] == "short")
 check("E1 gate: other histories are not counted", e1.gate(e1_runs(history="near")) == {})
+lopsided = [x for x in e1_runs(changed=60) if x["scenario"] in ("option_gone", "distinct")]
+check("E1 gate: 30 changed runs of one scenario are short", e1.gate(lopsided)["v3"]["verdict"] == "short")
+runs = e1_runs()
+runs[0]["outcome"] = "judge_error"
+check("E1 gate: a judge error makes the arm incomplete", e1.gate(runs)["v3"]["verdict"] == "incomplete")
+runs = e1_runs() + [{"job": ["v3", "premise", "far", 11], "error": "RateLimitError"}]
+check("E1 gate: an errored run makes the arm incomplete", e1.gate(runs)["v3"]["verdict"] == "incomplete")
 
 
 def card(matter, essential=True, reader="yes"):

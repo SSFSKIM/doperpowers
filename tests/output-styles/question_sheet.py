@@ -1049,20 +1049,32 @@ def notes_before(steps, step_index):
 JUDGE_USAGE = {"calls": 0, "input": 0, "output": 0}
 
 
-def judge(client, prompt, effort="low", model="claude-opus-5-5"):
-    """One judge's JSON verdict, in the gateway's request shape; its tokens are added to JUDGE_USAGE."""
-    resp = create(client, model=model, max_tokens=8000, output_config={"effort": effort},
-                                       system=CC_SYSTEM, betas=[CC_BETA], messages=[{"role": "user", "content": prompt}])
-    u = getattr(resp, "usage", None)
-    JUDGE_USAGE["calls"] += 1
-    if u is not None:
-        JUDGE_USAGE["input"] += u.input_tokens
-        JUDGE_USAGE["output"] += u.output_tokens
-    out = "".join(b.text for b in resp.content if b.type == "text")
-    m = re.search(r"\{.*\}", out, re.S)
-    if m is None:
-        raise ValueError(f"the judge gave no JSON (stop {resp.stop_reason})")
-    return json.loads(m.group(0))
+class JudgeError(ValueError):
+    """A judge that gave no valid verdict in three tries: the run's judging is incomplete, never a success."""
+
+
+def judge(client, prompt, effort="low", model="claude-opus-5-5", valid=None, tries=3):
+    """One judge's JSON verdict, in the gateway's request shape, checked by `valid` (a verdict -> bool) and asked
+    again when it gives none; its tokens are added to JUDGE_USAGE. Raises JudgeError after `tries`."""
+    last = None
+    for _ in range(tries):
+        resp = create(client, model=model, max_tokens=8000, output_config={"effort": effort},
+                      system=CC_SYSTEM, betas=[CC_BETA], messages=[{"role": "user", "content": prompt}])
+        u = getattr(resp, "usage", None)
+        JUDGE_USAGE["calls"] += 1
+        if u is not None:
+            JUDGE_USAGE["input"] += u.input_tokens
+            JUDGE_USAGE["output"] += u.output_tokens
+        out = "".join(b.text for b in resp.content if b.type == "text")
+        m = re.search(r"\{.*\}", out, re.S)
+        try:
+            verdict = json.loads(m.group(0)) if m else None
+        except json.JSONDecodeError:
+            verdict = None
+        if isinstance(verdict, dict) and (valid is None or valid(verdict)):
+            return verdict
+        last = out[:200] or f"(stop {resp.stop_reason})"
+    raise JudgeError(f"no valid verdict in {tries} tries; last: {last!r}")
 
 
 def usage_total(runs):
