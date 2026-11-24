@@ -1661,9 +1661,12 @@ sheet. Yielded, `ask.tsx` registers no tool, describes nothing, withdraws
 nothing, holds and delivers nothing, and draws no band and no open ask;
 two things it still does: its row hooks draw a stored call of today's
 form (its input has `questions`; §2.1) as they draw any answered or
-declined one, and its SessionStart hook still reads a resumed
-transcript's asks, which it hands to the sheet in place of adopting them
-(M5). The switch is the module's own variable, so a reload starts
+declined one (and pass a stored call of the sheet's form on to `next`
+in every session), and its SessionStart hook, yielded, adopts nothing.
+The sheet's own start reads a resumed transcript's asks through
+`readTodayAsks`, which `H/ask.tsx` exports and the sheet calls with its
+own hook's `$` (M5's review: a hand-off from the ask's hook would make
+one hook wait on another's work, K4). The switch is the module's own variable, so a reload starts
 unyielded and the kept choice sets it again.
 
 `H/sheet.tsx` exports, for `H/bridge.tsx`'s `sheet` op, `sheetNudge(keys):
@@ -2280,8 +2283,10 @@ sheet once, and is told.
 **Touches.** `H/sheet.tsx` (`registerSheetBand`, the row hooks),
 `H/sheet-model.tsx` (the parser of a result's first line; the lines);
 `H/register.tsx` (the band's registration); `H/ask.tsx` (`readAsks`
-answers whether its read was definite; yielded, its SessionStart hook
-hands what it read to the sheet); their tests; `H/README.md`,
+answers whether its read was definite, exported as `readTodayAsks` for
+the sheet's start; its row hooks pass a stored sheet-form call on);
+`sminos/types/sminos.d.ts` (`SheetKept.starting.today`, `preparing`);
+their tests; `H/README.md`,
 `H/CLAUDE.md`.
 
 **Interfaces.** Exposes I11's M5 row and the result's parser. Consumes
