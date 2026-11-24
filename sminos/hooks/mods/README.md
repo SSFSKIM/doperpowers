@@ -686,7 +686,7 @@ The other readers (the plan's M6; the composite's §11). Under the sheet,
 `sheet.tsx` writes the `ask` key the ask writes elsewhere, still `shape: 2`,
 so doperpowers' appeal and reload read it unchanged (`snapshotOf`, from each
 view adopted and at each main turn's start and end, written only when it
-changes): the questions answered last are its answered asks (`sheet:<id>`,
+changes from what the host acknowledged, one write after another): the questions answered last are its answered asks (`sheet:<id>`,
 the human's answer as the envelope words it), `answered` the record's count
 of answered questions (a dismissal is none), and the open ones and what is
 owed under its `sheet` field. After a step whose effects say the project log

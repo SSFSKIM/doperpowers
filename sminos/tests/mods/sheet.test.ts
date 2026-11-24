@@ -880,6 +880,22 @@ describe('the other readers (M6): the ask snapshot (I13), the project log (I12)'
     expect(h.runs().filter((r) => r.startsWith('sheet log'))).toHaveLength(2)
   })
 
+  test('a snapshot whose write the host refused is not taken as written: the same snapshot asked for again is written again', async () => {
+    const h = sheetOn({ refuseSet: (key, n) => key === 'sminos.ask' && n === 1 })
+    await h.ready()
+    await h.settle()
+    expect(h.kept.get('sminos.ask')).toBeUndefined()
+    expect(h.logs()).toContain('sheet: the ask snapshot is not written: the host refused sminos.ask')
+    await sheetNudge([])
+    await h.settle()
+    expect(h.kept.get('sminos.ask')).toEqual({ shape: 2, asks: [], undelivered: [], isTurnRunning: false, isDialogUp: false, answered: 0, sheet: { open: [], owed: 0 } })
+    const writes = () => h.calls.filter((c) => c.op === 'state.set' && (c.args as { key: string }).key === 'sminos.ask').length
+    expect(writes()).toBe(2)
+    await sheetNudge([])
+    await h.settle()
+    expect(writes()).toBe(2)
+  })
+
   test("a projection that fails says so in the debug log and is ordered again by the next step that owes", async () => {
     const h = sheetOn({ step: (event, n) => (event.event === 'call' ? ok(n, { result: 'Added q1.', owed: 1 }, { nextId: 2 }) : ok(n)), log: (n) => (n === 1 ? { exitCode: 75, stderr: 'busy' } : { exitCode: 0 }) })
     await h.ready()

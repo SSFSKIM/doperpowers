@@ -12126,6 +12126,14 @@ def _alias_held(project, session, seat, peer, own):
                                                     shadowing(project, session))[0] or session[:8]
 
 
+def alias_in(project, session):
+    """The alias a session's host events carry in `project` (_member_alias's),
+    whether or not its membership there is in effect now: where a question
+    the session asked there before it moved is written."""
+    seat, peer = _on_sight(project, session) or (None, None)
+    return _alias_held(project, session, seat, peer, _own_events(project, session))
+
+
 def held_member(session, transcript="", cwd=""):
     """(project, alias) where a session's host events go now: its project as
     `sminos record` resolves it (from its launch directory, `cwd` only until
@@ -14848,6 +14856,44 @@ def transcripts_now():
     for base, index in [(os.path.join(config_dir({}), "projects"), _TINDEX), *list(_TINDEXES.items())]:
         with index.lock:
             index.refresh(base)
+
+
+def transcript_confirmed_gone(session_id):
+    """Whether a session's transcript is known to be gone from this machine,
+    for a removal that rests on its absence (the question sheet's sweep):
+    the path its launch cache named is missing, and no project directory of
+    any config dir sminos knows holds `<session>.jsonl`, each listed and
+    stat'd now, never through the index (whose listing that fails reads as
+    empty). A listing or a stat that fails for any reason but absence is no
+    answer: False."""
+    def missing(path):
+        try:
+            os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            return True
+        return False
+    try:
+        cached = json_at(launch_cache_path(session_id))
+    except FileNotFoundError:
+        cached = None
+    except (OSError, ValueError):
+        return False
+    try:
+        if isinstance(cached, dict) and isinstance(cached.get("transcript"), str) and cached["transcript"] \
+                and not missing(cached["transcript"]):
+            return False
+        name = session_id + ".jsonl"
+        for cfg in dict.fromkeys([session_config_dir(session_id), config_dir({}), *engine_dirs(fresh=True)]):
+            base = os.path.join(cfg, "projects")
+            try:
+                subs = os.listdir(base)
+            except FileNotFoundError:
+                continue
+            if any(not missing(os.path.join(base, sub, name)) for sub in subs):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def transcript_path(session_id, fresh=False):

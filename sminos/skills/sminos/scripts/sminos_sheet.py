@@ -1138,24 +1138,34 @@ def _question_from(project, session, src, here):
     return now[1] if now is not None and now[0].id == project.id else session[:8]
 
 
-def project_log(session, here=None, closing=False):
-    """The projection (I12): what the record owes the project log, appended under the session's writer through
-    append_host, whose (kind, src) rule appends nothing twice; then taken off `log.owed`, the project each question
-    went to recorded in `log.projects`, by one replace under the lock. A `question` goes to the project the session
-    is in now (`here(session)`: (project, alias), or None while it is in none or no member there: it waits, and
-    with it every later event of its question); any other event to its question's recorded project. `closing`
-    (a removal): a closing for each question still open is appended after them, and owed nothing. The lock is held
-    to read and to replace, never while the log is written. Returns {written, owed}, None for no record; raises
-    LogFailed when the log refused a project's events (the others are taken), after the replace."""
+def _read_state(rec):
+    try:
+        return _read_json(os.path.join(rec, "state.json"))
+    except FileNotFoundError:
+        return None
+
+
+def project_log(session, here=None, closing=False, rec=None):
+    """The projection (I12): what the record at `rec` (the session's own by default; a removal's, detached) owes the
+    project log, appended under the session's writer through append_host, whose (kind, src) rule appends nothing
+    twice, then taken off `log.owed` by a replace under the lock. Each question's destination is decided once and
+    recorded before anything of it is appended (`log.projects`, first decision kept, under the lock): the project
+    the session is in now and a member of (`here(session)`: (project, alias), or None while it is in none or no
+    member: the question waits, and every later event of it), so a retry after a death, or a projection overlapping
+    a move to another project, sends it and every later event of it to the same project. `closing` (a removal): a
+    closing for each question still open goes after what is owed, and is owed nothing; a destination recorded but
+    not known here any more is then a debt (LogFailed), where otherwise it waits. The lock is held to read and to
+    replace, never while the log is written. Returns {written, owed}, None for no record; raises LogFailed when the
+    log refused a project's events (the others are taken, after the replace) or the session's place could not be
+    read."""
     here_of = here or (lambda s: S.held_member(s))
-    rec = record_dir(session)
+    rec = rec or record_dir(session)
     with Lock(session):
         why = _log_problem(rec)
         if why:
             raise LogFailed(why)
-        try:
-            state = _read_json(os.path.join(rec, "state.json"))
-        except FileNotFoundError:
+        state = _read_state(rec)
+        if state is None:
             return None
         owed = [dict(e) for e in state["log"]["owed"]]
         projects = dict(state["log"]["projects"])
@@ -1173,57 +1183,65 @@ def project_log(session, here=None, closing=False):
             except (OSError, S.LockBusy) as e:
                 raise LogFailed("where the session is could not be read: %s" % e)
         return cache[0]
-    went, batches, froms = {}, {}, {}
+
+    def id_of(e):
+        return e["src"].rsplit(":", 1)[1]
+    unplaced = [id_of(e) for e in owed if e["kind"] == "question" and id_of(e) not in projects]
+    if unplaced and now() is not None:
+        with Lock(session):
+            state = _read_state(rec)
+            if state is None:
+                return None
+            kept = state["log"]["projects"]
+            placed = {i: now()[0].id for i in unplaced if i not in kept}
+            if placed:
+                kept.update(placed)
+                state["seq"] += 1
+                _write_file(rec, "state.json", _dumps(state).encode())
+            projects = dict(kept)
+    batches, froms, failed, debts = {}, {}, [], []
     for e in owed:
-        id_ = e["src"].rsplit(":", 1)[1]
+        id_ = id_of(e)
+        pid = projects.get(id_)
+        if pid is None:
+            continue   # its question has no destination yet: it, and every later event of it, waits
+        project = S.known_project(pid)
+        if project is None:
+            debts.append("%s's project %s is not known here" % (id_, pid))
+            continue
         if e["kind"] == "question":
             where = now()
-            if where is None:
-                continue
-            project, alias = where
-            went[id_] = project.id
+            alias = where[1] if where is not None and where[0].id == pid else S.alias_in(project, session)
             froms[e["src"]] = alias
             event = {"kind": "question", "from": alias, "to": "host", "text": e["text"], "choices": e["choices"],
                      "src": e["src"]}
         else:
-            pid = projects.get(id_) or went.get(id_)
-            project = S.known_project(pid) if pid else None
-            if project is None:
-                continue   # its question not written yet, or its project gone from this machine: it waits
             if e["src"] not in froms:
                 froms[e["src"]] = _question_from(project, session, e["src"], now)
             event = {"kind": "answered", "from": froms[e["src"]], "src": e["src"], "text": e["text"]}
             if "closed" in e:
                 event["closed"] = e["closed"]
-        batches.setdefault(project.id, (project, []))[1].append((e.get("n"), id_, event))
-    written, recorded, failed = set(), {}, []
+        batches.setdefault(project.id, (project, []))[1].append((e.get("n"), event))
+    written = set()
     for project, batch in batches.values():
         try:
-            S.append_host(project, session, [event for _, _, event in batch])
+            S.append_host(project, session, [event for _, event in batch])
         except (OSError, S.LockBusy, S.LogWriteFailed) as e:
             failed.append("%s: %s" % (project.name, e))
             continue
-        for n, id_, event in batch:
-            if n is not None:
-                written.add(n)
-            if event["kind"] == "question":
-                recorded[id_] = project.id
+        written |= {n for n, _ in batch if n is not None}
     left = len([e for e in owed if "n" in e])
-    if written or recorded:
+    if written:
         with Lock(session):
-            try:
-                state = _read_json(os.path.join(rec, "state.json"))
-            except FileNotFoundError:
-                state = None
+            state = _read_state(rec)
             if state is not None:
                 log = state["log"]
                 log["owed"] = [e for e in log["owed"] if e["n"] not in written]
-                log["projects"].update(recorded)
                 state["seq"] += 1
                 _write_file(rec, "state.json", _dumps(state).encode())
                 left = len(log["owed"])
-    if failed:
-        raise LogFailed("; ".join(failed))
+    if failed or (closing and debts):
+        raise LogFailed("; ".join(failed + (debts if closing else [])))
     return {"written": len(written), "owed": left}
 
 
@@ -1331,22 +1349,54 @@ def _send(session, lines):
     print(json.dumps(put(session, data), ensure_ascii=False))
 
 
-def _removed_leftovers(now_s):
-    """Detached sheets an earlier removal left (it died, or could not delete them): deleted once older than a minute,
-    so a removal in progress elsewhere keeps its own."""
+def finish_removed(now_s=None):
+    """What earlier removals left in sheet/ (a death, a deletion that failed, a record whose closings the log did not
+    take), once older than a minute, so a removal in progress elsewhere keeps its own: a detached record's log is
+    projected (what it owes, and its open questions closed), then it is deleted; one whose log the projection could
+    not write stays for the next removal or sweep. Anything else is deleted. Returns what stays, as reasons."""
     root = sheet_root()
+    now_s = time.time() if now_s is None else now_s
     try:
         names = os.listdir(root)
     except FileNotFoundError:
-        return
+        return []
+    stays = []
     for n in names:
-        if n.startswith(REMOVED):
-            try:
-                at = int(n[len(REMOVED):].split("-", 1)[0])
-            except ValueError:
-                at = 0
-            if now_s - at > REMOVED_AGE_S:
-                shutil.rmtree(os.path.join(root, n), ignore_errors=True)
+        if not n.startswith(REMOVED):
+            continue
+        try:
+            at = int(n[len(REMOVED):].split("-", 1)[0])
+        except ValueError:
+            at = 0
+        if now_s - at <= REMOVED_AGE_S:
+            continue
+        path = os.path.join(root, n)
+        why = _project_detached(path)
+        if why:
+            stays.append("%s: %s" % (path, why))
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+    return stays
+
+
+def _project_detached(path):
+    """A detached record's log written (project_log with `closing`), or why not; None also for what is no record."""
+    if not path or _log_problem(path) is not None:
+        return None
+    try:
+        state = _read_state(path)
+    except (OSError, ValueError):
+        return None
+    session = state.get("session") if isinstance(state, dict) else None
+    if not isinstance(session, str) or not S.UUID_RE.fullmatch(session):
+        return None
+    try:
+        project_log(session, closing=True, rec=path)
+    except LogFailed as e:
+        return str(e)
+    except Busy:
+        return "its sheet's lock was busy"
+    return None
 
 
 class Refused(Exception):
@@ -1366,24 +1416,18 @@ def remove(session, cleared=False):
 
 
 def remove_record(session, cleared=False):
-    """A stopped session's record and its staging (I1, M2), its log projected first (I12, M6): what the record
-    still owes the log, then a closing for each question still open. Liveness is checked before the lock and again
-    under it (a session resumed while this waited); under the lock the staging, then the record, are detached, each
-    by one rename inside sheet/, so no reader or step sees part of a removal, and a record that cannot be detached
-    gets its staging back; then they are deleted, and what could not be is said (the next removal deletes it). The
-    lock file stays. A projection that fails leaves the record (Refused, 1): the next removal writes what it owes."""
+    """A stopped session's record and its staging (I1, M2), and its log (I12, M6). Liveness is checked before the lock
+    and again under it (a session resumed while this waited; not with `cleared`, the session a /clear left); under
+    the lock the staging, then the record, are detached, each by one rename inside sheet/, so no reader or step sees
+    part of a removal, and a record that cannot be detached gets its staging back. Only then, the removal decided, is
+    the detached record's log projected: what it still owes, then a closing for each question still open; a refusal
+    before it publishes nothing. A record whose log could not all be written stays detached (Refused, 1) and the next
+    removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
+    said. The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
                       % session, 2)
-    _removed_leftovers(int(time.time()))
-    try:
-        # A record that is no sound directory is not read through: the lock's checks below refuse or remove it.
-        if _log_problem(record_dir(session)) is None:
-            project_log(session, closing=True)
-    except LogFailed as e:
-        raise Refused("sheet remove: %s's project log could not be written (%s); the sheet stays" % (session, e), 1)
-    except Busy:
-        raise Refused("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
+    finish_removed()
     detached = []
     try:
         with Lock(session):
@@ -1414,12 +1458,18 @@ def remove_record(session, cleared=False):
                     detached.append((d, to))
     except Busy:
         raise Refused("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
+    stays = _project_detached(dict(detached).get(rec, ""))
     left = []
-    for _, d in detached:
+    for d, to in detached:
+        if d == rec and stays:
+            continue
         try:
-            shutil.rmtree(d)
+            shutil.rmtree(to)
         except OSError as e:
-            left.append("%s (%s)" % (d, e))
+            left.append("%s (%s)" % (to, e))
+    if stays:
+        raise Refused("sheet remove: %s's sheet is removed, but its project log could not be written (%s); it is kept "
+                      "aside, and the next removal or the daemon's sweep writes it" % (session, stays), 1)
     if left:
         raise Refused("sheet remove: %s's sheet is removed, but these could not be deleted (the next removal deletes "
                       "them): %s" % (session, "; ".join(left)), 1)

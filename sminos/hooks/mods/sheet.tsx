@@ -111,8 +111,8 @@ export type Port = {
   notify: (text: string) => void
   log: (text: string) => void
   keep: (kept: SheetKept) => void
-  /** The ask key another plugin reads (I13): written as `ask.tsx` writes it where the sheet is not chosen. */
-  publish: (snapshot: AskSnapshot) => void
+  /** The ask key another plugin reads (I13): written as `ask.tsx` writes it where the sheet is not chosen; rejects when the write did not land. */
+  publish: (snapshot: AskSnapshot) => Promise<void>
   invalidate: () => void
   /** A prompt of this plugin's (`$.prompt.submit`), the idle route; what entered, or why not. */
   submit: (text: string) => Promise<{ drop?: string; text?: string }>
@@ -279,8 +279,10 @@ type Sheet = {
   surfaceViews: number
   /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
   isDeliveryWanted: boolean
-  /** The ask snapshot last written (I13), as its JSON: one that would say the same is not written again. */
+  /** The ask snapshot last written or being written (I13), as its JSON: one that would say the same is not written again; forgotten when its write fails. */
   published?: string
+  /** The snapshot writes, one after another, so the last asked for is the last to land. */
+  publishing?: Promise<void>
 }
 
 function fresh(): Sheet {
@@ -435,7 +437,15 @@ function publish(port: Port) {
   const text = JSON.stringify(snapshot)
   if (text === sheet.published) return
   sheet.published = text
-  port.publish(snapshot)
+  sheet.publishing = (sheet.publishing ?? Promise.resolve()).then(async () => {
+    if (sheet.published !== text) return // a newer one is asked for: it is written instead
+    try {
+      await port.publish(snapshot)
+    } catch (error) {
+      port.log(`sheet: the ask snapshot is not written: ${message(error)}`)
+      if (sheet.published === text) sheet.published = undefined // not acknowledged: the same one is written again when asked
+    }
+  })
 }
 
 /**
@@ -1564,7 +1574,7 @@ function portOf($: EngineInterface): Port {
     notify: (text) => void $.ui.notify(text).catch((error: unknown) => $.ui.log(`sheet: the question's notification failed (${message(error)})`, { to: 'debug' })),
     log: (text) => $.ui.log(text, { to: 'debug' }),
     keep: (kept) => void $.state.set(KEPT, kept).catch((error: unknown) => $.ui.log(`sheet: the choice is not kept for a reload: ${message(error)}`, { to: 'debug' })),
-    publish: (snapshot) => void $.state.set({ plugin: 'sminos', key: 'ask' }, snapshot).catch((error: unknown) => $.ui.log(`sheet: the ask snapshot is not written: ${message(error)}`, { to: 'debug' })),
+    publish: async (snapshot) => void (await $.state.set({ plugin: 'sminos', key: 'ask' }, snapshot)),
     invalidate: () => $.ui.invalidate('tool.describe'),
     submit: (text) => $.prompt.submit({ text }),
     send: (agentId, text) => $.session.send({ to: { agentId }, text }),

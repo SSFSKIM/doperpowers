@@ -84,6 +84,8 @@ export function harness(
     exec?: (argv: readonly string[]) => { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | Promise<{ exitCode: number; stdout: string; isStdoutTruncated?: boolean }>
     /** The clock (`$.clock.now`), in milliseconds since the epoch. */
     now?: number
+    /** Whether the n-th `$.state.set` of a key (`plugin.key`) is refused; none is otherwise. */
+    refuseSet?: (key: string, n: number) => boolean
     /** What `sminos sheet log` (the projection) answers; exit 0 otherwise. */
     log?: (n: number) => { exitCode: number; stderr?: string } | Promise<{ exitCode: number; stderr?: string }>
   } = {},
@@ -108,6 +110,7 @@ export function harness(
   const sends: { agentId: string; text: string }[] = []
   let session = options.session ?? S1
   let projections = 0
+  const sets = new Map<string, number>()
   const env: Record<string, string> = { SMINOS_HOME: HOME, ...options.env }
   const $ = {
     plugin: { root: '/plug', name: 'sminos' },
@@ -129,7 +132,15 @@ export function harness(
     },
     state: {
       get: async (ref: { plugin: string; key: string }) => ({ value: kept.get(`${ref.plugin}.${ref.key}`), version: 0 }),
-      set: async (ref: { plugin: string; key: string }, value: unknown) => (kept.set(`${ref.plugin}.${ref.key}`, JSON.parse(JSON.stringify(value))), { isSet: true }),
+      set: async (ref: { plugin: string; key: string }, value: unknown) => {
+        const key = `${ref.plugin}.${ref.key}`
+        const n = (sets.get(key) ?? 0) + 1
+        sets.set(key, n)
+        calls.push({ op: 'state.set', args: { key, value } })
+        if (options.refuseSet?.(key, n) === true) throw new Error(`the host refused ${key}`)
+        kept.set(key, JSON.parse(JSON.stringify(value)))
+        return { isSet: true }
+      },
     },
     fs: {
       write: async (path: string, text: string) => {
