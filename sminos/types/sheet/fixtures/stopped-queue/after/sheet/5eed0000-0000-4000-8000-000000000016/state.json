@@ -45,18 +45,18 @@
   "skipped": 0
  },
  "log": {
-  "next": 7,
+  "next": 8,
   "owed": [
    {
     "kind": "answered",
-    "n": 5,
+    "n": 6,
     "src": "sheet:5eed0000-0000-4000-8000-000000000016:q1",
     "text": "\"Which auth method should the login use?\" → OAuth."
    },
    {
     "closed": "dismissed",
     "kind": "answered",
-    "n": 6,
+    "n": 7,
     "src": "sheet:5eed0000-0000-4000-8000-000000000016:q2",
     "text": "dismissed"
    }

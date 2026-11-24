@@ -558,10 +558,11 @@ cl = {"q2": closed_other(q2, "withdrawn", "2026-11-23T09:20:00.000Z"),
       "q3": closed_other(q3, "withdrawn", "2026-11-23T09:21:00.000Z")}
 a = L("page-0501a001", "answer", "page", "2026-11-23T09:59:50.000Z", id="q2", revision=1, picks=["Yes"])
 d = L("page-0501a002", "dismiss", "page", "2026-11-23T09:59:51.000Z", id="q2")
-before = {"state.json": record(S, 5, 4, 0, [q1], closed=cl), "inbox.jsonl": inbox([a, d])}
+before = {"state.json": record(S, 5, 4, 0, [q1], closed=cl, log_next=6), "inbox.jsonl": inbox([a, d])}
 va = V("closed", "answer", NOW, id="q2", how="withdrawn")
 vd = V("closed", "dismiss", NOW, id="q2", how="withdrawn")
-after = {"state.json": record(S, 6, 4, offset(a, d), [q1], closed=cl, verdicts={a["key"]: va, d["key"]: vd}),
+after = {"state.json": record(S, 6, 4, offset(a, d), [q1], closed=cl, verdicts={a["key"]: va, d["key"]: vd},
+                              log_next=6),
          "inbox.jsonl": inbox([a, d])}
 case("closed-withdrawn", "§4.2 row 3: an answer and a dismissal for a withdrawn question; show's closed reads "
      "withdrawn for q3, which no line ever touched", 5, NOW, drain([a["key"], d["key"]]),
@@ -627,7 +628,7 @@ tail = [r1, r2, dl, r3, r4]
 out1 = answer_out(k1, q1, T0)
 vk1, vk2 = V("applied", "answer", T0, id="q1"), V("stale", "answer", T0, id="q2", current=2)
 cl0 = {"q1": closed_answered(q1, k1, T0)}
-before = {"state.json": record(S, 9, 3, offset(k1, k2), [q2], [out1], cl0, {k1["key"]: vk1, k2["key"]: vk2}),
+before = {"state.json": record(S, 9, 3, offset(k1, k2), [q2], [out1], cl0, {k1["key"]: vk1, k2["key"]: vk2}, 4),
           "inbox.jsonl": inbox([k1, k2] + tail)}
 vs = {r1["key"]: V("too-late", "retract", NOW, target=k1["key"]),
       r2["key"]: V("too-late", "retract", NOW, target=k2["key"]),
@@ -636,7 +637,7 @@ vs = {r1["key"]: V("too-late", "retract", NOW, target=k1["key"]),
       r4["key"]: V("too-late", "retract", NOW, target=r1["key"])}
 cl1 = {"q1": dict(closed_answered(q1, k1, T0), deliveredAt=NOW)}
 after = {"state.json": record(S, 10, 3, offset(k1, k2, *tail), [q2], [], cl1,
-                              {k1["key"]: vk1, k2["key"]: vk2, **vs}),
+                              {k1["key"]: vk1, k2["key"]: vk2, **vs}, 4),
          "inbox.jsonl": inbox([k1, k2] + tail)}
 case("retract-too-late", "§4.2 row 6: a retract of a target an earlier step applied, and of one it refused as "
      "stale; a retract that names a retract, and one that names a delivered line, both too-late", 8, NOW,
@@ -690,11 +691,11 @@ dl = L("maws-1101d003", "delivered", "maws", "2026-11-23T09:59:50.000Z",
 out1 = answer_out(k1, q1, T1)
 v0 = {k1["key"]: V("applied", "answer", T1, id="q1"), k2["key"]: V("applied", "answer", T1, id="q2")}
 cl0 = {"q1": closed_answered(q1, k1, T1), "q2": dict(closed_answered(q2, k2, T1), deliveredAt=T2)}
-before = {"state.json": record(S, 8, 4, offset(k1, k2), [q3], [out1], cl0, v0),
+before = {"state.json": record(S, 8, 4, offset(k1, k2), [q3], [out1], cl0, v0, 6),
           "inbox.jsonl": inbox([k1, k2, dl])}
 vdl = V("applied", "delivered", NOW)
 cl1 = {"q1": dict(cl0["q1"], deliveredAt=NOW), "q2": cl0["q2"]}
-after = {"state.json": record(S, 9, 4, offset(k1, k2, dl), [q3], [], cl1, {**v0, dl["key"]: vdl}),
+after = {"state.json": record(S, 9, 4, offset(k1, k2, dl), [q3], [], cl1, {**v0, dl["key"]: vdl}, 6),
          "inbox.jsonl": inbox([k1, k2, dl])}
 case("delivered-mixed", "§4.2 row 7: a delivered line naming one key pending, one delivered before and one unknown; "
      "after it show's closed holds the delivered answer's receipt and pending holds it no longer", 11, NOW,
@@ -713,8 +714,8 @@ k = L("page-1201a001", "answer", "page", "2026-11-23T09:29:00.000Z", id="q1", re
 out = answer_out(k, q1, T1)
 vk = V("applied", "answer", T1, id="q1")
 cl = {"q1": closed_answered(q1, k, T1)}
-before = {"state.json": record(S, 5, 3, offset(k), [q2], [out], cl, {k["key"]: vk}), "inbox.jsonl": inbox([k, k])}
-after = {"state.json": record(S, 6, 3, offset(k, k), [q2], [out], cl, {k["key"]: vk}), "inbox.jsonl": inbox([k, k])}
+before = {"state.json": record(S, 5, 3, offset(k), [q2], [out], cl, {k["key"]: vk}, 4), "inbox.jsonl": inbox([k, k])}
+after = {"state.json": record(S, 6, 3, offset(k, k), [q2], [out], cl, {k["key"]: vk}, 4), "inbox.jsonl": inbox([k, k])}
 case("resent-key", "§4.2 row 8: a resent copy of an applied line is set aside: the first verdict again", 12, NOW,
      drain([k["key"]]), {k["key"]: vk}, before, after,
      show(S, 5, [shown(q2)], sent=[v_sent(k["key"], "accepted", vk)], pending=[out], closed=cl),
@@ -729,9 +730,10 @@ r = L("page-1301r002", "retract", "page", "2026-11-23T09:59:50.000Z", target=k["
 out = answer_out(k, q1, T1)
 vk = V("applied", "answer", T1, id="q1")
 cl = {"q1": closed_answered(q1, k, T1)}
-before = {"state.json": record(S, 5, 3, offset(k), [q2], [out], cl, {k["key"]: vk}), "inbox.jsonl": inbox([k, k, r])}
+before = {"state.json": record(S, 5, 3, offset(k), [q2], [out], cl, {k["key"]: vk}, 4),
+          "inbox.jsonl": inbox([k, k, r])}
 vr = V("too-late", "retract", NOW, target=k["key"])
-after = {"state.json": record(S, 6, 3, offset(k, k, r), [q2], [out], cl, {k["key"]: vk, r["key"]: vr}),
+after = {"state.json": record(S, 6, 3, offset(k, k, r), [q2], [out], cl, {k["key"]: vk, r["key"]: vr}, 4),
          "inbox.jsonl": inbox([k, k, r])}
 case("resent-then-retract", "a resent copy of an applied line, then a retract of it: the copy set aside, the retract "
      "too-late, the answer still pending", 13, NOW, drain([k["key"], r["key"]]), {k["key"]: vk, r["key"]: vr},
@@ -803,7 +805,7 @@ a3 = L("page-1601a003", "answer", "page", "2026-11-23T10:22:00.000Z", id="q3", r
 r3 = L("page-1601r004", "retract", "page", "2026-11-23T10:23:00.000Z", target=a3["key"])
 tail = [a1, d2, a3, r3]
 cl0 = {"q4": closed_answered(q4, k4, T1)}
-before = {"state.json": record(S, 7, 5, offset(k4), [q1, q2, q3], [out4], cl0, {k4["key"]: v4},
+before = {"state.json": record(S, 7, 5, offset(k4), [q1, q2, q3], [out4], cl0, {k4["key"]: v4}, 6,
                                calls=[{"callId": "toolu_01Empt0016", "result": "Added q3."}]),
           "inbox.jsonl": inbox([k4] + tail)}
 outs = [dict(out4, recipient="main", taken=False, acrossStop=True), answer_out(a1, q1, NOW, across=True),
@@ -811,8 +813,8 @@ outs = [dict(out4, recipient="main", taken=False, acrossStop=True), answer_out(a
 vs = {a1["key"]: V("applied", "answer", NOW, id="q1"), d2["key"]: V("applied", "dismiss", NOW, id="q2"),
       a3["key"]: V("retracted", "answer", NOW, id="q3"), r3["key"]: V("retracted", "retract", NOW, target=a3["key"])}
 cl1 = {**cl0, "q1": closed_answered(q1, a1, NOW), "q2": closed_other(q2, "dismissed", NOW, d2["key"])}
-after = {"state.json": record(S, 8, 5, offset(k4, *tail), [q3], outs, cl1, {k4["key"]: v4, **vs}, 7,
-                              [owed_answered(5, S, q1, a1), owed_closed(6, S, q2, "dismissed")]),
+after = {"state.json": record(S, 8, 5, offset(k4, *tail), [q3], outs, cl1, {k4["key"]: v4, **vs}, 8,
+                              [owed_answered(6, S, q1, a1), owed_closed(7, S, q2, "dismissed")]),
          "inbox.jsonl": inbox([k4] + tail)}
 case("stopped-queue", "event start: what was queued while the session was stopped (an answer, a dismissal whose "
      "question is hidden, an answer retracted) is applied, every pending outcome owed across a stop and given to the "
@@ -980,7 +982,7 @@ rec = record(S, 23, 13, 0, [q10], pend,
               "q12": closed_answered(q12, l12, A12)},
              {l8["key"]: V("applied", "answer", A8, id="q8"), l7["key"]: V("applied", "answer", A7, id="q7"),
               l9["key"]: V("applied", "dismiss", A7, id="q9"), l12["key"]: V("applied", "answer", A12, id="q12"),
-              l11["key"]: V("applied", "dismiss", A11, id="q11")})
+              l11["key"]: V("applied", "dismiss", A11, id="q11")}, 18)
 KEYS = ["page-7f3a91c2", "page-7f3a91c3", "cli-20c41d07", "page-7f3a91c4", "page-7f3a91c5"]
 BLK = block({"v": 1, "keys": KEYS, "answered": [
     {"id": "q7", "revision": 2, "picks": [1, 2], "text": "passkeys only on mobile", "images": [UP]},
@@ -1016,7 +1018,7 @@ AC = "2026-11-23T10:00:01.000Z"
 TF = ["texts/%s.txt" % sha(t) for t in LONGS]
 rec = record(S, 5, 5, 0, [], [answer_out(ls[i], qs[i], AC, text_file=TF[i]) for i in range(4)],
              {"q%d" % (i + 1): closed_answered(qs[i], ls[i], AC) for i in range(4)},
-             {ls[i]["key"]: V("applied", "answer", AC, id="q%d" % (i + 1)) for i in range(4)})
+             {ls[i]["key"]: V("applied", "answer", AC, id="q%d" % (i + 1)) for i in range(4)}, 9)
 ABS = ["%s/sheet/%s/%s" % (HOME, S, f) for f in TF]
 example("long", 2, "main", rec, {TF[i]: LONGS[i] for i in range(4)}, "\n".join([
     "[sheet v1] The human answered questions on your sheet.",
@@ -1039,7 +1041,7 @@ ds = [L("page-e3d%04d" % n, "dismiss", "page", "2026-11-23T10:0%d:00.000Z" % ((n
 ACS = ["2026-11-23T10:0%d:01.000Z" % s for s in range(5)]
 rec = record(S, 6, 251, 0, [], [dismiss_out(ds[n], qs[n], ACS[n // 50]) for n in range(250)],
              {"q%d" % (n + 1): closed_other(qs[n], "dismissed", ACS[n // 50], ds[n]["key"]) for n in range(250)},
-             {ds[n]["key"]: V("applied", "dismiss", ACS[n // 50], id="q%d" % (n + 1)) for n in range(250)})
+             {ds[n]["key"]: V("applied", "dismiss", ACS[n // 50], id="q%d" % (n + 1)) for n in range(250)}, 501)
 example("more", 3, "main", rec, {}, "\n".join([
     "[sheet v1] The human dismissed questions on your sheet; no answer will come for them. More follows.",
     "Dismissed: %s." % ", ".join("q%d" % n for n in range(1, 201)),
@@ -1053,7 +1055,7 @@ qi = question("q1", "Which rollout gate?", ASK_AT, ASK_CALL, [opt("No gate"), op
 li = L("page-e4a00001", "answer", "page", "2026-11-23T10:00:00.000Z", id="q1", revision=1, picks=[LEGACY_LABEL])
 AC = "2026-11-23T10:00:01.000Z"
 rec = record(S, 3, 2, 0, [], [answer_out(li, qi, AC)], {"q1": closed_answered(qi, li, AC)},
-             {li["key"]: V("applied", "answer", AC, id="q1")}, imports={ASK_CALL: ["q1"]})
+             {li["key"]: V("applied", "answer", AC, id="q1")}, 3, imports={ASK_CALL: ["q1"]})
 example("imported", 4, "main", rec, {}, "\n".join([
     "[sheet v1] The human answered questions on your sheet.",
     'q1 "Which rollout gate?" → %s….' % LEGACY_LABEL[:200],
@@ -1073,7 +1075,7 @@ A3, A4 = "2026-11-23T10:00:01.000Z", "2026-11-23T10:00:31.000Z"
 rec = record(S, 6, 5, 0, [], [answer_out(l3, q3, A3, recipient={"agentId": "a7c0ffee"}, taken=True),
                               answer_out(l4, q4, A4)],
              {"q3": closed_answered(q3, l3, A3), "q4": closed_answered(q4, l4, A4)},
-             {l3["key"]: V("applied", "answer", A3, id="q3"), l4["key"]: V("applied", "answer", A4, id="q4")})
+             {l3["key"]: V("applied", "answer", A3, id="q3"), l4["key"]: V("applied", "answer", A4, id="q4")}, 7)
 example("subagent", 5, {"agentId": "a7c0ffee"}, rec, {}, "\n".join([
     "From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet.",
     "[sheet v1] The human answered questions on your sheet.",
