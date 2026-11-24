@@ -1648,6 +1648,12 @@ export function registerAsk(on: On) {
             })
           : await readAsks($, e.transcript_path)
     }
+    // The choice may have been made while the read was pending: under the
+    // sheet nothing is adopted, and the read is kept for its import.
+    if (isYielded) {
+      readWhileYielded = read ?? []
+      return next(e)
+    }
     // The hook contributes nothing to its own result: all it does is take the
     // session's asks up, which can wait for the sheet's choice.
     const adopt = () => {

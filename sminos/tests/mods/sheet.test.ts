@@ -789,6 +789,50 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
     expect(asyncAsks()).toEqual([])
   })
 
+  for (const [choice, probe] of [['sheet', ALIVE], ['today', { ...ALIVE, surface: null, surfaces: 0 }]] as const) {
+    test(`the choice made (${choice}) while the SessionStart's read of the transcript is still pending: ${choice === 'sheet' ? 'nothing is adopted, the read kept for the import' : 'the asks are adopted once read'}`, async () => {
+      const h = harness({ env: SHEET_ON, probe, files: { [`/t/${S1}.jsonl`]: legacy() } })
+      const notes: AskNote[] = []
+      observeAsks((note) => notes.push(note))
+      const engine = h.engine as unknown as { process: { run: (argv: string[], init?: unknown) => Promise<unknown> }; fs: { read: (path: string) => Promise<string> } }
+      let releaseProbe: () => void = () => {}
+      const run = engine.process.run
+      engine.process.run = async (argv, init) => (argv[2] === 'probe' ? (await new Promise<void>((r) => (releaseProbe = r)), run(argv, init)) : run(argv, init))
+      // The ask's first read of the transcript waits; any later read (the sheet's floor) does not.
+      let releaseRead: () => void = () => {}
+      let isHeld = false
+      const read = engine.fs.read
+      engine.fs.read = async (path) => {
+        if (path === `/t/${S1}.jsonl` && !isHeld) {
+          isHeld = true
+          await new Promise<void>((r) => (releaseRead = r))
+        }
+        return read(path)
+      }
+      const starting = h.start()
+      await h.settle()
+      const classic = h.classicStart('resume')
+      await h.settle()
+      expect(isHeld).toBe(true)
+      // The choice is made while the read is pending.
+      releaseProbe()
+      await starting
+      await h.settle()
+      expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe(choice)
+      releaseRead()
+      await classic
+      await h.settle()
+      if (choice === 'sheet') {
+        expect(notes).toEqual([])
+        expect(asyncAsks()).toEqual([])
+        expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+      } else {
+        expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])
+        expect(asyncAsks().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+      }
+    })
+  }
+
   test('once the choice is made, a later SessionStart takes the asks up at once (today)', async () => {
     const h = harness({ probe: ALIVE, files: { [`/t/${S1}.jsonl`]: legacy() } })
     const notes: AskNote[] = []
