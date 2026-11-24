@@ -311,6 +311,33 @@ describe('the start choice, at session.start (I8)', () => {
     expect(older.runs()).toEqual([])
   })
 
+  test("a launch's SessionStart that comes while session.start still chooses (a terminal's, 2.1.331) is ordered once the choice is the sheet", async () => {
+    const h = sheetOn()
+    let release: () => void = () => {}
+    const engine = h.engine as unknown as { process: { run: (argv: string[], init?: unknown) => Promise<unknown> } }
+    const run = engine.process.run
+    // The probe waits, as the choice's process call does, while the engine runs the SessionStart.
+    engine.process.run = async (argv, init) => (argv[2] === 'probe' ? (await new Promise<void>((r) => (release = r)), run(argv, init)) : run(argv, init))
+    const starting = h.start()
+    await h.settle()
+    await h.classicStart('startup')
+    expect(h.steps).toEqual([])
+    release()
+    await starting
+    await h.settle()
+    expect(h.steps).toHaveLength(1)
+    expect(h.steps[0]).toMatchObject({ event: 'start', start: { source: 'startup', floor: 0 } })
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ choice: 'sheet', started: S1 })
+  })
+
+  test("a SessionStart that came early is dropped when the choice is not the sheet", async () => {
+    const h = harness({ probe: ALIVE })
+    await h.classicStart('startup')
+    await h.start()
+    await h.settle()
+    expect(h.steps).toEqual([])
+  })
+
   test('a reload before the start answered orders that start, under its nonce', async () => {
     const first = sheetOn({ step: () => Promise.reject(new Error('the command did not start')) })
     await first.start()

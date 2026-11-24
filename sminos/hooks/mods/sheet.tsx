@@ -136,6 +136,13 @@ type Sheet = {
   draining?: Promise<Answer>
   queued?: { keys: Set<string>; promise: Promise<Answer>; resolve: (answer: Promise<Answer>) => void }
   isChecking: boolean
+  /**
+   * A launch's classic SessionStart that came before the choice was made: at
+   * a terminal's launch the engine runs it while session.start still awaits
+   * (2.1.331, the live check). Ordered once the choice is the sheet; dropped
+   * otherwise.
+   */
+  early?: { source: StartSource; session: string; transcript: string }
 }
 
 function fresh(): Sheet {
@@ -706,6 +713,8 @@ export function registerSheet(on: On) {
     }
     sheet.port = port
     port.keep(sheet.kept)
+    const early = sheet.early
+    sheet.early = undefined
     if (chosen.choice !== 'sheet') {
       return next(e)
     }
@@ -724,6 +733,9 @@ export function registerSheet(on: On) {
       port.invalidate()
     }
     $.clock.every(TICK_MS, () => void check(port))
+    if (early !== undefined) {
+      await sessionStarted(port, early.source, early.session, early.transcript)
+    }
     if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined)) {
       void check(port)
     }
@@ -734,6 +746,11 @@ export function registerSheet(on: On) {
   // drain that composes the context M4 hands the model.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async (_, e, next) => {
     const port = sheet.port
+    if (sheet.kept === undefined && e.source !== 'compact') {
+      // The choice is still being made: its session.start orders this start.
+      sheet.early = { source: e.source, session: e.session_id, transcript: e.transcript_path }
+      return next(e)
+    }
     if (port === undefined || !isSheetChosen()) {
       return next(e)
     }
