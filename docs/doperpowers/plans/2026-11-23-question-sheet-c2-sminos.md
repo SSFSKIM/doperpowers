@@ -2317,6 +2317,26 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   done.` draws that; one whose first line is `Outcome not known yet.`
   draws `outcome not known` and no id, and is not matched to the notice
   that followed.
+- The question line's sentence, one definition for both surfaces (the
+  composite's writer's ruling of 2026-11-24; C3 holds the same). A
+  sentence ends (a) at a line break; (b) at a run of `.`, `?`, `!`, with
+  any closing quotes or brackets after it kept, only where whitespace or
+  the text's end follows (so `v1.2` and `file.txt` end none); (c) at a
+  run of the full-width marks `。？！`, closing quotes or brackets kept,
+  whatever follows. A sentence asks when its ending run holds `?` or
+  `？`. The line is the first sentence that asks, else the first
+  sentence; sentences are trimmed and empty ones dropped; an empty text
+  gives an empty line. As a pattern,
+  `/(?:[.?!]+["'”’)\]]*(?=\s|$)|[。？！]+["'”’)\]」』）]*)/g` over each
+  line of `text.split(/\r?\n/)`, a line's remainder after its last match
+  being a sentence that does not ask. The tests hold these, as written:
+  `"We ship Friday. Keep the earlier sailing?"` → `"Keep the earlier
+  sailing?"`; `"Use v1.2 or v2.0?"` → the whole text; `"Pick one"` →
+  `"Pick one"`; `"First line\nWhich one?"` → `"Which one?"`; `He said
+  "go?" Then left.` → `He said "go?"`; `"배포할까요？다음 주에 합니다。"` →
+  `"배포할까요？"`; `"Statement。Question？rest"` → `"Question？"`;
+  `"What?! Really."` → `"What?!"`; `"No marks here\nSecond line."` → `"No
+  marks here"`; `"e.g. this?"` → `"this?"`; `""` → `""`.
 - Where a receipt comes from (the same ruling). While the record lives,
   from the view's `closed`. For a question the view does not hold (a
   session with no record: a fork, a record removed; one older than the
