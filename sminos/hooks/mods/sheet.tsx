@@ -170,8 +170,10 @@ type Gen = {
   transcript?: string
   /** The questions a subagent's ended notice has named. */
   named: Set<string>
-  /** Sends in flight, by agent: from the hand-over until the step their receipt orders (`landed` or `reroute`) answers. */
-  sending: Map<string, number>
+  /** The keys a send handed to a subagent, and to whom: owned by that agent from the hand-over until the step their receipt orders (`landed` or `reroute`) has answered, retries included. */
+  sentTo: Map<string, string>
+  /** The record's answered count when the idle route last failed: a count past it is a fresh answer, wherever the view lists it. */
+  idleFailedAt?: number
 }
 
 /**
@@ -256,7 +258,7 @@ const newGen = (session: string): Gen => ({
   isContextOwed: false,
   isStartRouted: false,
   named: new Set(),
-  sending: new Map(),
+  sentTo: new Map(),
 })
 
 let sheet: Sheet = fresh()
@@ -313,7 +315,7 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
   const own = isRecord(event.call) ? event.call.callId : undefined
   const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
-  if (running === undefined && (hasSubagent(gen.held) || gen.sending.size > 0)) {
+  if (running === undefined && (hasSubagent(gen.held) || gen.sentTo.size > 0)) {
     running = await runningAgents(port, gen).catch(() => undefined)
   }
   const full = {
@@ -345,14 +347,14 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
 
 /**
  * The subagents a step may leave an outcome with: running as the engine
- * lists them and not stopped since, and any a send to is in flight, until
- * its receipt's step answers, so the `agents` rule does not take a key back
- * for the main conversation while a send may still deliver it (MAWS reads
- * the record meanwhile).
+ * lists them and not stopped since, and any that owns a key a send handed
+ * it, until its receipt's step has answered, so the `agents` rule does not
+ * take a key back for the main conversation while a send may still deliver
+ * it (MAWS reads the record meanwhile).
  */
 async function runningAgents(port: Port, gen: Gen): Promise<string[]> {
   const listed = (await port.agents()).filter((agent) => RUNNING.has(agent.status) && !sheet.stopped.has(agent.id)).map((agent) => agent.id)
-  return [...new Set([...listed, ...gen.sending.keys()])]
+  return [...new Set([...listed, ...gen.sentTo.values()])]
 }
 
 /**
@@ -565,7 +567,7 @@ function deliver(port: Port, gen: Gen) {
   }
   if (isTerminal() && sheet.mainTurn === undefined) {
     const envelope = readyFor(gen, 'main')
-    if (envelope !== undefined && envelope.wakes && envelope.keys.some((key) => !gen.noIdle.has(key) && isWaking(gen.held, key))) {
+    if (envelope !== undefined && envelope.wakes && hasFreshAnswer(gen, envelope)) {
       const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
       gen.flights.push(flight)
       port.after(() => void submitIdle(port, gen, flight))
@@ -589,6 +591,22 @@ function deliver(port: Port, gen: Gen) {
 function isWaking(view: View | undefined, key: string): boolean {
   const outcome = view?.pending.find((o) => o.key === key)
   return outcome === undefined || (outcome.kind === 'answer' && !outcome.acrossStop)
+}
+
+/**
+ * Whether the main conversation has an answer the idle route has not failed
+ * on: in its ready envelope, or anywhere the view lists as pending (the
+ * envelope packs the failed work first, and may be full of it), or, past
+ * what the view lists, an answer the record accepted since the last failure.
+ * Failed work alone never opens the route again.
+ */
+function hasFreshAnswer(gen: Gen, envelope: Envelope): boolean {
+  const view = gen.held
+  const fresh = (key: string) => !gen.noIdle.has(key) && isWaking(view, key)
+  if (envelope.keys.some(fresh)) return true
+  if (view === undefined) return false
+  if (view.pending.some((o) => o.recipient === 'main' && fresh(o.key))) return true
+  return view.pendingCount > view.pending.length && gen.idleFailedAt !== undefined && view.answeredCount > gen.idleFailedAt
 }
 
 /** A reservation the hop finds no longer good: let go, nothing failed; the routes open again for what it held. */
@@ -655,7 +673,8 @@ function turnOf(flight: Flight) {
  * delivered, or a rejection, reroutes it to the main conversation. At the
  * hop the reservation must still be good: the generation current, the agent
  * not stopped since (a send would resume it). From the hand-over until its
- * receipt's step answers, every step passes the agent as running.
+ * receipt's step has answered (a retry at a check included), every step
+ * passes the agent as running.
  */
 async function sendTo(port: Port, gen: Gen, flight: Flight) {
   const agentId = flight.agentId as string
@@ -668,26 +687,20 @@ async function sendTo(port: Port, gen: Gen, flight: Flight) {
     return
   }
   flight.handed = true
-  gen.sending.set(agentId, (gen.sending.get(agentId) ?? 0) + 1)
+  flight.keys.forEach((key) => gen.sentTo.set(key, agentId))
+  let sent: { isDelivered: boolean; reason?: string }
   try {
-    let sent: { isDelivered: boolean; reason?: string }
-    try {
-      sent = await port.send(agentId, flight.text)
-    } catch (error) {
-      sent = { isDelivered: false, reason: message(error) }
-    }
-    gen.flights = gen.flights.filter((other) => other !== flight)
-    flight.keys.forEach((key) => gen.landing.add(key))
-    if (sent.isDelivered) {
-      await orderKeys(port, gen, 'landed', flight.keys)
-    } else {
-      port.log(`sheet: a send to the subagent ${agentId} was not delivered (${sent.reason ?? 'no reason'}); its answers go to the main conversation`)
-      await orderKeys(port, gen, 'reroute', flight.keys)
-    }
-  } finally {
-    const left = (gen.sending.get(agentId) ?? 1) - 1
-    if (left > 0) gen.sending.set(agentId, left)
-    else gen.sending.delete(agentId)
+    sent = await port.send(agentId, flight.text)
+  } catch (error) {
+    sent = { isDelivered: false, reason: message(error) }
+  }
+  gen.flights = gen.flights.filter((other) => other !== flight)
+  flight.keys.forEach((key) => gen.landing.add(key))
+  if (sent.isDelivered) {
+    await orderKeys(port, gen, 'landed', flight.keys)
+  } else {
+    port.log(`sheet: a send to the subagent ${agentId} was not delivered (${sent.reason ?? 'no reason'}); its answers go to the main conversation`)
+    await orderKeys(port, gen, 'reroute', flight.keys)
   }
 }
 
@@ -709,6 +722,7 @@ function failFlight(port: Port, gen: Gen, flight: Flight, why: string) {
 function missed(port: Port, gen: Gen, route: Flight['route'], keys: readonly string[], why: string) {
   if (route === 'idle') {
     keys.forEach((key) => gen.noIdle.add(key))
+    gen.idleFailedAt = gen.held?.answeredCount
   }
   port.log(`sheet: an envelope's ${route} route failed (${why}); ${keys.length} answers wait for the next route`)
   if (gen === current()) {
@@ -733,6 +747,7 @@ function land(port: Port, gen: Gen, keys: readonly string[]) {
 /** A `landed` or `reroute` step for keys, 200 an event (I5); with no answer, owed to the next check. */
 async function orderKeys(port: Port, gen: Gen, event: 'landed' | 'reroute', keys: readonly string[]) {
   const owed = event === 'landed' ? gen.landOwed : gen.rerouteOwed
+  const released = new Set<string>()
   for (let i = 0; i < keys.length; i += EVENT_KEYS) {
     const chunk = keys.slice(i, i + EVENT_KEYS)
     const answer = await step(port, gen, { event, keys: chunk })
@@ -741,11 +756,22 @@ async function orderKeys(port: Port, gen: Gen, event: 'landed' | 'reroute', keys
         owed.delete(key)
         gen.landing.delete(key)
         if (event === 'landed') gen.noIdle.delete(key)
+        const owner = gen.sentTo.get(key)
+        if (owner !== undefined) {
+          gen.sentTo.delete(key)
+          released.add(owner)
+        }
       })
       if (event === 'landed' && gen === current()) port.redraw()
     } else {
       chunk.forEach((key) => owed.add(key))
     }
+  }
+  // An agent that no longer owns a key and has stopped: what was left with it while it did (answers drained
+  // meanwhile) goes to the main conversation by a drain, whose `agents` no longer name it.
+  const owners = new Set(gen.sentTo.values())
+  if ([...released].some((agent) => !owners.has(agent) && sheet.stopped.has(agent)) && isStarted(gen)) {
+    void drain(port, gen)
   }
   deliver(port, gen)
 }
@@ -858,9 +884,10 @@ async function afterStart(port: Port, gen: Gen, answer: Extract<Answer, { ok: tr
   if (start === undefined || start.beforeCount === 0 || gen.transcript === undefined || !isTerminal()) {
     return answer.effects.context
   }
-  const found = await searchLanded(port, gen.transcript)
-  // When `before` lists every key pending, a key it does not list was not pending: landing it would do nothing.
-  const keys = start.beforeCount <= start.before.length ? found.filter((key) => start.before.includes(key)) : found
+  // When `before` lists every key pending, a key it does not list was not pending: the search prints those alone.
+  const isComplete = start.beforeCount <= start.before.length
+  const found = await searchLanded(port, gen.transcript, isComplete ? start.before : [])
+  const keys = isComplete ? found.filter((key) => start.before.includes(key)) : found
   if (keys.length === 0) {
     return answer.effects.context
   }
@@ -871,9 +898,9 @@ async function afterStart(port: Port, gen: Gen, answer: Extract<Answer, { ok: tr
 }
 
 /** The keys of the envelopes the transcript holds in rows of the routes' kinds: one perl pass printing each row's kind and keys, newest first. */
-async function searchLanded(port: Port, transcript: string): Promise<string[]> {
+async function searchLanded(port: Port, transcript: string, only: readonly string[]): Promise<string[]> {
   try {
-    const search = await port.exec(landedSearchArgs(transcript))
+    const search = await port.exec(landedSearchArgs(transcript, only))
     if (search.exitCode === 1) return []
     if (search.exitCode !== 0) {
       port.log(`sheet: the transcript's search for delivered envelopes exited ${search.exitCode}; nothing is taken as landed`)
@@ -1042,7 +1069,7 @@ export async function askCall(port: Port, e: Record<string, unknown>): Promise<{
   const view = gen.held
   const floor = view === undefined || view.nextId === 1 ? await floorNow(port, gen) : undefined
   // The running agents as the call is ordered, after its staging (a capture can be slow).
-  const running = agentId !== undefined || hasSubagent(view) || gen.sending.size > 0 ? await runningAgents(port, gen).catch(() => undefined) : undefined
+  const running = agentId !== undefined || hasSubagent(view) || gen.sentTo.size > 0 ? await runningAgents(port, gen).catch(() => undefined) : undefined
   const first = await step(port, gen, { event: 'call', call: { callId, ...(floor !== undefined && { floor }) } }, running)
   if (first.ok) {
     return outcomeOf(port, gen, callId, first.effects, 'a settle foreclosed it', call)

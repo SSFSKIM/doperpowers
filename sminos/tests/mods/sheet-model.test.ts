@@ -467,6 +467,16 @@ describe('the block (I7) and the rows that land one (I9)', () => {
     expect(isRouteRow({ door: 'delivery', origin: { kind: 'plugin', name: 'sminos' } })).toBe(false)
   })
 
+  test("this plugin's idle prompt names its envelope's ids for the floor with notices above it, each notice read as its own item", async () => {
+    const own = envelope(['k1'], ['q42'])
+    const ended = '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.'
+    expect(floorOfSheetText(own)).toBe(42)
+    expect(floorOfSheetText(`${ended}\n\n${own}`)).toBe(42)
+    expect(floorOfSheetText(`[sheet v1] Your earlier call (toolu_9) did change the sheet: Added q50.\n\n${ended}\n\n${own}`)).toBe(50)
+    // A line quoting a notice with no blank line after it is no notice: the text is no item.
+    expect(floorOfSheetText(`${ended}\n${own}`)).toBe(0)
+  })
+
   test("a start's search evidence: each line a route's kind and its keys; anything else, a cut line included, names none", async () => {
     expect(
       searchedKeys([
@@ -483,6 +493,9 @@ describe('the block (I7) and the rows that land one (I9)', () => {
   test("the keys the conversation holds are a route's: a context of tool.call or prompt.submit behind the engine's prefix (in a tool result too), this plugin's prompt; never a bare block a human or a tool's output quotes, nor the model's own text", async () => {
     const text = envelope(['k1'], ['q1'])
     const reminder = (hook: string) => `<system-reminder>\n${hook} hook additional context: ${text}\n</system-reminder>`
+    // The forms 2.1.331 gives (M4's probe): the result route's context appended to the tool result's text after its
+    // output, the prompt route's a text block of its own, the idle prompt a text block behind the frame.
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: `1\tfirst line\n\n${reminder('tool.call')}\n\n<system-reminder>\n<total_tokens>1 tokens left</total_tokens>\n</system-reminder>` }] }])]).toEqual(['k1'])
     expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: 'output' }, { type: 'text', text: reminder('tool.call') }] }] }])]).toEqual(['k1'])
     expect([...heldKeys([{ role: 'user', content: [{ type: 'text', text: reminder('prompt.submit') }] }])]).toEqual(['k1'])
     expect([...heldKeys([{ role: 'system', content: `tool.call hook additional context: ${text}` }])]).toEqual(['k1'])

@@ -1561,6 +1561,42 @@ class RemoveDetachesTheStagingFirst(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(sheet.staging_dir(SESSION), "toolu_x")), "the staging is back")
         self.assertEqual(self.leftovers(), [])
 
+    def test_a_record_directory_that_is_a_link_is_refused_with_every_path_left(self):
+        rec = sheet.record_dir(SESSION)
+        other = tempfile.mkdtemp(prefix="other-record.")
+        self.addCleanup(shutil.rmtree, other, True)
+        moved = os.path.join(other, "record")
+        shutil.move(rec, moved)
+        os.symlink(moved, rec)
+        held = sorted(os.listdir(moved))
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()) as err:
+            sheet.remove(SESSION, cleared=True)
+        self.assertEqual(e.exception.code, 1)
+        self.assertIn("is not a directory; nothing removed", err.getvalue())
+        self.assertTrue(os.path.islink(rec))
+        self.assertEqual(sorted(os.listdir(moved)), held)
+        self.assertTrue(os.path.isdir(os.path.join(sheet.staging_dir(SESSION), "toolu_x")), "the staging stays")
+        self.assertEqual(self.leftovers(), [])
+
+    def test_a_record_holding_a_link_is_removed_and_what_the_link_names_is_not(self):
+        outside = tempfile.mkdtemp(prefix="outside.")
+        self.addCleanup(shutil.rmtree, outside, True)
+        target = os.path.join(outside, "elsewhere.jsonl")
+        with open(target, "wb") as f:
+            f.write(b"not the record's\n")
+        os.makedirs(os.path.join(outside, "refs"))
+        with open(os.path.join(outside, "refs", "kept"), "wb") as f:
+            f.write(b"kept")
+        rec = sheet.record_dir(SESSION)
+        os.unlink(os.path.join(rec, "inbox.jsonl"))
+        os.symlink(target, os.path.join(rec, "inbox.jsonl"))
+        os.symlink(os.path.join(outside, "refs"), os.path.join(rec, "refs"))
+        sheet.remove(SESSION, cleared=True)
+        self.assertFalse(os.path.lexists(rec))
+        with open(target, "rb") as f:
+            self.assertEqual(f.read(), b"not the record's\n")
+        self.assertEqual(os.listdir(os.path.join(outside, "refs")), ["kept"])
+
     def test_the_next_remove_deletes_what_an_earlier_one_left(self):
         root = os.path.join(self.home, "sheet")
         old = os.path.join(root, ".removed-%d-%s" % (int(datetime.datetime.now().timestamp()) - 120, "a" * 32))

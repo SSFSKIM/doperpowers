@@ -241,6 +241,9 @@ const newer = [
   contextRow('SessionStart', 'session-1'),
   // Two keys for one answered entry: no block.
   contextRow('tool.call', 'bad,worse'),
+  // This plugin's row whose stored content a hook beneath stripped of the block: its submission's record still holds
+  // it, which the model never read.
+  JSON.stringify({ type: 'user', origin: { kind: 'plugin', name: 'sminos' }, pluginPrompt: { name: 'sminos', text: \`\${head}\\n\${blockOf('stripped-1', 'q4')}\` }, message: { role: 'user', content: 'The sminos plugin sent a message:\\n[sheet v1] (rewritten)' } }),
   JSON.stringify({ type: 'user', origin: { kind: 'plugin', name: 'sminos' }, pluginPrompt: { name: 'sminos', text: envelopeText }, message: { role: 'user', content: \`The sminos plugin sent a message:\\n\${envelopeText}\\n\\nThis is how Claude Code surfaces a prompt a plugin submits between turns.\` } }),
 ]
 writeFileSync('$work/big.jsonl', [...olds, ...newer].join('\n') + '\n')
@@ -251,7 +254,10 @@ const allFound = searchedKeys(evidenceLines)
 check('the transcript searched is past 4 MiB of older matches', bigSize > 4 * 1024 * 1024, bigSize)
 check('the newest row is the first line, its kind and keys', evidenceLines[0] === '{"keys":["recent-1"],"kind":"plugin"}', evidenceLines.slice(0, 3))
 check('a key is printed once, at its newest row', evidenceLines[1] === '{"keys":["old-0"],"kind":"tool.call"}' && allFound.filter((k) => k === 'old-0').length === 1 && allFound.length === 12_001, [evidenceLines[1], allFound.length])
-check("a human's quote, another hook's context and an invalid block name nothing", !['quoted-1', 'session-1', 'bad', 'worse'].some((k) => allFound.includes(k)), allFound.slice(0, 5))
+check("a human's quote, another hook's context, an invalid block and a submission's record the stored content lost name nothing", !['quoted-1', 'session-1', 'bad', 'worse', 'stripped-1'].some((k) => allFound.includes(k)), allFound.slice(0, 5))
+const onlyArgs = landedSearchArgs('$work/big.jsonl', ['old-7', 'recent-1', 'never-1'])
+const onlyLines = execFileSync(onlyArgs[0] as string, onlyArgs.slice(1), { encoding: 'utf8' }).split('\n').filter((l) => l !== '')
+check("given the start's complete \`before\`, the search prints those keys alone", JSON.stringify(searchedKeys(onlyLines)) === '["recent-1","old-7"]' && onlyLines.length === 2, onlyLines)
 const cut = evidence.slice(0, 4096)
 check('an output cut short still holds the newest rows', searchedKeys(cut.split('\n').slice(0, -1)).slice(0, 2).join() === 'recent-1,old-0', cut.slice(0, 120))
 check('the evidence is compact: a small part of what it searched', evidence.length < bigSize / 10, [evidence.length, bigSize])

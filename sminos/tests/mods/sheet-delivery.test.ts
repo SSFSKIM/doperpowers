@@ -240,6 +240,23 @@ describe('a flight that fails (I9)', () => {
     }
   })
 
+  test('a fresh answer wakes the session though a full envelope of failed work hides it: failed work alone does not', async () => {
+    const rec = record([], { per: 2 })
+    const h = await started(rec, { submit: () => ({ drop: 'a hook said no' }) })
+    await answered(h, rec, out('k1', 'q1'), out('k2', 'q2'))
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    await answered(h, rec, out('d1', 'q4', { kind: 'dismiss' }))
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    await answered(h, rec, out('k3', 'q3'))
+    expect(rec.envelope('main')?.keys).toEqual(['k1', 'k2'])
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+  })
+
   test("at a turn's end only a route's framing counts: a human's prompt quoting the block lands nothing; a context holding part of the batch lands that part, the rest ready again", async () => {
     const rec = record()
     const h = await started(rec)
@@ -535,7 +552,8 @@ describe('a start (I9, I10)', () => {
     const answered = (await h.classicStart('resume')) as { additionalContext?: string[] }
     expect(searched).toHaveLength(1)
     expect(searched[0]?.slice(0, 3)).toEqual(['perl', '-MJSON::PP', '-e'])
-    expect(searched[0]?.slice(4)).toEqual(['--', `/t/${S1}.jsonl`])
+    // `before` lists every key pending: the search prints those keys alone.
+    expect(searched[0]?.slice(4)).toEqual(['--', `/t/${S1}.jsonl`, 'k1', 'k2'])
     expect(h.steps.map((s) => s.event)).toEqual(['start', 'landed', 'start'])
     expect(h.steps[2]?.start).toEqual(h.steps[0]?.start)
     expect(steps(h, 'landed')[0]?.keys).toEqual(['k1'])
@@ -573,7 +591,7 @@ describe('a start (I9, I10)', () => {
     const reloaded = sheetOn({ kept: first.kept, step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
     await reloaded.start()
     await reloaded.settle()
-    expect(searched.map((argv) => argv.at(-1))).toEqual([`/t/${S1}.jsonl`])
+    expect(searched.map((argv) => argv.slice(4))).toEqual([['--', `/t/${S1}.jsonl`, 'k1', 'k2']])
     expect(steps(reloaded, 'landed').map((s) => s.keys)).toEqual([['k1']])
     await reloaded.turnStart('t1')
     expect(contextOf(await reloaded.call('Read', {}))).toEqual([envelopeOf([out('k2', 'q2', { acrossStop: true })], 'main'), expect.stringMatching(/^\[sheet v1\] context \d+: k2$/)])
@@ -819,5 +837,47 @@ describe('subagents (§6, I9)', () => {
       '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.',
       '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q6 "And the tests?". Their answers will come to you; withdraw what you no longer need.',
     ])
+  })
+
+  test("a send's receipt with no answer keeps the agent owning its key: a drain meanwhile passes it as running, until the retry lands it", async () => {
+    let fails = true
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1], step: (event, n) => (event.event === 'landed' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
+    await answered(h, rec, out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    await h.hop()
+    await h.settle()
+    expect(h.sends).toHaveLength(1)
+    expect(steps(h, 'landed')).toHaveLength(1)
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    expect(steps(h, 'drain').at(-1)?.agents).toEqual({ running: ['a1'], direct: true })
+    expect(rec.pending.map((o) => o.recipient)).toEqual([{ agentId: 'a1' }])
+    fails = false
+    await h.tick()
+    expect(rec.pending).toEqual([])
+    await sheetNudge([])
+    await h.settle()
+    expect(steps(h, 'drain').at(-1)?.agents).toEqual({ running: [], direct: true })
+  })
+
+  test('an answer accepted for a stopped agent while it still owns a sent key goes to the main conversation once its receipt lands', async () => {
+    let receipt: (value: unknown) => void = () => {}
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open })
+    const h = await started(rec, { agents: [A1], send: () => new Promise((resolve) => (receipt = resolve)) })
+    await answered(h, rec, out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    await h.hop()
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    await answered(h, rec, out('k2', 'q2', { recipient: { agentId: 'a1' } }))
+    expect(rec.pending.map((o) => [o.key, o.recipient])).toEqual([['k1', { agentId: 'a1' }], ['k2', { agentId: 'a1' }]])
+    receipt({ isDelivered: true })
+    await h.settle()
+    expect(rec.pending.map((o) => [o.key, o.recipient])).toEqual([['k2', 'main']])
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    expect(h.submits[0]).toContain('"keys":["k2"]')
+    expect(h.sends).toHaveLength(1)
   })
 })

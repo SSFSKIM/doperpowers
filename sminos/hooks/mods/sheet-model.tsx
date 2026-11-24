@@ -608,6 +608,11 @@ const EMPTY_START = / New ids start at q([1-9][0-9]{0,8})\.$/
 const ENVELOPE_HEADS = ['[sheet v1] The human answered questions on your sheet.', '[sheet v1] The human dismissed questions on your sheet; no answer will come for them.']
 const BLOCK_LINE = /^<sheet-delivery>(.*)<\/sheet-delivery>$/
 const NOTICE = /^\[sheet v1\] Your earlier call \([^)\n]*\) did change the sheet: (.*)$/
+/** The other notices, each one line (a question's text is a JSON string there): what the idle prompt may hold above its envelope. */
+const OTHER_NOTICES = [
+  /^\[sheet v1\] Your earlier call \([^)\n]*\) changed nothing; call again if you still need it\.$/,
+  /^\[sheet v1\] The subagent .* \([^)\n]*\) ended with questions still open on your sheet: .*\. Their answers will come to you; withdraw what you no longer need\.$/,
+]
 /** A subagent's envelope opens with this line, before its head (M2's step). */
 const SUBAGENT_OPENING = 'From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet.'
 /** A hook's context as a conversation holds it: the engine's own prefix (C0's P5), in a reminder or bare. */
@@ -641,7 +646,21 @@ export function floorOfResult(text: string): number {
  * another's is not read: a miss, never an id invented. 0 for none.
  */
 export function floorOfSheetText(text: string): number {
-  const lines = text.replace(/\n<\/system-reminder>\s*$/, '').replace(/\s+$/, '').split('\n')
+  const all = text.replace(/\n<\/system-reminder>\s*$/, '').replace(/\s+$/, '').split('\n')
+  // This plugin's idle prompt puts the notices waiting above its envelope, each a line and a blank one after it
+  // (I9): each is read as the item it is, and the envelope below them as its own.
+  let floor = 0
+  let at = 0
+  while (at < all.length - 2 && all[at + 1] === '' && (NOTICE.test(all[at] ?? '') || OTHER_NOTICES.some((re) => re.test(all[at] ?? '')))) {
+    floor = Math.max(floor, floorOfItemText(all[at] as string))
+    at += 2
+  }
+  return Math.max(floor, floorOfItemText(all.slice(at).join('\n')))
+}
+
+/** The floor of one item the sheet put there, read by its place (`floorOfSheetText`). */
+function floorOfItemText(text: string): number {
+  const lines = text.split('\n')
   const first = lines[0] ?? ''
   const last = lines[lines.length - 1] ?? ''
   if (first.startsWith(START_HEAD)) {
@@ -887,19 +906,23 @@ export function contentTexts(content: unknown): string[] {
  * `blocksOf` reads it), a line `{"kind":…,"keys":[…]}`, newest row first,
  * each key once (at its newest row). A row of a route's kind: an attachment
  * of type `hook_additional_context` whose `hookName` is `tool.call` or
- * `prompt.submit`, or a user row whose origin is this plugin's prompt; told
- * by what the stored row holds, which says less of authorship than the live
+ * `prompt.submit`, or a user row whose origin is this plugin's prompt, its
+ * keys read from the content the model was given only (never the
+ * submission's `pluginPrompt` record, which a hook beneath does not
+ * rewrite); told by what the stored row holds, which says less of authorship than the live
  * event did (U13). Only lines holding the block's tag are decoded. Perl
  * (JSON::PP is core), one pass; its exit code is grep's: 0 found, 1 none,
- * 2 unreadable. Newest first, so an output cut at its bound keeps the rows
- * most likely still pending and loses only the oldest.
+ * 2 unreadable. Given `only` (the keys a start's `before` lists, when it
+ * lists every key pending), it prints those keys alone, at most 200: no cut
+ * can drop one. Otherwise newest first, so an output cut at its bound keeps
+ * the rows most likely still pending and loses only the oldest.
  */
-export function landedSearchArgs(path: string): string[] {
-  return ['perl', '-MJSON::PP', '-e', LANDED_SEARCH, '--', path]
+export function landedSearchArgs(path: string, only: readonly string[] = []): string[] {
+  return ['perl', '-MJSON::PP', '-e', LANDED_SEARCH, '--', path, ...only]
 }
 
 const LANDED_SEARCH = [
-  'binmode STDOUT; my $path = pop @ARGV; open(my $fh, "<:raw", $path) or exit 2;',
+  'binmode STDOUT; my $path = shift @ARGV; my %only = map { $_ => 1 } @ARGV; open(my $fh, "<:raw", $path) or exit 2;',
   'my $json = JSON::PP->new->utf8; my $text = JSON::PP->new->utf8(0); my @rows;',
   'sub strs { my ($c) = @_; return ref $c eq "ARRAY" ? (grep { defined $_ && !ref $_ } @$c) : (defined $c && !ref $c) ? ($c) : () }',
   'sub texts { my ($c) = @_; return ($c) if defined $c && !ref $c; return () unless ref $c eq "ARRAY";',
@@ -910,8 +933,8 @@ const LANDED_SEARCH = [
   '  next unless @k == @{$b->{keys}} && @k >= 1 && @k <= 200 && @k == $n; push @keys, @k } } return @keys }',
   'while (my $line = <$fh>) { next if index($line, "<sheet-delivery>") < 0; my $row = eval { $json->decode($line) }; next unless ref $row eq "HASH"; my ($kind, @t); my $type = $row->{type} // "";',
   '  if ($type eq "attachment" && ref $row->{attachment} eq "HASH") { my $a = $row->{attachment}; next unless ($a->{type} // "") eq "hook_additional_context"; $kind = $a->{hookName} // ""; next unless $kind eq "tool.call" || $kind eq "prompt.submit"; @t = strs($a->{content}) }',
-  '  elsif ($type eq "user" && ref $row->{origin} eq "HASH" && ($row->{origin}{kind} // "") eq "plugin" && ($row->{origin}{name} // "") eq "sminos") { $kind = "plugin"; @t = ((ref $row->{pluginPrompt} eq "HASH" ? strs($row->{pluginPrompt}{text}) : ()), (ref $row->{message} eq "HASH" ? texts($row->{message}{content}) : ())) }',
-  '  else { next } my @k = keys_of(@t); push @rows, [$kind, [@k]] if @k }',
+  '  elsif ($type eq "user" && ref $row->{origin} eq "HASH" && ($row->{origin}{kind} // "") eq "plugin" && ($row->{origin}{name} // "") eq "sminos") { $kind = "plugin"; @t = ref $row->{message} eq "HASH" ? texts($row->{message}{content}) : () }',
+  '  else { next } my @k = grep { !%only || $only{$_} } keys_of(@t); push @rows, [$kind, [@k]] if @k }',
   'my $out = JSON::PP->new->utf8->canonical; my %seen; for my $r (reverse @rows) { my @k = grep { !$seen{$_}++ } @{$r->[1]}; print $out->encode({ kind => $r->[0], keys => [@k] }), "\\n" if @k } exit(@rows ? 0 : 1);',
 ].join('\n')
 
@@ -939,17 +962,22 @@ export function searchedKeys(lines: readonly string[]): string[] {
 }
 
 /**
- * A route's text as the conversation the model holds renders it (the api
- * form, which keeps no origin): a hook's context of `tool.call` or
- * `prompt.submit` behind the engine's prefix (bare, or in a reminder), or
- * this plugin's prompt behind its frame; read from the start of an item (a
- * text block, or a text block inside a tool result), as the floor reads it.
- * A human's prompt or a tool's output that quotes a block is no route's.
+ * A route's texts as the conversation the model holds renders it (the api
+ * form, which keeps no origin; 2.1.331, M4's probe of each route): a hook's
+ * context of `tool.call` or `prompt.submit` in the engine's reminder,
+ * `<system-reminder>\n<hook> hook additional context: <entries>\n</system-reminder>`
+ * (the result route's appended to the tool result's own text after its
+ * output, the prompt route's a text block of its own), the same prefix bare
+ * at an item's start (a stored system row), or this plugin's prompt behind
+ * its frame, a text block of its own. A human's prompt or a tool's output
+ * that quotes a block bare is no route's.
  */
-const ROUTE_CONTEXT = /^(?:<system-reminder>\n)?(?:tool\.call|prompt\.submit) hook additional context: /
-function routeText(text: string): string | undefined {
-  if (ROUTE_CONTEXT.test(text)) return text.replace(ROUTE_CONTEXT, '')
-  return text.startsWith(PLUGIN_PROMPT) ? sheetTextOf(text) : undefined
+const ROUTE_CONTEXT = /^(?:tool\.call|prompt\.submit) hook additional context: /
+const ROUTE_REMINDER = /<system-reminder>\n(?:tool\.call|prompt\.submit) hook additional context: ([\s\S]*?)\n<\/system-reminder>/g
+function routeTexts(text: string): string[] {
+  if (text.startsWith(PLUGIN_PROMPT)) return [sheetTextOf(text) as string]
+  if (ROUTE_CONTEXT.test(text)) return [text.replace(ROUTE_CONTEXT, '')]
+  return [...text.matchAll(ROUTE_REMINDER)].map((match) => match[1] as string)
 }
 
 /** The keys the conversation the model holds names in a block a route put there (`$.session.messages({ as: 'api' })`), on its human's side. */
@@ -957,7 +985,7 @@ export function heldKeys(api: readonly { role: string; content: unknown }[]): Se
   const items = api
     .filter((message) => message.role !== 'assistant')
     .flatMap((message) => [...textsOf(message.content), ...blocksIn(message.content, 'tool_result').flatMap((block) => textsOf(block.content))])
-  return new Set(keysIn(items.flatMap((text) => routeText(text) ?? [])))
+  return new Set(keysIn(items.flatMap(routeTexts)))
 }
 
 /**

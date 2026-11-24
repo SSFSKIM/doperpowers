@@ -613,8 +613,10 @@ and it holds a fresh answer (reserved at once, handed to the engine from a
 enters first takes the envelope instead), as context on the result of the
 model's next main-loop call, or as context on the next prompt that enters; a
 running subagent's goes by `$.session.send`, not to one that stopped, and
-one not delivered is rerouted to the main conversation; while a send is in
-flight every step passes its agent as running. An envelope lands when the
+one not delivered is rerouted to the main conversation; a key a send handed
+to a subagent stays that agent's (every step passes it as running) until
+the receipt's step has answered, and a drain then reroutes what a stopped
+agent was left. An envelope lands when the
 `session.append` hook finds its block in a row of those kinds as stored (a
 `landed` step, never awaited); one a turn ended without (a context a hook
 dropped) is looked for in the conversation at the end of the turn it belongs
@@ -624,7 +626,8 @@ the turn its own prompt opened. An idle prompt that did not land is not
 retried by itself; a fresh answer wakes the session and takes it along. A
 start searches the transcript for the blocks that landed while the session
 was stopped (`landedSearchArgs`: one perl pass printing each row's kind and
-keys, newest first), lands them, and returns the start's context (I10) as
+keys, newest first, only the keys the start lists as pending when it lists
+them all), lands them, and returns the start's context (I10) as
 the SessionStart's `additionalContext`; a compaction orders its own drain
 and returns its context the same way, and either goes on the next result or
 prompt route when no SessionStart could return it (a reload keeps what an

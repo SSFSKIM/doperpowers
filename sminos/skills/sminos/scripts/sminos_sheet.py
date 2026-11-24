@@ -1233,6 +1233,15 @@ def remove(session, cleared=False):
     try:
         with Lock(session):
             rec = record_dir(session)
+            # The record directory itself a link (or not a directory): refused before anything is detached, every
+            # path left as it was. A real one holding a link is removed: the removal unlinks the link, never what it
+            # points to (rmtree follows no link).
+            try:
+                is_dir = stat.S_ISDIR(os.lstat(rec).st_mode)
+            except FileNotFoundError:
+                is_dir = True
+            if not is_dir:
+                S.die("sheet remove: the record %s is not a directory; nothing removed" % rec, 1)
             if not os.path.isfile(os.path.join(rec, "state.json")):
                 S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
