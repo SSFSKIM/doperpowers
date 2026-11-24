@@ -65,6 +65,17 @@ class Reading(unittest.TestCase):
     def test_an_empty_value_is_no_summary(self):
         self.assertIsNone(sminos.answer_fields("Owns it.\ndoing: x\nmade:\nnext: y").summary)
 
+    def test_a_value_of_delimiters_alone_is_empty_and_a_name_in_them_is_kept(self):
+        self.assertIsNone(sminos.answer_fields("Owns it.\ndoing: x\nmade: ```\nnext: y").summary)
+        self.assertIsNone(sminos.answer_fields("Owns it.\ndoing: x\nmade: \"'`\nnext: y").summary)
+        self.assertEqual(sminos.answer_fields("Owns it.\ndoing: x\nmade: `a.py`\nnext: y").summary["made"], "a.py")
+
+    def test_text_beside_a_mark_on_its_line_is_not_read_into_the_marked_fields(self):
+        got = sminos.answer_fields("name: parser-owner<message>Owns the parser.\n%s</message>said after it" % THREE)
+        self.assertEqual(got, sminos.AnswerFields("Owns the parser.", "parser-owner", SUMMARY))
+        got = sminos.answer_fields("Owns the parser.<message>%s</message>and words after" % THREE)
+        self.assertEqual(got, sminos.AnswerFields("Owns the parser.", None, SUMMARY))
+
     def test_a_labelled_line_is_never_the_line(self):
         self.assertEqual(sminos.answer_fields("doing: x\nmade: y\nnext: z").line, "")
 
@@ -181,6 +192,12 @@ class Derive(Deriving):
 
     def test_the_line_marked_with_commentary_outside_the_marks(self):
         e = self.case("Here is my answer:\n<message>Owns the parser.\n%s</message>\nHope that helps." % THREE)
+        self.assertEqual((e["text"], e["summary"]), ("Owns the parser.", SUMMARY))
+
+    def test_a_mark_beside_unmarked_text_on_the_same_line(self):
+        e = self.case("name: parser-owner<message>%s</message>Owns the parser." % THREE, named="derived")
+        self.assertEqual((e["text"], e.get("name"), e["summary"]), ("Owns the parser.", "parser-owner", SUMMARY))
+        e = self.case("Owns the parser.<message>%s</message>and so on" % THREE)
         self.assertEqual((e["text"], e["summary"]), ("Owns the parser.", SUMMARY))
 
     def test_an_unmarked_answer_as_today(self):
@@ -351,6 +368,22 @@ class Who(Deriving):
         self.assertEqual(code, 0, out)
         self.assertIn("far#%s" % sid[:8], out, "the session is still said")
         self.assertNotIn("WITHDRAWN-SECRET", out)
+
+    def test_who_commit_naming_a_retired_withdrawn_successor_prints_no_summary_from_its_visible_predecessor(self):
+        before = self.remote(summary={**SUMMARY, "made": "PREDECESSOR-SECRET plans"})
+        after = self.remote(alias="far2")
+        sminos.log_append(self.p, "beta/%s" % before, "retired", session=before, reason="continued", to=after)
+        sminos.log_append(self.p, "beta/%s" % after, "retired", session=after, reason="retired")
+        sminos.forget_caches()
+        sha = self.commit("Sminos-Session: far2#%s (%s on beta)" % (after[:8], self.p.name))
+        code, out = self.cli("who", sha)
+        self.assertEqual(code, 0, out)
+        self.assertIn("PREDECESSOR-SECRET", out, "visible, the successor carries its predecessor's summary")
+        self.withdrawn(after)
+        code, out = self.cli("who", sha)
+        self.assertEqual(code, 0, out)
+        self.assertIn("far2#%s" % after[:8], out, "the session is still said")
+        self.assertNotIn("PREDECESSOR-SECRET", out)
 
 
 if __name__ == "__main__":

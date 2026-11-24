@@ -7235,8 +7235,12 @@ def summary_of(member, events, info):
     (`thread_sessions`), less any the log shows unlisted to this reader
     (unlisted_here, `info` the projection): a summary names paths, PRs and
     decisions, and a withdrawal of a session's view hides them, through a
-    session that continues it too, and in `who`'s history of a retired one.
+    session that continues it too, and in `who`'s history of a retired one,
+    whose row (who_matches, from the projection unfiltered) may be a
+    withdrawn session itself: that one shows none, its predecessors' neither.
     A later set line does not clear it; its age says how old it is."""
+    if member.session in info and unlisted_here(member.session, info[member.session]):
+        return None, ""
     visible = {x for x in (member.session,) + tuple(member.former) + tuple(member.thread_sessions)
                if x in info and not unlisted_here(x, info[x])}
     e = latest_across_writers([x for x in events if x["kind"] == "in-charge" and x.get("session") in visible
@@ -12666,10 +12670,10 @@ def answer_fields(text):
     An unmarked answer reads as before the summary: the line its first
     unlabelled line, the name its first `name:` line."""
     marked = [x for s in extract_marks(text) for x in sminos_marks.TAG.sub("", s["text"]).splitlines()]
-    whole = sminos_marks.TAG.sub("", text).splitlines()
+    unmarked = unmarked_text(text).splitlines()
 
     def first(test):
-        return next((x for x in marked if test(x)), None) or next((x for x in whole if test(x)), None)
+        return next((x for x in marked if test(x)), None) or next((x for x in unmarked if test(x)), None)
 
     def labelled(x):
         return NAME_LINE_RE.match(x) or SUMMARY_LINE_RE.match(x)
@@ -12690,6 +12694,28 @@ def answer_fields(text):
     return AnswerFields(line, name, summary if len(summary) == len(SUMMARY_LABELS) else None)
 
 
+def unmarked_text(text):
+    """The text of an answer outside its marks, as the mod reads them
+    (sminos_marks.tag_tokens; a stray closing tag is no boundary, an
+    unclosed mark runs to the end), each place a mark stood a line break:
+    words beside a mark on its line are a line of their own, never joined
+    to the marked text's first or last line."""
+    pieces, stack, last = [], [], 0
+    for token in sminos_marks.tag_tokens(text):
+        opening, name = token.group(1) == "", token.group(2)
+        if opening:
+            if not stack:
+                pieces.append(text[last:token.start()])
+            stack.append(name)
+        elif name in stack:   # a closing tag of no open mark is stray: no boundary
+            del stack[len(stack) - 1 - stack[::-1].index(name):]
+            if not stack:
+                last = token.end()
+    if not stack:
+        pieces.append(text[last:])
+    return sminos_marks.TAG.sub("", "\n".join(pieces))
+
+
 def unwrapped(value):
     """A summary value as the model wrote it, trimmed of whitespace and of
     the backticks or quotes it wrapped the whole value in: a pair at its
@@ -12698,7 +12724,7 @@ def unwrapped(value):
     value = value.strip()
     while len(value) >= 2 and value[0] == value[-1] and value[0] in "`'\"" and value[0] not in value[1:-1]:
         value = value[1:-1].strip()
-    return value
+    return "" if not value.strip("`'\"") else value   # delimiters alone are no value
 
 
 def answer_line(text):
