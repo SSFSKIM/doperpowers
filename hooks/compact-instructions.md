@@ -15,5 +15,8 @@ from the template, follow these.
   given after the reset.
 - Mark each claim [verified] when a tool result in this conversation showed it,
   or [assumed] / [unchecked] otherwise.
+- A restriction or standing instruction goes in with who set it and when, in
+  their words. One you cannot trace to the user is your own working rule: mark
+  it as yours, or leave it out.
 - The last section is required, not optional: the step in progress and the
   first thing to read or do after the reset.

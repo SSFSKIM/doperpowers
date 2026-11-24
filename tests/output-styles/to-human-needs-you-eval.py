@@ -58,6 +58,20 @@ judgments, decisions, calls":
                        the needs left plain were follow-ups ("tell me to
                        continue") or second decisions; no block; no stray
                        spans; clean and emphasis 0 spans
+Ask first (7.226.0), 2026-11-23, 3 reps: the rule now puts the need at the
+message's opening, `ask_opens` and `ask_late` say where a run's first
+bold-italic span fell, and `chars` how long its messages ran. Every
+scenario here is a short report of one task, where the need already opened
+the message, so these runs show no regression and cannot show the gain. The
+case for the change is the messages sessions sent from 2026-11-04 to 11-22:
+of 1,646 with a bold-italic span, the first span fell in the opening 200
+characters of 13% and past the midpoint of 60%.
+  7.225.1 control      the first span at the opening in 7 of 8 reports
+                       with one; about 1,300 characters a report
+  need first           7 of 7; about 1,220
+  need first, and the  7 of 7; about 1,260 (shipped). No arm had a stray
+  cold-reader          span or a block of its own; clean and emphasis 0
+  paragraph            spans
 """
 import argparse, importlib.util, json, re, sys, concurrent.futures as cf
 from pathlib import Path
@@ -222,6 +236,26 @@ Reply with only a JSON object: {"needs": [{"what": ..., "italic": true|false}], 
 </italics>"""
 
 
+LEAD_QUOTE = re.compile(r"\A(?:[ \t]*>.*(?:\n|\Z)|[ \t]*\n)+")
+
+
+def ask_position(msgs):
+    """Where the first bold-italic span falls in the first message that has one: 0.0 when it is in a leading
+    blockquote (the critical block) or in the first paragraph after it, else its offset as a share of the
+    message after that blockquote. None when no message has a span."""
+    for m in msgs:
+        prose = CODE.sub(lambda c: c.group(0).replace("*", "\x00").replace("_", "\x01"), m)
+        hit = MARKED.search(prose)
+        if not hit:
+            continue
+        lead = LEAD_QUOTE.match(prose)
+        cut = lead.end() if lead else 0
+        if hit.start() < cut or "\n\n" not in prose[cut:hit.start()]:
+            return 0.0
+        return (hit.start() - cut) / max(1, len(prose) - cut)
+    return None
+
+
 def judge(text, spans_found):
     resp = client.beta.messages.create(
         model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"}, system=CC_SYSTEM, betas=[CC_BETA],
@@ -241,13 +275,18 @@ def tally(results):
     counts = {}
     for x in results:
         c = counts.setdefault((x["scenario"], x["arm"]), {"runs": 0, "reported": 0, "block": 0, "italic_spans": 0,
-                                                          "stray_spans": 0, "needs": 0, "needs_italic": 0, "asked_again": 0})
+                                                          "stray_spans": 0, "needs": 0, "needs_italic": 0, "asked_again": 0,
+                                                          "ask_opens": 0, "ask_late": 0, "chars": 0})
         c["runs"] += 1
         if "error" in x or not x.get("messages") or not ended(x):
             continue
         c["reported"] += 1
         c["block"] += any(own_block(m) for m in x["messages"])
         c["italic_spans"] += len(x["italics"])
+        c["chars"] += sum(len(m) for m in x["messages"])
+        if (pos := ask_position(x["messages"])) is not None:
+            c["ask_opens"] += pos == 0.0
+            c["ask_late"] += pos > 0.5
         c["asked_again"] += any(b["type"] == "tool_use" and b["name"] == ASK for s in x["steps"] for b in s["blocks"])
         if (j := x.get("judged")) and "error" not in j:
             c["stray_spans"] += sum(not s for s in j.get("spans", []))

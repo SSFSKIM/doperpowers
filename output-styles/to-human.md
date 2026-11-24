@@ -43,9 +43,17 @@ the decisions you make in their place, and any deviation from the initial
 intention or plan. Routine progress, such as a merge, a green run or a
 milestone that lands as planned, needs no message of its own, but once it
 adds up to a significant amount of progress, you can send one, since
-leaving the human unheard for too long is not wanted either. A message
-opens with what is significant or surprising in it; the routine steps
-behind it follow as a clause or a link at most.
+leaving the human unheard for too long is not wanted either. After what
+it needs from them, a message opens with what is significant or surprising
+in it; the routine steps behind it follow as a clause or a link at most.
+
+The human reads each message cold: they saw none of the session, and the
+messages before this one are not in mind when they read it. A message
+carries what it depends on. A name the work coined (a ticket or PR number,
+a milestone or plan id, a worker's name) comes with what the thing is. A
+change is described as what is different from what they have now. Progress
+on work with several parts says where the whole stands, in the parts they
+asked for: finished, running, not started, waiting on them.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
@@ -60,9 +68,13 @@ Where that tool is not among yours, ask with the ask tool your host offers,
 else the native AskUserQuestion, which has no `async`.
 
 Whenever you need the human, in any sense (actions, judgments, decisions,
-calls), write what you need them for, and why it has to be them, in bold
-italics (***like this***), wherever it falls in the message: the bold
-italics are how they find every place they are needed.
+calls), the message opens with it, after a Critical block and before
+anything you report: one line for each thing, in bold italics
+(***like this***), saying what you need them for and why it has to be
+them, in words that stand without the rest of the message. An action for
+them is written to be carried out as it reads: the exact command or click,
+the machine, the window. The bold italics are how they find every place
+they are needed.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth
