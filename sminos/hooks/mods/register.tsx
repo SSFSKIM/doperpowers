@@ -5,7 +5,7 @@ import { registerAsk, registerAskBand } from './ask'
 import { registerBackticks } from './backticks'
 import { registerBridge } from './bridge'
 import { registerName } from './name'
-import { registerSheet } from './sheet'
+import { registerSheet, registerSheetBand } from './sheet'
 
 /**
  * The plugin's one hooks module: each mod registers its own hooks. The engine
@@ -23,6 +23,8 @@ export function register(on: On) {
   registerBridge(on)
   // Inside the bridge, so the bridge reports a refused call as the session saw it.
   registerBackticks(on)
+  // The sheet's line above the prompt, outside today's (which yields under the sheet).
+  registerSheetBand(on)
   registerAskBand(on)
   // Before the ask, so the sheet's hooks are the outer ones of each event: the
   // sheet handles what is its own and passes the rest on (sheet.tsx, I11).

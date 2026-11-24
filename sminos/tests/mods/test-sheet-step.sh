@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # The sheet mod against the real `sminos sheet step` (plan
-# docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M3 and M4): a
+# docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M3 to M5): a
 # start and calls staged by the mod's own code and ordered through the
 # command, in a scratch SMINOS_HOME; the transcript searches the floor and a
 # start's landing use, run for real; the envelopes the real composer packs,
 # taken by the mod's routes; the block's parser on every published envelope;
-# and the tool as registered, against C1's description and the published
-# schema.
+# the tool as registered, against C1's description and the published schema;
+# the result's parser on every published stored call; a resume's asks of
+# today's tool, read by the ask's own hook and imported by the real step; and
+# the registrations the band reads, against the command's reading.
 # The mods' own tests cannot reach a process or the repository's files; bun
 # runs the module directly, on a port of plain functions.
 set -euo pipefail
@@ -20,10 +22,11 @@ printf 'line one\nline two\nline three\n' > "$work/cwd/notes.txt"
 
 cat > "$work/check.ts" <<TS
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs, landedSearchArgs, searchedKeys } from '$root/hooks/mods/sheet-model.tsx'
+import { ASYNC_RESULT, registerAsk, yieldAsk } from '$root/hooks/mods/ask.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs, landedSearchArgs, parseResult, rowLines, searchedKeys, surfaceOf } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -116,6 +119,13 @@ const port: Port = {
   api: async () => [],
   redraw: () => {},
   toast: () => {},
+  list: async (path) => readdirSync(path),
+  now: async () => Date.now(),
+  wait: (ms) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const done = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))
+    return { done, cancel: () => clearTimeout(timer) }
+  },
 }
 const submitted: string[] = []
 const hops: (() => void)[] = []
@@ -287,6 +297,85 @@ check('the idle route waits for the hop', submitted.length === 0 && hops.length 
 hops.splice(0).forEach((fn) => fn())
 await new Promise((resolve) => setTimeout(resolve, 10))
 check('from the hop, the idle route submits that envelope', submitted.length === 1 && submitted[0] === fresh?.text, submitted.map((t) => t.slice(0, 80)))
+
+// M5: the result's parser on every published stored call (grammar/result.examples.json), and each draws a row.
+const examples = JSON.parse(readFileSync('$root/types/sheet/grammar/result.examples.json', 'utf8')) as { input: Record<string, unknown>; result: string; parsed: unknown }[]
+for (const [i, example] of examples.entries()) {
+  const parsed = parseResult(example.result)
+  check(\`the published stored call \${i + 1} parses as published\`, JSON.stringify(canonical(parsed)) === JSON.stringify(canonical(example.parsed)), [parsed, example.parsed])
+  check(\`the published stored call \${i + 1} draws its row\`, parsed !== undefined && rowLines(example.input, parsed, { delivered: new Map() }).length > 0)
+}
+
+// M5: a resume's open asks of today's tool. The ask's own SessionStart hook reads the transcript (yielded, it adopts
+// none), the sheet stages what it read, and the real step imports it once: an ask only today's tool accepts, kept as
+// it was asked. A read that was not definite imports nothing, and the next start does. A copy never imports.
+const askHooks: { event: string; handler: (...args: unknown[]) => unknown }[] = []
+registerAsk(((event: string, ...rest: unknown[]) => (askHooks.push({ event, handler: rest[rest.length - 1] as (...args: unknown[]) => unknown }), { catch: () => {} })) as never)
+yieldAsk()
+const askStart = askHooks.find((hook) => hook.event === 'classic.SessionStart')!.handler
+const askEngine = (isSearchFailing = false) => ({
+  fs: {
+    stat: async (path: string) => ({ size: isSearchFailing ? 5 * 1024 * 1024 : statSync(path).size }),
+    read: async (path: string) => readFileSync(path, 'utf8'),
+    exists: async (path: string) => existsSync(path),
+  },
+  process: { run: async () => ({ exitCode: 2, stdout: '', stderr: 'no', isStdoutTruncated: false }) },
+  ui: { log: () => {} },
+})
+const resumeWith = async (session: string, path: string, isSearchFailing = false) => {
+  await askStart(askEngine(isSearchFailing), { hook_event_name: 'SessionStart', source: 'resume', session_id: session, transcript_path: path, cwd: CWD }, async () => ({}))
+  return sheetForTests.sessionStarted(port, 'resume', session, path)
+}
+const wide = { question: \`\${'Which port should the dev server use, given everything above? '.repeat(40)}Which?\`, header: 'Port', multiSelect: false, options: [{ label: 'L'.repeat(201), description: 'a' }, { label: 'B', description: 'b' }] }
+writeFileSync('$work/today.jsonl', [
+  { type: 'assistant', timestamp: '2026-11-20T08:00:00.000Z', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_today1', name: 'mcp__sminos__AskUserQuestion', input: { questions: [wide], async: true } }] } },
+  { type: 'user', uuid: 'a2', parentUuid: 'a1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_today1', content: ASYNC_RESULT }] } },
+].map((row) => JSON.stringify(row)).join('\n') + '\n')
+const stateOf = (session: string) => JSON.parse(readFileSync(\`\${HOME}/sheet/\${session}/state.json\`, 'utf8'))
+const S4 = '5eed0000-0000-4000-8000-00000000c3b4'
+const told = await resumeWith(S4, '$work/today.jsonl')
+const s4 = stateOf(S4)
+const imported = s4.questions[0]
+check("a resume imports today's open ask, kept as it was asked", s4.questions.length === 1 && imported?.id === 'q1' && imported.question === wide.question && imported.options[0]?.label === wide.options[0]!.label && imported.askedAt === '2026-11-20T08:00:00.000Z' && JSON.stringify(imported.importedFrom) === '{"callId":"toolu_today1","index":0}' && JSON.stringify(s4.import.calls) === '{"toolu_today1":["q1"]}', s4.questions)
+check('and the start tells the agent', typeof told === 'string' && told.includes('Moved onto the sheet from the earlier question tool: q1'), told)
+for (const n of [2, 3]) {
+  await resumeWith(S4, '$work/today.jsonl')
+  const again = stateOf(S4)
+  check(\`once: after resume \${n} it is still the one question\`, again.questions.length === 1 && again.nextId === 2, again.questions.map((q: { id: string }) => q.id))
+}
+const S5 = '5eed0000-0000-4000-8000-00000000c3b5'
+await resumeWith(S5, '$work/today.jsonl', true)
+check('a read that was not definite imports nothing and records nothing', stateOf(S5).questions.length === 0 && JSON.stringify(stateOf(S5).import.calls) === '{}', stateOf(S5).import)
+await resumeWith(S5, '$work/today.jsonl')
+check('the next start reads again, and imports', stateOf(S5).questions.length === 1 && stateOf(S5).import.calls.toolu_today1?.[0] === 'q1', stateOf(S5).import)
+const S6 = '5eed0000-0000-4000-8000-00000000c3b6'
+await sheetForTests.sessionStarted(port, 'fork', S6, '$work/today.jsonl')
+await resumeWith(S6, '$work/today.jsonl')
+await resumeWith(S6, '$work/today.jsonl')
+check("a copy's sheet starts empty and stays empty", stateOf(S6).questions.length === 0 && stateOf(S6).import.never === true, stateOf(S6).import)
+
+// M5: the registrations the band reads between steps, against the command's own reading of them (I8): the same
+// surface, mawsd first, then by name; a temporary file, a half-written one and a stale one passed over.
+const surfaces = \`\${HOME}/sheet/surfaces\`
+mkdirSync(surfaces, { recursive: true })
+const beat = (ageMs: number) => new Date(Date.now() - ageMs).toISOString()
+const register = (file: string, name: string, ageMs: number, reach = 'local') =>
+  writeFileSync(\`\${surfaces}/\${file}\`, JSON.stringify({ v: 1, name, pid: process.pid, url: \`http://\${name}.localhost:47590/\`, reach, heartbeatAt: beat(ageMs) }))
+register('zeta.json', 'zeta', 1000)
+register('alpha.json', 'alpha', 1000)
+register('mawsd.json', 'mawsd', 1000)
+register('old.json', 'aaa', 60_000)
+register('.mawsd.tmp', 'aa', 1000)
+writeFileSync(\`\${surfaces}/half.json\`, '{"v":1,"na')
+const theirs = () => {
+  const listed = JSON.parse(sminos(['sheet', 'surfaces', '--json']).stdout).surfaces as { name: string; url: string; reach: string; alive: boolean }[]
+  const first = listed.find((r) => r.alive && r.reach === 'local')
+  return first === undefined ? null : { name: first.name, url: first.url, reach: first.reach }
+}
+const ours = () => surfaceOf(readdirSync(surfaces).map((file) => ({ file, text: readFileSync(\`\${surfaces}/\${file}\`, 'utf8') })), Date.now(), false)
+check("the band's reading is the command's: mawsd first", JSON.stringify(ours()) === JSON.stringify(theirs()) && ours()?.name === 'mawsd' && ours()?.url === 'http://mawsd.localhost:47590', [ours(), theirs()])
+rmSync(\`\${surfaces}/mawsd.json\`)
+check("the band's reading is the command's: then by name", JSON.stringify(ours()) === JSON.stringify(theirs()) && ours()?.name === 'alpha', [ours(), theirs()])
 
 process.exit(failed === 0 ? 0 : 1)
 TS

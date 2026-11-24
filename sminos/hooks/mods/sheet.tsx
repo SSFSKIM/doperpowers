@@ -1,7 +1,7 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
 import type { SheetKept } from '../../types/sminos'
-import { askChoiceMade, deferAskToChoice, yieldAsk } from './ask'
+import { askChoiceMade, asksReadWhileYielded, deferAskToChoice, yieldAsk } from './ask'
 import {
   DESCRIPTION,
   INPUT_SCHEMA,
@@ -11,10 +11,13 @@ import {
   WITHDRAWN,
   announcement,
   answerOf,
+  bandLine,
   capturedOf,
   checkRefusal,
   chooseStart,
   contentTexts,
+  deliveredIn,
+  deliveriesHeld,
   endedNotice,
   entryProblem,
   floorOfLines,
@@ -25,15 +28,20 @@ import {
   heldKeys,
   isNewer,
   isRouteRow,
+  isSheetCall,
   keysIn,
   landedSearchArgs,
   outcomeNotice,
+  parseResult,
   readInput,
+  resultTextOf,
+  rowLines,
   searchedKeys,
+  surfaceOf,
   unreadClause,
   validateCall,
 } from './sheet-model'
-import type { Asker, Effects, Probe, Recipient, Reference, Runner, SheetInput, StepAnswer, Verdict, View } from './sheet-model'
+import type { Asker, Delivered, Effects, Probe, Recipient, Reference, Runner, SheetInput, StepAnswer, Surface, Verdict, View } from './sheet-model'
 
 /**
  * The question sheet's mod (the plan
@@ -44,7 +52,9 @@ import type { Asker, Effects, Probe, Recipient, Reference, Runner, SheetInput, S
  * view a step answered, nothing of the sheet's own. Delivery (M4, I9): the
  * envelopes a view holds ready go by the routes that open, and land on the
  * evidence of the row that holds them; a start's and a compaction's context
- * (I10). The terminal's drawing (M5) and the snapshot (M6) are not here yet.
+ * (I10). The terminal's drawing (M5, §8.3): the line above the prompt and a
+ * call's row; a resume's open asks of today's tool staged for its start's
+ * import. The snapshot (M6) is not here yet.
  */
 
 /** What the mod keeps in `$.state` for the process (types/sminos.d.ts). */
@@ -54,6 +64,10 @@ const KEPT = { plugin: 'sminos', key: 'sheet' } as const
 const STEP_TIMEOUT_MS = 20_000
 /** The check of K4 runs on this timer too: a nudge can be lost, and an idle session dispatches no hook. */
 export const TICK_MS = 5_000
+/** The band's link is judged again between steps every this many ticks (M5). */
+const SURFACE_TICKS = 3
+/** How long a start waits for the ask's read of a resume's asks of today's tool, when that read is still pending (M5). */
+const TODAY_WAIT_MS = 5_000
 /** How many times a call with no answer from its step is settled in the same dispatch (I5). */
 const SETTLES = 3
 /** The keys one drain asks verdicts for: what the step takes in one event (I5). */
@@ -107,6 +121,12 @@ export type Port = {
   /** The rows draw again (`ui.render`). */
   redraw: () => void
   toast: (text: string) => void
+  /** The names in a directory (`$.fs.list`). */
+  list: (path: string) => Promise<string[]>
+  /** Milliseconds since the epoch (`$.clock.now`). */
+  now: () => Promise<number>
+  /** A timer (`$.clock.after`): `done` resolves after `ms`, unless cancelled first. */
+  wait: (ms: number) => { done: Promise<void>; cancel: () => void }
 }
 
 type Failure = { ok: false; code: string; error: string }
@@ -174,6 +194,10 @@ type Gen = {
   sentTo: Map<string, string>
   /** The record's answered count when the idle route last failed: a count past it is a fresh answer, wherever the view lists it. */
   idleFailedAt?: number
+  /** What the deliveries' blocks this conversation holds say of each question: a row's receipts where the view holds none (M5). */
+  delivered: Map<string, Delivered>
+  /** The one read of the conversation for those blocks: under way, made, or failed (where it cannot be read yet, C0's P5) when this many turns had started, and whether retried since. */
+  deliveriesRead?: { state: 'reading' | 'done' } | { state: 'failed'; turns: number; isRetried: boolean }
 }
 
 /**
@@ -201,8 +225,8 @@ type Flight = {
   wake?: Wake
 }
 
-/** What opens the idle route (I9): fresh keys, or, past what the view lists, the record's answered count. */
-type Wake = { keys: string[]; answeredCount?: number }
+/** What opens the idle route (I9): fresh keys, or none when it is an answer past what the view lists (the record's answered count). */
+type Wake = { keys: string[] }
 
 /** A start's answer, and the context it gives the conversation (I10): the start's own, or after the search's landing, the start's again. */
 type Started = { answer: Answer; context?: string }
@@ -242,10 +266,28 @@ type Sheet = {
   turns: number
   /** Subagents that stopped and have not started again: never sent to, as a send resumes one (C0's P2). */
   stopped: Set<string>
+  /** The surface the band links: the last view's, or the registrations' as a tick read them since (M5). */
+  surface?: Surface | null
+  /** How many ticks the timer has made: every third reads the registrations. */
+  ticks: number
+  /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
+  isDeliveryWanted: boolean
 }
 
 function fresh(): Sheet {
-  return { home: '', runner: 'terminal', remote: false, isWithdrawing: false, wasBuiltinDescribed: false, dispatching: new Map(), removing: new Set(), turns: 0, stopped: new Set() }
+  return {
+    home: '',
+    runner: 'terminal',
+    remote: false,
+    isWithdrawing: false,
+    wasBuiltinDescribed: false,
+    dispatching: new Map(),
+    removing: new Set(),
+    turns: 0,
+    stopped: new Set(),
+    ticks: 0,
+    isDeliveryWanted: false,
+  }
 }
 
 const newGen = (session: string): Gen => ({
@@ -264,6 +306,7 @@ const newGen = (session: string): Gen => ({
   isStartRouted: false,
   named: new Set(),
   sentTo: new Map(),
+  delivered: new Map(),
 })
 
 let sheet: Sheet = fresh()
@@ -343,9 +386,15 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
   }
   acked.forEach((id) => gen.toAck.delete(id))
   if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
+    const before = gen.held
     gen.held = answer.view
     // A view adopted opens the routes it holds envelopes for (I9).
     deliver(port, gen)
+    // And the band's line and the rows' receipts draw from it (M5): its surface is the full rule.
+    if (gen === current() && (before?.seq !== answer.view.seq || JSON.stringify(sheet.surface) !== JSON.stringify(answer.view.surface))) {
+      sheet.surface = answer.view.surface
+      port.redraw()
+    }
   }
   return answer
 }
@@ -434,9 +483,19 @@ function startStep(port: Port, gen: Gen): Promise<Started> | undefined {
   const attempt = (async (): Promise<Started> => {
     const event = {
       event: 'start',
-      start: { source: starting.source, nonce: starting.nonce, ...(starting.floor !== undefined && { floor: starting.floor }) },
+      start: {
+        source: starting.source,
+        nonce: starting.nonce,
+        ...(starting.floor !== undefined && { floor: starting.floor }),
+        ...(starting.today !== undefined && { today: starting.today }),
+      },
     }
     const answer = await step(port, gen, event)
+    if (!answer.ok && answer.code === 'bad-event' && (starting.today?.asks.length ?? 0) > 0 && sheet.kept?.starting?.nonce === starting.nonce) {
+      // Asks it could not take (a staged file gone): the start goes without them, and the next start reads them again.
+      port.log(`sheet: the start refused the asks of today's tool it was given (${answer.error}); it goes without them`)
+      keep({ starting: { ...starting, today: { definite: false, asks: [] } } })
+    }
     if (!answer.ok || gen !== current() || sheet.kept?.starting?.nonce !== starting.nonce) {
       return { answer }
     }
@@ -613,7 +672,7 @@ function freshWake(gen: Gen, envelope: Envelope): Wake | undefined {
   const keys = [...new Set([...envelope.keys.filter(fresh), ...(view?.pending ?? []).filter((o) => o.recipient === 'main' && fresh(o.key)).map((o) => o.key)])]
   if (keys.length > 0) return { keys }
   if (view !== undefined && view.pendingCount > view.pending.length && gen.idleFailedAt !== undefined && view.answeredCount > gen.idleFailedAt) {
-    return { keys: [], answeredCount: view.answeredCount }
+    return { keys: [] }
   }
   return undefined
 }
@@ -773,7 +832,6 @@ async function orderKeys(port: Port, gen: Gen, event: 'landed' | 'reroute', keys
           released.add(owner)
         }
       })
-      if (event === 'landed' && gen === current()) port.redraw()
     } else {
       chunk.forEach((key) => owed.add(key))
     }
@@ -928,6 +986,120 @@ async function searchLanded(port: Port, transcript: string, only: readonly strin
     port.log(`sheet: the transcript could not be searched for delivered envelopes (${message(error)}); nothing is taken as landed`)
     return []
   }
+}
+
+// ------------------------------------------------------------------ the terminal's drawing (M5; §8.3)
+
+/** The timer's tick: the check of K4; every third, the registrations read for the band's link. */
+function tick(port: Port) {
+  void check(port)
+  sheet.ticks += 1
+  if (sheet.ticks % SURFACE_TICKS === 0 && bandNow() !== undefined) {
+    void readSurfaces(port)
+  }
+}
+
+/**
+ * The band's link between steps (M5): the registrations read with `$.fs`,
+ * judged by their heartbeat's age alone (`surfaceOf`); a step's view, the full
+ * rule, replaces it at the next step. A change redraws.
+ */
+async function readSurfaces(port: Port) {
+  const dir = `${sheet.home}/sheet/surfaces`
+  try {
+    const files: { file: string; text: string }[] = []
+    for (const file of (await port.list(dir).catch(() => [])).filter((name) => name.endsWith('.json'))) {
+      // A file gone since the listing is passed over.
+      const text = await port.read(`${dir}/${file}`).catch(() => undefined)
+      if (text !== undefined) files.push({ file, text })
+    }
+    const surface = surfaceOf(files, await port.now(), sheet.remote)
+    if (JSON.stringify(surface) !== JSON.stringify(sheet.surface ?? null)) {
+      sheet.surface = surface
+      port.redraw()
+    }
+  } catch (error) {
+    port.log(`sheet: the registrations could not be read: ${message(error)}`)
+  }
+}
+
+/** The line above the prompt (§8.3), in a terminal session under the sheet whose start has answered: from the view held, and the link the band holds. */
+function bandNow(): string | undefined {
+  const gen = current()
+  if (!isTerminal() || !isStarted(gen) || gen.held === undefined) {
+    return undefined
+  }
+  return bandLine({ open: gen.held.open.length, owed: gen.held.owedAcrossStop }, sheet.surface === undefined ? gen.held.surface : sheet.surface, gen.session)
+}
+
+/**
+ * The deliveries' blocks the conversation holds, read once (M5): a row whose
+ * question the view does not hold draws its receipt from them. Read when a
+ * row first needs it, which for a resumed conversation's rows is its start;
+ * where the conversation cannot be read yet (C0's P5: a copy's first start),
+ * once more after a turn has started. Only for drawing: a read that fails
+ * leaves the rows without receipts.
+ */
+function wantDeliveries() {
+  const port = sheet.port
+  const gen = current()
+  if (port === undefined || gen === undefined) {
+    sheet.isDeliveryWanted = true
+    return
+  }
+  sheet.isDeliveryWanted = false
+  const read = gen.deliveriesRead
+  if (read !== undefined && (read.state !== 'failed' || read.isRetried || sheet.turns <= read.turns)) {
+    return
+  }
+  const isRetry = read?.state === 'failed'
+  gen.deliveriesRead = { state: 'reading' }
+  void port.api().then(
+    (api) => {
+      // What the landing hook saw since is as new as anything the read finds.
+      deliveriesHeld(api).forEach((outcome, id) => {
+        if (!gen.delivered.has(id)) gen.delivered.set(id, outcome)
+      })
+      gen.deliveriesRead = { state: 'done' }
+      port.redraw()
+    },
+    (error: unknown) => {
+      gen.deliveriesRead = { state: 'failed', turns: sheet.turns, isRetried: isRetry }
+      port.log(`sheet: the conversation could not be read for the deliveries' receipts (${message(error)})`)
+    },
+  )
+}
+
+/** What a call's row reads beyond its call (I11): the view's while the record lives, the deliveries' blocks for what it does not hold. */
+function rowFacts(ids: readonly string[]) {
+  const gen = current()
+  const view = isSheetChosen() ? gen?.held : undefined
+  if (ids.some((id) => view === undefined || (!view.open.some((q) => q.id === id) && view.closed[id] === undefined))) {
+    wantDeliveries()
+  }
+  return { ...(view !== undefined && { view }), delivered: gen?.delivered ?? new Map<string, Delivered>() }
+}
+
+/**
+ * The line above the prompt (§8.3): drawn above what the hooks beneath
+ * drew, the place today's line has, so the to-human view's line (a plugin
+ * seated outside this one) stays under it; not while a survey holds the band.
+ */
+export function registerSheetBand(on: On) {
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const line = bandNow()
+    if (line === undefined || e.props.hasSurvey) {
+      return next(e)
+    }
+    const inner = await next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>{line}</Text>
+        {inner}
+      </Box>
+    )
+  })
 }
 
 // ------------------------------------------------------------------ a call (I6; M3's decisions)
@@ -1126,6 +1298,49 @@ async function floorAtStart(port: Port, gen: Gen, source: StartSource, transcrip
   return floorNow(port, gen)
 }
 
+/**
+ * The asks of today's tool a resume's start imports (M5; §9): what the ask's
+ * SessionStart read of the transcript (I11), each open ask staged as a file
+ * of its own under the start's nonce, its call's time where the transcript
+ * holds one, else now. A read that was not definite (a search that failed or
+ * was cut), one not made, or one not done in time, sends none and says so,
+ * so nothing is recorded and the next start reads again; so does a staging
+ * that fails.
+ */
+async function stageToday(port: Port, session: string, nonce: string): Promise<NonNullable<NonNullable<SheetKept['starting']>['today']>> {
+  const none = { definite: false, asks: [] }
+  const pending = asksReadWhileYielded(session)
+  if (pending === undefined) {
+    port.log("sheet: no read of the session's asks of today's tool was made; none is imported at this start")
+    return none
+  }
+  // Read before this start at once, but for a launch's SessionStart that came before the choice: bounded then.
+  const timer = port.wait(TODAY_WAIT_MS)
+  const read = await Promise.race([pending.catch(() => undefined), timer.done.then(() => undefined)])
+  timer.cancel()
+  if (read === undefined || !read.isDefinite) {
+    port.log(`sheet: the read of the session's asks of today's tool was ${read === undefined ? 'not had in time' : 'not definite'}; none is imported at this start`)
+    return none
+  }
+  try {
+    const now = new Date(await port.now()).toISOString()
+    const asks: { file: string }[] = []
+    for (const [i, ask] of read.asks.entries()) {
+      const file = `start-${nonce}/ask-${i + 1}.json`
+      const askedAt = ask.askedAt !== undefined && TIME.test(ask.askedAt) ? ask.askedAt : now
+      await port.write(`${staging(session)}/${file}`, JSON.stringify({ callId: ask.callId, askedAt, questions: ask.questions }))
+      asks.push({ file })
+    }
+    return { definite: true, asks }
+  } catch (error) {
+    port.log(`sheet: the asks of today's tool could not be staged (${message(error)}); none is imported at this start`)
+    return none
+  }
+}
+
+/** I2's time (K6): what a staged ask's `askedAt` must be. */
+const TIME = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/
+
 /** The record a /clear left, removed (U10): `sminos sheet remove --cleared`. True once it is gone or was never there. */
 async function removeLeft(port: Port, left: string): Promise<boolean> {
   try {
@@ -1181,7 +1396,14 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
     if (floor !== undefined) {
       gen.floor = floor
     }
-    keep({ starting: { nonce: newName('n'), source, ...(floor !== undefined && { floor }), transcript } })
+    const nonce = newName('n')
+    // A resume's open asks of today's tool go with its start, which imports them once (M5); a copy's never do: its
+    // first start records that it imports nothing.
+    const today = source === 'resume' ? await stageToday(port, session, nonce) : undefined
+    if (gen !== current()) {
+      return undefined
+    }
+    keep({ starting: { nonce, source, ...(floor !== undefined && { floor }), transcript, ...(today !== undefined && { today }) } })
   }
   const started = await startStep(port, gen)
   if (started === undefined || !started.answer.ok) {
@@ -1259,6 +1481,14 @@ function portOf($: EngineInterface): Port {
     api: () => $.session.messages({ as: 'api' }),
     redraw: () => $.ui.invalidate('ui.render'),
     toast: (text) => $.ui.toast(text),
+    list: async (path) => (await $.fs.list(path)).map((entry) => entry.name),
+    now: () => $.clock.now(),
+    wait: (ms) => {
+      let resolve: () => void = () => {}
+      const done = new Promise<void>((settle) => (resolve = settle))
+      const timer = $.clock.after(ms, () => resolve())
+      return { done, cancel: () => timer.cancel() }
+    },
   }
 }
 
@@ -1339,6 +1569,10 @@ export function registerSheet(on: On) {
       }
     }
     port.keep(sheet.kept)
+    if (sheet.isDeliveryWanted) {
+      // A row drawn before this asked for the deliveries' blocks (M5), whatever the choice.
+      wantDeliveries()
+    }
     const early = sheet.early
     sheet.early = undefined
     if (chosen.choice !== 'sheet') {
@@ -1360,10 +1594,11 @@ export function registerSheet(on: On) {
     if (sheet.wasBuiltinDescribed) {
       port.invalidate()
     }
-    $.clock.every(TICK_MS, () => void check(port))
+    $.clock.every(TICK_MS, () => tick(port))
     if (early !== undefined) {
-      // Its SessionStart has returned: the start's context goes by the next result or prompt route.
-      await sessionStarted(port, early.source, early.session, early.transcript, true)
+      // Its SessionStart has returned: the start's context goes by the next result or prompt route. Not awaited: a
+      // resume's start may wait on the ask's read of its asks of today's tool, another hook's work (K4).
+      void sessionStarted(port, early.source, early.session, early.transcript, true).catch((error: unknown) => port.log(`sheet: the start failed: ${message(error)}`))
     }
     if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined)) {
       void check(port)
@@ -1404,11 +1639,19 @@ export function registerSheet(on: On) {
         }
       }
     } else {
-      context = await sessionStarted(port, e.source, e.session_id, e.transcript_path)
+      // The hooks beneath first: the ask's among them reads a resume's asks of today's tool, which this start imports
+      // (M5). Its own result is the hooks' beneath, with the start's context.
+      const result = await next(e)
+      try {
+        context = await sessionStarted(port, e.source, e.session_id, e.transcript_path)
+      } catch (error) {
+        port.log(`sheet: the start failed: ${message(error)}`)
+      }
+      return context === undefined || context === '' ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
     }
     const result = await next(e)
     return context === undefined || context === '' ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
-  }).catch((_, e, next) => next(e))
+  }).catch((_, e, next) => (next.called ? {} : next(e)))
 
   // A /clear leaves the session (E15): its record goes, here first, since the
   // next SessionStart names only the new session; not awaited, as a session's
@@ -1568,13 +1811,57 @@ export function registerSheet(on: On) {
     const gen = routable()
     // In a MAWS-run session only a `delivered` line moves an outcome of the main conversation (§5.4).
     if (gen !== undefined && isTerminal() && stored.message !== undefined && isRouteRow(e)) {
-      const keys = keysIn(contentTexts(stored.message.content))
+      const texts = contentTexts(stored.message.content)
+      const keys = keysIn(texts)
+      // What it delivered, for the rows' receipts (M5).
+      deliveredIn(texts).forEach((outcome, id) => gen.delivered.set(id, outcome))
       if (keys.length > 0) {
         sheet.port?.log(`sheet: a ${e.door} row (${JSON.stringify(e.origin)}) landed ${keys.length} ${keys.length === 1 ? 'key' : 'keys'}: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? ', …' : ''}`)
         land(sheet.port as Port, gen, keys)
       }
     }
     return stored
+  })
+
+  // A call's row (§8.3; I11): in every session, whatever the choice, a stored
+  // call of the sheet's form, from its input and its result alone, with the
+  // receipts the view or the deliveries give. No head of its own: the
+  // engine's tool row has its head, and ctrl+o (expanded) shows the engine's
+  // whole row. A call still running, refused whole, or cut is the engine's.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const { tool, input, output, isRunning, isErrored, isInterrupted, isExpanded } = e.props
+    const parsed = tool === SHEET_TOOL && isSheetCall(input) && !isRunning && !isErrored && !isInterrupted && isExpanded !== true ? parseResult(resultTextOf(output)) : undefined
+    if (parsed === undefined || !isSheetCall(input)) {
+      return next(e)
+    }
+    const ids = parsed.form === 'sentences' ? [...parsed.added, ...parsed.revised].map((item) => item.id) : []
+    const lines = rowLines(input, parsed, rowFacts(ids))
+    const head = await next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {head}
+        <Box flexDirection="row">
+          <Text dimColor>{'  ⎿  '}</Text>
+          <Box flexDirection="column">
+            {lines.map((line, i) => (
+              <Text key={`${i}:${line}`} color="inactive" wrap="truncate-end">
+                {line}
+              </Text>
+            ))}
+          </Box>
+        </Box>
+      </Box>
+    )
+  })
+  // Its result block: the row's lines stand in its place.
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    const { tool, output, isErrored, isExpanded } = e.props
+    if (tool !== SHEET_TOOL || isErrored || isExpanded === true || parseResult(resultTextOf(output)) === undefined) {
+      return next(e)
+    }
+    const { Box } = $.ui.resolve(e)
+    return <Box />
   })
 
   // A subagent stops (E14): a drain, so its pending outcomes go to the main

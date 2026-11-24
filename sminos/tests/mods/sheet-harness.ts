@@ -3,12 +3,13 @@ import type { EngineInterface, On } from 'claude-code'
 import { registerAsk, registerAskBand, resetAsk } from '../../hooks/mods/ask'
 import { SHEET_TOOL } from '../../hooks/mods/sheet-model'
 import type { Probe, View } from '../../hooks/mods/sheet-model'
-import { registerSheet, resetSheet } from '../../hooks/mods/sheet'
+import { registerSheet, registerSheetBand, resetSheet } from '../../hooks/mods/sheet'
 
 /**
  * The question sheet's test harness, shared by sheet.test.ts (M3: the choice,
- * a call, the start) and sheet-delivery.test.ts (M4: the routes, landing):
- * the hooks in register.tsx's order (the ask's band, the sheet, the ask) on
+ * a call, the start), sheet-delivery.test.ts (M4: the routes, landing) and
+ * sheet-drawing.test.ts (M5: the band, the rows, the import): the hooks in
+ * register.tsx's order (the sheet's band, the ask's, the sheet, the ask) on
  * an engine of plain records, whose process runs are the command answering
  * as each test scripts it.
  */
@@ -50,8 +51,8 @@ export type StepEvent = Record<string, unknown> & { event: string; session?: str
 export type StepScript = (event: StepEvent, n: number) => string | Promise<string>
 
 /**
- * A registrar that keeps the hooks of register.tsx's order (the ask's band,
- * the sheet, the ask), and an engine of plain records whose process runs are
+ * A registrar that keeps the hooks of register.tsx's order (the sheet's band,
+ * the ask's, the sheet, the ask), and an engine of plain records whose process runs are
  * the command answering as each test scripts it.
  */
 export function harness(
@@ -81,6 +82,8 @@ export function harness(
     send?: (agentId: string, text: string) => unknown
     /** What a program other than the command answers (a transcript's search): its exit code and output. */
     exec?: (argv: readonly string[]) => { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | Promise<{ exitCode: number; stdout: string; isStdoutTruncated?: boolean }>
+    /** The clock (`$.clock.now`), in milliseconds since the epoch. */
+    now?: number
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -136,6 +139,10 @@ export function harness(
         return text
       },
       exists: async (path: string) => files.has(path) || (options.record === true && path === `${HOME}/sheet/${session}/state.json`),
+      list: async (path: string) => {
+        calls.push({ op: 'fs.list', args: path })
+        return [...files.keys()].filter((file) => file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes('/')).map((file) => ({ name: file.slice(path.length + 1), kind: 'file', size: 1, mtimeMs: 0, isLink: false }))
+      },
       stat: async (path: string, opts?: { resolve?: boolean }) => {
         calls.push({ op: 'fs.stat', args: path })
         const text = files.get(path)
@@ -189,13 +196,20 @@ export function harness(
       toast: (text: string) => calls.push({ op: 'ui.toast', args: text }),
       notify: async (text: string) => (calls.push({ op: 'ui.notify', args: text }), { isSent: true }),
       invalidate: (event: string) => calls.push({ op: 'ui.invalidate', args: event }),
-      resolve: () => {
-        throw new Error('drew')
-      },
+      resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }),
     },
     clock: {
+      now: async () => options.now ?? Date.parse('2026-11-24T10:00:30.000Z'),
       every: (_ms: number, fn: () => void) => (timers.push(fn), { cancel: () => {} }),
-      after: (_ms: number, fn: () => void) => (afters.push(fn), { cancel: () => {} }),
+      after: (_ms: number, fn: () => void) => {
+        afters.push(fn)
+        return {
+          cancel: () => {
+            const at = afters.indexOf(fn)
+            if (at >= 0) afters.splice(at, 1)
+          },
+        }
+      },
     },
     prompt: {
       submit: async ({ text }: { text: string }) => {
@@ -207,6 +221,7 @@ export function harness(
   }
   resetAsk()
   resetSheet()
+  registerSheetBand(on)
   registerAskBand(on)
   registerSheet(on)
   registerAsk(on)
@@ -312,4 +327,20 @@ export function gated(kinds: readonly string[], otherwise: StepScript = defaultS
         )
       : otherwise(event, n)
   return { script, waiting }
+}
+
+/** The texts a drawn tree shows, in order (the test runtime's elements are `{ type, props, children }`). */
+export function textsOf(tree: unknown): string[] {
+  if (typeof tree === 'string') return [tree]
+  if (Array.isArray(tree)) return tree.flatMap(textsOf)
+  if (typeof tree === 'object' && tree !== null && 'children' in tree) return textsOf((tree as { children: unknown }).children)
+  return []
+}
+
+/** The lines a drawn tree's Text elements show, each joined. */
+export function linesOf(tree: unknown): string[] {
+  if (Array.isArray(tree)) return tree.flatMap(linesOf)
+  if (typeof tree !== 'object' || tree === null) return []
+  const element = tree as { type?: unknown; children?: unknown }
+  return element.type === 'Text' ? [textsOf(element.children).join('')] : linesOf(element.children)
 }

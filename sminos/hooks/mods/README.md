@@ -2,7 +2,7 @@
 
 Function hooks of the sminos plugin: one module (`register.tsx`, named by
 `hooks/hooks.json` under `modules`) that registers the bridge, the backtick guard, the
-ask's band, the question sheet, the ask, the address and the name, in that order. The engine loads it only where
+sheet's band, the ask's band, the question sheet, the ask, the address and the name, in that order. The engine loads it only where
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and ignores it elsewhere; the
 shell hooks beside this folder (`smns-record.sh`, `smns-guide.sh`) run
 everywhere.
@@ -605,6 +605,39 @@ its drains, its one start in flight) is a generation that a /clear, a
 session's asks only once the choice is made, so under the sheet it takes up
 none. No SessionStart waits on another hook's work.
 
+A resume's open asks of today's tool move onto the sheet once (the plan's
+M5; the composite's §9): yielded, the ask's SessionStart still reads them
+(`readAsks`, which says whether its read was definite: the whole file read,
+or the search run and its output not cut) and hands them over
+(`asksReadWhileYielded`); the sheet's SessionStart runs the hooks beneath it
+first, then stages each open ask under its start's nonce
+(`.staging/<session>/start-<nonce>/ask-<n>.json`, its call's time from the
+transcript) and the start step imports what it has not yet imported and
+says so in its context. A read that was not definite sends none, so nothing
+is recorded and the next start reads again; a copy's first start records
+that it never imports. A launch's SessionStart that came before the choice
+has its start ordered after the choice, not awaited by `session.start`; it
+waits for the ask's read at most 5 s.
+
+The terminal's drawing (§8.3): `registerSheetBand`, outside the ask's band,
+draws one line above what the hooks beneath drew while the session has open
+questions or answers owed across a stop (`3 open questions ·
+<url>/s/<session> · 2 answers go with your next message`; `the page is
+unreachable: sminos sheet show <first 8>` when no surface suits), not while a
+survey holds the band. Its link is the view's surface, and between steps
+every third tick reads `$SMINOS_HOME/sheet/surfaces/` with `$.fs` and judges
+by the heartbeat's age alone (`surfaceOf`, the step's reading). A call of the
+sheet's form draws, in every session whatever the choice, the engine's head
+and then one line a question it added or revised (`q7 Auth method — <the
+question's first sentence that ends in "?", else its first sentence>`) and
+one a withdrawal, the line becoming its receipt once the question left the
+sheet (`→ OAuth`, `· Dismissed`, `· Withdrawn`, `· Revised below`); its result
+block stands aside. Receipts come from the view while the record holds the
+question, else from the deliveries' blocks this conversation holds (those
+the landing hook saw, and one read of the conversation when a row first
+needs it); a question neither knows is its line bare. Unfolded (ctrl+o), the
+engine draws the row whole.
+
 Delivery (the plan's I9): each view a step answers holds the envelopes ready
 for each recipient, and the routes take them. In a terminal session the main
 conversation's envelope goes as this plugin's prompt when no main turn runs
@@ -639,9 +672,11 @@ conversation and no row lands (MAWS delivers there); only a start's or a
 compaction's context rides the next prompt.
 `sheet-model.tsx` holds what takes no `$` (the schema and its validation,
 the start choice, the result texts, the floor of a conversation's ids, the
-block's parser and the rows that land one, the notices); `sheet.tsx` the
-hooks. Tests `tests/mods/sheet-model.test.ts`, `tests/mods/sheet.test.ts`,
-`tests/mods/sheet-delivery.test.ts` (on `tests/mods/sheet-harness.ts`), and
+block's parser and the rows that land one, the notices, the result's
+parser, the band's line and the row's lines); `sheet.tsx` the hooks. Tests
+`tests/mods/sheet-model.test.ts`, `tests/mods/sheet.test.ts`,
+`tests/mods/sheet-delivery.test.ts`, `tests/mods/sheet-drawing.test.ts` (on
+`tests/mods/sheet-harness.ts`), and
 `tests/mods/test-sheet-step.sh` against the real step; live check
 `tests/mods/live-sheet-check.py`.
 

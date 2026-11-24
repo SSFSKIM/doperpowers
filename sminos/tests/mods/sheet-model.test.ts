@@ -10,10 +10,13 @@ import {
   WITHDRAWN,
   announcement,
   answerOf,
+  bandLine,
   blocksOf,
   capturedOf,
   checkRefusal,
   chooseStart,
+  deliveredIn,
+  deliveriesHeld,
   endedNotice,
   entryProblem,
   floorOfLines,
@@ -28,9 +31,13 @@ import {
   isNewer,
   isRouteRow,
   outcomeNotice,
+  parseResult,
+  questionSentence,
   readInput,
+  rowLines,
   searchedKeys,
   settingOf,
+  surfaceOf,
   unreadClause,
   validateCall,
 } from '../../hooks/mods/sheet-model'
@@ -519,5 +526,151 @@ describe('the block (I7) and the rows that land one (I9)', () => {
     const prompt = `The sminos plugin sent a message:\n${envelope(['k1'], ['q7'])}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`
     expect(sheetTextOf(prompt)).toBe(envelope(['k1'], ['q7']))
     expect(floorOfMessages([{ role: 'user', text: prompt, toolUses: [] }], [])).toBe(7)
+  })
+})
+
+describe("the terminal's drawing (M5, §8.3)", () => {
+  const S = '5eed0000-0000-4000-8000-0000000000aa'
+  const SURFACE = { name: 'standin', url: 'http://sheet.localhost:47590', reach: 'local' }
+
+  test("a result's first line, by I6's grammar: the sentences, `Nothing done.`, `Outcome not known yet.`; anything else is no sheet's", async () => {
+    expect(parseResult('Added q1, q2, q3.')).toEqual({ form: 'sentences', added: [{ id: 'q1' }, { id: 'q2' }, { id: 'q3' }], revised: [], withdrew: [] })
+    expect(parseResult('Added q7 (entry 1), q8 (entry 4). Revised q3 (entry 2, revision 2).\nNot done: entry 3, the reference x could not be read: no.')).toEqual({
+      form: 'sentences',
+      added: [{ id: 'q7', entry: 1 }, { id: 'q8', entry: 4 }],
+      revised: [{ id: 'q3', entry: 2, revision: 2 }],
+      withdrew: [],
+    })
+    expect(parseResult('Revised q2 (revision 2). Withdrew q4, q5.')).toEqual({ form: 'sentences', added: [], revised: [{ id: 'q2', revision: 2 }], withdrew: ['q4', 'q5'] })
+    expect(parseResult('Withdrew q3.\nNo surface can show these questions right now; they wait on the sheet and show when one returns.')).toEqual({ form: 'sentences', added: [], revised: [], withdrew: ['q3'] })
+    expect(parseResult('Nothing done.\nNot done: q3 is not open (withdrawn at 09:12).')).toEqual({ form: 'nothing' })
+    expect(parseResult('Outcome not known yet.\nThe sheet did not answer. Do not repeat this call: what it did will be told to you.')).toEqual({ form: 'unknown' })
+    // Out of the grammar's order, a sentence twice, a stray word: none.
+    for (const text of ['Withdrew q1. Added q2.', 'Added q1. Added q2.', 'Added q1', 'Added q1, q2. Done.', 'Async ask sent.', '', 'User has answered your questions: "Which?"="A".']) {
+      expect(parseResult(text)).toBeUndefined()
+    }
+  })
+
+  test("a question's line is its first sentence that ends in a question mark, else its first sentence (§8.1)", async () => {
+    expect(questionSentence('Which auth method should the login use?')).toBe('Which auth method should the login use?')
+    expect(questionSentence('The login fails on Safari. Which auth method should we use? We have three.')).toBe('Which auth method should we use?')
+    expect(questionSentence('Version 2.5 is out. Ship it today, or wait for 2.6?')).toBe('Ship it today, or wait for 2.6?')
+    expect(questionSentence('Pick a colour for the badge. Red is the default.')).toBe('Pick a colour for the badge.')
+    expect(questionSentence('Pick a colour')).toBe('Pick a colour')
+    expect(questionSentence('Two options here:\nkeep it, or drop it?')).toBe('keep it, or drop it?')
+    expect(questionSentence('He said "ship it?" Then what.')).toBe('He said "ship it?"')
+  })
+
+  test("the band's line: its four forms, and none with nothing open or owed", async () => {
+    expect(bandLine({ open: 3, owed: 0 }, SURFACE, S)).toBe(`3 open questions · http://sheet.localhost:47590/s/${S}`)
+    expect(bandLine({ open: 3, owed: 0 }, null, S)).toBe('3 open questions · the page is unreachable: sminos sheet show 5eed0000')
+    expect(bandLine({ open: 3, owed: 2 }, SURFACE, S)).toBe(`3 open questions · http://sheet.localhost:47590/s/${S} · 2 answers go with your next message`)
+    expect(bandLine({ open: 0, owed: 2 }, SURFACE, S)).toBe('2 answers go with your next message')
+    expect(bandLine({ open: 1, owed: 1 }, null, S)).toBe('1 open question · the page is unreachable: sminos sheet show 5eed0000 · 1 answer goes with your next message')
+    expect(bandLine({ open: 0, owed: 0 }, SURFACE, S)).toBeUndefined()
+  })
+
+  test("the registrations read between steps (I8's three readings): names ending .json alone, an unreadable or unparsable file not alive, mawsd first then by name, one trailing slash off; alive by age alone", async () => {
+    const now = Date.parse('2026-11-24T10:00:30.000Z')
+    const reg = (name: string, over: Record<string, unknown> = {}) => JSON.stringify({ v: 1, name, pid: 4321, url: `http://${name}.localhost:1/`, reach: 'local', heartbeatAt: '2026-11-24T10:00:10.000Z', ...over })
+    const files = [
+      { file: 'zeta.json', text: reg('zeta') },
+      { file: 'alpha.json', text: reg('alpha') },
+      { file: 'mawsd.json', text: reg('mawsd') },
+      { file: '.mawsd.tmp', text: reg('tmp') },
+    ]
+    expect(surfaceOf(files, now, false)).toEqual({ name: 'mawsd', url: 'http://mawsd.localhost:1', reach: 'local' })
+    expect(surfaceOf(files.filter((f) => f.file !== 'mawsd.json'), now, false)).toEqual({ name: 'alpha', url: 'http://alpha.localhost:1', reach: 'local' })
+    // Stale, half-written, of another shape, a date that is no date: none of them alive.
+    const dead = [
+      { file: 'a.json', text: reg('a', { heartbeatAt: '2026-11-24T09:59:59.000Z' }) },
+      { file: 'b.json', text: reg('b').slice(0, 20) },
+      { file: 'c.json', text: reg('c', { v: 2 }) },
+      { file: 'd.json', text: reg('d', { heartbeatAt: '2026-02-30T10:00:10.000Z' }) },
+      { file: 'e.json', text: reg('e', { name: 'bad name' }) },
+    ]
+    expect(surfaceOf(dead, now, false)).toBeNull()
+    // Under SSH only a remote reach suits.
+    expect(surfaceOf(files, now, true)).toBeNull()
+    expect(surfaceOf([...files, { file: 'far.json', text: reg('far', { reach: 'remote' }) }], now, true)).toEqual({ name: 'far', url: 'http://far.localhost:1', reach: 'remote' })
+  })
+
+  test("a delivery's block read for receipts: each answered entry's revision, places and text; the dismissed ids", async () => {
+    const block = `<sheet-delivery>${JSON.stringify({ v: 1, keys: ['k1', 'k2', 'k3'], answered: [{ id: 'q7', revision: 2, picks: [1, 2], text: 'only on mobile', images: [] }, { id: 'q8', revision: 1, picks: [], text: 'Nothing waiting.', images: [] }], dismissed: ['q9'] })}</sheet-delivery>`
+    const found = deliveredIn([`[sheet v1] The human answered questions on your sheet.\n${block}`])
+    expect(Object.fromEntries(found)).toEqual({
+      q7: { how: 'answered', revision: 2, picks: [1, 2], text: 'only on mobile' },
+      q8: { how: 'answered', revision: 1, picks: [], text: 'Nothing waiting.' },
+      q9: { how: 'dismissed' },
+    })
+    // In the conversation the model holds, only a route's: a human quoting it names nothing.
+    const reminder = `<system-reminder>\ntool.call hook additional context: ${block}\n</system-reminder>`
+    expect([...deliveriesHeld([{ role: 'user', content: [{ type: 'text', text: reminder }] }]).keys()]).toEqual(['q7', 'q8', 'q9'])
+    expect([...deliveriesHeld([{ role: 'user', content: block }]).keys()]).toEqual([])
+  })
+
+  describe("a call's row: one line a question, then its receipt in the line's place", () => {
+    const input = {
+      ask: [
+        { question: 'The login fails on Safari. Which auth method should it use?', header: 'Auth method', options: [{ label: 'OAuth' }, { label: 'Passkeys' }] },
+        { id: 'q3', question: 'Ship the migration today?', header: 'Ship' },
+        { question: 'What should the empty state say?' },
+      ],
+      withdraw: ['q2'],
+    }
+    const parsed = parseResult('Added q7, q8. Revised q3 (revision 2). Withdrew q2.')!
+    const none = { delivered: new Map() }
+
+    test('open, in the order of the call\'s entries, and what it withdrew', async () => {
+      expect(rowLines(input, parsed, none)).toEqual([
+        'q7 Auth method — Which auth method should it use?',
+        'q3 Ship — Ship the migration today?',
+        'q8 — What should the empty state say?',
+        'q2 · Withdrawn',
+      ])
+    })
+
+    test('from the view: answered, dismissed, withdrawn, revised by a later call; open at its revision', async () => {
+      const view = {
+        open: [{ id: 'q8', revision: 1 }],
+        closed: {
+          q7: { how: 'answered', revision: 1, receipt: 'OAuth, Passkeys' },
+          q3: { how: 'dismissed', revision: 2 },
+          q2: { how: 'withdrawn', revision: 1 },
+        },
+      }
+      expect(rowLines(input, parsed, { view, delivered: new Map() })).toEqual(['q7 Auth method → OAuth, Passkeys', 'q3 Ship · Dismissed', 'q8 — What should the empty state say?', 'q2 · Withdrawn'])
+      const later = { open: [{ id: 'q8', revision: 2 }], closed: { q7: { how: 'withdrawn', revision: 1 }, q3: { how: 'answered', revision: 3, receipt: 'Yes' } } }
+      expect(rowLines(input, parsed, { view: later, delivered: new Map() })).toEqual(['q7 Auth method · Withdrawn', 'q3 Ship · Revised below', 'q8 · Revised below', 'q2 · Withdrawn'])
+      // A text answer's receipt, on one line.
+      expect(rowLines(input, parsed, { view: { open: [], closed: { q8: { how: 'answered', revision: 1, receipt: 'Nothing\nwaiting.' } } }, delivered: new Map() })[2]).toBe('q8 → Nothing waiting.')
+    })
+
+    test("with no record, from the blocks the conversation holds: labels by place from the call's own input, the text, a dismissal; a later revision is revised below; a question neither knows is its line bare", async () => {
+      const delivered = new Map<string, unknown>([
+        ['q7', { how: 'answered', revision: 1, picks: [2], text: 'and a note' }],
+        ['q8', { how: 'answered', revision: 1, picks: [], text: `Nothing waiting for you. ${'x'.repeat(100)}` }],
+        ['q3', { how: 'answered', revision: 3, picks: [1], text: '' }],
+      ])
+      expect(rowLines(input, parsed, { delivered: delivered as never })).toEqual([
+        'q7 Auth method → Passkeys',
+        'q3 Ship · Revised below',
+        `q8 → ${`Nothing waiting for you. ${'x'.repeat(100)}`.slice(0, 80)}`,
+        'q2 · Withdrawn',
+      ])
+      expect(rowLines(input, parsed, { delivered: new Map([['q7', { how: 'dismissed' }]]) as never })[0]).toBe('q7 Auth method · Dismissed')
+      // The view does not hold it (older than its 500 closed): the blocks do.
+      expect(rowLines(input, parsed, { view: { open: [], closed: {} }, delivered: new Map([['q7', { how: 'answered', revision: 1, picks: [1], text: '' }]]) as never })[0]).toBe('q7 Auth method → OAuth')
+    })
+
+    test('a partly refused call names its entries: each id to its own entry', async () => {
+      const refused = parseResult('Added q7 (entry 1), q8 (entry 3).\nNot done: entry 2, q3 is not open (answered at 14:05).')!
+      expect(rowLines(input, refused, none)).toEqual(['q7 Auth method — Which auth method should it use?', 'q8 — What should the empty state say?'])
+    })
+
+    test('`Nothing done.` draws that; `Outcome not known yet.` draws "outcome not known" and no id', async () => {
+      expect(rowLines(input, { form: 'nothing' }, none)).toEqual(['Nothing done.'])
+      expect(rowLines(input, { form: 'unknown' }, none)).toEqual(['outcome not known'])
+    })
   })
 })

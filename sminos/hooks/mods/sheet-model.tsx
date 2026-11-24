@@ -848,7 +848,12 @@ const BLOCK_KEYS = 200
  * one names nothing.
  */
 export function blocksOf(text: string): Block[] {
-  const out: Block[] = []
+  return blockLines(text).map(({ block }) => block)
+}
+
+/** Each block line of `text`, read, with its answered entries as they stand. */
+function blockLines(text: string): { block: Block; entries: Record<string, unknown>[] }[] {
+  const out: { block: Block; entries: Record<string, unknown>[] }[] = []
   for (const line of text.split('\n')) {
     const match = BLOCK_LINE.exec(line.replace(/\r$/, ''))
     if (match === null) continue
@@ -856,10 +861,11 @@ export function blocksOf(text: string): Block[] {
       const block: unknown = JSON.parse(match[1] as string)
       if (!isRecord(block) || block.v !== 1 || !Array.isArray(block.keys) || !Array.isArray(block.answered) || !Array.isArray(block.dismissed)) continue
       const keys = block.keys.filter((key): key is string => typeof key === 'string')
-      const answered = block.answered.flatMap((a) => (isRecord(a) && typeof a.id === 'string' ? [a.id] : []))
+      const entries = block.answered.filter((a): a is Record<string, unknown> => isRecord(a) && typeof a.id === 'string')
+      const answered = entries.map((a) => a.id as string)
       const dismissed = block.dismissed.filter((id): id is string => typeof id === 'string')
       if (keys.length !== block.keys.length || keys.length === 0 || keys.length > BLOCK_KEYS || keys.length !== answered.length + dismissed.length) continue
-      out.push({ keys, answered, dismissed, more: block.more === true })
+      out.push({ block: { keys, answered, dismissed, more: block.more === true }, entries })
     } catch {
       // A block that is not JSON names nothing.
     }
@@ -980,12 +986,17 @@ function routeTexts(text: string): string[] {
   return [...text.matchAll(ROUTE_REMINDER)].map((match) => match[1] as string)
 }
 
-/** The keys the conversation the model holds names in a block a route put there (`$.session.messages({ as: 'api' })`), on its human's side. */
-export function heldKeys(api: readonly { role: string; content: unknown }[]): Set<string> {
-  const items = api
+/** The texts routes put in the conversation the model holds (`$.session.messages({ as: 'api' })`), on its human's side. */
+function routeItems(api: readonly { role: string; content: unknown }[]): string[] {
+  return api
     .filter((message) => message.role !== 'assistant')
     .flatMap((message) => [...textsOf(message.content), ...blocksIn(message.content, 'tool_result').flatMap((block) => textsOf(block.content))])
-  return new Set(keysIn(items.flatMap(routeTexts)))
+    .flatMap(routeTexts)
+}
+
+/** The keys the conversation the model holds names in a block a route put there. */
+export function heldKeys(api: readonly { role: string; content: unknown }[]): Set<string> {
+  return new Set(keysIn(routeItems(api)))
 }
 
 /**
@@ -996,4 +1007,236 @@ export function heldKeys(api: readonly { role: string; content: unknown }[]): Se
 export function endedNotice(agent: { agentId: string; name: string }, questions: readonly { id: string; question: string }[]): string {
   const listed = questions.map((q) => `${q.id} ${JSON.stringify([...q.question].slice(0, 200).join(''))}`).join(', ')
   return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
+}
+
+// ------------------------------------------------------------------ the terminal's drawing (M5; §8.3, §8.1)
+
+/** A stored call's first line read (I6's grammar, `grammar/result.md`), as `result.examples.json` holds it parsed. */
+export type Parsed =
+  | { form: 'sentences'; added: { id: string; entry?: number }[]; revised: { id: string; entry?: number; revision: number }[]; withdrew: string[] }
+  | { form: 'nothing' }
+  | { form: 'unknown' }
+
+const ITEM = 'q[0-9]+(?: \\(entry [0-9]+\\))?'
+const RITEM = 'q[0-9]+ \\((?:entry [0-9]+, )?revision [0-9]+\\)'
+const WITHDREW = 'Withdrew q[0-9]+(?:, q[0-9]+)*\\.'
+/** The first line, whole: the published pattern, in parts. */
+const FIRST_LINE = new RegExp(
+  `^(?:Nothing done\\.|Outcome not known yet\\.|Added ${ITEM}(?:, ${ITEM})*\\.(?: Revised ${RITEM}(?:, ${RITEM})*\\.)?(?: ${WITHDREW})?|Revised ${RITEM}(?:, ${RITEM})*\\.(?: ${WITHDREW})?|${WITHDREW})$`,
+)
+
+/** A stored call's result read by its first line; undefined for a text that is none of I6's three (a denial, today's form). */
+export function parseResult(text: string): Parsed | undefined {
+  const first = text.split('\n', 1)[0] ?? ''
+  if (!FIRST_LINE.test(first)) return undefined
+  if (first === 'Nothing done.') return { form: 'nothing' }
+  if (first === 'Outcome not known yet.') return { form: 'unknown' }
+  const sentence = (verb: string) => /^(?:[^.]|\.(?! ))*/.exec(first.slice(first.indexOf(`${verb} `) + verb.length + 1))?.[0] ?? ''
+  const added = first.includes('Added ')
+    ? [...sentence('Added').matchAll(/(q[0-9]+)(?: \(entry ([0-9]+)\))?/g)].map((m) => ({ id: m[1] as string, ...(m[2] !== undefined && { entry: Number(m[2]) }) }))
+    : []
+  const revised = first.includes('Revised ')
+    ? [...sentence('Revised').matchAll(/(q[0-9]+) \((?:entry ([0-9]+), )?revision ([0-9]+)\)/g)].map((m) => ({
+        id: m[1] as string,
+        ...(m[2] !== undefined && { entry: Number(m[2]) }),
+        revision: Number(m[3]),
+      }))
+    : []
+  const withdrew = first.includes('Withdrew ') ? [...sentence('Withdrew').matchAll(/q[0-9]+/g)].map((m) => m[0]) : []
+  return { form: 'sentences', added, revised, withdrew }
+}
+
+/** A sentence's end: its stop (`.`, `?`, `!`, their full-width forms), any closing quote or bracket, then a space or the end. */
+const SENTENCE = /\S.*?(?:[.?!。？！]+["'”’)\]]*(?=\s|$)|$)/g
+const ASKS = /[?？]["'”’)\]]*$/
+
+/**
+ * A question's line (§8.1, which the app draws alike): its first sentence that
+ * ends in a question mark, or its first sentence when none does, so a question
+ * that opens with a statement is not shown as its preamble. A line break ends
+ * a sentence too.
+ */
+export function questionSentence(question: string): string {
+  const sentences = question.split(/\n+/).flatMap((line) => [...line.matchAll(SENTENCE)].map((m) => m[0].trim())).filter((s) => s !== '')
+  return sentences.find((s) => ASKS.test(s)) ?? sentences[0] ?? ''
+}
+
+/** A stored result's text as a row hook is given it: a string, its text blocks joined, or an MCP result's content. */
+export function resultTextOf(output: unknown): string {
+  if (typeof output === 'string') return output
+  if (Array.isArray(output)) return textsOf(output).join('\n')
+  if (isRecord(output) && Array.isArray(output.content)) return textsOf(output.content).join('\n')
+  return ''
+}
+
+/** A stored call's form, by its input (I11): `ask` or `withdraw` is the sheet's; `questions` today's. */
+export function isSheetCall(input: unknown): input is SheetInput {
+  return isRecord(input) && !('questions' in input) && ('ask' in input || 'withdraw' in input)
+}
+
+/** A surface, as the view carries it and the registrations read between steps give it. */
+export type Surface = { name: string; url: string; reach: string }
+
+/**
+ * The line above the prompt (§8.3): how many questions are open and the
+ * surface's link to this session's sheet, or how to read them when no
+ * surface can show them; how many answers owed across a stop leave with the
+ * next message. None when neither.
+ */
+export function bandLine(counts: { open: number; owed: number }, surface: Surface | null, session: string): string | undefined {
+  const parts: string[] = []
+  if (counts.open > 0) {
+    parts.push(`${counts.open} open ${counts.open === 1 ? 'question' : 'questions'}`)
+    parts.push(surface !== null ? `${surface.url}/s/${session}` : `the page is unreachable: sminos sheet show ${session.slice(0, 8)}`)
+  }
+  if (counts.owed > 0) {
+    parts.push(`${counts.owed} ${counts.owed === 1 ? 'answer goes' : 'answers go'} with your next message`)
+  }
+  return parts.length === 0 ? undefined : parts.join(' · ')
+}
+
+/** A surface is alive this long after its heartbeat (I8). */
+const HEARTBEAT_MS = 30_000
+const SURFACE_NAME = /^[A-Za-z0-9._-]{1,64}$/
+const HEARTBEAT_AT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/
+
+/**
+ * The surface the band links between steps (M5): of the registrations read
+ * from `surfaces/`, the first alive by age alone whose reach suits, read as
+ * the step reads them (I8, "Reading the registrations"): only names ending
+ * in `.json`; a file half-written, unparsable or of another shape not alive;
+ * `mawsd` first, then the others by name; one trailing slash off the url. A
+ * step's view is the full rule (a running pid too).
+ */
+export function surfaceOf(files: readonly { file: string; text: string }[], now: number, remote: boolean): Surface | null {
+  const alive: { name: string; file: string; surface: Surface }[] = []
+  for (const { file, text } of files) {
+    if (!file.endsWith('.json')) continue
+    let r: unknown
+    try {
+      r = JSON.parse(text)
+    } catch {
+      continue
+    }
+    if (
+      !isRecord(r) ||
+      r.v !== 1 ||
+      typeof r.name !== 'string' ||
+      !SURFACE_NAME.test(r.name) ||
+      typeof r.pid !== 'number' ||
+      !Number.isInteger(r.pid) ||
+      r.pid < 1 ||
+      typeof r.url !== 'string' ||
+      codePoints(r.url) < 1 ||
+      codePoints(r.url) > 2000 ||
+      (r.reach !== 'local' && r.reach !== 'remote') ||
+      typeof r.heartbeatAt !== 'string' ||
+      !HEARTBEAT_AT.test(r.heartbeatAt)
+    ) {
+      continue
+    }
+    const at = Date.parse(r.heartbeatAt)
+    // A well-shaped date that is no date (the 30th of February) reads back as another: not alive.
+    if (Number.isNaN(at) || new Date(at).toISOString() !== r.heartbeatAt || now - at > HEARTBEAT_MS) continue
+    const url = r.url.endsWith('/') && r.url.length > 1 ? r.url.slice(0, -1) : r.url
+    alive.push({ name: r.name, file, surface: { name: r.name, url, reach: r.reach } })
+  }
+  const order = (a: { name: string; file: string }) => [a.name !== 'mawsd' ? 1 : 0, a.name, a.file] as const
+  alive.sort((a, b) => {
+    const [x, y] = [order(a), order(b)]
+    return x[0] - y[0] || (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0) || (x[2] < y[2] ? -1 : x[2] > y[2] ? 1 : 0)
+  })
+  return alive.find((a) => a.surface.reach === 'remote' || !remote)?.surface ?? null
+}
+
+/** What a delivery's block says of a question: answered at a revision with places and a text, or dismissed. */
+export type Delivered = { how: 'answered'; revision: number; picks: number[]; text: string } | { how: 'dismissed' }
+
+/** The outcomes the blocks of `texts` deliver, by question id (a later block's over an earlier one's). */
+export function deliveredIn(texts: readonly string[]): Map<string, Delivered> {
+  const out = new Map<string, Delivered>()
+  for (const text of texts) {
+    for (const { block, entries } of blockLines(text)) {
+      for (const entry of entries) {
+        const picks = Array.isArray(entry.picks) ? entry.picks.filter((p): p is number => typeof p === 'number' && Number.isInteger(p)) : []
+        out.set(entry.id as string, {
+          how: 'answered',
+          revision: typeof entry.revision === 'number' ? entry.revision : 1,
+          picks,
+          text: typeof entry.text === 'string' ? entry.text : '',
+        })
+      }
+      block.dismissed.forEach((id) => out.set(id, { how: 'dismissed' }))
+    }
+  }
+  return out
+}
+
+/** The outcomes the conversation the model holds was delivered, in blocks a route put there. */
+export function deliveriesHeld(api: readonly { role: string; content: unknown }[]): Map<string, Delivered> {
+  return deliveredIn(routeItems(api))
+}
+
+/** What a row reads of the sheet beyond its own call: the view while the record lives, and the deliveries' blocks. */
+export type RowFacts = {
+  view?: { open: readonly { id: string; revision: number }[]; closed: Readonly<Record<string, { how: string; revision: number; receipt?: string }>> }
+  delivered: ReadonlyMap<string, Delivered>
+}
+
+/** The receipt's text of an answer: one line, its first 200 characters at most. */
+const receiptText = (text: string) => [...text.replace(/\s+/g, ' ').trim()].slice(0, 200).join('')
+
+/**
+ * A call's row (§8.3, §8.1; I11): from its input and its result's first line
+ * alone, one line a question it added or revised, in its entries' order
+ * (`q7 Auth method — <its line>`), then one for each withdrawal it made. A
+ * question that has left the sheet reads its receipt in the line's place
+ * (`→ OAuth`, `· Dismissed`, `· Withdrawn`), and one a later call revised
+ * `· Revised below`: from the view while the record holds it, else from the
+ * blocks the conversation holds, the labels read by place from this call's
+ * own input. A question neither knows is its line bare.
+ */
+export function rowLines(input: SheetInput, parsed: Parsed, facts: RowFacts): string[] {
+  if (parsed.form === 'nothing') return ['Nothing done.']
+  if (parsed.form === 'unknown') return ['outcome not known']
+  const entries = input.ask ?? []
+  // Each id to its entry: by the entry's place where the result names it, else in the entries' order (nothing refused).
+  const placed: { id: string; entry?: Entry; revision: number }[] = []
+  const isNamed = [...parsed.added, ...parsed.revised].some((item) => item.entry !== undefined)
+  if (isNamed) {
+    const items = [...parsed.added.map((a) => ({ ...a, revision: 1 })), ...parsed.revised].sort((a, b) => (a.entry ?? 0) - (b.entry ?? 0))
+    items.forEach((item) => placed.push({ id: item.id, entry: item.entry === undefined ? undefined : entries[item.entry - 1], revision: item.revision }))
+  } else {
+    // Nothing refused: an entry without an id is the next added, one with an id is that id revised.
+    const added = parsed.added.map((a) => ({ id: a.id, revision: 1 }))
+    const revised = [...parsed.revised]
+    for (const entry of entries) {
+      const at = entry.id === undefined ? -1 : revised.findIndex((r) => r.id === entry.id)
+      const item = entry.id === undefined ? added.shift() : at === -1 ? undefined : revised.splice(at, 1)[0]
+      if (item !== undefined) placed.push({ id: item.id, entry, revision: item.revision })
+    }
+    // What no entry accounts for (an input that does not match its result) is its id alone.
+    ;[...added, ...revised].forEach((item) => placed.push({ id: item.id, revision: item.revision }))
+  }
+  const lines = placed.map(({ id, entry, revision }) => {
+    const name = entry?.header === undefined ? id : `${id} ${entry.header}`
+    const open = entry === undefined ? name : `${name} — ${questionSentence(entry.question)}`
+    const view = facts.view
+    const isOpen = view?.open.find((q) => q.id === id)
+    const closed = view?.closed[id]
+    if (isOpen !== undefined) return isOpen.revision > revision ? `${name} · Revised below` : open
+    if (closed !== undefined) {
+      if (closed.revision > revision) return `${name} · Revised below`
+      if (closed.how === 'answered') return `${name} → ${receiptText(closed.receipt ?? '')}`
+      return `${name} · ${closed.how === 'dismissed' ? 'Dismissed' : 'Withdrawn'}`
+    }
+    const delivered = facts.delivered.get(id)
+    if (delivered === undefined) return open
+    if (delivered.how === 'dismissed') return `${name} · Dismissed`
+    if (delivered.revision > revision) return `${name} · Revised below`
+    if (delivered.revision < revision) return open
+    const labels = delivered.picks.map((place) => entry?.options?.[place - 1]?.label ?? `option ${place}`)
+    return `${name} → ${labels.length > 0 ? receiptText(labels.join(', ')) : receiptText([...delivered.text].slice(0, 80).join(''))}`
+  })
+  return [...lines, ...parsed.withdrew.map((id) => `${id} · Withdrawn`)]
 }

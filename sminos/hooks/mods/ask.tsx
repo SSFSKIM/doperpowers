@@ -472,10 +472,22 @@ export const isAskYielded = () => isYielded
  * adoption of the session's asks waits for it; the hook itself does not.
  */
 let isChoiceAwaited = false
-/** A SessionStart's adoption waiting for the choice, and what it read. */
-let adoption: { adopt: () => void; read: OpenAsk[] } | undefined
-/** What a yielded ask read back from a resumed session or a copy: the sheet's import takes it up (M5). */
-let readWhileYielded: OpenAsk[] = []
+/** A SessionStart's adoption waiting for the choice. */
+let adoption: { adopt: () => void } | undefined
+/**
+ * A resumed session's asks as its SessionStart read them, for the session it
+ * read them for: under the sheet, the sheet's import takes them up (M5), and
+ * the read may still be pending when the sheet asks for it.
+ */
+let todayRead: { session: string; read: Promise<TodayRead> } | undefined
+
+/**
+ * What the sheet's import takes of a resumed session's asks of today's tool
+ * (plan M5): the open ones, each with its call's time where the transcript
+ * holds one, and whether the read was definite: the whole file read, or the
+ * search run and its output not cut. An indefinite read imports nothing.
+ */
+export type TodayRead = { isDefinite: boolean; asks: { callId: string; askedAt?: string; questions: AskQuestion[] }[] }
 
 /** The sheet is registered: it will make the choice, which the ask's adoptions wait for. */
 export function deferAskToChoice() {
@@ -491,17 +503,18 @@ export function askChoiceMade() {
   isChoiceAwaited = false
   const waiting = adoption
   adoption = undefined
-  if (waiting === undefined) {
-    return
-  }
-  if (isYielded) {
-    readWhileYielded = waiting.read
-  } else {
+  // Under the sheet nothing is adopted: what was read waits for its import (`asksReadWhileYielded`).
+  if (waiting !== undefined && !isYielded) {
     waiting.adopt()
   }
 }
 
-export const asksReadWhileYielded = (): readonly OpenAsk[] => readWhileYielded
+/**
+ * The asks of today's tool a resume's SessionStart read for `session`, the
+ * read perhaps still pending; undefined when none was made for it. Under the
+ * sheet the ask adopts none of them: the sheet imports them (plan M5).
+ */
+export const asksReadWhileYielded = (session: string): Promise<TodayRead> | undefined => (todayRead?.session === session ? todayRead.read : undefined)
 
 /** A stored call's result in the sheet's form: its first line is one of I6's three. */
 const SHEET_RESULT = /^(?:(?:Added|Revised|Withdrew) q[1-9]|Nothing done\.|Outcome not known yet\.)/
@@ -581,7 +594,7 @@ export function resetAsk() {
   isYielded = false
   isChoiceAwaited = false
   adoption = undefined
-  readWhileYielded = []
+  todayRead = undefined
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -987,7 +1000,7 @@ function conversationOf(rows: readonly Row[]): Row[] {
  * file is on it. Lines a search found (`isWholeFile` false) carry no ancestry
  * to follow, and all count.
  */
-export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { isWholeFile?: boolean } = {}): OpenAsk[] {
+export function rebuildAsks(lines: readonly string[], { isWholeFile = true, times }: { isWholeFile?: boolean; times?: Map<string, string> } = {}): OpenAsk[] {
   const parsed = lines.flatMap((line) => {
     try {
       const row: unknown = JSON.parse(line)
@@ -997,11 +1010,11 @@ export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { 
     }
   })
   const isRewound = parsed.some((row) => row.type === 'last-prompt' && row.rewound === true)
-  return asksIn(isWholeFile && isRewound ? conversationOf(parsed) : parsed)
+  return asksIn(isWholeFile && isRewound ? conversationOf(parsed) : parsed, times)
 }
 
-/** The async asks rows in the transcript's shape hold, every row counting. */
-function asksIn(rows: readonly Row[]): OpenAsk[] {
+/** The async asks rows in the transcript's shape hold, every row counting; each call's row's time into `times`, when given. */
+function asksIn(rows: readonly Row[], times?: Map<string, string>): OpenAsk[] {
   const calls: { id: string; input: Record<string, unknown> }[] = []
   const results = new Map<string, { content: unknown; is_error?: boolean }>()
   const answers = new Map<string, string>()
@@ -1012,6 +1025,9 @@ function asksIn(rows: readonly Row[]): OpenAsk[] {
       // Any call not marked blocking may be async; isAccepted reads which from its result.
       if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && ASK_TOOLS.includes(String(block.name)) && isRecord(block.input) && block.input.async !== false) {
         calls.push({ id: String(block.id), input: block.input })
+        if (times !== undefined && typeof row.timestamp === 'string') {
+          times.set(String(block.id), row.timestamp)
+        }
       } else if (isRecord(block) && block.type === 'tool_result') {
         results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
       }
@@ -1394,14 +1410,21 @@ export function grepArgs(path: string): string[] {
 /** What `$.fs.read` takes whole: it refuses a file over 4 MiB. */
 const READ_LIMIT = 4 * 1024 * 1024
 
+/** What a read of a transcript's asks found, whether it was definite, and when each call was made. */
+type AsksRead = { asks: OpenAsk[]; isDefinite: boolean; times: Map<string, string> }
+
 /**
  * The async asks the transcript at `path` holds. One too large to read whole
  * (over 4 MiB) is searched for the lines that can name an ask, which carry no
  * ancestry: the asks of a branch the human rewound past count there too. A
  * search that fails, or whose output was cut at the same 4 MiB (it would drop
  * the newest asks), rebuilds nothing rather than a part, with a debug line.
+ * The read is definite when the whole file was read, or the search ran and
+ * its output was not cut: only then does "none" mean none (the sheet's
+ * import, plan M5).
  */
-async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
+async function readAsks($: EngineInterface, path: string): Promise<AsksRead> {
+  const times = new Map<string, string>()
   // A file past what one read takes goes straight to the search: the read's
   // refusal costs a round trip of its own, while the questions wait to draw.
   const size = await $.fs.stat(path).then(
@@ -1418,11 +1441,11 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
     }
   }
   if (text !== undefined) {
-    return rebuildAsks(text.split('\n'))
+    return { asks: rebuildAsks(text.split('\n'), { times }), isDefinite: true, times }
   }
-  const failed = (why: string) => {
+  const failed = (why: string): AsksRead => {
     $.ui.log(`ask: the transcript could not be read whole (${unread}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
-    return []
+    return { asks: [], isDefinite: false, times }
   }
   let search: Awaited<ReturnType<typeof $.process.run>>
   try {
@@ -1432,7 +1455,7 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
   }
   // 0 lines found, 1 none, anything else a failure.
   if (search.exitCode === 1) {
-    return []
+    return { asks: [], isDefinite: true, times }
   }
   if (search.exitCode !== 0) {
     return failed(`could not be searched (the search exited ${search.exitCode})`)
@@ -1440,7 +1463,16 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
   if (search.isStdoutTruncated === true) {
     return failed('its asks run past what one search returns')
   }
-  return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
+  return { asks: rebuildAsks(search.stdout.split('\n'), { isWholeFile: false, times }), isDefinite: true, times }
+}
+
+/** The sheet's import's part of a read (`TodayRead`): the open asks, with their calls' times. */
+function todayOf(read: AsksRead): TodayRead {
+  const asks = read.asks.filter((ask) => ask.status === 'open')
+  return {
+    isDefinite: read.isDefinite,
+    asks: asks.map((ask) => ({ callId: ask.id, ...(read.times.has(ask.id) && { askedAt: read.times.get(ask.id) }), questions: ask.questions })),
+  }
 }
 
 /**
@@ -1633,25 +1665,29 @@ export function registerAsk(on: On) {
   // copy's from the conversation it copied; a cleared one has none, and a
   // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
-    if (isYielded) {
+    // Yielded, only a resume's asks are read, for the sheet to import (M5).
+    if (isYielded && e.source !== 'resume') {
       return next(e)
     }
     let read: OpenAsk[] | undefined
-    if (e.source === 'resume' || e.source === 'fork') {
+    if (e.source === 'resume') {
+      // Kept for the sheet before it settles: its start may be waiting for it.
+      const reading = readAsks($, e.transcript_path)
+      todayRead = { session: e.session_id, read: reading.then(todayOf, () => ({ isDefinite: false, asks: [] })) }
+      read = (await reading).asks
+    } else if (e.source === 'fork') {
       // A copy's transcript is unwritten, but for /branch's, written whole
       // before the session starts and read with no cap on its length.
-      read =
-        e.source === 'fork' && !(await $.fs.exists(e.transcript_path))
-          ? await historyAsks($).catch((error: unknown) => {
-              $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
-              return []
-            })
-          : await readAsks($, e.transcript_path)
+      read = !(await $.fs.exists(e.transcript_path))
+        ? await historyAsks($).catch((error: unknown) => {
+            $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
+            return []
+          })
+        : (await readAsks($, e.transcript_path)).asks
     }
     // The choice may have been made while the read was pending: under the
-    // sheet nothing is adopted, and the read is kept for its import.
+    // sheet nothing is adopted, and the read waits for its import.
     if (isYielded) {
-      readWhileYielded = read ?? []
       return next(e)
     }
     // The hook contributes nothing to its own result: all it does is take the
@@ -1671,7 +1707,7 @@ export function registerAsk(on: On) {
       save()
     }
     if (isChoiceAwaited) {
-      adoption = { adopt, read: read ?? [] }
+      adoption = { adopt }
     } else {
       adopt()
     }

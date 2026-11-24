@@ -523,12 +523,14 @@ describe('landing (I9)', () => {
   test("a row of the routes' kinds that holds a block lands its keys, the step not awaited by the hook; the rows redraw after", async () => {
     const rec = record([out('a', 'q1'), out('b', 'q2'), out('c', 'q3')])
     const h = await started(rec)
+    const before = h.calls.length
     for (const [origin, door, key] of [[RESULT_ROW, 'hook-context', 'a'], [PROMPT_ROW, 'hook-context', 'b'], [PLUGIN_ROW, 'prompt', 'c']] as const) {
       await h.append({ door, origin, text: `<system-reminder>\nx hook additional context: ${envelopeOf([out(key, 'q')], 'main')}\n</system-reminder>` })
     }
     await h.settle()
     expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['a'], ['b'], ['c']])
-    expect(h.calls.filter((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toHaveLength(3)
+    // Each landed step's view is drawn: once each.
+    expect(h.calls.slice(before).filter((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toHaveLength(3)
     expect(rec.pending).toEqual([])
   })
 
@@ -603,7 +605,8 @@ describe('a start (I9, I10)', () => {
   test("the search finds one of two pending outcomes: it lands, the start is ordered again, and its context is the SessionStart's; the other goes owed across a stop", async () => {
     const rec = record([out('k1', 'q1'), out('k2', 'q2')])
     const searched: string[][] = []
-    const h = sheetOn({ step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
+    // The start's search (the ask's own read of today's asks searches too: M5's import).
+    const h = sheetOn({ step: rec.script, exec: (argv) => (argv[1] === '-MJSON::PP' && searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
     await h.start()
     const answered = (await h.classicStart('resume')) as { additionalContext?: string[] }
     expect(searched).toHaveLength(1)
@@ -644,7 +647,7 @@ describe('a start (I9, I10)', () => {
     await first.classicStart('resume')
     fails = false
     const searched: string[][] = []
-    const reloaded = sheetOn({ kept: first.kept, step: rec.script, exec: (argv) => (searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
+    const reloaded = sheetOn({ kept: first.kept, step: rec.script, exec: (argv) => (argv[1] === '-MJSON::PP' && searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'tool.call')}\n` }) })
     await reloaded.start()
     await reloaded.settle()
     expect(searched.map((argv) => argv.slice(4))).toEqual([['--', `/t/${S1}.jsonl`, 'k1', 'k2']])
@@ -678,7 +681,7 @@ describe('a start (I9, I10)', () => {
     const h = sheetOn({ step: rec.script, exec: () => Promise.reject(new Error('searched')) })
     await h.start()
     const answered = (await h.classicStart('resume')) as { additionalContext?: string[] }
-    expect(h.runs().filter((r) => r.startsWith('-e'))).toEqual([])
+    expect(h.runs().filter((r) => r.startsWith('-MJSON::PP'))).toEqual([])
     expect(answered.additionalContext).toBeUndefined()
   })
 

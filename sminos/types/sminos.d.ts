@@ -49,7 +49,8 @@ export type AskSnapshot = {
  * `session` is the session the process is in; `started` the session whose
  * `start` step has answered, before which no other step is ordered for it;
  * `starting` the start step owed for `session` (its nonce, which every retry
- * repeats, its source and the conversation's floor), until it answers;
+ * repeats, its source, the conversation's floor, its transcript and, for a
+ * resume, the asks of today's tool it imports), until it answers;
  * `left` the session a /clear left, whose record is removed. Only sminos
  * writes or reads it.
  */
@@ -59,7 +60,7 @@ export type SheetKept = {
   runner?: 'terminal' | 'maws'
   session: string
   started?: string
-  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string }
+  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[] } }
   left?: string
 }
 

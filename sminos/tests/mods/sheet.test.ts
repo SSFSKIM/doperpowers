@@ -4,7 +4,7 @@ import { ASYNC_RESULT, asksReadWhileYielded, asyncAsks, observeAsks } from '../.
 import type { AskNote } from '../../hooks/mods/ask'
 import { DESCRIPTION, INPUT_SCHEMA, NOT_KNOWN, SHEET_TOOL, WITHDRAWN } from '../../hooks/mods/sheet-model'
 import { TICK_MS, sheetNotices, sheetNudge, sheetView } from '../../hooks/mods/sheet'
-import { ALIVE, HOME, MODEL, S1, S2, SHEET_ON, defaultStep, gated, harness, ok, sheetOn, view } from './sheet-harness'
+import { ALIVE, HOME, MODEL, S1, S2, SHEET_ON, defaultStep, gated, harness, linesOf, ok, sheetOn, view } from './sheet-harness'
 import type { StepEvent, StepScript } from './sheet-harness'
 
 tier('user')
@@ -129,16 +129,17 @@ describe('the ask yields (I11)', () => {
     expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
   })
 
-  test("yielded, a stored call of the sheet's form is the engine's to draw; one of today's form is still the ask's", async () => {
+  test("yielded, the ask passes a stored call of the sheet's form on (the sheet's row draws it, M5); one of today's form is still the ask's", async () => {
     const h = sheetOn()
     await h.start()
-    expect(await h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't1', input: { ask: [{ question: 'a' }] }, output: 'Added q1.', isRunning: false, isErrored: false })).toBe('beneath')
-    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't1', output: 'Added q1.\nNot done: entry 2, multiSelect needs options.', isErrored: false })).toBe('beneath')
-    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't2', output: 'Outcome not known yet.\nThe sheet did not answer.', isErrored: false })).toBe('beneath')
-    // Today's form, answered: the ask draws it (its row reaches for the renderer).
+    // The sheet's own row draws the engine's head (what passed beneath) and its lines; its result block stands aside.
+    expect(linesOf(await h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't1', input: { ask: [{ question: 'a' }] }, output: 'Added q1.', isRunning: false, isErrored: false }))).toEqual(['  ⎿  ', 'q1 — a'])
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't1', output: 'Added q1.\nNot done: entry 2, multiSelect needs options.', isErrored: false })).toMatchObject({ type: 'Box' })
+    expect(await h.render('ToolResult', { tool: SHEET_TOOL, tool_use_id: 't2', output: 'Outcome not known yet.\nThe sheet did not answer.', isErrored: false })).toMatchObject({ type: 'Box' })
+    // Today's form, answered: the ask draws it.
     const today = { questions: [{ question: 'Which?', header: 'H', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }] }
-    const drawn = h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't3', input: today, output: 'User has answered your questions: "Which?"="A". You can now continue with these answers in mind.', isRunning: false, isErrored: false })
-    await expect(drawn).rejects.toThrow('drew')
+    const drawn = await h.render('ToolUse', { tool: SHEET_TOOL, tool_use_id: 't3', input: today, output: 'User has answered your questions: "Which?"="A". You can now continue with these answers in mind.', isRunning: false, isErrored: false })
+    expect(linesOf(drawn)).toContain('· Which? → A')
   })
 
   test("not yielded (today), the sheet's hooks pass every call on: today's tool answers", async () => {
@@ -520,8 +521,12 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
       expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('sheet')
       expect(notes).toEqual([])
       expect(asyncAsks()).toEqual([])
-      expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+      expect((await asksReadWhileYielded(S1))?.asks.map((ask) => ask.callId)).toEqual(['t-open'])
       expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
+      // The start imports it (M5): staged under the start's nonce, named by the event.
+      const start = h.steps.find((step) => step.event === 'start')?.start as { nonce: string; today?: { definite: boolean; asks: { file: string }[] } }
+      expect(start.today).toEqual({ definite: true, asks: [{ file: `start-${start.nonce}/ask-1.json` }] })
+      expect(h.staged(`${HOME}/sheet/.staging/${S1}/start-${start.nonce}/ask-1.json`)).toMatchObject({ callId: 't-open', questions: [{ question: 'Which port?' }] })
     })
 
     test(`a SessionStart ${order === 'first' ? 'before' : 'during'} the choice, which is today: the ask takes them up as it does today, once the choice is made`, async () => {
@@ -574,7 +579,9 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
       if (choice === 'sheet') {
         expect(notes).toEqual([])
         expect(asyncAsks()).toEqual([])
-        expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+        expect((await asksReadWhileYielded(S1))?.asks.map((ask) => ask.callId)).toEqual(['t-open'])
+        // The start waited for the read, and imports it.
+        expect((h.steps.find((step) => step.event === 'start')?.start as { today?: { definite: boolean; asks: unknown[] } }).today).toMatchObject({ definite: true, asks: [{}] })
       } else {
         expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])
         expect(asyncAsks().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
