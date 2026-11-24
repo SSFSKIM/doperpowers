@@ -962,8 +962,19 @@ STAGING = [
                               " carto-labs      |  288730\n(5 rows)"),
     (_DB + r".*viewer", " role   | seats\n--------+-------\n viewer |  2914\n member | 11207\n finance |   988\n"
                         " admin  |  3402\n(4 rows)"),
-    (_DB, "(0 rows)"),
 ]
+
+# What the shell simulator keeps to (question_sheet.Env.simulate) for a command the canned shell cannot answer.
+SIM_FACTS = """- Staging is read-only (psql "$STAGING_RO_URL"; snapshot 2026-11-22 03:00 UTC): 3,170 accounts, 1,204 of them
+  with accounts.timezone NULL; 48,211 billing contacts (36,880 with a phone); seats by role: viewer 2,914,
+  member 11,207, finance 988, admin 3,402.
+- October 2026 usage_events rows by account: acme-logistics 1,412,903; northwind-freight 884,120; helios-energy
+  610,447; brightpath 402,915; carto-labs 288,730; no other account above 260,000.
+- The streaming writer's peak RSS stays between 81 and 92 MB whatever the row count; it writes about 95,000
+  rows a second.
+- tzdata 2025.2 is installed in .venv; zoneinfo.TZPATH is empty there.
+- Commands that reach outside this machine (other repositories, the network, deploys) are not available:
+  they fail as such a command fails when the path or host does not exist."""
 
 
 def trigger_output(scenario):

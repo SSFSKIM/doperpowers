@@ -152,7 +152,30 @@ check("commands split outside quotes only", qs.simple_commands('git commit -m "a
 env_p, *_ = qs.session(ss.e1_script("premise", "far"), qs.DEFAULT_ARM)
 check("the branch's scripted commits sit on main's new one", env_p.shell("git log --oneline -4").split("\n")[3]
       .startswith("5d0e7a9"), env_p.shell("git log --oneline -4"))
+check("pytest -v lists the tests it ran", "tests/export/test_x.py::test_a PASSED" in sh("pytest tests/export/test_x.py -v"))
+check("pytest -k filters by name", sh("pytest tests/export/test_x.py -k test_b -q").endswith("1 passed in 0.39s"),
+      sh("pytest tests/export/test_x.py -k test_b -q"))
+check("an unknown command prints nothing without a simulator", sh("uv run python -c 'print(1)'") == qs.NO_OUTPUT)
+
+
+class SimClient:
+    def __init__(self):
+        self.prompts = []
+        self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(create=self.create))
+
+    def create(self, **kw):
+        self.prompts.append(kw["messages"][0]["content"])
+        return types.SimpleNamespace(content=[BetaTextBlock(type="text", text="1")])
+
+
+sim = SimClient()
+env.simulator = (sim, "claude-sonnet-5-5", ss.SIM_FACTS)
+out = sh("uv run python -c 'print(1)' && git status")
+check("an unknown command goes to the simulator, whole", out == "1" and "uv run python -c 'print(1)' && git status"
+      in sim.prompts[0] and "1,204 of them" in sim.prompts[0] and env.simulated[-1]["output"] == "1", out)
+check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 1)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
+env.simulator = None
 check("staging answers the numbers the session showed",
       "1204" in sh('psql "$STAGING_RO_URL" -c "select count(*) from accounts where timezone is null"'))
 check("the trigger run again answers the same", "ExportTooLarge" in sh("make smoke-staging"))

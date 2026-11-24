@@ -436,6 +436,44 @@ class Env:
         self.agents = 0
         self.committed = dict(fs.files)
         self.commits = 0
+        self.simulator = None  # (client, model, facts): answers what the canned shell cannot
+        self.simulated = []
+
+    SIM = """You are the shell of a developer's Mac, in the git repository {cwd} (branch csv-export; Python 3.12.7 in
+.venv with the project's dependencies installed; the `tally` package and its tests are the files listed below).
+Print exactly what this command line would print, stdout and stderr, and nothing else: no commentary, no code
+fences. If it would print nothing, print nothing.
+
+Keep to what is established. These facts hold:
+{facts}
+Every test in the repository passes. Where the output depends on something not given here, print a plausible,
+unremarkable result consistent with the files; never invent a new problem, failure, warning or surprise, and
+never contradict the files.
+
+The repository's files: {listing}
+
+{named}
+Command line:
+{command}"""
+
+    def simulate(self, command):
+        client, model, facts = self.simulator
+        named = [p for p in self.fs.files if self.fs.rel(p) in command or p in command]
+        files = "".join(f"--- {self.fs.rel(p)} ---\n{self.fs.files[p][:6000]}\n" for p in named[:4])
+        prompt = self.SIM.format(cwd=CWD, facts=facts, command=command,
+                                 listing=", ".join(self.fs.rel(p) for p in sorted(self.fs.files) if p.startswith(CWD)),
+                                 named=("Files the command names, as they are now:\n" + files) if files else "")
+        try:
+            resp = client.beta.messages.create(model=model, max_tokens=4000, output_config={"effort": "low"},
+                                               system=CC_SYSTEM, betas=[CC_BETA],
+                                               messages=[{"role": "user", "content": prompt}])
+            out = "".join(b.text for b in resp.content if b.type == "text").strip()
+        except Exception as e:  # the run goes on; the miss is recorded
+            out, resp = NO_OUTPUT, None
+            self.simulated.append({"command": command, "error": repr(e)})
+            return out
+        self.simulated.append({"command": command, "output": out})
+        return out or NO_OUTPUT
 
     def mark_committed(self):
         """The working tree as committed: what the live part of a run starts from."""
@@ -509,6 +547,8 @@ class Env:
         command = re.sub(r"python3?\s+-\s*<<-?\s*['\"]?(\w+)['\"]?\n.*?\n\1", "", command, flags=re.S)
         for words in simple_commands(command):
             out = self.shell_one(words)
+            if out is None:  # a command the canned shell cannot answer: the whole line goes to the simulator
+                return self.simulate(command) if self.simulator else NO_OUTPUT
             if out:
                 outputs.append(out)
         return "\n".join(outputs) or NO_OUTPUT
@@ -520,7 +560,7 @@ class Env:
         if not words:
             return ""
         cmd, args = words[0], words[1:]
-        if cmd == "cd":
+        if cmd in ("cd", ":"):
             return ""
         if cmd == "git":
             return self.git(args)
@@ -565,8 +605,9 @@ class Env:
                     if not a.startswith("-"):
                         self.fs.files.setdefault(self.fs.resolve(a), "")
             return ""
-        return {"pwd": CWD, "whoami": "dev", "hostname": "macbook",
-                "date": "Mon Nov 23 15:42:10 UTC 2026"}.get(cmd, "")
+        known = {"pwd": CWD, "whoami": "dev", "hostname": "macbook", "date": "Mon Nov 23 15:42:10 UTC 2026",
+                 "true": "", "false": "", "export": "", "source": "", "sleep": "", "head": "", "tail": ""}
+        return known.get(cmd)  # None: not something the canned shell can answer
 
 
     def changed(self):
@@ -646,16 +687,35 @@ class Env:
         return ""
 
     def pytest(self, args):
-        """Every test passes; the count is what the named paths hold, or the whole suite."""
+        """Every test passes. The tests are those the named paths hold (the whole suite adds 196 the world does
+        not hold), filtered by -k's words and -m slow; -v lists them by name."""
         paths = [a.split("::")[0] for a in args if a.split("::")[0].startswith("tests")]
-        files = [p for p in self.fs.files if p.endswith(".py") and "/tests/" in p and
+        files = [p for p in sorted(self.fs.files) if p.endswith(".py") and "/tests/" in p and
                  (not paths or any(self.fs.rel(p).startswith(x.rstrip("/")) for x in paths))]
-        n = sum(len(re.findall(r"^def test_", self.fs.files[p], re.M)) for p in files)
-        if not paths:
-            n += 196  # the rest of the suite, which the world does not hold
+        names = []
+        for p in files:
+            body = self.fs.files[p]
+            for m in re.finditer(r"^((?:@pytest\.mark\.\w+.*\n)*)def (test_\w+)", body, re.M):
+                slow = "mark.slow" in m.group(1)
+                names.append((self.fs.rel(p), m.group(2), slow))
+        k = next((args[i + 1] for i, a in enumerate(args) if a == "-k" and i + 1 < len(args)), None)
+        mark = next((args[i + 1] for i, a in enumerate(args) if a == "-m" and i + 1 < len(args)), "")
+        if k:
+            words = [w for w in re.split(r"\s+|\(|\)", k) if w and w not in ("and", "or", "not")]
+            names = [x for x in names if any(w in x[1] for w in words)]
+        if mark.strip() == "slow":
+            names = [x for x in names if x[2]]
+        elif "not slow" in mark or not mark:
+            names = [x for x in names if not x[2]]
+        extra = 0 if paths or k else 196
+        n = len(names) + extra
+        tail = f"{n} passed" + (", 3 skipped" if extra else "") + f" in {0.2 + n * 0.19:.2f}s"
+        if any(a in ("-v", "--verbose", "-vv") for a in args):
+            body = [f"{f}::{t} PASSED".ljust(72) + f"[{100 * (i + 1) // max(1, len(names)):>3}%]"
+                    for i, (f, t, _) in enumerate(names)]
+            return "\n".join(body + ([f"... and {extra} more PASSED"] if extra else []) + ["", tail])
         dots = "." * n
         lines = [dots[i:i + 72] for i in range(0, len(dots), 72)] or [""]
-        tail = f"{n} passed" + (", 3 skipped" if not paths else "") + f" in {0.2 + n * 0.19:.2f}s"
         return "\n".join(lines) + "\n" + tail
 
 
@@ -878,12 +938,15 @@ def run_jobs(jobs, key, run, workers=8):
     return out
 
 
-def session(script, arm_path, overrides=()):
+def session(script, arm_path, overrides=(), simulator=None):
     """A fresh environment, the scripted prefix built through it, and the request's system and tools.
-    `overrides` are (regex, output) answers tried before staging's and the generic shell's."""
-    from question_sheet_session import GIT_LOG, STAGING, make_fs
+    `overrides` are (regex, output) answers tried before staging's and the generic shell's; `simulator`
+    (client, model) answers, from then on, what the canned shell cannot."""
+    from question_sheet_session import GIT_LOG, SIM_FACTS, STAGING, make_fs
     fs = make_fs()
     env = Env(fs, Sheet(fs), shell_overrides=list(overrides) + STAGING, git_log=GIT_LOG)
     prefix = build(script, env)
     env.mark_committed()
+    if simulator:
+        env.simulator = (*simulator, SIM_FACTS)
     return env, prefix, claude_code_system(PREAMBLE + style_body()), tools_for(arm_path)

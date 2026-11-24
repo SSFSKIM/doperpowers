@@ -25,6 +25,9 @@ Histories (question_sheet_session.e2_script): short (the reading, the writer,
 the trigger) and long (the reading, about forty tool rounds of work, the
 trigger), so the reasons are far back when the question is written.
 
+The project's shell is canned, and a command it cannot answer goes to
+--shell-model, as in E1 (question-sheet-revise-eval.py says how).
+
 Each question a run puts on the sheet is drawn as its card
 (question_sheet.render_card: header, question, context, the references' text
 as captured, options with the recommended mark) and judged from the card
@@ -55,6 +58,7 @@ full card pass, or the judges cannot tell the behaviour apart.
   python3 tests/output-styles/question-sheet-card-eval.py [NAME=DESCRIPTION.md ...]
       [--scenarios cap,pii,tz,all] [--history long,short] [--reps 5]
       [--model claude-opus-5-5] [--effort high] [--judge-effort medium] [--max-steps 20]
+      [--shell-model claude-sonnet-5-5]
       [--workers 8] [--out question-sheet-card-results.json] [--calibrate] [--dry-run]
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
@@ -118,7 +122,8 @@ def run(job, args, arms):
     arm, scenario, history, rep = job
     again = ss.trigger_output(scenario)  # the trigger's command run again answers the same
     env, prefix, system, tools = qs.session(ss.e2_script(scenario, history), arms[arm],
-                                            [(r"smoke-staging|tests\.smoke|tally\.export\.audit", again)])
+                                            [(r"smoke-staging|tests\.smoke|tally\.export\.audit", again)],
+                                            simulator=(client, args.shell_model))
     steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps)
     cards = []
     for step_i, b in qs.sheet_calls(steps):
@@ -128,7 +133,7 @@ def run(job, args, arms):
             cards.append({"id": qid, "step": step_i, "card": qs.render_card(q),
                           "notes": qs.notes_before(steps, step_i)})
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
-            "calls": env.sheet.calls, "cards": cards,
+            "calls": env.sheet.calls, "cards": cards, "simulated": env.simulated,
             "asking_calls": sum(1 for c in env.sheet.calls if c.get("added"))}
 
 
@@ -199,6 +204,7 @@ if __name__ == "__main__":
     ap.add_argument("--effort", default="high")
     ap.add_argument("--judge-effort", default="medium")
     ap.add_argument("--max-steps", type=int, default=20)
+    ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default="question-sheet-card-results.json")
     ap.add_argument("--calibrate", action="store_true", help="judge the calibration cards only")

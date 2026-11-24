@@ -35,6 +35,11 @@ the branch's diff; then the trigger); near (the same steps with the ask moved
 to just before the trigger). far and near differ only in how far back the
 ask is, so far minus near is what having moved on costs.
 
+The project's shell is canned (git, files, grep, sed, pytest, the staging
+numbers the session showed); a command it cannot answer goes to
+--shell-model, told the facts the session established and to invent no
+problem (question_sheet.Env.simulate); each such answer is kept on the run.
+
 A run ends at the turn's end, a final message, --max-steps responses, or one
 response after its first sheet call. Its outcome, from the stub's record:
 
@@ -58,6 +63,7 @@ whether a revision still asks for the decision it replaced, is judged
   python3 tests/output-styles/question-sheet-revise-eval.py [NAME=DESCRIPTION.md ...]
       [--scenarios option_gone,premise,subagent,distinct] [--history far,near,short] [--reps 5]
       [--model claude-opus-5-5] [--effort high] [--judge-effort low] [--max-steps 20]
+      [--shell-model claude-sonnet-5-5]
       [--workers 8] [--out question-sheet-revise-results.json] [--dry-run]
 
 It calls the local gateway (mid_turn.gateway_client: ANTHROPIC_BASE_URL,
@@ -101,12 +107,12 @@ def card(q):
 
 def run(job, args, arms):
     arm, scenario, history, rep = job
-    env, prefix, system, tools = qs.session(ss.e1_script(scenario, history), arms[arm])
+    env, prefix, system, tools = qs.session(ss.e1_script(scenario, history), arms[arm], simulator=(client, args.shell_model))
     n0 = len(env.sheet.calls)
     before = {q: json.loads(json.dumps(v)) for q, v in env.sheet.questions.items()}
     steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps)
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
-            "calls": env.sheet.calls[n0:], "before": before,
+            "calls": env.sheet.calls[n0:], "before": before, "simulated": env.simulated,
             "after": {q: {k: v for k, v in env.sheet.questions[q].items() if k != "history"} for q in env.sheet.questions}}
 
 
@@ -171,6 +177,7 @@ if __name__ == "__main__":
     ap.add_argument("--effort", default="high")
     ap.add_argument("--judge-effort", default="low")
     ap.add_argument("--max-steps", type=int, default=20)
+    ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default="question-sheet-revise-results.json")
     ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")
