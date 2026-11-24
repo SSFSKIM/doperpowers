@@ -5,7 +5,8 @@
 initialised the caller's repository: from a linked worktree, `core.bare =
 true` and `core.worktree` written into its shared config. What every runnable
 test file runs first removes them: git_isolation.py (from devcloud_isolation.py
-for the Python files), devcloud-isolation.sh for the shell suites.
+for the Python test files, directly in the files run by themselves that do not
+run that), devcloud-isolation.sh for the shell suites.
 
 Each case starts an entry point's preamble and a fixture that makes a
 repository in a child whose GIT_DIR and GIT_WORK_TREE name a decoy (a linked
@@ -33,12 +34,20 @@ m = object.__new__(test_threads.Machine)
 m.home = sys.argv[2]
 m.repo("work")
 """
+# A file run directly that runs git_isolation.py itself (rl10_conformance.py, bridge_order.py, the benches' rig,
+# the live checks), then its own `git init`.
+DIRECT_FIXTURE = """import os, runpy, subprocess, sys
+runpy.run_path(os.path.join(sys.argv[1], "git_isolation.py"))
+subprocess.run(["git", "init", "-q", os.path.join(sys.argv[2], "work")], check=True)
+"""
 # A shell suite: the preamble sourced, then its own `git init`.
 SH_FIXTURE = '. "$1/devcloud-isolation.sh"; git init -q "$2/work"'
 
 
 def git(*args, cwd=None):
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+    """The test's own git, under none of the caller's configuration (a signing commit.gpgSign among it)."""
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, env=env, check=True,
                           capture_output=True, text=True).stdout.strip()
 
 
@@ -82,6 +91,9 @@ class Decoy(unittest.TestCase):
 
     def test_python_fixture(self):
         self.check([sys.executable, "-B", "-c", PY_FIXTURE, HERE, self.scratch])
+
+    def test_direct_preamble(self):
+        self.check([sys.executable, "-B", "-c", DIRECT_FIXTURE, HERE, self.scratch])
 
     def test_shell_suite(self):
         self.check(["bash", "-c", SH_FIXTURE, "_", HERE, self.scratch])

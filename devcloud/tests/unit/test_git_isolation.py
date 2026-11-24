@@ -24,7 +24,9 @@ test_driver_keys.git(sys.argv[2], "init", "-q")
 
 
 def git(*args, cwd=None):
-    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+    """The test's own git, under none of the caller's configuration (a signing commit.gpgSign among it)."""
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, env=env, check=True,
                           capture_output=True, text=True).stdout.strip()
 
 
