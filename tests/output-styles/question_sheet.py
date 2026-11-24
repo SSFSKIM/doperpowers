@@ -312,6 +312,25 @@ def render_card(q):
     return "\n".join(out)
 
 
+# -- calling the model
+
+PLAN_WAITS = []  # (time, seconds waited) for each refusal for plan usage
+
+
+def create(client, **kw):
+    """A request, retried for up to ten minutes when the gateway refuses it for plan usage (an exhausted account
+    behind it; another usually serves a minute later). Any other error is raised."""
+    import time
+    for attempt in range(11):
+        try:
+            return client.beta.messages.create(**kw)
+        except Exception as e:
+            if "plan usage" not in str(e) or attempt == 10:
+                raise
+            PLAN_WAITS.append((time.strftime("%H:%M:%S"), 60))
+            time.sleep(60)
+
+
 # -- the simulated project
 
 class FS:
@@ -478,7 +497,7 @@ Command line:
                                  listing=", ".join(self.fs.rel(p) for p in sorted(self.fs.files) if p.startswith(CWD)),
                                  named=("Files the command names, as they are now:\n" + files) if files else "")
         try:
-            resp = client.beta.messages.create(model=model, max_tokens=4000, output_config={"effort": "low"},
+            resp = create(client, model=model, max_tokens=4000, output_config={"effort": "low"},
                                                system=CC_SYSTEM, betas=[CC_BETA],
                                                messages=[{"role": "user", "content": prompt}])
             out = "".join(b.text for b in resp.content if b.type == "text").strip()
@@ -868,7 +887,7 @@ def live(client, model, effort, system, tools, prefix, env, max_steps, done=None
     steps, sheet_seen, ended = [], None, "max_steps"
     for i in range(max_steps):
         req = with_breakpoint(msgs) if i else msgs
-        resp = client.beta.messages.create(model=model, max_tokens=16000, output_config={"effort": effort},
+        resp = create(client, model=model, max_tokens=16000, output_config={"effort": effort},
                                            thinking=THINKING["thinking"], betas=THINKING["betas"] + [CC_BETA],
                                            system=system, tools=tools, messages=req)
         blocks = response_blocks(resp.content)
@@ -915,7 +934,7 @@ JUDGE_USAGE = {"calls": 0, "input": 0, "output": 0}
 
 def judge(client, prompt, effort="low", model="claude-opus-5-5"):
     """One judge's JSON verdict, in the gateway's request shape; its tokens are added to JUDGE_USAGE."""
-    resp = client.beta.messages.create(model=model, max_tokens=8000, output_config={"effort": effort},
+    resp = create(client, model=model, max_tokens=8000, output_config={"effort": effort},
                                        system=CC_SYSTEM, betas=[CC_BETA], messages=[{"role": "user", "content": prompt}])
     u = getattr(resp, "usage", None)
     JUDGE_USAGE["calls"] += 1

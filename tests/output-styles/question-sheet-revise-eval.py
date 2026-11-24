@@ -226,7 +226,8 @@ if __name__ == "__main__":
     sim = [y["usage"] for x in out for y in x.get("simulated", []) if y.get("usage")]
     side = {"judge": dict(qs.JUDGE_USAGE), "shell_simulator": {"calls": len(sim), "input": sum(y["input"] for y in sim),
                                                                 "output": sum(y["output"] for y in sim)}}
-    print("judges", side["judge"], "shell simulator", side["shell_simulator"])
+    side["plan_usage_waits"] = list(qs.PLAN_WAITS)
+    print("judges", side["judge"], "shell simulator", side["shell_simulator"], "plan-usage waits", len(qs.PLAN_WAITS))
     Path(args.out).write_text(json.dumps({"python": sys.version.split()[0], "args": vars(args), "usage": usage, "side_usage": side,
                                           "runs": out}, indent=1, ensure_ascii=False, default=str))
     print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; usage {usage}, about ${qs.cost(usage, args.model)} "
