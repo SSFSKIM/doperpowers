@@ -1831,15 +1831,18 @@ I3's op.
   `/branch`; else at `session.start` after `next`, or at the first
   prompt) and sends it on `start` when it has it and on every `call`
   while the view's `nextId` is 1.
-- The description the tool is registered under until M7 (§2.4 as the
-  owner ruled it; C1's baseline compares this wording with "put every
-  question you have in one call", and M7 takes the one it reports):
-
-      Puts questions to the human on this session's question sheet and returns at once; nothing waits on them. The human answers any of them, in any order, when they get to it, and each answer reaches you later in a message that names its question by id.
-
-      Ask when a question comes up, not at the end of your turn, and put every question you have at that moment in the one call (`ask` takes up to 20 entries); then go on with work that does not depend on the answers. To change a question you already asked, send an entry with its `id`: it replaces the question in place. Do not ask a second question that overrides the first. To take a question back, name it in `withdraw`.
-
-      The human sees only the card. Put in `context` what they need to judge the question, name in `references` the files it is about (each is shown as it is now; a file outside your working directories cannot be shown, so quote what matters from it in `context`), and mark an option `recommended` when you have a recommendation. Options are optional: a question without them is answered in text, and every question has a text field.
+- The description the tool is registered under is
+  `tests/output-styles/question-sheet/description-v3.md` as it stands on
+  `main`, word for word: the owner's ruling on C1's baseline (§2.4 at the
+  composite's `5f53131c5`: "ask when a question comes up, then keep
+  working", the sentence on batching dropped). It is held as a constant in
+  `H/sheet-model.tsx`, and a test holds the constant equal to the file.
+  C1's two evals default to the same file; M7 ships it unless they fail
+  on it.
+  Each property's description is the one C1's stub registers for that
+  field (`FIELD_DESCRIPTIONS` in `tests/output-styles/question_sheet.py`;
+  `description-v3.md` sets none of its own), so the evals measure the
+  tool as it ships.
 
   The schema the tool is registered under is the published
   `tool-input.schema.json` with a description on each property; a test
@@ -2000,17 +2003,31 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   `$.fs.read`, and judges by age alone; a step's view is the full rule.
   The count of answers is the view's `owedAcrossStop`.
 - A row, from the stored call alone (I11): one line a question the call
-  added or revised, `q7 Auth method — <the question's first sentence>`;
-  then, where a view knows the question, the receipt in the line's
-  place: `q7 Auth method → OAuth`, `q7 Auth method · Dismissed`, `·
-  Withdrawn`, and `· Revised below` when the question's revision is past
-  the one this call set. A withdrawal the call made draws `q2 ·
-  Withdrawn`. A session with no record (a fork, a record removed), and a
-  question older than the 500 a view's `closed` holds, draw the lines
-  without receipts. A stored call whose first line is `Nothing done.`
-  draws that; one whose first line is `Outcome not known yet.` draws
-  `outcome not known` and no id, and is not matched to the notice that
-  followed.
+  added or revised, `q7 Auth method — <the question's first sentence
+  that ends in "?", else its first sentence>` (§8.1's rule, so a
+  question reads the same in the terminal and in the app); no head line
+  of the sheet's own: the engine's tool row has its head and its fold
+  (the composite's writer's ruling of 2026-11-24 on §8.3). Then the
+  receipt in the line's place: `q7 Auth method → OAuth`, `q7 Auth method
+  · Dismissed`, `· Withdrawn`, and `· Revised below` when the question's
+  revision is past the one this call set. A withdrawal the call made
+  draws `q2 · Withdrawn`. A stored call whose first line is `Nothing
+  done.` draws that; one whose first line is `Outcome not known yet.`
+  draws `outcome not known` and no id, and is not matched to the notice
+  that followed.
+- Where a receipt comes from (the same ruling). While the record lives,
+  from the view's `closed`. For a question the view does not hold (a
+  session with no record: a fork, a record removed; one older than the
+  500 `closed` keeps), from the `<sheet-delivery>` blocks this process's
+  conversation holds: those the landing hook saw, and those of one read
+  of `$.session.messages` at the start. A block's answered entry gives
+  `→` and the picked labels, read by place from the call's own input at
+  that revision, or `their text`; its dismissed ids give `· Dismissed`.
+  No scan beyond that. This path only draws: a read that fails or is
+  not available leaves the lines without receipts and touches nothing of
+  the record, the drain or delivery, and it adds nothing the model sees.
+  A question that neither the view nor those blocks know is drawn as its
+  line with no receipt.
 - A read is definite when the whole file was read, or the search ran and
   its output was not cut. Indefinite, the `start` event says so, nothing
   is imported or recorded, and the next start reads again. A fork's first
@@ -2021,7 +2038,11 @@ the view, I6's grammar and its published examples, I5's `start.today`.
 **Does not touch.** Today's band and rows in a session whose choice is
 'today'.
 
-**Proves.** Acceptance 1's line, 16's row, the receipts of §8.3, and
+**Proves.** Acceptance 1's line, 16's row, the receipts of §8.3, a
+line's sentence (a question that opens with a statement shows its first
+sentence ending in "?"; one with none shows its first sentence), a row
+with no record drawing its receipts from the blocks the conversation
+holds and, where neither knows a question, its line bare, and
 G2's three import statements (once, also after two resumes; kept when
 the read was incomplete; a fork empty and staying empty). Tests pin the
 line's four forms, each receipt, the parser on every published stored
@@ -2086,8 +2107,8 @@ by the answers applied and not by a dismissal.
 ### M7 — The description, what is written beside the code, the acceptance
 
 **At its end.** The tool ships the description that passes C1's
-thresholds; if the owner ruled for automatic capture of context (§10),
-it is built and passes with it; the manuals say what the plugin now
+thresholds (automatic capture of context is out of scope: the owner's
+ruling on C1's baseline, §10); the manuals say what the plugin now
 does; G2 and G3 hold as the composite words them, run as written.
 
 **Touches.** `H/sheet-model.tsx` (the description and the properties'
@@ -2104,8 +2125,8 @@ looser `$`).
 
 **Decisions.**
 
-- The description is the wording C1's baseline reports of the two it
-  compares (§2.4), tested with C1's two evals as C1 merged them under
+- The description is `description-v3.md` (M3; the owner's ruling,
+  §2.4), tested with C1's two evals as C1 merged them under
   `tests/output-styles/`, the registered tool in the stub's place, by
   the one command each eval gives; the thresholds are the ones the owner
   set into the composite's Acceptance 14.
