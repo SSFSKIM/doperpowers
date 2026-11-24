@@ -2080,6 +2080,16 @@ tool changes); their tests; `T/mods/live-sheet-check.py`; `H/README.md`,
   `landed` when `start.before` names keys; the context of the step that
   answered last. All of it inside the classic SessionStart hook, which
   waits only on its own `$` calls.
+- The compaction's context (M3 left the seam: its drain is only queued,
+  so that hook never waits behind another hook's step). The classic
+  SessionStart of source `compact` orders its own step, a drain with
+  `context: "compact"`, as its own `$.process.run` (awaiting its own `$`
+  call is what K4 allows; the record's lock serializes it with any other
+  step) and returns `effects.context` as `additionalContext`, the path
+  C0's P5 showed reaches the model. Only when that step gives no answer,
+  or when a start's SessionStart had to return before the start choice
+  was made (M3's `sheet.early`), does the context go instead as a context
+  entry on the next result or prompt route, once.
 
 **Does not touch.** MAWS's steer and the context the tool adds to one
 (C5). The band's count of answers that will go with the next message
