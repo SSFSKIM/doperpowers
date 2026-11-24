@@ -586,8 +586,11 @@ def _running(pid):
 
 
 def surfaces(now=None):
-    """Every well-formed registration, by its file's name, each with `alive`: its heartbeat at most 30 s old and its
-    process running."""
+    """Every well-formed registration, each with `alive`: its heartbeat at most 30 s old and its process running
+    (I8, "Reading the registrations"). Only names ending in `.json` are read, so a writer's temporary file is not; a
+    file that vanishes between the listing and the read, or is half-written, is passed over. The order is fixed:
+    `mawsd` first, then the others by name, never the directory's. `url` is the origin with one trailing slash taken
+    off, so a surface's link is `<url>/s/<session>`."""
     t = STEP().when(now or _now_ms())
     out = []
     try:
@@ -599,7 +602,7 @@ def surfaces(now=None):
             continue
         try:
             r = _read_json(os.path.join(surfaces_dir(), n))
-        except (OSError, ValueError):
+        except (OSError, ValueError):     # gone since the listing, half-written, not JSON: not alive
             continue
         if not (isinstance(r, dict) and r.get("v") == 1 and isinstance(r.get("name"), str)
                 and SURFACE_NAME_RE.fullmatch(r["name"]) and _count(r.get("pid"), 1)
@@ -609,9 +612,11 @@ def surfaces(now=None):
             continue
         age = (t - STEP().when(r["heartbeatAt"])).total_seconds()
         reg = {f: r[f] for f in ("v", "name", "pid", "url", "reach", "heartbeatAt")}
+        if reg["url"].endswith("/") and len(reg["url"]) > 1:
+            reg["url"] = reg["url"][:-1]
         reg["alive"] = age <= HEARTBEAT_S and _running(int(r["pid"]))
-        out.append(reg)
-    return out
+        out.append((r["name"] != "mawsd", r["name"], n, reg))
+    return [x[-1] for x in sorted(out, key=lambda x: x[:3])]
 
 
 def suiting(regs, remote):

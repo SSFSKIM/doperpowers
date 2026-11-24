@@ -577,6 +577,52 @@ class Surfaces(unittest.TestCase):
         self.assertEqual(step(ev("start", start={"source": "startup"}, remote=True))["view"]["surface"]["name"],
                          "d-remote")
 
+    def test_a_file_that_vanished_or_is_half_written_is_passed_over(self):
+        h = scratch()
+        self.register(h, "standin", 1)
+        d = os.path.join(h, "sheet", "surfaces")
+        os.symlink(os.path.join(d, "nowhere.json"), os.path.join(d, "gone.json"))     # listed, then not there
+        os.mkdir(os.path.join(d, "dir.json"))
+        with open(os.path.join(d, "half.json"), "w") as f:
+            f.write('{"v": 1, "name": "mawsd", "pid": 1, "url": "http://ma')
+        with open(os.path.join(d, "bytes.json"), "wb") as f:
+            f.write(b"\xff\xfe not text")
+        with open(os.path.join(d, "mawsd.json.tmp-77"), "w") as f:          # a writer's temporary file
+            json.dump({"v": 1, "name": "mawsd", "pid": 1, "url": "http://tmp.localhost", "reach": "local",
+                       "heartbeatAt": "2026-11-24T09:59:59.000Z"}, f)
+        self.assertEqual([r["name"] for r in sheet.surfaces(NOW)], ["standin"])
+        self.assertEqual(sheet.suiting(sheet.surfaces(NOW), False)[1], 1)
+
+    def test_mawsd_first_then_by_name_never_the_listing(self):
+        h = scratch()
+        self.register(h, "a-file", 1)
+        self.register(h, "m-file", 1)
+        self.register(h, "z-file", 1)
+        d = os.path.join(h, "sheet", "surfaces")
+        for f, name in (("a-file", "zeta"), ("m-file", "alpha"), ("z-file", "mawsd")):
+            with open(os.path.join(d, f + ".json")) as fh:
+                r = json.load(fh)
+            with open(os.path.join(d, f + ".json"), "w") as fh:
+                json.dump(dict(r, name=name), fh)
+        self.assertEqual([r["name"] for r in sheet.surfaces(NOW)], ["mawsd", "alpha", "zeta"])
+        self.assertEqual(step(ev("start", start={"source": "startup"}))["view"]["surface"]["name"], "mawsd")
+        os.unlink(os.path.join(d, "z-file.json"))
+        self.assertEqual(sheet.suiting(sheet.surfaces(NOW), False)[0]["name"], "alpha")
+
+    def test_the_url_loses_one_trailing_slash(self):
+        h = scratch()
+        self.register(h, "mawsd", 1)
+        p = os.path.join(h, "sheet", "surfaces", "mawsd.json")
+        with open(p) as f:
+            r = json.load(f)
+        with open(p, "w") as f:
+            json.dump(dict(r, url="http://sheet.localhost:47590/"), f)
+        out = step(ev("start", start={"source": "startup"}))
+        self.assertEqual(out["view"]["surface"], {"name": "mawsd", "url": "http://sheet.localhost:47590",
+                                                  "reach": "local"})
+        self.assertEqual(out["view"]["surface"]["url"] + "/s/" + SESSION,
+                         "http://sheet.localhost:47590/s/" + SESSION, "the link")
+
     def test_the_stand_in_surface(self):
         h = scratch()
         p = subprocess.Popen([sys.executable, "-B", os.path.join(HERE, "sheet_surface.py"), "--every", "0.2"])
@@ -590,6 +636,7 @@ class Surfaces(unittest.TestCase):
             code, out, err = run_cli(["sheet", "surfaces", "--json"])
             self.assertEqual(code, 0, err)
             self.assertEqual([(r["name"], r["alive"]) for r in json.loads(out)["surfaces"]], [("standin", True)])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
             self.assertEqual(run_cli(["sheet", "surfaces"])[1].split()[-1], "alive")
         finally:
             p.terminate()

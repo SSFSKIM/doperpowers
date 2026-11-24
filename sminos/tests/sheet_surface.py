@@ -29,8 +29,8 @@ def write(p, reg):
     os.makedirs(os.path.dirname(p), mode=0o700, exist_ok=True)
     t = datetime.datetime.now(datetime.timezone.utc)
     reg = dict(reg, heartbeatAt=t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000))
-    tmp = p + ".tmp-%d" % os.getpid()
-    with open(tmp, "w") as f:
+    tmp = p + ".tmp-%d" % os.getpid()          # its name does not end in .json, so no reader takes it
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         f.write(json.dumps(reg) + "\n")
     os.replace(tmp, p)
 
