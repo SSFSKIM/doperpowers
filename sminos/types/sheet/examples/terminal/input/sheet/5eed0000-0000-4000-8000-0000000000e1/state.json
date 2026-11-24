@@ -1,0 +1,279 @@
+{
+ "calls": [],
+ "closed": {
+  "q11": {
+   "asker": "main",
+   "at": "2026-11-23T17:15:01.000Z",
+   "header": "Naming",
+   "how": "dismissed",
+   "key": "page-7f3a91c5",
+   "question": "Rename the settings page?",
+   "revision": 1
+  },
+  "q12": {
+   "answer": "\"Ship the migration today?\" → Yes.",
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T17:12:01.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "cli-20c41d07",
+   "question": "Ship the migration today?",
+   "receipt": "Yes",
+   "revision": 1
+  },
+  "q7": {
+   "answer": "\"Which auth method should the login use?\" → OAuth, Passkeys. Their text: \"passkeys only on mobile\"",
+   "asker": "main",
+   "at": "2026-11-23T17:10:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-7f3a91c2",
+   "question": "Which auth method should the login use?",
+   "receipt": "OAuth, Passkeys",
+   "revision": 2
+  },
+  "q8": {
+   "answer": "\"What should the empty state say?\" → their text: \"Nothing waiting for you.\"",
+   "asker": "main",
+   "at": "2026-11-23T17:02:00.000Z",
+   "header": "Empty state",
+   "how": "answered",
+   "key": "page-7f3a91c3",
+   "question": "What should the empty state say?",
+   "receipt": "Nothing waiting for you.",
+   "revision": 1
+  },
+  "q9": {
+   "asker": "main",
+   "at": "2026-11-23T17:10:00.000Z",
+   "header": "Export",
+   "how": "dismissed",
+   "key": "page-7f3a91c4",
+   "question": "Keep the legacy export button?",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 13,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q10": "1c0de000-0000-5000-8000-0000000000aa",
+   "q11": "1c0de000-0000-5000-8000-0000000000aa",
+   "q12": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa",
+   "q4": "1c0de000-0000-5000-8000-0000000000aa",
+   "q5": "1c0de000-0000-5000-8000-0000000000aa",
+   "q6": "1c0de000-0000-5000-8000-0000000000aa",
+   "q7": "1c0de000-0000-5000-8000-0000000000aa",
+   "q8": "1c0de000-0000-5000-8000-0000000000aa",
+   "q9": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 13,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T17:02:00.000Z",
+   "acrossStop": true,
+   "at": "2026-11-23T16:40:05.000Z",
+   "by": "page",
+   "id": "q8",
+   "images": [],
+   "key": "page-7f3a91c3",
+   "kind": "answer",
+   "picks": [],
+   "question": {
+    "askedAt": "2026-11-23T14:02:11.000Z",
+    "asker": "main",
+    "header": "Empty state",
+    "multiSelect": false,
+    "options": [],
+    "question": "What should the empty state say?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": "Nothing waiting for you."
+  },
+  {
+   "acceptedAt": "2026-11-23T17:10:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T17:09:58.000Z",
+   "batch": "page-b7f3a91c",
+   "by": "page",
+   "id": "q7",
+   "images": [
+    "uploads/sketch.png"
+   ],
+   "key": "page-7f3a91c2",
+   "kind": "answer",
+   "picks": [
+    "OAuth",
+    "Passkeys"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T15:10:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": true,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 2,
+   "taken": false,
+   "text": "passkeys only on mobile"
+  },
+  {
+   "acceptedAt": "2026-11-23T17:10:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T17:09:58.000Z",
+   "batch": "page-b7f3a91c",
+   "by": "page",
+   "id": "q9",
+   "key": "page-7f3a91c4",
+   "kind": "dismiss",
+   "question": {
+    "askedAt": "2026-11-23T14:05:00.000Z",
+    "asker": "main",
+    "header": "Export",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Keep the legacy export button?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false
+  },
+  {
+   "acceptedAt": "2026-11-23T17:12:01.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T17:12:00.000Z",
+   "by": "cli",
+   "id": "q12",
+   "images": [],
+   "key": "cli-20c41d07",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T15:30:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  },
+  {
+   "acceptedAt": "2026-11-23T17:15:01.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T17:15:00.000Z",
+   "by": "page",
+   "id": "q11",
+   "key": "page-7f3a91c5",
+   "kind": "dismiss",
+   "question": {
+    "askedAt": "2026-11-23T14:07:00.000Z",
+    "asker": "main",
+    "header": "Naming",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Rename the settings page?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T14:06:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Logs00e1",
+   "header": "Log level",
+   "id": "q10",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "info",
+     "recommended": true
+    },
+    {
+     "label": "debug"
+    }
+   ],
+   "question": "Which log level in production?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 23,
+ "session": "5eed0000-0000-4000-8000-0000000000e1",
+ "v": 1,
+ "verdicts": {
+  "cli-20c41d07": {
+   "at": "2026-11-23T17:12:01.000Z",
+   "id": "q12",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-7f3a91c2": {
+   "at": "2026-11-23T17:10:00.000Z",
+   "id": "q7",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-7f3a91c3": {
+   "at": "2026-11-23T17:02:00.000Z",
+   "id": "q8",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-7f3a91c4": {
+   "at": "2026-11-23T17:10:00.000Z",
+   "id": "q9",
+   "kind": "dismiss",
+   "verdict": "applied"
+  },
+  "page-7f3a91c5": {
+   "at": "2026-11-23T17:15:01.000Z",
+   "id": "q11",
+   "kind": "dismiss",
+   "verdict": "applied"
+  }
+ }
+}

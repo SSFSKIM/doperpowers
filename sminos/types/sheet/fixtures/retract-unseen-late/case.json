@@ -1,0 +1,34 @@
+{
+ "covers": "U1, from the state retract-unseen leaves: the target's line arrives and is set aside, its verdict unchanged and its question still open; a second retract of it reads too-late",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-1001a0ff",
+   "page-1001r002"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "retract-unseen-late",
+ "now": "2026-11-23T10:05:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000010",
+ "verdicts": {
+  "page-1001a0ff": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "by": "page-1001r001",
+   "kind": "unseen",
+   "verdict": "retracted"
+  },
+  "page-1001r002": {
+   "at": "2026-11-23T10:05:00.000Z",
+   "kind": "retract",
+   "target": "page-1001a0ff",
+   "verdict": "too-late"
+  }
+ }
+}

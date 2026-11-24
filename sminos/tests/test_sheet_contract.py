@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""The question sheet's published set (sminos/types/sheet/) and the two verbs that read and append to a record
+(plan docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M1's Proves).
+
+- The set: the generator (sheet-contract.gen.py) reproduces it byte for byte; the manifest is its files'; every
+  file validates against its schema (sheet_schema.py), the schemas held to the keywords I1 names; the
+  imported-legacy record is valid where the tool's input refuses its question and its label.
+- The reader: `show --json` over every fixture's before and after is the fixture's.
+- The envelopes: keys as many as answered and dismissed together, in that order; the block names the ids the
+  prose names; the two limits; no text past 500 in the block and picks that are places; only outcomes pending
+  for the recipient; `more` exactly where more is pending; `long` and `more` sized as I7's table says; every
+  texts/ file named by its hash.
+- The result's grammar: each stored call's first line matches the published pattern and parses to `parsed`.
+- The door: a call appended whole (at filled, one batch on several), `queued`; each refusal exits 2 with nothing
+  appended; no record exits 3; a held lock exits 75; eight processes of twenty-five calls each leave every call's
+  lines whole and together; a file without its last newline gets one first; a stand-in bridge's verdicts are
+  printed, and a bridge that does not know the op reads queued. `--session` runs before the migration.
+
+Run: python3 -B sminos/tests/test_sheet_contract.py   (ends `test_sheet_contract: N passed`)
+"""
+import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from this file's own directory, -I too
+runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+PLUGIN = os.path.dirname(HERE)
+SCRIPTS = os.path.join(PLUGIN, "skills", "sminos", "scripts")
+CLI = os.path.join(SCRIPTS, "sminos")
+SET = os.path.join(PLUGIN, "types", "sheet")
+GEN = os.path.join(HERE, "sheet-contract.gen.py")
+# Under /tmp: a bridge's socket, $SMINOS_HOME/bridge/<session>.sock, must fit a Unix socket's path.
+BASE = tempfile.mkdtemp(prefix="sheetc.", dir="/tmp")
+os.environ.update(HOME=os.path.join(BASE, "home"), SMINOS_HOME=os.path.join(BASE, "s"))
+os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+sys.path.insert(0, HERE)
+sys.path.insert(0, SCRIPTS)
+import sminos  # noqa: E402
+import sheet_schema  # noqa: E402
+import bridge_standin  # noqa: E402
+sheet = sminos.sibling_module("sminos_sheet")
+
+ALLOWED = sheet_schema.KEYWORDS | sheet_schema.ANNOTATIONS
+CASES = sorted(os.listdir(os.path.join(SET, "fixtures")))
+EXAMPLES = sorted(d for d in os.listdir(os.path.join(SET, "examples")) if os.path.isdir(os.path.join(SET, "examples", d)))
+BUDGET, KEYS_MAX, TEXT_MAX = 60000, 200, 500
+
+
+def load(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+SCHEMA = {n: load(os.path.join(SET, "schema", n + ".schema.json")) for n in
+          ("state", "inbox-line", "show", "delivery", "surface", "tool-input")}
+
+
+def files(root):
+    out = {}
+    for d, _, names in os.walk(root):
+        for n in names:
+            p = os.path.join(d, n)
+            with open(p, "rb") as f:
+                out[os.path.relpath(p, root)] = f.read()
+    return out
+
+
+def write(path, data, mode="w"):
+    with open(path, mode) as f:
+        f.write(data)
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def raw_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def units(s):
+    return len(s.encode("utf-16-le")) // 2
+
+
+def home(case, side):
+    """A scratch $SMINOS_HOME holding a fixture's `before` or `after`, set as the process's."""
+    h = tempfile.mkdtemp(prefix="h.", dir=BASE)
+    src = os.path.join(SET, "fixtures", case, side)
+    if os.path.isdir(src):
+        shutil.copytree(src, h, dirs_exist_ok=True)
+    os.environ["SMINOS_HOME"] = h
+    return h
+
+
+def run(args, stdin=b"", env=None):
+    p = subprocess.run([CLI] + args, input=stdin, capture_output=True,
+                       env=dict(os.environ, **(env or {})), timeout=120)
+    return p.returncode, p.stdout.decode(), p.stderr.decode()
+
+
+class TheSet(unittest.TestCase):
+    def test_the_generator_reproduces_the_set(self):
+        out = os.path.join(BASE, "gen")
+        p = subprocess.run([sys.executable, "-B", GEN, "--out", out], capture_output=True, text=True, check=True)
+        self.assertRegex(p.stdout, r"^sheet-contract: 21 cases, 5 examples, digest [0-9a-f]{64}\n$")
+        made, have = files(out), files(SET)
+        self.assertEqual(sorted(made), sorted(have), "the same files")
+        self.assertEqual([p for p in made if made[p] != have[p]], [], "byte for byte")
+        self.assertEqual(subprocess.run([sys.executable, "-B", GEN, "--check"], capture_output=True).returncode, 0)
+
+    def test_the_manifest_is_the_files(self):
+        m = load(os.path.join(SET, "MANIFEST.json"))
+        self.assertEqual((m["v"], m["version"]), (1, 1))
+        have = {p: hashlib.sha256(d).hexdigest() for p, d in files(SET).items() if p != "MANIFEST.json"}
+        self.assertEqual(m["files"], have)
+        lines = "".join("%s  %s\n" % (h, p) for p, h in sorted(have.items()))
+        self.assertEqual(m["digest"], hashlib.sha256(lines.encode()).hexdigest())
+
+    def test_the_schemas_use_only_the_named_keywords(self):
+        def walk(node, where):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in ("properties", "$defs"):
+                        for name, sub in v.items():
+                            walk(sub, "%s.%s.%s" % (where, k, name))
+                        continue
+                    self.assertIn(k, ALLOWED, where)
+                    if k in ("items", "additionalProperties") and isinstance(v, dict):
+                        walk(v, where + "." + k)
+                    if k == "oneOf":
+                        for i, sub in enumerate(v):
+                            walk(sub, "%s.oneOf[%d]" % (where, i))
+                    if k == "$ref":
+                        self.assertTrue(v.startswith("#/$defs/") and v[8:] in SCHEMA[where.split(".")[0]]["$defs"],
+                                        (where, v))
+        for name, s in SCHEMA.items():
+            walk(s, name)
+
+    def test_every_file_validates(self):
+        bad_lines = []
+        for path in glob.glob(os.path.join(SET, "**", "*"), recursive=True):
+            rel = os.path.relpath(path, SET)
+            if rel.endswith("state.json"):
+                self.assertEqual(sheet_schema.errors(SCHEMA["state"], load(path)), [], rel)
+            elif rel.endswith("inbox.jsonl"):
+                data = raw_bytes(path)
+                whole = data[:data.rfind(b"\n") + 1].splitlines()
+                for n, raw in enumerate(whole, 1):
+                    try:
+                        errs = sheet_schema.errors(SCHEMA["inbox-line"], json.loads(raw))
+                    except ValueError:
+                        errs = ["not JSON"]
+                    if errs:
+                        bad_lines.append((rel.split("/")[1], n))
+                if not data.endswith(b"\n") and data:      # an unfinished write: a whole object, its newline lost
+                    tail = data[data.rfind(b"\n") + 1:]
+                    self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], json.loads(tail)), [], rel)
+            elif re.search(r"show\.(before|after)\.json$", rel):
+                m = load(path)
+                if m is not None:
+                    self.assertEqual(sheet_schema.errors(SCHEMA["show"], m), [], rel)
+        # Three of skipped-and-unknown's four U2 lines, in its before and its after, are the only lines the schema
+        # refuses; the fourth is well formed and picks no label of its question, which only the record can tell.
+        self.assertEqual(sorted(bad_lines), sorted([("skipped-and-unknown", n) for n in (1, 2, 3)] * 2))
+        self.assertEqual(sheet_schema.errors(SCHEMA["surface"], load(os.path.join(SET, "examples", "surface.json"))),
+                         [])
+        for name in EXAMPLES:
+            self.assertEqual(sheet_schema.errors(SCHEMA["delivery"], block(envelope(name))), [], name)
+        for c in load(os.path.join(SET, "grammar", "result.examples.json")):
+            self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], c["input"]), [], c["result"])
+
+    def test_imported_legacy_is_a_record_and_no_input(self):
+        rec = load(glob.glob(os.path.join(SET, "fixtures", "imported-legacy", "after", "sheet", "*", "state.json"))[0])
+        self.assertEqual(sheet_schema.errors(SCHEMA["state"], rec), [])
+        self.assertEqual([q.get("importedFrom", {}).get("index") for q in rec["questions"]], [0, 1, 2])
+        entries = [{k: q[k] for k in ("question", "header", "options", "multiSelect")} for q in rec["questions"]]
+        long_q, long_label, preview = entries
+        self.assertEqual(len(long_q["question"]), 2001)
+        self.assertEqual(len(long_label["options"][0]["label"]), 201)
+        for e in (long_q, long_label):
+            self.assertNotEqual(sheet_schema.errors(SCHEMA["tool-input"], {"ask": [e]}), [], e["header"])
+        # A preview on a multi-select question is an entry's own rule (U14), refused alone and not by the schema,
+        # which would deny the whole call.
+        self.assertTrue(preview["multiSelect"] and any("preview" in o for o in preview["options"]))
+        self.assertEqual(sheet_schema.errors(SCHEMA["tool-input"], {"ask": [preview]}), [])
+
+    def test_case_files(self):
+        self.assertEqual(len(CASES), 21)
+        for n, case in enumerate(CASES):
+            c = load(os.path.join(SET, "fixtures", case, "case.json"))
+            self.assertEqual(sorted(c), ["covers", "event", "name", "now", "session", "verdicts"], case)
+            self.assertEqual(c["name"], case)
+            for v in c["verdicts"].values():
+                self.assertEqual(sheet_schema.errors({"$ref": "#/$defs/verdict", "$defs": SCHEMA["state"]["$defs"]},
+                                                     v), [])
+            after = os.path.join(SET, "fixtures", case, "after", "sheet", c["session"], "state.json")
+            got = load(after)["verdicts"]
+            for k, v in c["verdicts"].items():
+                self.assertEqual(got[k], v, (case, k))
+
+
+class TheReader(unittest.TestCase):
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_show_json_is_every_fixtures(self):
+        for case in CASES:
+            c = load(os.path.join(SET, "fixtures", case, "case.json"))
+            for side in ("before", "after"):
+                with self.subTest(case=case, side=side):
+                    home(case, side)
+                    want = load(os.path.join(SET, "fixtures", case, "show.%s.json" % side))
+                    self.assertEqual(sheet.model(c["session"]), want)
+
+    def test_show_keys(self):
+        c = load(os.path.join(SET, "fixtures", "batch", "case.json"))
+        home("batch", "after")
+        full = sheet.model(c["session"])
+        got = sheet.model(c["session"], ["page-1401a002", "page-1401d003"])
+        self.assertEqual(sorted(got), ["pending", "sent", "seq", "session", "v"])
+        self.assertEqual([o["key"] for o in got["pending"]], ["page-1401a002", "page-1401d003"])
+        self.assertEqual(got["sent"], [s for s in full["sent"] if s["key"] in ("page-1401a002", "page-1401d003")])
+        self.assertEqual(sheet_schema.errors(SCHEMA["show"], got), [])
+
+    def test_a_pending_question_is_bounded(self):
+        h = home("answer-applied", "after")
+        c = load(os.path.join(SET, "fixtures", "answer-applied", "case.json"))
+        path = os.path.join(h, "sheet", c["session"], "state.json")
+        rec = load(path)
+        rec["pending"][0]["question"]["question"] = "x" * 2500
+        rec["pending"][0]["question"]["options"][0] = "y" * 250
+        write(path, json.dumps(rec))
+        q = sheet.model(c["session"])["pending"][0]["question"]
+        self.assertEqual((len(q["question"]), len(q["options"][0])), (2000, 200))
+        self.assertEqual(len(load(path)["pending"][0]["question"]["question"]), 2500, "the record unchanged")
+
+    def test_a_reference_unchanged_and_changed(self):
+        h = home("references", "before")
+        c = load(os.path.join(SET, "fixtures", "references", "case.json"))
+        path = os.path.join(h, "sheet", c["session"], "state.json")
+        rec = load(path)
+        f = os.path.join(h, "here.ts")
+        write(f, "x\n")
+        st = os.stat(f)
+        rec["questions"][0]["references"][0].update(abs=f, size=st.st_size, mtimeMs=st.st_mtime_ns // 1000000)
+        write(path, json.dumps(rec))
+        refs = sheet.model(c["session"])["open"][0]["references"]
+        self.assertEqual([r["changed"] for r in refs], [False, True, True])
+        write(f, "y\n", "a")
+        self.assertTrue(sheet.model(c["session"])["open"][0]["references"][0]["changed"])
+
+    def test_through_the_command_before_any_migration(self):
+        h = home("references", "before")
+        s = load(os.path.join(SET, "fixtures", "references", "case.json"))["session"]
+        rc, out, err = run(["sheet", "show", "--session", s])
+        self.assertEqual(rc, 0, err)
+        self.assertRegex(out, r"(?m)^q1  Session check$")
+        self.assertIn("  file: src/auth.ts:40-80  (changed since asked)", out)
+        self.assertIn("  queued (cli-1901a001): Yes", out)
+        line = '{"v":1,"key":"demo-0001","kind":"dismiss","id":"q1","by":"cli"}\n'
+        rc, out, err = run(["sheet", "put", "--session", s], line.encode())
+        self.assertEqual((rc, json.loads(out)), (0, {"session": s, "results": [{"key": "demo-0001",
+                                                                                 "state": "queued"}]}), err)
+        rc, out, _ = run(["sheet", "show", "--session", s])
+        self.assertNotRegex(out, r"(?m)^q1\b")
+        self.assertIn("dismissed, not yet applied: q1", out)
+        rc, out, _ = run(["sheet", "show", "--session", s, "--json"])
+        self.assertEqual(json.loads(out)["hidden"], [{"id": "q1", "key": "demo-0001"}])
+        self.assertEqual(sorted(os.listdir(h)), ["sheet"], "no registry read or migrated")
+        rc, _, err = run(["sheet", "show", "--session", "5eed0000-0000-4000-8000-0000000000ff"])
+        self.assertEqual((rc, err.strip()), (3, "sminos: no sheet: 5eed0000-0000-4000-8000-0000000000ff has no "
+                                                "question sheet on this machine"))
+        self.assertEqual(run(["sheet", "show", "--session", "../x"])[0], 2)
+        self.assertEqual(run(["sheet", "show"])[0], 2)
+
+
+# ------------------------------------------------------------------ the envelopes
+
+
+def envelope(name):
+    with open(os.path.join(SET, "examples", name, "envelope.txt"), encoding="utf-8") as f:
+        return f.read()
+
+
+def block(text):
+    last = text.split("\n")[-1]
+    m = re.fullmatch(r"<sheet-delivery>(.*)</sheet-delivery>", last)
+    assert m, last[:80]
+    return json.loads(m.group(1))
+
+
+def example_record(name):
+    return load(glob.glob(os.path.join(SET, "examples", name, "input", "sheet", "*", "state.json"))[0])
+
+
+class TheEnvelopes(unittest.TestCase):
+    def test_each_envelope(self):
+        for name in EXAMPLES:
+            with self.subTest(name):
+                text, case, rec = envelope(name), load(os.path.join(SET, "examples", name, "case.json")), \
+                    example_record(name)
+                self.assertFalse(text.endswith("\n"))
+                b = block(text)
+                last = text.split("\n")[-1]
+                self.assertNotRegex(last[len("<sheet-delivery>"):-len("</sheet-delivery>")], r"[<>&\u2028\u2029]")
+                outcomes = {o["key"]: o for o in rec["pending"]}
+                mine = [o for o in rec["pending"] if o["recipient"] == case["recipient"]]
+                self.assertEqual(len(b["keys"]), len(b["answered"]) + len(b["dismissed"]))
+                self.assertTrue(set(b["keys"]) <= {o["key"] for o in mine}, "only its recipient's pending outcomes")
+                ids = [outcomes[k]["id"] for k in b["keys"]]
+                self.assertEqual(ids, [a["id"] for a in b["answered"]] + b["dismissed"], "keys in that order")
+                self.assertEqual([outcomes[k]["kind"] for k in b["keys"]],
+                                 ["answer"] * len(b["answered"]) + ["dismiss"] * len(b["dismissed"]))
+                for part in (b["answered"], b["dismissed"]):
+                    nums = [int((x["id"] if isinstance(x, dict) else x)[1:]) for x in part]
+                    self.assertEqual(nums, sorted(nums), "listed by the id's number")
+                prose = text.split("\n")[:-1]
+                named = set(re.findall(r"^(q[0-9]+)\b", "\n".join(prose), re.M))
+                for ln in prose:
+                    if ln.startswith("Dismissed: "):
+                        named |= set(ln[len("Dismissed: "):-1].split(", "))
+                self.assertEqual(named, {a["id"] for a in b["answered"]} | set(b["dismissed"]))
+                self.assertLessEqual(units(text), BUDGET)
+                self.assertLessEqual(len(b["keys"]), KEYS_MAX)
+                for a in b["answered"]:
+                    o = outcomes[b["keys"][[x["id"] for x in b["answered"]].index(a["id"])]]
+                    self.assertLessEqual(len(a["text"]), TEXT_MAX)
+                    self.assertEqual(a["text"], o["text"][:TEXT_MAX])
+                    self.assertEqual(a.get("textCut", False), len(o["text"]) > TEXT_MAX)
+                    self.assertEqual("textFile" in a, "textFile" in o)
+                    labels = o["question"]["options"]
+                    self.assertEqual([labels[p - 1] for p in a["picks"]], o["picks"], "picks are places")
+                    self.assertEqual(a["revision"], o["revision"])
+                more = len(mine) > len(b["keys"])
+                self.assertEqual(b.get("more", False), more)
+                self.assertEqual(text.split("\n")[0 if name != "subagent" else 1].endswith(" More follows."), more)
+
+    def test_every_texts_file_is_named_by_its_hash(self):
+        found = glob.glob(os.path.join(SET, "**", "texts", "*"), recursive=True)
+        self.assertGreaterEqual(len(found), 5)
+        for p in found:
+            self.assertEqual(os.path.basename(p), hashlib.sha256(raw_bytes(p)).hexdigest() + ".txt", p)
+
+    def test_long_is_sized_as_the_table_says(self):
+        text, rec = envelope("long"), example_record("long")
+        lines = text.split("\n")
+        self.assertEqual(sum(1 for ln in lines if " is in " in ln and "and begins: " in ln), 2)
+        full = {}
+        for o in rec["pending"]:
+            q = json.dumps(o["question"]["question"], ensure_ascii=False)
+            full[o["id"]] = '%s %s → their text: %s' % (o["id"], q, json.dumps(o["text"], ensure_ascii=False))
+            self.assertEqual(len(o["text"]), 20000)
+        carried = {ln.split(" ")[0]: ln for ln in lines if " is in " in ln}
+        self.assertEqual(sorted(carried), ["q1", "q2"], "the earlier of equal lengths first")
+        two = units(text)
+        one = two + units(full["q2"]) - units(carried["q2"])
+        none = one + units(full["q1"]) - units(carried["q1"])
+        self.assertLessEqual(two, BUDGET)
+        self.assertGreater(one, BUDGET)
+        self.assertGreater(none, BUDGET)
+        for o in rec["pending"]:
+            if o["id"] in carried:
+                self.assertIn(o["textFile"], carried[o["id"]])
+                self.assertIn(json.dumps(o["text"][:500] + "…", ensure_ascii=False), carried[o["id"]])
+            else:
+                self.assertIn(full[o["id"]], lines)
+
+    def test_more_stops_at_two_hundred_keys(self):
+        b, rec = block(envelope("more")), example_record("more")
+        batches = {}
+        for o in rec["pending"]:
+            batches.setdefault(o["batch"], []).append(o["key"])
+        self.assertEqual([len(v) for v in batches.values()], [50] * 5)
+        first4 = [k for v in list(batches.values())[:4] for k in v]
+        self.assertEqual(b["keys"], first4)
+        self.assertEqual(len(first4) + 50, 250, "the fifth Send would make 250 keys")
+        self.assertTrue(b["more"])
+
+    def test_the_steer_carries_the_same_block(self):
+        steer = read_text(os.path.join(SET, "examples", "terminal", "steer.txt"))
+        self.assertEqual(steer.split("\n")[-1], envelope("terminal").split("\n")[-1])
+        self.assertNotIn("Which auth method", steer, "no text a model wrote")
+
+    def test_the_imported_label_is_cut_in_the_prose_only(self):
+        text, rec = envelope("imported"), example_record("imported")
+        label = rec["pending"][0]["picks"][0]
+        self.assertEqual(len(label), 201)
+        self.assertIn("→ %s…." % label[:200], text)
+        self.assertEqual(block(text)["answered"][0]["picks"], [2])
+
+    def test_the_subagent_envelope_opens_with_whose_it_is(self):
+        text = envelope("subagent")
+        self.assertTrue(text.startswith("From the human, through the question tool, not from your coordinator: "
+                                        "answers to questions you put on the sheet.\n[sheet v1] "))
+
+
+# ------------------------------------------------------------------ the result's grammar
+
+
+class TheGrammar(unittest.TestCase):
+    def test_each_stored_call_parses(self):
+        md = read_text(os.path.join(SET, "grammar", "result.md"))
+        pattern = re.search(r"## The pattern a reader matches\n\n.*?\n\n    (\^.*\$)\n", md, re.S).group(1)
+        for c in load(os.path.join(SET, "grammar", "result.examples.json")):
+            first = c["result"].split("\n")[0]
+            with self.subTest(first):
+                self.assertRegex(first, pattern)
+                self.assertEqual(parse(first), c["parsed"])
+        for bad in ("Added q1,q2.", "Revised q3.", "Withdrew q2. Added q1.", "Added q1. ", "Nothing done"):
+            self.assertNotRegex(bad, pattern)
+
+
+def parse(first):
+    if first == "Nothing done.":
+        return {"form": "nothing"}
+    if first == "Outcome not known yet.":
+        return {"form": "unknown"}
+    out = {"form": "sentences", "added": [], "revised": [], "withdrew": []}
+    for word, body in re.findall(r"(Added|Revised|Withdrew) ([^.]*)\.", first):
+        for m in re.finditer(r"(q[0-9]+)(?: \((?:entry ([0-9]+))?(?:, )?(?:revision ([0-9]+))?\))?", body):
+            x = {"id": m.group(1)}
+            if m.group(2):
+                x["entry"] = int(m.group(2))
+            if m.group(3):
+                x["revision"] = int(m.group(3))
+            out[{"Added": "added", "Revised": "revised", "Withdrew": "withdrew"}[word]].append(
+                x["id"] if word == "Withdrew" else x)
+    return out
+
+
+# ------------------------------------------------------------------ the door
+
+
+def answer(key, id_, revision=1, **f):
+    return {"v": 1, "key": key, "kind": "answer", "id": id_, "revision": revision, "by": "cli", **f}
+
+
+class TheDoor(unittest.TestCase):
+    def setUp(self):
+        self.h = home("answer-applied", "before")
+        self.s = load(os.path.join(SET, "fixtures", "answer-applied", "case.json"))["session"]
+        self.inbox = os.path.join(self.h, "sheet", self.s, "inbox.jsonl")
+        self.was = raw_bytes(self.inbox)
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def put(self, lines, *flags):
+        data = "".join(json.dumps(x) + "\n" for x in lines).encode()
+        return run(["sheet", "put", "--session", self.s, *flags], data)
+
+    def added(self):
+        return [json.loads(x) for x in raw_bytes(self.inbox)[len(self.was):].splitlines()]
+
+    def test_a_call_is_appended_whole_and_reads_queued(self):
+        lines = [answer("cli-test0001", "q2", picks=["Yes"]),
+                 {"v": 1, "key": "cli-test0002", "kind": "retract", "target": "cli-test0001", "by": "cli",
+                  "at": "2026-11-23T12:00:00.000Z"}]
+        rc, out, err = self.put(lines)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out), {"session": self.s, "results": [
+            {"key": "cli-test0001", "state": "queued"}, {"key": "cli-test0002", "state": "queued"}]})
+        got = self.added()
+        self.assertEqual([x["key"] for x in got], ["cli-test0001", "cli-test0002"])
+        self.assertRegex(got[0]["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+        self.assertEqual(got[1]["at"], "2026-11-23T12:00:00.000Z", "a given time is kept")
+        self.assertEqual(len({x["batch"] for x in got}), 1)
+        self.assertRegex(got[0]["batch"], r"^[A-Za-z0-9._:-]{8,128}$")
+        for x in got:
+            self.assertEqual(sheet_schema.errors(SCHEMA["inbox-line"], x), [])
+        rc, out, _ = self.put([answer("cli-test0003", "q2", picks=["No"])], "--no-wait")
+        self.assertEqual((rc, "batch" in self.added()[-1]), (0, False), "one line: no batch")
+
+    def test_each_refusal_appends_nothing(self):
+        cases = {
+            "fails the schema": [answer("cli-test0001", "q2")],
+            "an unknown field": [answer("cli-test0001", "q2", picks=["Yes"], extra=1)],
+            "a key too short": [answer("short", "q2", picks=["Yes"])],
+            "an image that is not there": [answer("cli-test0001", "q1", picks=["OAuth"],
+                                                  images=["uploads/missing.png"])],
+            "a pick that is no label": [answer("cli-test0001", "q2", picks=["Maybe"])],
+            "two picks on a single-select question": [answer("cli-test0001", "q1", picks=["OAuth", "Passkeys"])],
+            "one bad line of two": [answer("cli-test0001", "q2", picks=["Yes"]), answer("cli-test0002", "q2")],
+        }
+        os.makedirs(os.path.join(self.h, "sheet", self.s, "uploads", "dir.png"))
+        cases["an image that is a directory"] = [answer("cli-test0001", "q1", text="see", images=["uploads/dir.png"])]
+        for why, lines in cases.items():
+            with self.subTest(why):
+                rc, _, err = self.put(lines)
+                self.assertEqual(rc, 2, err)
+                self.assertIn("nothing appended", err)
+                self.assertEqual(raw_bytes(self.inbox), self.was)
+        rc, _, _ = run(["sheet", "put", "--session", self.s], b"not json\n")
+        self.assertEqual(rc, 2)
+        rc, _, _ = run(["sheet", "put", "--session", self.s], b"".join(
+            json.dumps(answer("cli-t%07d" % n, "q2", picks=["Yes"])).encode() + b"\n" for n in range(51)))
+        self.assertEqual(rc, 2, "fifty lines a call at most")
+        self.assertEqual(raw_bytes(self.inbox), self.was)
+        # A pick checked only at the question's current revision: a stale answer passes the door, as §4.2 wants.
+        rc, _, err = self.put([answer("cli-test0009", "q2", revision=3, picks=["Whatever"])])
+        self.assertEqual(rc, 0, err)
+
+    def test_no_record_exits_3(self):
+        rc, _, err = run(["sheet", "put", "--session", "5eed0000-0000-4000-8000-0000000000ff"],
+                         (json.dumps(answer("cli-test0001", "q1", text="x")) + "\n").encode())
+        self.assertEqual(rc, 3)
+        self.assertIn("no sheet", err)
+        self.assertFalse(os.path.exists(os.path.join(self.h, "sheet", "5eed0000-0000-4000-8000-0000000000ff")))
+
+    def test_a_held_lock_exits_75(self):
+        import fcntl
+        fd = os.open(sheet.lock_path(self.s), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        old, sheet.LOCK_WAIT_S = sheet.LOCK_WAIT_S, 0.2
+        try:
+            with self.assertRaises(SystemExit) as e:
+                sheet.append(self.s, [answer("cli-test0001", "q2", picks=["Yes"])])
+            self.assertEqual(e.exception.code, 75)
+        finally:
+            sheet.LOCK_WAIT_S = old
+            os.close(fd)
+        self.assertEqual(raw_bytes(self.inbox), self.was)
+        self.assertTrue(os.path.exists(sheet.lock_path(self.s)), "the lock file stays")
+
+    def test_a_missing_last_newline_is_written_first(self):
+        write(self.inbox, b'{"v":1,"key":"page-torn0001"', "ab")
+        rc, _, err = self.put([answer("cli-test0001", "q2", picks=["Yes"])], "--no-wait")
+        self.assertEqual(rc, 0, err)
+        data = raw_bytes(self.inbox)
+        self.assertTrue(data.endswith(b'"page-torn0001"\n' + data.split(b"\n")[-2] + b"\n"))
+        self.assertEqual(json.loads(data.split(b"\n")[-2])["key"], "cli-test0001")
+
+    def test_eight_doors_at_once_keep_each_call_whole(self):
+        script = (
+            "import os, sys; sys.path.insert(0, %r); import sminos\n"
+            "sh = sminos.sibling_module('sminos_sheet')\n"
+            "w = int(sys.argv[1])\n"
+            "for c in range(25):\n"
+            "    lines = [{'v': 1, 'key': 'cli-w%%d-c%%02d-l%%d' %% (w, c, n), 'kind': 'dismiss', 'id': 'q2', 'by': 'cli',"
+            " 'text': 'x' * 3000} for n in range(3)]\n"
+            "    sh.append(%r, lines)\n") % (SCRIPTS, self.s)
+        procs = [subprocess.Popen([sys.executable, "-B", "-c", script, str(w)], env=dict(os.environ))
+                 for w in range(8)]
+        for p in procs:
+            self.assertEqual(p.wait(120), 0)
+        got = self.added()
+        self.assertEqual(len(got), 600)
+        for i in range(0, 600, 3):
+            call = got[i:i + 3]
+            self.assertEqual(len({x["batch"] for x in call}), 1, "a call's lines together")
+            self.assertEqual([x["key"][-2:] for x in call], ["l0", "l1", "l2"])
+            self.assertEqual(len({x["key"][:-3] for x in call}), 1)
+        self.assertEqual(len({x["batch"] for x in got}), 200)
+
+    def test_a_bridge_answers_the_verdicts(self):
+        # The stand-in's socket is named through a short link to SMINOS_HOME: a socket's path is bounded.
+        link = os.path.join(tempfile.mkdtemp(prefix="sb.", dir="/tmp"), "s")
+        os.symlink(self.h, link)
+        self.addCleanup(shutil.rmtree, os.path.dirname(link))
+        os.environ["SMINOS_HOME"] = link
+        verdict = {"verdict": "stale", "kind": "answer", "at": "2026-11-23T12:00:01.000Z", "id": "q2", "current": 2}
+        standin = bridge_standin.StandIn(CLI, self.s, ops=["sheet"], env=dict(os.environ),
+                                         results={"sheet": {"verdicts": {"cli-test0001": verdict}}})
+        self.addCleanup(standin.stop)
+        rc, out, err = self.put([answer("cli-test0001", "q2", picks=["Yes"]),
+                                 answer("cli-test0002", "q1", picks=["OAuth"])])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["results"], [{"key": "cli-test0001", "state": "stale", **verdict},
+                                                      {"key": "cli-test0002", "state": "queued"}])
+        sent = [c for c in standin.commands if c.get("op") == "sheet"]
+        self.assertEqual([c["keys"] for c in sent], [["cli-test0001", "cli-test0002"]])
+        rc, out, _ = self.put([answer("cli-test0003", "q2", picks=["Yes"])], "--no-wait")
+        self.assertEqual(json.loads(out)["results"], [{"key": "cli-test0003", "state": "queued"}])
+        self.assertEqual(len([c for c in standin.commands if c.get("op") == "sheet"]), 1, "--no-wait tells no one")
+        standin.stop()
+        other = bridge_standin.StandIn(CLI, self.s, ops=["btw"], env=dict(os.environ))
+        self.addCleanup(other.stop)
+        rc, out, _ = self.put([answer("cli-test0004", "q2", picks=["Yes"])])
+        self.assertEqual(json.loads(out)["results"], [{"key": "cli-test0004", "state": "queued"}],
+                         "a bridge that does not know the op")
+
+
+if __name__ == "__main__":
+    try:
+        result = unittest.main(exit=False, verbosity=1).result
+    finally:
+        shutil.rmtree(BASE, ignore_errors=True)
+    ok = result.wasSuccessful()
+    print("test_sheet_contract: %d %s" % (result.testsRun - len(result.failures) - len(result.errors) - len(
+        result.skipped), "passed" if ok else "passed, %d failed" % (len(result.failures) + len(result.errors))))
+    sys.exit(0 if ok else 1)

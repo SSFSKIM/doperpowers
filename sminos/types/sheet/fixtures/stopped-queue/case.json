@@ -1,0 +1,49 @@
+{
+ "covers": "event start: what was queued while the session was stopped (an answer, a dismissal whose question is hidden, an answer retracted) is applied, every pending outcome owed across a stop and given to the main conversation, the unacknowledged calls forgotten",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "source": "resume",
+   "today": {
+    "asks": [],
+    "definite": true
+   }
+  }
+ },
+ "name": "stopped-queue",
+ "now": "2026-11-23T11:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000016",
+ "verdicts": {
+  "page-1601a001": {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1601a003": {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q3",
+   "kind": "answer",
+   "verdict": "retracted"
+  },
+  "page-1601d002": {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q2",
+   "kind": "dismiss",
+   "verdict": "applied"
+  },
+  "page-1601r004": {
+   "at": "2026-11-23T11:00:00.000Z",
+   "kind": "retract",
+   "target": "page-1601a003",
+   "verdict": "retracted"
+  }
+ }
+}

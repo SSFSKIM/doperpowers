@@ -1,0 +1,130 @@
+{
+ "calls": [],
+ "closed": {
+  "q3": {
+   "answer": "\"Should the cache key include the locale?\" → Yes. Their text: \"and the region\"",
+   "asker": {
+    "agentId": "a7c0ffee",
+    "name": "explorer"
+   },
+   "at": "2026-11-23T10:00:01.000Z",
+   "header": "Cache key",
+   "how": "answered",
+   "key": "page-e5a00003",
+   "question": "Should the cache key include the locale?",
+   "receipt": "Yes",
+   "revision": 1
+  },
+  "q4": {
+   "answer": "\"Ship the migration today?\" → No.",
+   "asker": "main",
+   "at": "2026-11-23T10:00:31.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "page-e5a00004",
+   "question": "Ship the migration today?",
+   "receipt": "No",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 5,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa",
+   "q4": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 5,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:01.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T10:00:00.000Z",
+   "by": "page",
+   "id": "q3",
+   "images": [],
+   "key": "page-e5a00003",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:40:00.000Z",
+    "asker": {
+     "agentId": "a7c0ffee",
+     "name": "explorer"
+    },
+    "header": "Cache key",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Should the cache key include the locale?"
+   },
+   "recipient": {
+    "agentId": "a7c0ffee"
+   },
+   "revision": 1,
+   "taken": true,
+   "text": "and the region"
+  },
+  {
+   "acceptedAt": "2026-11-23T10:00:31.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T10:00:30.000Z",
+   "by": "page",
+   "id": "q4",
+   "images": [],
+   "key": "page-e5a00004",
+   "kind": "answer",
+   "picks": [
+    "No"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "questions": [],
+ "seq": 6,
+ "session": "5eed0000-0000-4000-8000-0000000000e5",
+ "v": 1,
+ "verdicts": {
+  "page-e5a00003": {
+   "at": "2026-11-23T10:00:01.000Z",
+   "id": "q3",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-e5a00004": {
+   "at": "2026-11-23T10:00:31.000Z",
+   "id": "q4",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

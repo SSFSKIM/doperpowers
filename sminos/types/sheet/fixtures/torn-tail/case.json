@@ -1,0 +1,20 @@
+{
+ "covers": "an inbox that ends in bytes without a newline (a whole answer that lacks only it): no reader lists it, the drain applies nothing, the offset stays at the last newline and nothing is replaced",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-2001a001"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "torn-tail",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000020",
+ "verdicts": {}
+}

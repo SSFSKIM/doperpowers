@@ -1,0 +1,119 @@
+{
+ "$defs": {
+  "entry": {
+   "additionalProperties": false,
+   "properties": {
+    "context": {
+     "maxLength": 8000,
+     "type": "string"
+    },
+    "header": {
+     "maxLength": 60,
+     "type": "string"
+    },
+    "id": {
+     "$ref": "#/$defs/id"
+    },
+    "multiSelect": {
+     "type": "boolean"
+    },
+    "options": {
+     "items": {
+      "$ref": "#/$defs/option"
+     },
+     "maxItems": 12,
+     "type": "array"
+    },
+    "question": {
+     "maxLength": 2000,
+     "minLength": 1,
+     "type": "string"
+    },
+    "references": {
+     "items": {
+      "$ref": "#/$defs/reference"
+     },
+     "maxItems": 8,
+     "type": "array"
+    }
+   },
+   "required": [
+    "question"
+   ],
+   "type": "object"
+  },
+  "id": {
+   "pattern": "^q[1-9][0-9]*$",
+   "type": "string"
+  },
+  "option": {
+   "additionalProperties": false,
+   "properties": {
+    "description": {
+     "maxLength": 500,
+     "type": "string"
+    },
+    "label": {
+     "maxLength": 200,
+     "minLength": 1,
+     "type": "string"
+    },
+    "preview": {
+     "maxLength": 8000,
+     "type": "string"
+    },
+    "recommended": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "label"
+   ],
+   "type": "object"
+  },
+  "reference": {
+   "additionalProperties": false,
+   "properties": {
+    "lines": {
+     "items": {
+      "minimum": 1,
+      "type": "integer"
+     },
+     "maxItems": 2,
+     "minItems": 2,
+     "type": "array"
+    },
+    "path": {
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "type": "object"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "ask": {
+   "items": {
+    "$ref": "#/$defs/entry"
+   },
+   "maxItems": 20,
+   "minItems": 1,
+   "type": "array"
+  },
+  "withdraw": {
+   "items": {
+    "$ref": "#/$defs/id"
+   },
+   "minItems": 1,
+   "type": "array"
+  }
+ },
+ "required": [],
+ "title": "The tool's input (composite §2.1 with §1's limits), without descriptions. Two rules of the whole call are not stated here: at least one of `ask` and `withdraw` non-empty, and an id at most once across both. An entry's own rules (U14: unique labels, a preview only without multiSelect, multiSelect only with options, lines in order) refuse that entry alone and are not stated here either (plan I6).",
+ "type": "object"
+}

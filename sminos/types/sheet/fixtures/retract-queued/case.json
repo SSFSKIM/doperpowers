@@ -1,0 +1,55 @@
+{
+ "covers": "§4.2 row 5: a retract after its target (cancelled before the step), and an edit (a retract and a new answer)",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0701a001",
+   "page-0701r002",
+   "page-0701a003",
+   "page-0701r004",
+   "page-0701a005"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "retract-queued",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000007",
+ "verdicts": {
+  "page-0701a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "retracted"
+  },
+  "page-0701a003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "retracted"
+  },
+  "page-0701a005": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-0701r002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0701a001",
+   "verdict": "retracted"
+  },
+  "page-0701r004": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0701a003",
+   "verdict": "retracted"
+  }
+ }
+}

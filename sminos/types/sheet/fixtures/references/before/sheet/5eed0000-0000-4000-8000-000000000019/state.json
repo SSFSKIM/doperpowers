@@ -1,0 +1,108 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 3,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 3,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Refs0019",
+   "context": "The two checks disagree on expiry.",
+   "header": "Session check",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Is the session check in these lines the one to keep?",
+   "references": [
+    {
+     "abs": "/Users/me/work/proj/src/auth.ts",
+     "bytes": 1066,
+     "kind": "text",
+     "lines": [
+      40,
+      80
+     ],
+     "mtimeMs": 1763888400000,
+     "numLines": 41,
+     "path": "src/auth.ts",
+     "sha256": "fe3081828a2fb20f8b0afe735d5327f23f9ffcb7996807a1b5da5714f178cf15",
+     "size": 6120,
+     "startLine": 40,
+     "totalLines": 212
+    },
+    {
+     "abs": "/Users/me/work/proj/README.md",
+     "bytes": 27,
+     "kind": "text",
+     "mtimeMs": 1763888000000,
+     "numLines": 3,
+     "path": "README.md",
+     "sha256": "636f2a98b78bdd9c206c1a6c89856a968446fcdc89ceaeb78b1e52379d9c7586",
+     "size": 27,
+     "startLine": 1,
+     "totalLines": 3
+    },
+    {
+     "abs": "/Users/me/work/proj/docs/login.png",
+     "bytes": 71,
+     "kind": "image",
+     "mediaType": "image/png",
+     "mtimeMs": 1763887000000,
+     "path": "docs/login.png",
+     "sha256": "0eb42155b45b045f71b7fc72a9c8d6e8e2941e9a26ec046379b72568aaf77ae3",
+     "size": 71
+    }
+   ],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 2,
+ "session": "5eed0000-0000-4000-8000-000000000019",
+ "v": 1,
+ "verdicts": {}
+}

@@ -1,0 +1,88 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Ship the migration today?\" → Yes.",
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "page-0401a001",
+   "question": "Ship the migration today?",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 286,
+  "skipped": 0
+ },
+ "log": {
+  "next": 3,
+  "owed": [
+   {
+    "kind": "answered",
+    "n": 2,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000004:q1",
+    "text": "\"Ship the migration today?\" → Yes."
+   }
+  ],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 2,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-0401a001",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "questions": [],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-000000000004",
+ "v": 1,
+ "verdicts": {
+  "cli-0401b002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "answered",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "closed"
+  },
+  "page-0401a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

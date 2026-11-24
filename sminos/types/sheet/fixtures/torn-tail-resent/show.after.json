@@ -1,0 +1,57 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-2101a001",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "key": "page-2101a001",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  }
+ ],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-000000000021",
+ "v": 1
+}

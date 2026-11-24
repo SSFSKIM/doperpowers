@@ -1,0 +1,176 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T11:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "receipt": "OAuth",
+   "revision": 1
+  },
+  "q2": {
+   "asker": "main",
+   "at": "2026-11-23T11:00:00.000Z",
+   "header": "Migration",
+   "how": "dismissed",
+   "revision": 1
+  },
+  "q4": {
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Cache key",
+   "how": "answered",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "handle": "q3",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": true,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q4",
+   "images": [],
+   "key": "page-1601a000",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:10:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Cache key",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Should the cache key include the locale?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  },
+  {
+   "acceptedAt": "2026-11-23T11:00:00.000Z",
+   "acrossStop": true,
+   "at": "2026-11-23T10:20:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1601a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  },
+  {
+   "acceptedAt": "2026-11-23T11:00:00.000Z",
+   "acrossStop": true,
+   "at": "2026-11-23T10:21:00.000Z",
+   "by": "page",
+   "id": "q2",
+   "key": "page-1601d002",
+   "kind": "dismiss",
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": "main",
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q4",
+   "key": "page-1601a000",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q1",
+   "key": "page-1601a001",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q3",
+   "key": "page-1601a003",
+   "kind": "answer",
+   "state": "retracted",
+   "verdict": "retracted"
+  },
+  {
+   "at": "2026-11-23T11:00:00.000Z",
+   "id": "q2",
+   "key": "page-1601d002",
+   "kind": "dismiss",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T11:00:00.000Z",
+   "key": "page-1601r004",
+   "kind": "retract",
+   "state": "retracted",
+   "target": "page-1601a003",
+   "verdict": "retracted"
+  }
+ ],
+ "seq": 8,
+ "session": "5eed0000-0000-4000-8000-000000000016",
+ "v": 1
+}

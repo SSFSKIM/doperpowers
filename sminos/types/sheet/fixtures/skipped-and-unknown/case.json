@@ -1,0 +1,36 @@
+{
+ "covers": "U2: a line that is not JSON, one with no key, one that fails the line's schema and one that picks no label of its question are skipped with no verdict, inbox.skipped raised by four; U3: an answer and a dismissal naming ids the record never assigned read closed, how unknown",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-1801a005",
+   "page-1801d006"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "skipped-and-unknown",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000018",
+ "verdicts": {
+  "page-1801a005": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "unknown",
+   "id": "q99",
+   "kind": "answer",
+   "verdict": "closed"
+  },
+  "page-1801d006": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "how": "unknown",
+   "id": "q42",
+   "kind": "dismiss",
+   "verdict": "closed"
+  }
+ }
+}

@@ -1,0 +1,147 @@
+{
+ "closed": {
+  "q4": {
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Cache key",
+   "how": "answered",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "hidden": [
+  {
+   "id": "q2",
+   "key": "page-1601d002"
+  }
+ ],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "handle": "q1",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "queued": {
+    "at": "2026-11-23T10:20:00.000Z",
+    "by": "page",
+    "images": [],
+    "key": "page-1601a001",
+    "kind": "answer",
+    "picks": [
+     "OAuth"
+    ],
+    "revision": 1,
+    "text": ""
+   },
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "handle": "q3",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q4",
+   "images": [],
+   "key": "page-1601a000",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:10:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Cache key",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Should the cache key include the locale?"
+   },
+   "recipient": {
+    "agentId": "a1b2c3"
+   },
+   "revision": 1,
+   "taken": true,
+   "text": ""
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q4",
+   "key": "page-1601a000",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "id": "q1",
+   "key": "page-1601a001",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "id": "q2",
+   "key": "page-1601d002",
+   "kind": "dismiss",
+   "state": "queued"
+  },
+  {
+   "cancelled": true,
+   "id": "q3",
+   "key": "page-1601a003",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "key": "page-1601r004",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-1601a003"
+  }
+ ],
+ "seq": 7,
+ "session": "5eed0000-0000-4000-8000-000000000016",
+ "v": 1
+}

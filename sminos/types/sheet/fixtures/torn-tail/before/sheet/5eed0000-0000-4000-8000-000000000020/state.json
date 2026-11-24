@@ -1,0 +1,47 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 2,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 2,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0001",
+   "header": "Migration",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 2,
+ "session": "5eed0000-0000-4000-8000-000000000020",
+ "v": 1,
+ "verdicts": {}
+}

@@ -1,0 +1,8 @@
+{
+ "heartbeatAt": "2026-11-23T10:00:00.000Z",
+ "name": "mawsd",
+ "pid": 4321,
+ "reach": "local",
+ "url": "http://sheet.localhost:47590",
+ "v": 1
+}

@@ -1,0 +1,109 @@
+{
+ "closed": {},
+ "hidden": [
+  {
+   "id": "q3",
+   "key": "page-1401d003"
+  }
+ ],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "handle": "q1",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "queued": {
+    "at": "2026-11-23T09:59:50.000Z",
+    "by": "page",
+    "images": [],
+    "key": "page-1401a001",
+    "kind": "answer",
+    "picks": [
+     "OAuth"
+    ],
+    "revision": 1,
+    "text": ""
+   },
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "callId": "toolu_01Ship0002",
+   "handle": "q2",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "queued": {
+    "at": "2026-11-23T09:59:50.000Z",
+    "by": "page",
+    "images": [],
+    "key": "page-1401a002",
+    "kind": "answer",
+    "picks": [
+     "No"
+    ],
+    "revision": 1,
+    "text": "wait for the backup"
+   },
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [],
+ "sent": [
+  {
+   "id": "q1",
+   "key": "page-1401a001",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "id": "q2",
+   "key": "page-1401a002",
+   "kind": "answer",
+   "state": "queued"
+  },
+  {
+   "id": "q3",
+   "key": "page-1401d003",
+   "kind": "dismiss",
+   "state": "queued"
+  }
+ ],
+ "seq": 4,
+ "session": "5eed0000-0000-4000-8000-000000000014",
+ "v": 1
+}

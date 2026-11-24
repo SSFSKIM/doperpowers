@@ -1,0 +1,613 @@
+{
+ "$defs": {
+  "asker": {
+   "oneOf": [
+    {
+     "const": "main",
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "agentId": {
+       "minLength": 1,
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "agentId",
+      "name"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "id": {
+   "pattern": "^q[1-9][0-9]*$",
+   "type": "string"
+  },
+  "key": {
+   "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+   "type": "string"
+  },
+  "option": {
+   "additionalProperties": false,
+   "properties": {
+    "description": {
+     "type": "string"
+    },
+    "label": {
+     "type": "string"
+    },
+    "preview": {
+     "type": "string"
+    },
+    "recommended": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "label"
+   ],
+   "type": "object"
+  },
+  "outcome": {
+   "additionalProperties": false,
+   "oneOf": [
+    {
+     "properties": {
+      "kind": {
+       "const": "answer"
+      }
+     },
+     "required": [
+      "picks",
+      "text",
+      "images"
+     ]
+    },
+    {
+     "properties": {
+      "kind": {
+       "const": "dismiss"
+      }
+     }
+    }
+   ],
+   "properties": {
+    "acceptedAt": {
+     "$ref": "#/$defs/time"
+    },
+    "acrossStop": {
+     "type": "boolean"
+    },
+    "at": {
+     "$ref": "#/$defs/time"
+    },
+    "batch": {
+     "$ref": "#/$defs/key"
+    },
+    "by": {
+     "enum": [
+      "page",
+      "maws",
+      "desk",
+      "cli"
+     ],
+     "type": "string"
+    },
+    "id": {
+     "$ref": "#/$defs/id"
+    },
+    "images": {
+     "items": {
+      "pattern": "^uploads/[A-Za-z0-9._-]+\\.(png|jpg|jpeg|gif|webp)$",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "key": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "enum": [
+      "answer",
+      "dismiss"
+     ],
+     "type": "string"
+    },
+    "picks": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "question": {
+     "$ref": "#/$defs/snapshot"
+    },
+    "recipient": {
+     "$ref": "#/$defs/recipient"
+    },
+    "revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "taken": {
+     "type": "boolean"
+    },
+    "text": {
+     "type": "string"
+    },
+    "textFile": {
+     "pattern": "^texts/[0-9a-f]{64}\\.txt$",
+     "type": "string"
+    }
+   },
+   "required": [
+    "key",
+    "kind",
+    "id",
+    "revision",
+    "by",
+    "at",
+    "acceptedAt",
+    "recipient",
+    "taken",
+    "acrossStop",
+    "question"
+   ],
+   "type": "object"
+  },
+  "queued": {
+   "additionalProperties": false,
+   "properties": {
+    "at": {
+     "$ref": "#/$defs/time"
+    },
+    "by": {
+     "enum": [
+      "page",
+      "maws",
+      "desk",
+      "cli"
+     ],
+     "type": "string"
+    },
+    "images": {
+     "items": {
+      "pattern": "^uploads/[A-Za-z0-9._-]+\\.(png|jpg|jpeg|gif|webp)$",
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "key": {
+     "$ref": "#/$defs/key"
+    },
+    "kind": {
+     "const": "answer",
+     "type": "string"
+    },
+    "picks": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "text": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "key",
+    "kind",
+    "picks",
+    "text",
+    "images",
+    "revision",
+    "by",
+    "at"
+   ],
+   "type": "object"
+  },
+  "recipient": {
+   "oneOf": [
+    {
+     "const": "main",
+     "type": "string"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "agentId": {
+       "minLength": 1,
+       "type": "string"
+      }
+     },
+     "required": [
+      "agentId"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "reference": {
+   "additionalProperties": false,
+   "properties": {
+    "abs": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "bytes": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "changed": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
+    "kind": {
+     "enum": [
+      "text",
+      "image"
+     ],
+     "type": "string"
+    },
+    "lines": {
+     "items": {
+      "minimum": 1,
+      "type": "integer"
+     },
+     "maxItems": 2,
+     "minItems": 2,
+     "type": "array"
+    },
+    "mediaType": {
+     "type": "string"
+    },
+    "mtimeMs": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "numLines": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "path": {
+     "minLength": 1,
+     "type": "string"
+    },
+    "sha256": {
+     "pattern": "^[0-9a-f]{64}$",
+     "type": "string"
+    },
+    "size": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "startLine": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "totalLines": {
+     "minimum": 0,
+     "type": "integer"
+    }
+   },
+   "required": [
+    "path",
+    "abs",
+    "sha256",
+    "bytes",
+    "kind",
+    "size",
+    "mtimeMs",
+    "changed"
+   ],
+   "type": "object"
+  },
+  "snapshot": {
+   "additionalProperties": false,
+   "properties": {
+    "askedAt": {
+     "$ref": "#/$defs/time"
+    },
+    "asker": {
+     "$ref": "#/$defs/asker"
+    },
+    "header": {
+     "type": "string"
+    },
+    "multiSelect": {
+     "type": "boolean"
+    },
+    "options": {
+     "items": {
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "question": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "asker",
+    "question",
+    "options",
+    "multiSelect",
+    "askedAt"
+   ],
+   "type": "object"
+  },
+  "time": {
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+   "type": "string"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "closed": {
+   "additionalProperties": {
+    "additionalProperties": false,
+    "properties": {
+     "asker": {
+      "$ref": "#/$defs/asker"
+     },
+     "at": {
+      "$ref": "#/$defs/time"
+     },
+     "deliveredAt": {
+      "$ref": "#/$defs/time"
+     },
+     "header": {
+      "type": "string"
+     },
+     "how": {
+      "enum": [
+       "answered",
+       "dismissed",
+       "withdrawn"
+      ],
+      "type": "string"
+     },
+     "receipt": {
+      "type": "string"
+     },
+     "revision": {
+      "minimum": 1,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "how",
+     "at",
+     "revision",
+     "asker"
+    ],
+    "type": "object"
+   },
+   "type": "object"
+  },
+  "hidden": {
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "$ref": "#/$defs/id"
+     },
+     "key": {
+      "$ref": "#/$defs/key"
+     }
+    },
+    "required": [
+     "id",
+     "key"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "open": {
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "askedAt": {
+      "$ref": "#/$defs/time"
+     },
+     "asker": {
+      "$ref": "#/$defs/asker"
+     },
+     "callId": {
+      "minLength": 1,
+      "type": "string"
+     },
+     "context": {
+      "type": "string"
+     },
+     "handle": {
+      "pattern": "^q[1-9][0-9]*(@[1-9][0-9]*)?$",
+      "type": "string"
+     },
+     "header": {
+      "type": "string"
+     },
+     "id": {
+      "$ref": "#/$defs/id"
+     },
+     "importedFrom": {
+      "additionalProperties": false,
+      "properties": {
+       "callId": {
+        "minLength": 1,
+        "type": "string"
+       },
+       "index": {
+        "minimum": 0,
+        "type": "integer"
+       }
+      },
+      "required": [
+       "callId",
+       "index"
+      ],
+      "type": "object"
+     },
+     "multiSelect": {
+      "type": "boolean"
+     },
+     "options": {
+      "items": {
+       "$ref": "#/$defs/option"
+      },
+      "type": "array"
+     },
+     "question": {
+      "type": "string"
+     },
+     "queued": {
+      "$ref": "#/$defs/queued"
+     },
+     "references": {
+      "items": {
+       "$ref": "#/$defs/reference"
+      },
+      "type": "array"
+     },
+     "revision": {
+      "minimum": 1,
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "revision",
+     "asker",
+     "question",
+     "options",
+     "multiSelect",
+     "references",
+     "askedAt",
+     "callId",
+     "handle"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "pending": {
+   "items": {
+    "$ref": "#/$defs/outcome"
+   },
+   "type": "array"
+  },
+  "sent": {
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "at": {
+      "$ref": "#/$defs/time"
+     },
+     "by": {
+      "$ref": "#/$defs/key"
+     },
+     "cancelled": {
+      "const": true,
+      "type": "boolean"
+     },
+     "current": {
+      "minimum": 1,
+      "type": "integer"
+     },
+     "how": {
+      "enum": [
+       "answered",
+       "dismissed",
+       "withdrawn",
+       "unknown"
+      ],
+      "type": "string"
+     },
+     "id": {
+      "$ref": "#/$defs/id"
+     },
+     "key": {
+      "$ref": "#/$defs/key"
+     },
+     "kind": {
+      "enum": [
+       "answer",
+       "dismiss",
+       "retract",
+       "delivered",
+       "unseen"
+      ],
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "queued",
+       "accepted",
+       "delivered",
+       "stale",
+       "closed",
+       "retracted",
+       "too-late"
+      ],
+      "type": "string"
+     },
+     "target": {
+      "$ref": "#/$defs/key"
+     },
+     "verdict": {
+      "enum": [
+       "applied",
+       "stale",
+       "closed",
+       "retracted",
+       "too-late"
+      ],
+      "type": "string"
+     }
+    },
+    "required": [
+     "key",
+     "kind",
+     "state"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  },
+  "seq": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "session": {
+   "minLength": 1,
+   "type": "string"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "v",
+  "session",
+  "seq",
+  "sent",
+  "pending"
+ ],
+ "title": "What `sminos sheet show --json` prints (plan I4); with --keys, `open`, `hidden` and `closed` are left out.",
+ "type": "object"
+}

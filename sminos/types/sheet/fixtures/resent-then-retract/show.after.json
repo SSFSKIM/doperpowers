@@ -1,0 +1,88 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "receipt": "OAuth",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "handle": "q2",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1301a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q1",
+   "key": "page-1301a001",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T10:00:00.000Z",
+   "key": "page-1301r002",
+   "kind": "retract",
+   "state": "too-late",
+   "target": "page-1301a001",
+   "verdict": "too-late"
+  }
+ ],
+ "seq": 6,
+ "session": "5eed0000-0000-4000-8000-000000000013",
+ "v": 1
+}

@@ -9,7 +9,9 @@ them: its `delivered` event (outcome `submitted`, the key as given) posted,
 then the answer `submitted`, each text it took kept in `delivered`. Its
 capabilities list the ops it is given, so `bridge_offers` reads them as a
 loaded module's. `cwd` is the session's as its start says it (where the
-child's export finds its project); `env`, the child's environment.
+child's export finds its project); `env`, the child's environment. Given
+`results` ({op: result}), each such op is answered at once with that result
+and nothing on the stream, as the sheet mod answers `sheet`.
 
 How each op is answered, `btw` and `ask` alike:
     {"text": "...", "usage": {...}}   an answer (usage defaults to USAGE)
@@ -51,8 +53,9 @@ class _Unix(http.client.HTTPConnection):
 
 
 class StandIn:
-    def __init__(self, cli, session, ops=("btw", "ask"), btw=None, ask=None, log=None, cwd="/", env=None):
-        self.session, self.ops, self.log = session, list(ops), log
+    def __init__(self, cli, session, ops=("btw", "ask"), btw=None, ask=None, log=None, cwd="/", env=None,
+                 results=None):
+        self.session, self.ops, self.log, self.results = session, list(ops), log, dict(results or {})
         self.answers = {"btw": btw or {"text": "Keeps the stand-in's tool working."},
                         "ask": ask or {"text": "Nothing blocking."}}
         self.cli, self.commands, self.delivered, self.cwd, self.env = cli, [], [], cwd, env
@@ -100,6 +103,9 @@ class StandIn:
             self.delivered.append(cmd.get("text"))
             self.post({"type": "delivered", "key": cmd.get("key"), "outcome": "submitted", "t": 0})
             self.post({"type": "result", "id": oid, "op": op, "ok": True, "result": {"submitted": True}})
+            return
+        if op in self.ops and op in self.results:
+            self.post({"type": "result", "id": oid, "op": op, "ok": True, "result": self.results[op]})
             return
         how = self.answers.get(op) if op in self.ops else None
         if how is None:

@@ -557,7 +557,7 @@ In the plugin:
       examples/surface.json
       grammar/result.md              I6's grammar and the pattern a reader matches
       grammar/result.examples.json   stored calls: { "input", "result", "parsed" }
-      fixtures/<case>/case.json      { "name", "covers", "session", "event", "verdicts" }
+      fixtures/<case>/case.json      { "name", "covers", "session", "now", "event", "verdicts" }
       fixtures/<case>/before/sheet/<session>/…   a $SMINOS_HOME before one step
       fixtures/<case>/after/sheet/<session>/…    the same after it
       fixtures/<case>/show.before.json, show.after.json
@@ -570,6 +570,15 @@ the set but `MANIFEST.json`, sorted by path. The schemas are JSON Schema
 `$defs` of the same file, so the suite checks them with a small validator
 of its own (`T/sheet_schema.py`; the runners have no schema library) and
 MAWS with whichever it has.
+
+A fixture's `now` is the step's clock, which stamps every `at` and
+`acceptedAt` the step writes. A JSON document of the set is serialized as
+Python's `json.dumps(obj, sort_keys=True, indent=1, ensure_ascii=False)`
+and a newline, and a step's output is compared after the same
+serialization; an inbox line is compact JSON, its keys in its writer's
+order. A side of a fixture with no record has no directory, and its
+`show.*.json` is `null`. The set's `README.md` lists these readings with
+the ones below, in the same words.
 
 **Published at one revision** means: M1's pull request merged to `main`.
 The revision is that merge commit; M1's Progress line records it with the
@@ -660,6 +669,25 @@ fails here first.
   question's events go (I12). A reader ignores it.
 - A question's order on a surface is its id's: a revise keeps the place.
   `askedAt` and `callId` are the current revision's, as §1 says.
+- **Always present.** `import` is `{never, calls}` and `log` is `{next,
+  owed, projects}` in every record. An answer's outcome always carries
+  `picks`, `text` and `images` (`[]`, `""`, `[]` when the line had none); a
+  dismissal's carries none of the three, and its `revision` is the
+  question's at the dismissal. A record a `start` makes has an empty
+  `inbox.jsonl` beside `state.json`.
+- **`Verdict.at`** is when the step gave the verdict, for every verdict;
+  when a question closed is `closed[id].at`.
+- **Cuts of data** are the first N characters with no mark:
+  `Closed.question` (200), the receipt's text (80), `Closed.answer`
+  (2,000). Only the envelope's prose marks a cut with `…` (I7).
+- **What an answer leaves.** `Closed.answer` and the `answered` event the
+  log is owed (I12) hold I7's line after the id in its full-text form, with
+  no asker and no times, which belong to a delivery: the log's whole,
+  `Closed.answer` its first 2,000 characters. `receipt` is written for an
+  answered question only; a closed question keeps the `key` of the line
+  that closed it.
+- A `delivered` line sets `closed[id].deliveredAt` for each key it takes
+  out of `pending`, as `landed` does.
 
 ### I3 · The inbox line, the door, the command
 
@@ -783,6 +811,15 @@ One rule for `sminos sheet show`, MAWS's reader and the page; `show
                     "pending": [ Outcome, its question bounded as in 7 ],
                     "closed":  { "q3": { "how", "at", "revision", "asker", "header", "receipt", "deliveredAt" } } }
 
+- `sent` lists the keys with a verdict, sorted by key (a JS reader would
+  put an integer-like key of an object first), then the queued lines in
+  inbox order. A queued retract carries its `target`; a `delivered` line's
+  own key reads `delivered`.
+- A line a reader drops in step 2 is one a drain skips (U2): it fails the
+  line's schema, or it answers an open question at its current revision
+  with a pick that is no label of it.
+- A session with no record: `show` exits 3, `no sheet`.
+
 `show --json --keys <k1,k2,…>` (at most 50) prints the same with `pending`
 and `sent` held to those keys and `open`, `hidden` and `closed` left out:
 a few kilobytes an outcome, which a hook can take through
@@ -802,6 +839,9 @@ a few kilobytes an outcome, which a hook can take through
             "start": { "source": "startup" | "resume" | "fork" | "clear", "floor": 11,
                        "today": { "definite": true, "asks": [ { "file": "<a staged ask>" } ] } },
             "call":  { "callId": "toolu_…", "floor": 11 } }          // call and settle alike name the call by callId
+
+    a staged ask (start.today.asks[].file), or one given inline =
+          { "callId": "toolu_…", "askedAt": "…", "questions": [ today's tool's question objects, as it held them ] }
 
     <staging>/<callId>/call.json =
           { "asker": "main" | { "agentId": "…", "name": "…" },
@@ -904,7 +944,9 @@ plugin tool's input). Two kinds of rule:
   without `multiSelect`; `multiSelect` only with options; `lines` as `[a,
   b]` with `1 <= a <= b`; every reference captured. An entry that breaks
   one is refused alone: the mod writes its clause in the entry's place in
-  `call.json`, and the others apply.
+  `call.json`, and the others apply. The published schema states none of
+  these, nor the call's two rules above: a preview on a multi-select
+  question passes it.
 
 The result's first line is one of three, and a stored call that was not
 denied always has one:
@@ -1013,6 +1055,12 @@ send to a subagent and the fixtures. The terminal form:
   label today's tool let through, and there the place still names the
   option.
 - A reader reads the block and nothing above it.
+- Inside an envelope `answered` and `dismissed` each list their questions
+  by the id's number (q8 before q12): the packing below decides which
+  outcomes an envelope carries, and their order is the ids'. The block
+  places `textCut` and `textFile` after `text` and `more` after
+  `dismissed`. "Cut at N with `…`" in the prose is the first N characters
+  and `…`.
 
 **The budget** (the composite's §5.3 rule, in exact shapes). The engine
 hands the model one context entry whole only up to 100,000 of its

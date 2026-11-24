@@ -1,0 +1,89 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 0,
+  "skipped": 0
+ },
+ "log": {
+  "next": 4,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 4,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "callId": "toolu_01Ship0002",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 4,
+ "session": "5eed0000-0000-4000-8000-000000000014",
+ "v": 1,
+ "verdicts": {}
+}

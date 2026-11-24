@@ -1,0 +1,65 @@
+{
+ "calls": [],
+ "closed": {},
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 116,
+  "skipped": 0
+ },
+ "log": {
+  "next": 2,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 2,
+ "pending": [],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 3,
+ "session": "5eed0000-0000-4000-8000-000000000010",
+ "v": 1,
+ "verdicts": {
+  "page-1001a0ff": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "by": "page-1001r001",
+   "kind": "unseen",
+   "verdict": "retracted"
+  },
+  "page-1001r001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-1001a0ff",
+   "verdict": "retracted"
+  }
+ }
+}

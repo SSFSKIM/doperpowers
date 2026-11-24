@@ -1,0 +1,188 @@
+{
+ "calls": [],
+ "closed": {
+  "q1": {
+   "answer": "\"Which auth method should the login use?\" → OAuth.",
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "key": "page-1401a001",
+   "question": "Which auth method should the login use?",
+   "receipt": "OAuth",
+   "revision": 1
+  },
+  "q2": {
+   "answer": "\"Ship the migration today?\" → No. Their text: \"wait for the backup\"",
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Migration",
+   "how": "answered",
+   "key": "page-1401a002",
+   "question": "Ship the migration today?",
+   "receipt": "No",
+   "revision": 1
+  },
+  "q3": {
+   "asker": "main",
+   "at": "2026-11-23T10:00:00.000Z",
+   "header": "Empty state",
+   "how": "dismissed",
+   "key": "page-1401d003",
+   "question": "What should the empty state say?",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 461,
+  "skipped": 0
+ },
+ "log": {
+  "next": 7,
+  "owed": [
+   {
+    "kind": "answered",
+    "n": 4,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000014:q1",
+    "text": "\"Which auth method should the login use?\" → OAuth."
+   },
+   {
+    "kind": "answered",
+    "n": 5,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000014:q2",
+    "text": "\"Ship the migration today?\" → No. Their text: \"wait for the backup\""
+   },
+   {
+    "closed": "dismissed",
+    "kind": "answered",
+    "n": 6,
+    "src": "sheet:5eed0000-0000-4000-8000-000000000014:q3",
+    "text": "dismissed"
+   }
+  ],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 4,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-1401a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  },
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q2",
+   "images": [],
+   "key": "page-1401a002",
+   "kind": "answer",
+   "picks": [
+    "No"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:02:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Migration",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Ship the migration today?"
+   },
+   "recipient": {
+    "agentId": "a1b2c3"
+   },
+   "revision": 1,
+   "taken": true,
+   "text": "wait for the backup"
+  },
+  {
+   "acceptedAt": "2026-11-23T10:00:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:59:50.000Z",
+   "batch": "page-b1400001",
+   "by": "page",
+   "id": "q3",
+   "key": "page-1401d003",
+   "kind": "dismiss",
+   "question": {
+    "askedAt": "2026-11-23T09:03:00.000Z",
+    "asker": "main",
+    "header": "Empty state",
+    "multiSelect": false,
+    "options": [],
+    "question": "What should the empty state say?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false
+  }
+ ],
+ "questions": [],
+ "seq": 5,
+ "session": "5eed0000-0000-4000-8000-000000000014",
+ "v": 1,
+ "verdicts": {
+  "page-1401a001": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q1",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1401a002": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q2",
+   "kind": "answer",
+   "verdict": "applied"
+  },
+  "page-1401d003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "id": "q3",
+   "kind": "dismiss",
+   "verdict": "applied"
+  }
+ }
+}

@@ -1,0 +1,54 @@
+{
+ "covers": "§4.2 row 6: a retract of a target an earlier step applied, and of one it refused as stale; a retract that names a retract, and one that names a delivered line, both too-late",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": true,
+   "running": []
+  },
+  "event": "drain",
+  "keys": [
+   "page-0801r003",
+   "page-0801r004",
+   "maws-0801d005",
+   "page-0801r006",
+   "page-0801r007"
+  ],
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "retract-too-late",
+ "now": "2026-11-23T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000008",
+ "verdicts": {
+  "maws-0801d005": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "delivered",
+   "verdict": "applied"
+  },
+  "page-0801r003": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801a001",
+   "verdict": "too-late"
+  },
+  "page-0801r004": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801a002",
+   "verdict": "too-late"
+  },
+  "page-0801r006": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "maws-0801d005",
+   "verdict": "too-late"
+  },
+  "page-0801r007": {
+   "at": "2026-11-23T10:00:00.000Z",
+   "kind": "retract",
+   "target": "page-0801r003",
+   "verdict": "too-late"
+  }
+ }
+}

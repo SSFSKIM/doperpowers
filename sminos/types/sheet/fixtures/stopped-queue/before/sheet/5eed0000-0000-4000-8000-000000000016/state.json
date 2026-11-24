@@ -1,0 +1,148 @@
+{
+ "calls": [
+  {
+   "callId": "toolu_01Empt0016",
+   "result": "Added q3."
+  }
+ ],
+ "closed": {
+  "q4": {
+   "answer": "\"Should the cache key include the locale?\" → Yes.",
+   "asker": {
+    "agentId": "a1b2c3",
+    "name": "reviewer"
+   },
+   "at": "2026-11-23T09:30:00.000Z",
+   "header": "Cache key",
+   "how": "answered",
+   "key": "page-1601a000",
+   "question": "Should the cache key include the locale?",
+   "receipt": "Yes",
+   "revision": 1
+  }
+ },
+ "import": {
+  "calls": {},
+  "never": false
+ },
+ "inbox": {
+  "offset": 129,
+  "skipped": 0
+ },
+ "log": {
+  "next": 5,
+  "owed": [],
+  "projects": {
+   "q1": "1c0de000-0000-5000-8000-0000000000aa",
+   "q2": "1c0de000-0000-5000-8000-0000000000aa",
+   "q3": "1c0de000-0000-5000-8000-0000000000aa",
+   "q4": "1c0de000-0000-5000-8000-0000000000aa"
+  }
+ },
+ "nextId": 5,
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:30:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:29:00.000Z",
+   "by": "page",
+   "id": "q4",
+   "images": [],
+   "key": "page-1601a000",
+   "kind": "answer",
+   "picks": [
+    "Yes"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:10:00.000Z",
+    "asker": {
+     "agentId": "a1b2c3",
+     "name": "reviewer"
+    },
+    "header": "Cache key",
+    "multiSelect": false,
+    "options": [
+     "Yes",
+     "No"
+    ],
+    "question": "Should the cache key include the locale?"
+   },
+   "recipient": {
+    "agentId": "a1b2c3"
+   },
+   "revision": 1,
+   "taken": true,
+   "text": ""
+  }
+ ],
+ "questions": [
+  {
+   "askedAt": "2026-11-23T09:01:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Auth0001",
+   "header": "Auth method",
+   "id": "q1",
+   "multiSelect": false,
+   "options": [
+    {
+     "description": "The provider's flow; nothing stored here.",
+     "label": "OAuth",
+     "recommended": true
+    },
+    {
+     "description": "WebAuthn; needs a fallback on old devices.",
+     "label": "Passkeys"
+    },
+    {
+     "label": "Magic link"
+    }
+   ],
+   "question": "Which auth method should the login use?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:02:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0002",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 1
+  },
+  {
+   "askedAt": "2026-11-23T09:03:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Empt0003",
+   "header": "Empty state",
+   "id": "q3",
+   "multiSelect": false,
+   "options": [],
+   "question": "What should the empty state say?",
+   "references": [],
+   "revision": 1
+  }
+ ],
+ "seq": 7,
+ "session": "5eed0000-0000-4000-8000-000000000016",
+ "v": 1,
+ "verdicts": {
+  "page-1601a000": {
+   "at": "2026-11-23T09:30:00.000Z",
+   "id": "q4",
+   "kind": "answer",
+   "verdict": "applied"
+  }
+ }
+}

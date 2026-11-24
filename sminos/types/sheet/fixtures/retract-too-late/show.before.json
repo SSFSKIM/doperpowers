@@ -1,0 +1,118 @@
+{
+ "closed": {
+  "q1": {
+   "asker": "main",
+   "at": "2026-11-23T09:40:00.000Z",
+   "header": "Auth method",
+   "how": "answered",
+   "receipt": "OAuth",
+   "revision": 1
+  }
+ },
+ "hidden": [],
+ "open": [
+  {
+   "askedAt": "2026-11-23T09:30:00.000Z",
+   "asker": "main",
+   "callId": "toolu_01Ship0008",
+   "handle": "q2@2",
+   "header": "Migration",
+   "id": "q2",
+   "multiSelect": false,
+   "options": [
+    {
+     "label": "Yes",
+     "recommended": true
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Ship the migration today?",
+   "references": [],
+   "revision": 2
+  }
+ ],
+ "pending": [
+  {
+   "acceptedAt": "2026-11-23T09:40:00.000Z",
+   "acrossStop": false,
+   "at": "2026-11-23T09:39:00.000Z",
+   "by": "page",
+   "id": "q1",
+   "images": [],
+   "key": "page-0801a001",
+   "kind": "answer",
+   "picks": [
+    "OAuth"
+   ],
+   "question": {
+    "askedAt": "2026-11-23T09:01:00.000Z",
+    "asker": "main",
+    "header": "Auth method",
+    "multiSelect": false,
+    "options": [
+     "OAuth",
+     "Passkeys",
+     "Magic link"
+    ],
+    "question": "Which auth method should the login use?"
+   },
+   "recipient": "main",
+   "revision": 1,
+   "taken": false,
+   "text": ""
+  }
+ ],
+ "sent": [
+  {
+   "at": "2026-11-23T09:40:00.000Z",
+   "id": "q1",
+   "key": "page-0801a001",
+   "kind": "answer",
+   "state": "accepted",
+   "verdict": "applied"
+  },
+  {
+   "at": "2026-11-23T09:40:00.000Z",
+   "current": 2,
+   "id": "q2",
+   "key": "page-0801a002",
+   "kind": "answer",
+   "state": "stale",
+   "verdict": "stale"
+  },
+  {
+   "key": "page-0801r003",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-0801a001"
+  },
+  {
+   "key": "page-0801r004",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-0801a002"
+  },
+  {
+   "key": "maws-0801d005",
+   "kind": "delivered",
+   "state": "queued"
+  },
+  {
+   "key": "page-0801r006",
+   "kind": "retract",
+   "state": "queued",
+   "target": "maws-0801d005"
+  },
+  {
+   "key": "page-0801r007",
+   "kind": "retract",
+   "state": "queued",
+   "target": "page-0801r003"
+  }
+ ],
+ "seq": 9,
+ "session": "5eed0000-0000-4000-8000-000000000008",
+ "v": 1
+}
