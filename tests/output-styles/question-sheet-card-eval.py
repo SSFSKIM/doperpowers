@@ -51,6 +51,9 @@ around the call (the text and progress notes of that response and the one
 before) appended, as automatic capture (§10) would show them: the difference
 is what capture would add.
 
+Each run also records how many responses came before its first sheet call
+(the trigger shows the matter in the response before the first).
+
 --calibrate judges the hand-written bare and full cards of
 question_sheet_session.CALIBRATION instead: each bare card must fail and each
 full card pass, or the judges cannot tell the behaviour apart.
@@ -134,7 +137,9 @@ def run(job, args, arms):
             q = {k: v for k, v in env.sheet.questions[qid].items() if k != "history"}
             cards.append({"id": qid, "step": step_i, "card": qs.render_card(q),
                           "notes": qs.notes_before(steps, step_i)})
+    first = qs.sheet_calls(steps)
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
+            "first_sheet_step": first[0][0] if first else None,
             "calls": env.sheet.calls, "cards": cards, "simulated": env.simulated,
             "asking_calls": sum(1 for c in env.sheet.calls if c.get("added"))}
 
@@ -159,7 +164,9 @@ def summary(results):
         r = rows.setdefault((x["arm"], x["scenario"], x["history"]), {
             "runs": 0, "runs_asking": 0, "cards": 0, "matter_cards": 0, "pass": 0, "essential": 0, "reader_yes": 0,
             "pass_with_capture": 0, "asking_calls": 0, "matters_unasked": 0, "facts_by_where": {},
-            "other_cards": 0, "other_reader_yes": 0})
+            "other_cards": 0, "other_reader_yes": 0, "responses_before_sheet": []})
+        if x.get("first_sheet_step") is not None:
+            r["responses_before_sheet"].append(x["first_sheet_step"])
         keys = ss.E2_TRIGGERS[x["scenario"]]["matters"]
         r["runs"] += 1
         r["runs_asking"] += bool(x["cards"])

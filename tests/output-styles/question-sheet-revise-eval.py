@@ -58,7 +58,13 @@ response after its first sheet call. Its outcome, from the stub's record:
 
 Whether an added question asks for the same decision as the target, and
 whether a revision still asks for the decision it replaced, is judged
-(claude-opus-5-5, --judge-effort) from the two cards alone.
+(claude-opus-5-5, --judge-effort) from the two cards alone. The second
+judgment decides only the distinct control: in the other scenarios a revision
+of the target counts as revised even when it broadens the question.
+
+Each run also records how many responses came before its first sheet call:
+§2.4 asks for every question in one call, and an agent that batches waits
+for the turn's end to ask what it knew at its first step.
 
   python3 tests/output-styles/question-sheet-revise-eval.py [NAME=DESCRIPTION.md ...]
       [--scenarios option_gone,premise,subagent,distinct] [--history far,near,short] [--reps 5]
@@ -111,7 +117,9 @@ def run(job, args, arms):
     n0 = len(env.sheet.calls)
     before = {q: json.loads(json.dumps(v)) for q, v in env.sheet.questions.items()}
     steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps)
+    first = qs.sheet_calls(steps)
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
+            "first_sheet_step": first[0][0] if first else None,
             "calls": env.sheet.calls[n0:], "before": before, "simulated": env.simulated,
             "after": {q: {k: v for k, v in env.sheet.questions[q].items() if k != "history"} for q in env.sheet.questions}}
 
@@ -160,8 +168,11 @@ def summary(results):
     for x in results:
         if "error" in x:
             continue
-        r = rows.setdefault((x["arm"], x["scenario"], x["history"]), {"runs": 0, "outcomes": {}, "schema_errors": 0})
+        r = rows.setdefault((x["arm"], x["scenario"], x["history"]), {"runs": 0, "outcomes": {}, "schema_errors": 0,
+                                                                     "responses_before_sheet": []})
         r["runs"] += 1
+        if x.get("first_sheet_step") is not None:
+            r["responses_before_sheet"].append(x["first_sheet_step"])
         r["outcomes"][x["outcome"]] = r["outcomes"].get(x["outcome"], 0) + 1
         r["schema_errors"] += x["schema_errors"]
     return rows
@@ -212,7 +223,8 @@ if __name__ == "__main__":
           f"at list price (judges not counted); full output in {args.out}")
     for key, r in sorted(summary(out).items()):
         fails = sum(v for k, v in r["outcomes"].items() if k in FAIL)
-        print(*key, f"runs {r['runs']}", json.dumps(r["outcomes"]), f"failures {fails}", f"schema errors {r['schema_errors']}")
+        print(*key, f"runs {r['runs']}", json.dumps(r["outcomes"]), f"failures {fails}", f"schema errors {r['schema_errors']}",
+              f"responses before the first sheet call {sorted(r['responses_before_sheet'])}")
     for x in out:
         if "error" in x:
             print("error", x["job"], x["error"])

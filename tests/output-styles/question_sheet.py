@@ -561,7 +561,8 @@ Command line:
         for words in simple_commands(command):
             out = self.shell_one(words)
             if out is None:  # a command the canned shell cannot answer goes to the simulator
-                out = self.simulate(shlex.join(words)) if self.simulator else ""
+                line = " ".join(w if re.fullmatch(r"\d*(>>?|<)(&\d+)?\S*|&>\S*", w) else shlex.quote(w) for w in words)
+                out = self.simulate(line) if self.simulator else ""
                 out = "" if out == NO_OUTPUT else out
             if out:
                 outputs.append(out)

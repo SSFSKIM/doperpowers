@@ -175,10 +175,13 @@ check("an unknown command goes to the simulator alone", out.startswith("1\nOn br
       sim.prompts[0].endswith("Command line:\nuv run python -c 'print(1)'")
       and "1,204 of them" in sim.prompts[0] and env.simulated[-1]["output"] == "1", out)
 check("2>&1 is a redirection, not a separator", qs.simple_commands("pytest -q 2>&1 | tail -3") == [["pytest", "-q", "2>&1"]])
+sh("stat -f '%z' x.sql >> /tmp/o.txt 2>&1")
+check("redirections reach the simulator unquoted", sim.prompts[-1].endswith("stat -f %z x.sql >> /tmp/o.txt 2>&1"),
+      sim.prompts[-1][-60:])
 sh("for c in a b; do git show $c; done")
 check("a compound command goes to the simulator whole", sim.prompts[-1].endswith("for c in a b; do git show $c; done")
       and "41b0c8a docs: CSV export spec" in sim.prompts[-1])
-check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 2)
+check("a known command does not", sh("git status").startswith("On branch") and len(sim.prompts) == 3)
 check("echo reads $? as 0", sh('false; echo "exit=$?"').endswith("exit=0"))
 env.simulator = None
 check("staging answers the numbers the session showed",
