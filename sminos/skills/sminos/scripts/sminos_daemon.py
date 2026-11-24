@@ -2268,7 +2268,7 @@ def override_duty():
 def _cleared_notes():
     """{session: (when its latest note was written, the identity of the record directory its notes witnessed)} for
     the sessions the `/clear` notes kept now name (smns-cleared.sh: the engine's SessionEnd payload, and
-    `<pid>.sheet`, the `<st_dev>:<st_ino>` of the session's sheet record as the hook found it). The identity is None
+    `<pid>.sheet`, the `<st_dev>:<st_ino>:<nonce>` of the session's sheet record as the hook found it). The identity is None
     when a note witnessed no record, or the notes naming one session disagree on it: such a note authorizes no
     removal."""
     d = os.path.join(sminos.root(), sminos.CLEARED)
@@ -2293,12 +2293,12 @@ def _cleared_notes():
 
 
 def _witnessed(note):
-    """The (st_dev, st_ino) of the sheet record a `/clear` note's hook found, from `<pid>.sheet` beside the note, or
-    None."""
+    """The identity (sminos_sheet.record_identity: st_dev, st_ino, nonce) of the sheet record a `/clear` note's hook
+    found, from `<pid>.sheet` beside the note, or None."""
     try:
         with open(os.path.splitext(note)[0] + ".sheet", encoding="utf-8") as f:
-            dev, ino = f.read().strip().split(":")
-        return int(dev), int(ino)
+            dev, ino, nonce = f.read().strip().split(":")
+        return (int(dev), int(ino), nonce) if nonce else None
     except (OSError, ValueError):
         return None
 

@@ -1145,14 +1145,37 @@ def _read_state(rec):
         return None
 
 
-def record_identity(rec):
-    """The record directory's (st_dev, st_ino), or None: which record a path names, so a projection, or a /clear's
-    note, acts on the record it began from and never on one made at the same path since. Not in state.json."""
+INCARNATION = ".incarnation"
+
+
+def record_identity(rec, mint=False):
+    """Which record a path names, so a projection, or a /clear's note, acts on the record it began from and never on
+    one made at the same path since: (st_dev, st_ino, nonce) of the record directory, or None for none there. A
+    filesystem may give a new directory the inode of one just removed, so the nonce, `.incarnation` in the record
+    (not in state.json, and no part of what a step writes), tells them apart: minted once, by the first reader that
+    binds to the record (`mint`, and smns-cleared.sh), with a no-clobber link, so concurrent minters read one; ""
+    while none is."""
     try:
         st = os.lstat(rec)
     except FileNotFoundError:
         return None
-    return st.st_dev, st.st_ino
+    path = os.path.join(rec, INCARNATION)
+    if mint and not os.path.lexists(path):
+        tmp = os.path.join(rec, ".tmp-" + uuid.uuid4().hex)
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(uuid.uuid4().hex + "\n")
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+        finally:
+            os.unlink(tmp)
+    try:
+        with open(path, encoding="utf-8") as f:
+            nonce = f.read().strip()
+    except FileNotFoundError:
+        nonce = ""
+    return st.st_dev, st.st_ino, nonce
 
 
 def project_log(session, here=None, closing=False, rec=None):
@@ -1175,7 +1198,7 @@ def project_log(session, here=None, closing=False, rec=None):
         why = _log_problem(rec)
         if why:
             raise LogFailed(why)
-        began = record_identity(rec)
+        began = record_identity(rec, mint=rec == record_dir(session))
         state = _read_state(rec)
         if state is None:
             return None

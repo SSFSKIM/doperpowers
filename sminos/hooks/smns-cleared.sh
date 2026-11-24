@@ -26,19 +26,29 @@ home=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}
 dir=$home/cleared
 mkdir -p "$dir" 2>/dev/null && chmod 700 "$dir" 2>/dev/null
 tmp=$dir/.$pid.$$.tmp
-# The question sheet the session left, as it is now (its directory's device and
-# inode, `<pid>.sheet`, written before the note): what the note witnessed, so
-# the daemon's sweep removes that record and never one made after it. None
-# when there is no record (or it is already gone); a stale one is removed.
+# The question sheet the session left, as it is now: its record directory's
+# device, inode and nonce (`.incarnation` in it, minted here if no reader has
+# yet: a no-clobber link, so a concurrent minter's wins; sminos_sheet's
+# record_identity), `<pid>.sheet`, written before the note. What the note
+# witnessed, so the daemon's sweep removes that record and never one made
+# after it. None when there is no record; a stale one is removed.
 sid=${input#*\"session_id\":}
 sid=${sid#"${sid%%[![:space:]]*}"}
 sid=${sid#\"}
 sid=${sid%%\"*}
+rec=$home/sheet/$sid
 rm -f "$dir/$pid.sheet" 2>/dev/null
-if [[ $sid =~ ^[0-9a-fA-F-]+$ && -d $home/sheet/$sid ]]; then
-  id=$(stat -c '%d:%i' "$home/sheet/$sid" 2>/dev/null || stat -f '%d:%i' "$home/sheet/$sid" 2>/dev/null) \
-    && [[ $id =~ ^[0-9]+:[0-9]+$ ]] \
-    && (umask 077 && printf '%s\n' "$id" >"$tmp") 2>/dev/null && mv -f "$tmp" "$dir/$pid.sheet" 2>/dev/null
+if [[ $sid =~ ^[0-9a-fA-F-]+$ && -d $rec && ! -L $rec ]]; then
+  if [[ ! -e $rec/.incarnation ]]; then
+    mint=$rec/.tmp-cleared-$pid-$$
+    (umask 077 && od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$mint" && echo >>"$mint") 2>/dev/null \
+      && ln "$mint" "$rec/.incarnation" 2>/dev/null
+    rm -f "$mint" 2>/dev/null
+  fi
+  nonce=$(cat "$rec/.incarnation" 2>/dev/null)
+  id=$(stat -c '%d:%i' "$rec" 2>/dev/null || stat -f '%d:%i' "$rec" 2>/dev/null) \
+    && [[ $id =~ ^[0-9]+:[0-9]+$ && $nonce =~ ^[0-9a-f]{32}$ ]] \
+    && (umask 077 && printf '%s:%s\n' "$id" "$nonce" >"$tmp") 2>/dev/null && mv -f "$tmp" "$dir/$pid.sheet" 2>/dev/null
 fi
 (umask 077 && printf '%s' "$input" >"$tmp") 2>/dev/null && mv -f "$tmp" "$dir/$pid.json" 2>/dev/null
 rm -f "$tmp" 2>/dev/null

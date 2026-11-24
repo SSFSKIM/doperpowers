@@ -263,8 +263,8 @@ class Projection(Log):
         self.assertEqual(self.logged(sid, "question", other), [], "never in the second project")
         self.assertEqual(self.state(sid)["log"], {"next": 2, "owed": [], "projects": {"q1": self.p.id}})
 
-    def test_a_projection_that_outlives_its_record_changes_nothing_in_the_one_made_after_it(self):
-        sid, proc = self.opened()
+    def test_a_projection_that_outlives_its_record_changes_nothing_in_the_one_made_after_it(self, sid=None):
+        sid = sid or self.opened()[0]
         self.start(sid)
         self.ask(sid, "toolu_1", [entry("Old one?"), entry("Old two?")])
         real, again = sminos.append_host, []
@@ -285,6 +285,26 @@ class Projection(Log):
         self.assertEqual(self.state(sid)["log"], made["log"], "the new record still owes its own")
         self.assertEqual(self.state(sid)["seq"], made["seq"])
         self.assertEqual([e["text"] for e in made["log"]["owed"]], [["New one?"], ["New two?"]])
+
+    def test_a_record_made_again_on_the_inode_of_the_one_removed_is_another_to_a_projection(self):
+        """A filesystem that gives the new directory the inode of the one removed (as ext4 does at once): the nonce
+        tells them apart."""
+        sid = self.opened()[0]
+        rec = sheet.record_dir(sid)
+        real = os.lstat
+
+        def same_inode(path, *a, **k):
+            st = real(path, *a, **k)
+            return os.stat_result((st.st_mode, 4242) + tuple(st)[2:]) if path == rec else st
+        with mock.patch.object(os, "lstat", side_effect=same_inode):
+            self.start(sid)
+            before = sheet.record_identity(rec, mint=True)
+            sheet.remove_record(sid, cleared=True)
+            self.start(sid)
+            after = sheet.record_identity(rec)
+            self.assertEqual(before[:2], after[:2], "the same device and inode")
+            self.assertNotEqual(before, after)
+            self.test_a_projection_that_outlives_its_record_changes_nothing_in_the_one_made_after_it(sid)
 
     def test_two_sessions_of_one_project_each_keep_their_own_q1(self):
         a, _ = self.opened()
@@ -652,8 +672,8 @@ class Sweep(Log):
     def test_a_record_a_clears_note_names_goes_at_once(self):
         sid = self.asked_and_stopped()
         note, _ = self.note(sid)
-        st = os.stat(sheet.record_dir(sid))
-        self.assertEqual(self.witnessed(note), "%d:%d\n" % (st.st_dev, st.st_ino), "the record the note witnessed")
+        self.assertEqual(self.witnessed(note), "%d:%d:%s\n" % sheet.record_identity(sheet.record_dir(sid)),
+                         "the record the note witnessed")
         self.sweep()
         self.assertFalse(self.exists(sid), "transcript there, touched now: a /clear's note is enough")
         self.assertEqual(self.answers(sid), [(self.src(sid, "q1"), sheet.LOG_REMOVED, "removed")])
@@ -688,7 +708,7 @@ class Sweep(Log):
         self.note(sid)
         other, _ = self.note(sid)
         with open(os.path.splitext(other)[0] + ".sheet", "w") as f:
-            f.write("1:2\n")
+            f.write("1:2:%s\n" % ("0" * 32))
         self.sweep()
         self.assertTrue(self.exists(sid))
 
