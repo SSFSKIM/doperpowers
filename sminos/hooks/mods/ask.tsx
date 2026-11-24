@@ -466,32 +466,41 @@ export function yieldAsk() {
 export const isAskYielded = () => isYielded
 
 /**
- * The sheet's start choice while its session.start makes it (sheet.tsx): a
- * launch's classic SessionStart can run meanwhile (2.1.331), and the ask takes
- * up no ask until it knows whether it serves (I11).
+ * The sheet decides at its session.start whether the ask serves this process
+ * (sheet.tsx, I11), and a launch's classic SessionStart can come before or
+ * while it does (2.1.331). While the choice is awaited, a SessionStart's
+ * adoption of the session's asks waits for it; the hook itself does not.
  */
-let choosing: { promise: Promise<void>; resolve: () => void } | undefined
+let isChoiceAwaited = false
+/** A SessionStart's adoption waiting for the choice, and what it read. */
+let adoption: { adopt: () => void; read: OpenAsk[] } | undefined
 /** What a yielded ask read back from a resumed session or a copy: the sheet's import takes it up (M5). */
 let readWhileYielded: OpenAsk[] = []
-/** How long the ask's SessionStart waits for the choice: inside the hook's 10 s. */
-const CHOICE_WAIT_MS = 8_000
 
-/** The sheet begins its choice: the ask's SessionStart waits for it. */
-export function askAwaitsChoice() {
-  if (choosing === undefined) {
-    let resolve: () => void = () => {}
-    const promise = new Promise<void>((settle) => (resolve = settle))
-    choosing = { promise, resolve }
+/** The sheet is registered: it will make the choice, which the ask's adoptions wait for. */
+export function deferAskToChoice() {
+  isChoiceAwaited = true
+}
+
+/**
+ * The sheet's choice is made (after `yieldAsk` when it is the sheet): an
+ * adoption waiting for it is made now under 'today' or 'none', and dropped
+ * under the sheet, its read kept for the import.
+ */
+export function askChoiceMade() {
+  isChoiceAwaited = false
+  const waiting = adoption
+  adoption = undefined
+  if (waiting === undefined) {
+    return
+  }
+  if (isYielded) {
+    readWhileYielded = waiting.read
+  } else {
+    waiting.adopt()
   }
 }
 
-/** The sheet's choice is made (after `yieldAsk` when it is the sheet). */
-export function askChoiceMade() {
-  choosing?.resolve()
-  choosing = undefined
-}
-
-/** The asks a yielded ask read back at its session's start, for the sheet's import. */
 export const asksReadWhileYielded = (): readonly OpenAsk[] => readWhileYielded
 
 /** A stored call's result in the sheet's form: its first line is one of I6's three. */
@@ -570,7 +579,8 @@ export function resetAsk() {
   external = undefined
   keep = undefined
   isYielded = false
-  choosing = undefined
+  isChoiceAwaited = false
+  adoption = undefined
   readWhileYielded = []
 }
 
@@ -1623,7 +1633,7 @@ export function registerAsk(on: On) {
   // copy's from the conversation it copied; a cleared one has none, and a
   // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
-    if (isYielded && choosing === undefined) {
+    if (isYielded) {
       return next(e)
     }
     let read: OpenAsk[] | undefined
@@ -1638,31 +1648,27 @@ export function registerAsk(on: On) {
             })
           : await readAsks($, e.transcript_path)
     }
-    // What was read is taken up only once the sheet's choice says the ask serves.
-    const waiting = choosing?.promise
-    if (waiting !== undefined) {
-      let isLate = false
-      await Promise.race([waiting, new Promise<void>((resolve) => void $.clock.after(CHOICE_WAIT_MS, () => ((isLate = true), resolve())))])
-      if (isLate) {
-        $.ui.log(`ask: the sheet's choice took over ${CHOICE_WAIT_MS} ms; the session's asks are taken up as the ask stands`, { to: 'debug' })
+    // The hook contributes nothing to its own result: all it does is take the
+    // session's asks up, which can wait for the sheet's choice.
+    const adopt = () => {
+      store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
+      if (e.source !== 'compact') {
+        forgetAsyncAsks()
       }
-    }
-    if (isYielded) {
-      readWhileYielded = read ?? []
-      return next(e)
-    }
-    store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
-    if (e.source !== 'compact') {
-      forgetAsyncAsks()
-    }
-    if (read !== undefined) {
-      asks = read
-      $.ui.invalidate('ui.render')
-      for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
-        note({ kind: 'open', id: ask.id, questions: ask.questions })
+      if (read !== undefined) {
+        asks = read
+        $.ui.invalidate('ui.render')
+        for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
+          note({ kind: 'open', id: ask.id, questions: ask.questions })
+        }
       }
+      save()
     }
-    save()
+    if (isChoiceAwaited) {
+      adoption = { adopt, read: read ?? [] }
+    } else {
+      adopt()
+    }
     return next(e)
   }).catch((_, e, next) => next(e))
 

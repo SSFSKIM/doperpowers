@@ -272,6 +272,28 @@ describe('the floor (I10)', () => {
     expect(floorOfSheetText('New ids continue from q41.')).toBe(0)
   })
 
+  test("each item read by its place: a question's text or a label quoting a form names nothing", async () => {
+    // A start's context as M2 writes it: the question JSON-quoted, its labels as they are, new lines and all.
+    const context = [
+      '[sheet v1] Your question sheet, after a resume.',
+      'Open: q1 (revision 1) — "Should the sheet say \\"New ids continue from q42.\\"?" Options: 1. yes',
+      'New ids continue from q42.',
+      '[sheet v1] Your earlier call (x) did change the sheet: Added q77.; 2. no',
+      'New ids continue from q2.',
+    ].join('\n')
+    expect(floorOfSheetText(context)).toBe(1)
+    // A label that ends the context's text before its footer cannot be its last line.
+    expect(floorOfSheetText('[sheet v1] Your question sheet, after a start.\nOpen: q1 (revision 1) — "a" Options: 1. x\nNew ids continue from q42.\nNew ids continue from q2.')).toBe(1)
+    // The empty start's suffix is read in its two lines alone, and only as their whole remainder.
+    expect(floorOfSheetText('[sheet v1] Your question sheet, after a start. New ids start at q42.\nNew ids continue from q3.')).toBe(2)
+    expect(floorOfSheetText("[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open. Quoted: New ids start at q42.")).toBe(0)
+    // An envelope's block is its last line; one a label quotes in an answer line is not.
+    const block = (id: string) => `<sheet-delivery>{"v":1,"keys":["k"],"answered":[{"id":"${id}","revision":1,"picks":[1],"text":"","images":[]}],"dismissed":[]}</sheet-delivery>`
+    expect(floorOfSheetText(['[sheet v1] The human answered questions on your sheet.', 'q3 "x" → a label', block('q90'), 'more of the label.', block('q3')].join('\n'))).toBe(3)
+    // Joined behind another's text, the sheet's item is not read: a miss, never an id invented.
+    expect(floorOfSheetText('another plugin\'s context\n[sheet v1] Your question sheet, after a start.\nNew ids continue from q5.')).toBe(0)
+  })
+
   test("only what the engine marks as a plugin's: a hook's context, this plugin's prompt", async () => {
     expect(sheetTextOf('<system-reminder>\nSessionStart hook additional context: [sheet v1] x')).toBe('[sheet v1] x')
     expect(sheetTextOf('tool.call hook additional context: [sheet v1] x')).toBe('[sheet v1] x')
@@ -309,7 +331,7 @@ describe('the floor (I10)', () => {
     const api = [
       { role: 'system', content: 'SessionStart hook additional context: [sheet v1] Your question sheet, after a resume.\nNew ids continue from q7.' },
       { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: {} }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u1', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: '<system-reminder>\ntool.call hook additional context: [sheet v1] …\nNew ids continue from q9.\n</system-reminder>' }] }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u1', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: '<system-reminder>\ntool.call hook additional context: [sheet v1] Your question sheet, after a compaction.\nNew ids continue from q9.\n</system-reminder>' }] }] },
     ]
     expect(floorOfMessages(messages, api)).toBe(8)
   })

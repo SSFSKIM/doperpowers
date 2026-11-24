@@ -601,9 +601,9 @@ dispatch, never awaited) orders a start still owed, settles, and drains when
 the inbox grew; the bridge's `sheet` op is a drain naming the door's keys.
 The work of one session (its view, the calls waiting for a step, its notices,
 its drains, its one start in flight) is a generation that a /clear, a
-/branch or a fork retires; the ask's SessionStart waits for the choice
-before it takes up a resumed session's asks, so under the sheet it takes up
-none.
+/branch or a fork retires; the ask's SessionStart takes up a resumed
+session's asks only once the choice is made, so under the sheet it takes up
+none. No SessionStart waits on other work: a compaction's drain is queued.
 `sheet-model.tsx` holds what takes no `$` (the schema and its validation,
 the start choice, the result texts, the floor of a conversation's ids);
 `sheet.tsx` the hooks. Tests `tests/mods/sheet-model.test.ts`,

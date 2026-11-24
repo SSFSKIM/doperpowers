@@ -72,9 +72,11 @@ def call_prompt(payload):
 
 
 def gist(payload):
-    """A call's input by its questions and withdrawals: what a model copying the input keeps, whatever it adds."""
+    """A call's input by its questions, their references' paths and its withdrawals: what a model copying the input
+    keeps, whatever it adds."""
     payload = payload if isinstance(payload, dict) else {}
-    return ([e.get("question") for e in payload.get("ask") or [] if isinstance(e, dict)], payload.get("withdraw") or [])
+    return ([(e.get("question"), [r.get("path") for r in e.get("references") or [] if isinstance(r, dict)])
+             for e in payload.get("ask") or [] if isinstance(e, dict)], payload.get("withdraw") or [])
 
 
 def text_of(content):
@@ -404,10 +406,22 @@ class Sheet(LB.Live):
             return
         result = self.ask("main", {"ask": [{"question": "About the deploy config?", "references": [{"path": "deploy.cfg"}]}]})
         found, scan = self.scan(GUARDED)
-        refused = "the reference deploy.cfg could not be read" in (result or "")
-        self.check("secret: under the owner's guard the credential reaches neither the staging nor refs/ (refused, or "
-                   "captured as the guard left it)", scan == 1 and not found and (refused or re.match(r"Added q\d+\.", result or "")),
-                   "%s; grep exit %s; files %s" % (repr(result), scan, found))
+        added = re.match(r"Added (q\d+)\.", result or "")
+        held, body = None, None
+        if added:
+            q = next((x for x in self.state(sid)["questions"] if x["id"] == added.group(1)), {})
+            held = next((r for r in q.get("references") or [] if r.get("path") == "deploy.cfg"), None)
+            try:
+                with open(os.path.join(self.smh, "sheet", sid, "refs", (held or {}).get("sha256", "-")), errors="replace") as f:
+                    body = f.read()
+            except OSError:
+                body = None
+        # The guard scrubs a Read rather than refusing it (seen at M3): the stored body holds its replacement.
+        self.check("secret: under the owner's guard the capture is stored as the guard left it: the reference and its "
+                   "body there, the body holding the guard's replacement, the token nowhere under the sheet's files",
+                   scan == 1 and not found and held is not None and body is not None and "[redacted:" in body
+                   and GUARDED not in body,
+                   "%s; reference %s; body %r; grep exit %s; files %s" % (repr(result), held and held.get("path"), body, scan, found))
 
     def scan(self, *needles):
         """grep over the sheet's files: (the files holding any needle, grep's exit: 0 found, 1 none, 2 an error)."""

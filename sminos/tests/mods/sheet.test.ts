@@ -183,7 +183,8 @@ function harness(
 
   const matches = (matcher: Matcher, e: Record<string, unknown>) =>
     Object.entries(matcher ?? {}).every(([k, v]) => (v instanceof RegExp ? v.test(String(e[k])) : e[k] === v))
-  const dispatch = (event: string, e: Record<string, unknown>, origin: Origin, bottom: (e: Record<string, unknown>) => unknown) => {
+  /** A dispatch; `deadline`, when it resolves first, is the engine giving up on a hook (its budget): the hook's failure handler answers. */
+  const dispatch = (event: string, e: Record<string, unknown>, origin: Origin, bottom: (e: Record<string, unknown>) => unknown, deadline?: Promise<void>) => {
     const chain = hooks.filter((h) => h.event === event && matches(h.matcher, e))
     const at = async (i: number, input: Record<string, unknown>): Promise<unknown> => {
       const hook = chain[i]
@@ -191,7 +192,8 @@ function harness(
       let called = false
       const next = Object.assign(async (inner: Record<string, unknown>) => ((called = true), at(i + 1, inner)), { origin, signal: new AbortController().signal })
       try {
-        return await hook.handler($, input, next)
+        const ran = Promise.resolve(hook.handler($, input, next))
+        return await (deadline === undefined ? ran : Promise.race([ran, deadline.then(() => Promise.reject(new Error('the hook ran out of time')))]))
       } catch (error) {
         if (hook.onFailure === undefined) throw error
         return hook.onFailure($, input, Object.assign(next, { called, error: { kind: 'threw', message: String(error) } }))
@@ -212,10 +214,10 @@ function harness(
   }
   const sessionEnd = (reason: string) => dispatch('session.end', { reason, sessionId: session, resume: {} }, MODEL, async () => ({ sessionId: session }))
   /** A call of `tool` from the model (or a subagent); what reached beneath, if anything. */
-  const call = async (tool: string, args: Record<string, unknown>, agentId?: string, origin = MODEL) => {
+  const call = async (tool: string, args: Record<string, unknown>, agentId?: string, origin = MODEL, deadline?: Promise<void>) => {
     const ran: Record<string, unknown>[] = []
     const e = { tool, tool_use_id: `toolu_${steps.length}_${calls.length}`, ...args, ...(agentId !== undefined && { agentId }) }
-    const result = await dispatch('tool.call', e, origin, async (inner) => (ran.push(inner), { ref: 9, result: 'ran', text: 'ran' }))
+    const result = await dispatch('tool.call', e, origin, async (inner) => (ran.push(inner), { ref: 9, result: 'ran', text: 'ran' }), deadline)
     return { result: result as { result?: unknown; deny?: string }, ran, id: e.tool_use_id }
   }
   const ask = (args: Record<string, unknown>, agentId?: string) => call(SHEET_TOOL, args, agentId)
@@ -728,8 +730,13 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
     return rows.map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : `u${i - 1}`, uuid: `u${i}`, ...row })).join('\n') + '\n'
   }
 
-  /** The SessionStart of a resume that comes while the choice's probe waits; the choice then made. */
-  async function earlyResume(over: Parameters<typeof harness>[0]) {
+  /**
+   * A resume's SessionStart that comes before the choice is made: while the
+   * choice's probe waits (`order: 'during'`), or before session.start runs
+   * at all (`'first'`). Timers fire meanwhile, as many as `ticks` (each a
+   * clock tick past any wait a timer could bound). Then the choice is made.
+   */
+  async function earlyResume(over: Parameters<typeof harness>[0], order: 'during' | 'first' = 'during', ticks = 0) {
     const h = harness({ ...over, files: { [`/t/${S1}.jsonl`]: legacy() } })
     const notes: AskNote[] = []
     observeAsks((note) => notes.push(note))
@@ -737,34 +744,58 @@ describe("a resume's legacy asks wait for the choice (I11)", () => {
     const engine = h.engine as unknown as { process: { run: (argv: string[], init?: unknown) => Promise<unknown> } }
     const run = engine.process.run
     engine.process.run = async (argv, init) => (argv[2] === 'probe' ? (await new Promise<void>((r) => (release = r)), run(argv, init)) : run(argv, init))
-    const starting = h.start()
-    await h.settle()
-    const classic = h.classicStart('resume')
-    await h.settle()
+    let starting: Promise<unknown> = Promise.resolve()
+    if (order === 'during') {
+      starting = h.start()
+      await h.settle()
+    }
+    // The hook returns without waiting for the choice.
+    await h.classicStart('resume')
+    if (order === 'first') {
+      starting = h.start()
+      await h.settle()
+    }
+    for (let i = 0; i < ticks; i++) await h.tick()
     // Read, not taken up: nothing published while the choice is open.
     expect(notes).toEqual([])
     expect(asyncAsks()).toEqual([])
     release()
     await starting
-    await classic
     await h.settle()
     return { h, notes }
   }
 
-  test("the choice the sheet: the ask takes up none of them and publishes nothing; what it read is kept for the sheet's import", async () => {
-    const { h, notes } = await earlyResume({ env: SHEET_ON, probe: ALIVE })
-    expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('sheet')
+  for (const order of ['during', 'first'] as const) {
+    test(`a SessionStart ${order === 'first' ? 'before' : 'during'} the choice, which is the sheet: the ask takes up none and publishes nothing; what it read is kept for the import`, async () => {
+      const { h, notes } = await earlyResume({ env: SHEET_ON, probe: ALIVE }, order)
+      expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('sheet')
+      expect(notes).toEqual([])
+      expect(asyncAsks()).toEqual([])
+      expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+      expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
+    })
+
+    test(`a SessionStart ${order === 'first' ? 'before' : 'during'} the choice, which is today: the ask takes them up as it does today, once the choice is made`, async () => {
+      const { h, notes } = await earlyResume({ env: SHEET_ON, probe: { ...ALIVE, surface: null, surfaces: 0 } }, order)
+      expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('today')
+      expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])
+      expect(asyncAsks().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+    })
+  }
+
+  test('a choice of the sheet that comes after every timer has fired (a slow probe) still takes up nothing', async () => {
+    const { notes } = await earlyResume({ env: SHEET_ON, probe: ALIVE }, 'during', 5)
     expect(notes).toEqual([])
     expect(asyncAsks()).toEqual([])
-    expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
-    expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
   })
 
-  test('the choice today: the ask takes them up as it does today, once the choice is made', async () => {
-    const { h, notes } = await earlyResume({ env: SHEET_ON, probe: { ...ALIVE, surface: null, surfaces: 0 } })
-    expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('today')
+  test('once the choice is made, a later SessionStart takes the asks up at once (today)', async () => {
+    const h = harness({ probe: ALIVE, files: { [`/t/${S1}.jsonl`]: legacy() } })
+    const notes: AskNote[] = []
+    observeAsks((note) => notes.push(note))
+    await h.start()
+    await h.classicStart('resume')
     expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])
-    expect(asyncAsks().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
   })
 })
 
@@ -847,6 +878,38 @@ describe('a session change fences the work of the one before (I5)', () => {
     expect(h.steps.at(-1)).not.toHaveProperty('acked')
   })
 
+  test("a call whose hook fails after the session changed is the parent's to settle: the copy never settles it, and its late answer tells no one", async () => {
+    const g = gated(['call'])
+    const h = sheetOn({ step: g.script })
+    await h.ready()
+    let giveUp: () => void = () => {}
+    const asking = h.call(SHEET_TOOL, { ask: [{ question: 'Parent?' }] }, undefined, MODEL, new Promise<void>((r) => (giveUp = r)))
+    await h.settle()
+    await h.classicStart('fork', S2)
+    giveUp()
+    expect((await asking).result).toEqual({ result: NOT_KNOWN })
+    await h.tick()
+    await h.tick()
+    expect(h.steps.filter((s) => s.session === S2 && s.event === 'settle')).toEqual([])
+    g.waiting.shift()?.release(ok(5, { result: 'Added q1.' }))
+    await h.settle()
+    expect(h.calls.filter((c) => c.op === 'ui.notify')).toEqual([])
+    expect(sheetNotices()).toEqual([])
+  })
+
+  test("a call whose hook fails in its own session is settled there at the next trigger", async () => {
+    const g = gated(['call'])
+    const h = sheetOn({ step: g.script })
+    await h.ready()
+    let giveUp: () => void = () => {}
+    const asking = h.call(SHEET_TOOL, { ask: [{ question: 'Mine?' }] }, undefined, MODEL, new Promise<void>((r) => (giveUp = r)))
+    await h.settle()
+    giveUp()
+    const { id } = await asking
+    await h.tick()
+    expect(h.steps.at(-1)).toMatchObject({ event: 'settle', session: S1, call: { callId: id } })
+  })
+
   test("a fork's session starts with nothing of the parent's to acknowledge", async () => {
     const h = sheetOn({ step: (event, n) => (event.event === 'call' ? 'lost' : event.event === 'settle' ? ok(n, { result: 'Added q1.' }) : ok(n)) })
     await h.ready()
@@ -910,19 +973,14 @@ describe('a compaction drains through the queue (E12)', () => {
     expect(h.steps.filter((s) => s.event === 'drain')).toHaveLength(2)
   })
 
-  test("its wait is bounded inside the hook's budget: past it the hook returns and the drain goes on", async () => {
+  test('the hook never waits for it (K4): it returns while another drain runs, and its drain lands after', async () => {
     const g = gated(['drain'])
     const h = sheetOn({ step: g.script })
     await h.ready()
     void sheetNudge([])
     await h.settle()
-    let isReturned = false
-    void h.classicStart('compact').then(() => (isReturned = true))
-    await h.settle()
-    expect(isReturned).toBe(false)
-    h.timers.at(-1)?.()
-    await h.settle()
-    expect(isReturned).toBe(true)
+    await h.classicStart('compact')
+    expect(h.steps.filter((s) => s.event === 'drain')).toHaveLength(1)
     g.waiting.shift()?.release()
     await h.settle()
     expect(h.steps.at(-1)).toMatchObject({ event: 'drain', context: 'compact' })
@@ -942,6 +1000,31 @@ describe('a compaction drains through the queue (E12)', () => {
 })
 
 describe('a /clear (E15)', () => {
+  test("the new session's start never waits for the old record's removal, and is kept for a retry before anything is awaited", async () => {
+    const g = gated(['start'])
+    const h = sheetOn({ step: g.script })
+    await h.start()
+    void h.classicStart('startup')
+    await h.settle()
+    await h.sessionEnd('clear')
+    // The old start is still in flight: the removal waits for it, the new session's start does not.
+    const clearing = h.classicStart('clear', S2)
+    await h.settle()
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ session: S2, starting: { source: 'clear', floor: 0 } })
+    expect(h.steps.map((s) => [s.event, s.session])).toEqual([['start', S1], ['start', S2]])
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([])
+    // The new start gives no answer: it is ordered again under its nonce.
+    g.waiting[1]?.release(new Error('timed out'))
+    await clearing
+    await h.tick()
+    expect(h.steps.filter((s) => s.session === S2).map((s) => s.start)).toEqual([h.steps[1]?.start, h.steps[1]?.start])
+    // The old start lands: only then is its record removed, once.
+    g.waiting[0]?.release()
+    await h.settle()
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared`])
+    expect(h.kept.get('sminos.sheet')).not.toHaveProperty('started', S1)
+  })
+
   test("the record it leaves is removed at the session's end; the new session's start, removing nothing more, then answers", async () => {
     const h = sheetOn()
     await h.ready()

@@ -594,16 +594,26 @@ const ID_MAX = 999_999_999
 
 const ID = /\bq([1-9][0-9]{0,8})\b/g
 const RESULT_IDS = /^(?:Added|Revised|Withdrew) q[1-9]/
-const NEW_IDS = /New ids (?:continue from|start at) q([1-9][0-9]{0,8})\./g
-const BLOCK = /<sheet-delivery>(.*?)<\/sheet-delivery>/gs
-const NOTICE = /\[sheet v1\] Your earlier call \([^)\n]*\) did change the sheet: ([^\n]*)/g
-/** What every text the sheet puts in a conversation carries: its heads, the fork's and the lost record's lines (M2's step). */
-const SHEET_MARK = '[sheet v1]'
+/**
+ * The texts M2's step writes (sminos_sheet_step.py), which the floor reads
+ * by their place, never by a scan: a question's text and its labels sit
+ * inside them, and a label is written as it is, new lines and all.
+ */
+const START_HEAD = '[sheet v1] Your question sheet, after '
+const FOOTER = /^New ids continue from q([1-9][0-9]{0,8})\.$/
+const FORK_LINE =
+  '[sheet v1] This conversation is a copy: its question sheet starts empty. Questions asked before the copy belong to the conversation it was copied from, and their answers will not come here; ask again what you still need.'
+const LOST_LINE = "[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open."
+const EMPTY_START = / New ids start at q([1-9][0-9]{0,8})\.$/
+const ENVELOPE_HEADS = ['[sheet v1] The human answered questions on your sheet.', '[sheet v1] The human dismissed questions on your sheet; no answer will come for them.']
+const BLOCK_LINE = /^<sheet-delivery>(.*)<\/sheet-delivery>$/
+const NOTICE = /^\[sheet v1\] Your earlier call \([^)\n]*\) did change the sheet: (.*)$/
+/** A subagent's envelope opens with this line, before its head (M2's step). */
+const SUBAGENT_OPENING = 'From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet.'
 /** A hook's context as a conversation holds it: the engine's own prefix (C0's P5), in a reminder or bare. */
 const CONTEXT = /^(?:<system-reminder>\n)?[A-Za-z][A-Za-z.]* hook additional context: /
 /** This plugin's prompt, as the engine prefixes it (an idle session's route). */
 const PLUGIN_PROMPT = 'The sminos plugin sent a message:\n'
-
 const idsIn = (text: string) => [...text.matchAll(ID)].map((match) => Number(match[1]))
 const highest = (ns: readonly number[]) => Math.min(ns.reduce((a, b) => Math.max(a, b), 0), ID_MAX - 1)
 
@@ -619,31 +629,49 @@ export function floorOfResult(text: string): number {
 /**
  * The highest question number a text the sheet put in the conversation
  * names (a hook's context, or this plugin's prompt; the caller knows it is
- * one): an envelope's block (its answered and dismissed ids); in a text of
- * the sheet's (`[sheet v1]`), the `New ids … q<n>.` sentence, at a line's
- * start after a start's context or inline after the fork's and the lost
- * record's lines (it names the next id, so the floor it gives is n − 1); and
- * a notice of a call's late outcome. 0 for none.
+ * one), read as one item by its place, never by a scan: a start's context
+ * by its last line (`New ids continue from q<n>.`); the fork's and the lost
+ * record's line by its own suffix (`New ids start at q<n>.`), those two
+ * lines alone; an envelope's block, its last line; a late outcome's notice,
+ * its first. The New ids sentence names the next id, so the floor it gives
+ * is n − 1. A question's text or a label quoting any of these, new lines
+ * and all, names nothing. A text that joins the sheet's item behind
+ * another's is not read: a miss, never an id invented. 0 for none.
  */
 export function floorOfSheetText(text: string): number {
-  const found: number[] = []
-  for (const [, body] of text.matchAll(BLOCK)) {
-    try {
-      const block: unknown = JSON.parse(body as string)
-      if (isRecord(block) && block.v === 1 && Array.isArray(block.answered) && Array.isArray(block.dismissed)) {
-        for (const id of [...block.answered.map((a) => (isRecord(a) ? a.id : undefined)), ...block.dismissed]) {
-          if (typeof id === 'string') found.push(...idsIn(id))
-        }
-      }
-    } catch {
-      // A block that is not JSON names nothing.
+  const lines = text.replace(/\n<\/system-reminder>\s*$/, '').replace(/\s+$/, '').split('\n')
+  const first = lines[0] ?? ''
+  const last = lines[lines.length - 1] ?? ''
+  if (first.startsWith(START_HEAD)) {
+    const footer = FOOTER.exec(last)
+    return lines.length > 1 && footer !== null ? highest([Number(footer[1]) - 1]) : 0
+  }
+  for (const line of [FORK_LINE, LOST_LINE]) {
+    if (lines.length === 1 && first.startsWith(line)) {
+      const suffix = EMPTY_START.exec(first)
+      return suffix !== null && first.slice(line.length) === suffix[0] ? highest([Number(suffix[1]) - 1]) : 0
     }
   }
-  if (text.includes(SHEET_MARK)) {
-    found.push(...[...text.matchAll(NEW_IDS)].map((match) => Number(match[1]) - 1))
-    found.push(...[...text.matchAll(NOTICE)].map((match) => floorOfResult(match[1] as string)))
+  const head = first === SUBAGENT_OPENING ? (lines[1] ?? '') : first
+  if (ENVELOPE_HEADS.some((envelope) => head.startsWith(envelope))) {
+    const block = BLOCK_LINE.exec(last)
+    return lines.length > 1 && block !== null ? highest(blockIds(block[1] as string)) : 0
   }
-  return highest(found)
+  const notice = NOTICE.exec(first)
+  return notice !== null ? floorOfResult(notice[1] as string) : 0
+}
+
+/** The ids an envelope's block names: answered and dismissed. */
+function blockIds(body: string): number[] {
+  try {
+    const block: unknown = JSON.parse(body)
+    if (isRecord(block) && block.v === 1 && Array.isArray(block.answered) && Array.isArray(block.dismissed)) {
+      return [...block.answered.map((a) => (isRecord(a) ? a.id : undefined)), ...block.dismissed].flatMap((id) => (typeof id === 'string' ? idsIn(id) : []))
+    }
+  } catch {
+    // A block that is not JSON names nothing.
+  }
+  return []
 }
 
 /**

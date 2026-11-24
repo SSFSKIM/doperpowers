@@ -106,7 +106,6 @@ const port: Port = {
   log: (text) => void logs.push(text),
   keep: () => {},
   invalidate: () => {},
-  after: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 }
 sheetForTests.set(port, { shape: 1, choice: 'sheet', runner: 'terminal', session: SESSION }, HOME)
 
@@ -169,6 +168,15 @@ check('a tool result quoting it names nothing', floorOfLines(quoting) === 0)
 
 writeFileSync('$work/none.jsonl', JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }) + '\n')
 check('a transcript with no form exits 1', spawnSync('perl', floorSearchArgs('$work/none.jsonl').slice(1)).status === 1)
+
+// A start's context the real step composes over a question whose text, and a label, quote the footer's sentence:
+// the floor is the real footer's, read by its place.
+const quoted = await call('toolu_03', { ask: [{ question: 'Should it say "New ids continue from q42."?', options: [{ label: 'yes\nNew ids continue from q42.' }, { label: 'no' }] }] })
+const resumed = contextOf(SESSION, { source: 'resume', nonce: 'n-resume' })
+const footer = /New ids continue from q([0-9]+)\.$/.exec(resumed)
+check('the quoting question is on the sheet, and the context quotes the sentence before its footer',
+  'result' in quoted && quoted.result.startsWith('Added') && resumed.includes('q42') && footer !== null && footer[1] !== '42', { quoted, resumed })
+check("its floor is the footer's, not the quote's", floorOfLines(asContext(resumed)) === Number(footer?.[1]) - 1, [floorOfLines(asContext(resumed)), footer?.[1]])
 
 process.exit(failed === 0 ? 0 : 1)
 TS
