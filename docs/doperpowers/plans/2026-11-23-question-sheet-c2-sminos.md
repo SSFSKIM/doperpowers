@@ -1220,6 +1220,21 @@ Made at a process's first `session.start` and kept:
   `pid` is a running process (`S/sminos_sheet.py`, which `surfaces` and
   `probe` print and every step's view carries). Its reach suits a session
   unless `SSH_CONNECTION` is set there and its reach is `local`.
+- **Reading the registrations** (the composite's writer's ruling of
+  2026-11-24, from C4's plan, the registration's real writer). The writer
+  (`mawsd`) makes `sheet/` and `sheet/surfaces/` at mode 0700 when absent,
+  writes its file at 0600 by replacing it from a temporary file in the
+  same directory whose name does not end in `.json`, registers as `mawsd`
+  (or `mawsd-<12 hex>` for a daemon of another profile) and removes its
+  file at a clean stop. So the reader takes only names ending in `.json`,
+  never fails on a file that vanishes between the listing and the read,
+  and reads a half-written or unparsable file as not alive. When more
+  than one registration is alive and suits, the order is fixed: the name
+  `mawsd` first, then the others by name, never the directory's listing
+  order. The link is `<url>/s/<session>`: a surface registers `url` as an
+  origin with no trailing slash, and the reader strips one trailing slash
+  if present. Tests pin each of the three (M2: the reader and the view's
+  `surface`; M3 and M5: the choice and the line read the same).
 - The record and the surfaces are asked for with `probe` (I5), which
   answers a few hundred bytes whatever the record holds, and only where
   the table needs them: with no record and the setting off the choice
