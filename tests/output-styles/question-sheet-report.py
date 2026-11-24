@@ -75,7 +75,8 @@ def e1(runs):
         t[2] += r["outcomes"].get("revised", 0)
         t[3] += r["outcomes"].get("duplicated", 0) + r["outcomes"].get("revised+duplicated", 0)
         print(f"  {arm} {sc} {h}: n={r['n']} {json.dumps(r['outcomes'])} failures {fails} "
-              f"| responses before first sheet call: median {median(r['first'])}, {sorted(r['first'])}"
+              f"| responses before first sheet call: median {median(r['first'])}, {sorted(r['first'])}; "
+              f"within the trigger's response or the next {sum(f <= 1 for f in r['first'])}/{r['n']}"
               + (f", never {r['never']}" if r["never"] else "")
               + (f" | before the target's revision: median {median(r['target'])}" if r["target"] else ""))
     print("\nE1 by arm (changed scenarios pooled; the control apart)")
@@ -140,7 +141,8 @@ def e2(runs):
     print("\nE2 by arm")
     for (arm, h), (ps, n, ess, yes, first, unasked, matters) in sorted(totals.items()):
         print(f"  {arm} {h}: pass {ps}/{n} (95% lower {lower(ps, n)}), essential facts {ess}/{n}, reader yes {yes}/{n}, "
-              f"matters asked {matters - unasked}/{matters}, responses before first sheet call median {median(first)}")
+              f"matters asked {matters - unasked}/{matters}, responses before first sheet call median {median(first)}, "
+              f"within the trigger's response or the next {sum(f <= 1 for f in first)}/{len(first)}")
     print("\nE2 capture, paired on the same cards (pass alone vs pass with the agent's notes appended)")
     for key, p in sorted(pairs.items()):
         print(f"  {key[0]} {key[1]}: {json.dumps(p)}")

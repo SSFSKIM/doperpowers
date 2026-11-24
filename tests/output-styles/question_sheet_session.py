@@ -360,7 +360,8 @@ def peak_rss():
         before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         p = Peak()
         yield p
-        p.peak_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 2**20 + 71.0
+        p.baseline_mb = before / 2**20  # macOS reports ru_maxrss in bytes
+        p.peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
     return measure
 '''
 
@@ -816,8 +817,21 @@ def _suite_listing():
         "tests/reports/test_usage_rollup.py": [f"test_rollup_{p}_{g}" for p in ("day", "week", "month")
                                                for g in ("product", "account", "currency")],
     }
+    modules["tests/billing/test_invoices.py"] = [f"test_{what}_{cur}" for what in (
+        "totals_round_half_even", "lines_sum_to_total", "credit_note_negates", "number_is_sequential", "due_after_issue",
+        "tax_per_line", "discount_before_tax", "void_keeps_number") for cur in ("eur", "usd", "gbp", "jpy")]
+    modules["tests/billing/test_dunning.py"] = [f"test_step_{n}_{what}" for n in range(1, 5) for what in (
+        "sends_after_due", "skips_paid", "skips_disputed", "stops_on_payment", "logs_reminder")]
+    modules["tests/http/test_api_auth.py"] = [f"test_{who}_{what}" for who in ("viewer", "member", "finance", "admin")
+                                              for what in ("reads_own_account", "denied_other_account", "token_expiry",
+                                                           "rate_limited")]
+    modules["tests/reports/test_seats.py"] = [f"test_seats_{w}" for w in ("assign", "unassign", "plan_change", "history",
+                                              "limit", "export_columns", "inactive_hidden", "sso_users")]
+    pad = 224 - sum(len(v) for v in modules.values())  # 221 pass and 3 skip, as the suite stands after this work
+    modules["tests/db/test_queries.py"] = [f"test_query_plan_{i:02d}" for i in range(pad)]
     skip = {"test_print_view_e2e_browser": "needs a browser (PRINT_VIEW_E2E=1)",
-            "test_pin_across_accounts": "pinning across accounts is not built (#203)"}
+            "test_pin_across_accounts": "pinning across accounts is not built (#203)",
+            "test_seats_sso_users": "needs the SSO stub (SSO_E2E=1)"}
     lines, n = [], sum(len(v) for v in modules.values())
     i = 0
     for mod, tests in modules.items():
@@ -829,20 +843,25 @@ def _suite_listing():
             "platform darwin -- Python 3.12.7, pytest-8.3.3, pluggy-1.5.0 -- /Users/dev/tally/.venv/bin/python\n"
             "rootdir: /Users/dev/tally\nconfigfile: pyproject.toml\nplugins: postgresql-6.1.1, hypothesis-6.118.8\n"
             f"collecting ... collected {n + 1} items / 1 deselected / {n} selected\n\n")
-    return head + "\n".join(lines) + (f"\n\n=========== {n - 2} passed, 2 skipped, 1 deselected in 46.71s ===========")
+    return head + "\n".join(lines) + (f"\n\n=========== {n - 3} passed, 3 skipped, 1 deselected in 46.71s ===========")
 
 
 def _branch_diff(env):
-    """The branch's diff against main, from the files as they are now."""
+    """The branch's diff against main: every file it added or changed, from the files as they are now."""
+    import difflib
+    main = FS().files
     out = []
-    for rel in ("tally/export/columns.py", "tally/export/writer.py", "tests/export/conftest.py",
-                "tests/export/test_columns.py", "tests/export/test_writer.py"):
-        body = env.fs.files.get(P(rel))
-        if body is None:
+    for path in sorted(env.fs.files):
+        if not path.startswith(CWD + "/") or path.startswith(CWD + "/.fixtures"):
             continue
-        lines = body.rstrip("\n").split("\n")
-        out.append(f"diff --git a/{rel} b/{rel}\nnew file mode 100644\nindex 0000000..{zlib.crc32(rel.encode()) % 16**7:07x}\n"
-                   f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + l for l in lines))
+        rel, body = path[len(CWD) + 1:], env.fs.files[path]
+        if path not in main:
+            lines = body.rstrip("\n").split("\n") if body else []
+            out.append(f"diff --git a/{rel} b/{rel}\nnew file mode 100644\nindex 0000000..{zlib.crc32(rel.encode()) % 16**7:07x}\n"
+                       f"--- /dev/null\n+++ b/{rel}\n@@ -0,0 +1,{len(lines)} @@\n" + "\n".join("+" + l for l in lines))
+        elif main[path] != body:
+            out.append(f"diff --git a/{rel} b/{rel}\n" + "\n".join(difflib.unified_diff(
+                main[path].splitlines(), body.splitlines(), f"a/{rel}", f"b/{rel}", lineterm="")))
     return "\n".join(out)
 
 

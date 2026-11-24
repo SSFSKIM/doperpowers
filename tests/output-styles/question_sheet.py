@@ -464,6 +464,7 @@ class Env:
         self.committed = dict(fs.files)
         self.commits = 0
         self.simulator = None  # (client, model, facts): answers what the canned shell cannot
+        self.suite_extra = 196  # tests of the whole suite the world does not hold
         self.simulated = []
 
     SIM = """You are the shell of a developer's Mac, in the git repository {cwd} (branch csv-export; Python 3.12.7 in
@@ -769,7 +770,7 @@ Command line:
             names = [x for x in names if x[2]]
         elif "not slow" in mark or not mark:
             names = [x for x in names if not x[2]]
-        extra = 0 if paths or k else 196
+        extra = 0 if paths or k else self.suite_extra
         n = len(names) + extra
         slow = sum(x[2] for x in names)
         seconds = 0.2 + (n - slow) * 0.019 + slow * 83.5
@@ -1024,6 +1025,13 @@ def session(script, arm_path, overrides=(), simulator=None):
     env = Env(fs, Sheet(fs), shell_overrides=list(overrides) + STAGING, git_log=GIT_LOG)
     prefix = build(script, env)
     env.mark_committed()
+    # the whole suite answers with the count the session last showed for it
+    shown = [int(m) for m in re.findall(r"(\d+) passed, \d+ skipped", json.dumps(prefix))]
+    if shown:
+        world = sum(1 for p in fs.files if "/tests/" in p and p.endswith(".py")
+                    for m in re.finditer(r"^((?:@pytest\.mark\.\w+.*\n)*)def test_", fs.files[p], re.M)
+                    if "mark.slow" not in m.group(1))
+        env.suite_extra = max(0, shown[-1] - world)
     if simulator:
         env.simulator = (*simulator, SIM_FACTS)
     return env, prefix, claude_code_system(PREAMBLE + style_body()), tools_for(arm_path)
