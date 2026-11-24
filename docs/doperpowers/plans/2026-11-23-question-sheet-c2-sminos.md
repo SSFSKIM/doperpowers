@@ -78,8 +78,15 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   deferred to M6's sweep); the last fix, a six-line guard, verified by
   the controller. `run.sh` 948 passed; gates GREEN (run 45397387138);
   live, the whole M3 set 22 passed with the owner's guard loaded.
-- [ ] M4 — Delivering: the routes, landing, a start, subagents. Blocked
-  by: M3.
+- [x] (2026-11-24) M4 — Delivering: the routes, landing, a start,
+  subagents. Commits `448e8540e`, `e4ff0d9e1`, fix waves `eb5009c7e`,
+  `53d2ce750` (the record's paths, the composite's writer's ruling),
+  `55ada7748`, `cfdbd4914`, `080859bc2`. Its live probe confirmed the
+  critic's turn ordering and found the main loop's Agent always
+  background (Acceptance 18 reworded in the composite). Task review: one
+  Critical and seven Important, then one Critical and four Important,
+  then one, one (a regression of the previous fix) and clean. 1,003 mod
+  tests; gates GREEN; live, every M4 case passing.
 - [ ] M5 — The terminal's drawing, and the import of today's asks. Blocked
   by: M3.
 - [ ] M6 — The other readers, and the sheet's end of life. Blocked by: M4.
@@ -941,7 +948,7 @@ not hooks, carries texts whole.
             | { "ok": true, "abs": "…", "kind": "image", "file": "<a staged file: the bytes in base64>", "mediaType": "image/png", "size": …, "mtimeMs": … }
 
     out = { "ok": true, "seq": 42, "view": View, "effects": Effects }
-        | { "ok": false, "code": "busy" | "bad-event" | "no-record" | "gone", "error": "…" }
+        | { "ok": false, "code": "busy" | "bad-event" | "no-record" | "gone" | "bad-record", "error": "…" }
 
     View    = { "seq", "offset", "nextId",
                 "open":    [ { "id", "revision", "asker", "header", "question", "askedAt" } ],   // header cut at 60, question at 300
@@ -1483,6 +1490,73 @@ start's context names every open question and its asker):
 - a call whose outcome was not known when it was answered (I5): `[sheet
   v1] Your earlier call (<callId>) did change the sheet: <its result's
   first line>` or `… changed nothing; call again if you still need it.`
+
+**As built (M4).** What its live probe on 2.1.331 showed and the mod
+relies on, then the rules the task review settled.
+
+- *The engine's forms.* The idle submit's row reaches this plugin's own
+  `session.append` (door `prompt`, origin `{kind: 'plugin', name}`),
+  before `turn.start`; stored as a user row with `origin` and
+  `pluginPrompt`, its content the engine's frame (`The sminos plugin sent
+  a message:`), the text and a trailer. The engine raises no
+  `prompt.submit` for a plugin's own submit ("skipped: re-entry"). Two
+  submits in one hop make one turn. A prompt typed over a running turn
+  is absorbed into it, with no turn of its own. A submit made while a
+  foreign turn runs: that turn's `turn.complete` comes first, then our
+  row and our `turn.start`. In `$.session.messages({ as: 'api' })` the
+  idle prompt is a text block of its own opening with the frame; the
+  prompt route's context a reminder block of its own; the result
+  route's context is appended inside the tool result's text, after the
+  output, in a reminder wrapper. The main loop's Agent runs in the
+  background even when asked not to: the main turn ends, then
+  `SubagentStop`, then its completion enters as a prompt about 30 ms
+  later.
+- *Flights.* A flight is a reservation until the `$.clock.after(0)` hop
+  hands it to the engine; the hop rechecks the generation, a running
+  main turn and a stopped agent, and releases an invalid reservation
+  without sending (no failure, no toast); a prompt that enters first
+  takes an unhanded idle envelope. An idle flight's turn is the first
+  main turn started after its hand-over; a flight typed over a running
+  turn awaits the next turn, its boundary taken before any read.
+- *Evidence.* Landing reads only rows of the routes' kinds, from what the
+  model reads: at `session.append` the stored row; at a turn's end only
+  items carrying a route's framing (above), landing only the keys found
+  and making the rest ready again; at a start, a perl pass printing
+  `{"keys", "kind"}` per matching row, newest first, from the stored
+  message content only (never a row's submission metadata), filtered to
+  `before` when `before` is complete. A tool output that itself carries
+  the exact reminder framing and a block with pending keys would count:
+  U13's limit.
+- *The idle route's wake.* An envelope wakes when it, or the view's
+  pending past it, holds a fresh answer; a failed idle submit marks its
+  keys and the fresh keys that authorized it `noIdle` (or moves
+  `idleFailedAt` past `answeredCount` where the view is cut), so failed
+  work alone never reopens the route, while a newer answer does and the
+  later parts of a split Send go on their own after a landing.
+- *Sends.* While a send to an agent is in flight, until its receipt's
+  `landed` or `reroute` has answered, every step the mod orders passes
+  that agent in `agents.running`; on release a drain reroutes what is
+  left with a stopped agent. A stopped agent is never sent to; its own
+  `turn.start` makes it running again.
+- *Starts.* Search, then `landed` (every key found, chunks of 200), then
+  the start again under its nonce, and only then `started`.
+  `SheetKept.starting` keeps the transcript path, so a reload's retry
+  searches and routes its context. A compaction's SessionStart orders its
+  own drain step; an early start's context, and a context whose step gave
+  no answer, ride the next route (in a MAWS-run session the prompt route,
+  context only). The prompt route puts back each context and notice the
+  entered prompt lost, independently of the envelope.
+- *Notices.* An ended subagent's open questions are named at the stop
+  from the view held then, and again after the stop's drain, once per
+  question id; a waiting notice rides the idle prompt above the envelope
+  and is read by the floor as its own item.
+- *The record's paths.* The door, the step (`bad-record`, read by the mod
+  as no answer) and `answer --image` refuse a record directory or a
+  child (`inbox.jsonl`, `state.json`, `refs/`, `texts/`, `uploads/`)
+  that is a link or not of its kind, writing nothing through it (the
+  composite's writer's ruling from MAWS's review); `remove` refuses a
+  record directory that is a link, and removes a real one holding a
+  linked child without following it.
 
 **In a MAWS-run session** the mod opens none of the four routes (a turn
 the tool submits there is a turn MAWS did not send: C0's P1); it drains,
