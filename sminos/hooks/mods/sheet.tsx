@@ -1,8 +1,9 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
 import type { SheetKept } from '../../types/sminos'
-import { askChoiceMade, deferAskToChoice, yieldAsk } from './ask'
+import { askChoiceMade, deferAskToChoice, searchArgs, yieldAsk } from './ask'
 import {
+  DELIVERY_FORMS,
   DESCRIPTION,
   INPUT_SCHEMA,
   NOT_KNOWN,
@@ -14,19 +15,25 @@ import {
   capturedOf,
   checkRefusal,
   chooseStart,
+  contentTexts,
+  endedNotice,
   entryProblem,
   floorOfLines,
   floorOfMessages,
   floorSearchArgs,
   foreclosedResult,
   hasSubagent,
+  heldKeys,
   isNewer,
+  isRouteRow,
+  keysIn,
   outcomeNotice,
   readInput,
+  searchedKeys,
   unreadClause,
   validateCall,
 } from './sheet-model'
-import type { Asker, Effects, Probe, Reference, Runner, SheetInput, StepAnswer, Verdict, View } from './sheet-model'
+import type { Asker, Effects, Probe, Recipient, Reference, Runner, SheetInput, StepAnswer, Verdict, View } from './sheet-model'
 
 /**
  * The question sheet's mod (the plan
@@ -34,9 +41,10 @@ import type { Asker, Effects, Probe, Reference, Runner, SheetInput, StepAnswer, 
  * M3): the start choice, the tool under the sheet's schema, a call through a
  * step, and the drains that keep the record applied. The record is the
  * command's (`sminos sheet step`, K1): the mod orders steps and keeps the last
- * view a step answered, nothing of the sheet's own. Delivery (M4), the
- * terminal's drawing (M5) and the snapshot (M6) are not here yet: answers are
- * accepted and wait in the record.
+ * view a step answered, nothing of the sheet's own. Delivery (M4, I9): the
+ * envelopes a view holds ready go by the routes that open, and land on the
+ * evidence of the row that holds them; a start's and a compaction's context
+ * (I10). The terminal's drawing (M5) and the snapshot (M6) are not here yet.
  */
 
 /** What the mod keeps in `$.state` for the process (types/sminos.d.ts). */
@@ -88,6 +96,17 @@ export type Port = {
   log: (text: string) => void
   keep: (kept: SheetKept) => void
   invalidate: () => void
+  /** A prompt of this plugin's (`$.prompt.submit`), the idle route; what entered, or why not. */
+  submit: (text: string) => Promise<{ drop?: string; text?: string }>
+  /** A message to a running subagent (`$.session.send`). */
+  send: (agentId: string, text: string) => Promise<{ isDelivered: boolean; reason?: string }>
+  /** `fn` from a `$.clock.after(0)` hop: outside every hook's dispatch (C0's P1). */
+  after: (fn: () => void) => void
+  /** The conversation as the model holds it (`$.session.messages({ as: 'api' })`). */
+  api: () => Promise<readonly { role: string; content: unknown }[]>
+  /** The rows draw again (`ui.render`). */
+  redraw: () => void
+  toast: (text: string) => void
 }
 
 type Failure = { ok: false; code: string; error: string }
@@ -130,9 +149,52 @@ type Gen = {
   draining?: Promise<Answer>
   queued?: { keys: Set<string>; context?: 'compact'; promise: Promise<Answer>; resolve: (answer: Promise<Answer>) => void }
   /** The start in flight, by its nonce: one attempt at a time (I5); another only once it settled with no answer. */
-  starting?: { nonce: string; attempt: Promise<Answer> }
+  starting?: { nonce: string; attempt: Promise<Started> }
   isChecking: boolean
+  /** The envelopes on a route (I9), until they land or fail. */
+  flights: Flight[]
+  /** Keys a `landed` or `reroute` step is ordered for and has not answered: still in flight for the routes. */
+  landing: Set<string>
+  /** Keys whose `landed`, or `reroute`, step gave no answer: ordered again at the next check. */
+  landOwed: Set<string>
+  rerouteOwed: Set<string>
+  /** Keys whose idle flight did not land: their envelope waits for a route that starts no turn, so no turn is started for it again and again. */
+  noIdle: Set<string>
+  /** I10's context the next result or prompt route carries, once: where no SessionStart could return it (M4's decisions). */
+  context?: string
+  /** A compaction's context is owed: its drain gave no answer, so the next check's drain composes it. */
+  isContextOwed: boolean
+  /** A start's context goes by a route: its SessionStart returned before the start answered. */
+  isStartRouted: boolean
+  /** The transcript a start searches for the envelopes that landed (I9). */
+  transcript?: string
+  /** The questions a subagent's ended notice has named. */
+  named: Set<string>
 }
+
+/**
+ * One envelope on a route (I9), from the moment it is handed over until it
+ * lands or fails. Landing is read from the row that holds it, never from
+ * here; a flight is settled at a turn's end only by the turn it belongs to.
+ */
+type Flight = {
+  route: 'idle' | 'result' | 'prompt' | 'send'
+  keys: string[]
+  text: string
+  /** A subagent's envelope: whom it is sent to. */
+  agentId?: string
+  /** The main turn whose end settles it: the one its context entered, or the one its prompt opened; `*` whichever ends next (a turn this module did not see start). */
+  turnId?: string
+  /** A turn whose end settles it only if the conversation holds it: a prompt typed over a running turn enters that turn or the next. */
+  tentative?: string
+  /** Its turn is the next main turn to start. */
+  awaitsTurn?: boolean
+  /** How many main turns had started when it was handed over: a turn that started before is not its own. */
+  turnsAt: number
+}
+
+/** A start's answer, and the context it gives the conversation (I10): the start's own, or after the search's landing, the start's again. */
+type Started = { answer: Answer; context?: string }
 
 /**
  * The process's sheet: its choice and the session generation it serves. One
@@ -163,13 +225,34 @@ type Sheet = {
    * otherwise.
    */
   early?: { source: StartSource; session: string; transcript: string }
+  /** The main turn running, by its id (`turn.start` without an agentId), until it completes. */
+  mainTurn?: string
+  /** How many main turns have started in this module. */
+  turns: number
+  /** Subagents that stopped and have not started again: never sent to, as a send resumes one (C0's P2). */
+  stopped: Set<string>
 }
 
 function fresh(): Sheet {
-  return { home: '', runner: 'terminal', remote: false, isWithdrawing: false, wasBuiltinDescribed: false, dispatching: new Map(), removing: new Set() }
+  return { home: '', runner: 'terminal', remote: false, isWithdrawing: false, wasBuiltinDescribed: false, dispatching: new Map(), removing: new Set(), turns: 0, stopped: new Set() }
 }
 
-const newGen = (session: string): Gen => ({ session, toAck: new Set(), unsettled: new Set(), notices: [], isDrainOwed: false, isChecking: false })
+const newGen = (session: string): Gen => ({
+  session,
+  toAck: new Set(),
+  unsettled: new Set(),
+  notices: [],
+  isDrainOwed: false,
+  isChecking: false,
+  flights: [],
+  landing: new Set(),
+  landOwed: new Set(),
+  rerouteOwed: new Set(),
+  noIdle: new Set(),
+  isContextOwed: false,
+  isStartRouted: false,
+  named: new Set(),
+})
 
 let sheet: Sheet = fresh()
 
@@ -249,12 +332,15 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
   acked.forEach((id) => gen.toAck.delete(id))
   if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
     gen.held = answer.view
+    // A view adopted opens the routes it holds envelopes for (I9).
+    deliver(port, gen)
   }
   return answer
 }
 
+/** The subagents a send reaches without resuming one: running as the engine lists them, and not stopped since. */
 async function runningAgents(port: Port): Promise<string[]> {
-  return (await port.agents()).filter((agent) => RUNNING.has(agent.status)).map((agent) => agent.id)
+  return (await port.agents()).filter((agent) => RUNNING.has(agent.status) && !sheet.stopped.has(agent.id)).map((agent) => agent.id)
 }
 
 /**
@@ -293,6 +379,11 @@ async function runDrain(port: Port, gen: Gen, keys: string[], context?: 'compact
     const answer = await step(port, gen, { event: 'drain', ...(keys.length > 0 && { keys: keys.slice(0, EVENT_KEYS) }), ...(context !== undefined && { context }) })
     gen.isDrainOwed = !answer.ok
     if (answer.ok) gen.drainedAt = size
+    if (answer.ok && context === 'compact') {
+      // A compaction's context its SessionStart could not return: the next result or prompt route carries it.
+      gen.isContextOwed = false
+      routeContext(gen, answer.effects.context)
+    }
     return answer
   } finally {
     gen.draining = undefined
@@ -308,11 +399,12 @@ async function runDrain(port: Port, gen: Gen, keys: string[], context?: 'compact
 /**
  * The start step owed for the generation's session (kept as `starting`):
  * single-flight by its nonce, so a trigger while one runs joins it; ordered
- * again only once an attempt settled with no answer. Its answer marks the
- * session started only while the generation is current and the start the
- * one kept.
+ * again only once an attempt settled with no answer. An answer is followed
+ * by the search for what landed (I9), and marks the session started only
+ * then, while the generation is current and the start the one kept: no
+ * route takes an outcome the search is about to land.
  */
-function startStep(port: Port, gen: Gen): Promise<Answer> | undefined {
+function startStep(port: Port, gen: Gen): Promise<Started> | undefined {
   const starting = sheet.kept?.starting
   if (starting === undefined || gen !== current()) {
     return undefined
@@ -320,17 +412,24 @@ function startStep(port: Port, gen: Gen): Promise<Answer> | undefined {
   if (gen.starting !== undefined && gen.starting.nonce === starting.nonce) {
     return gen.starting.attempt
   }
-  const attempt = (async (): Promise<Answer> => {
-    const answer = await step(port, gen, {
+  const attempt = (async (): Promise<Started> => {
+    const event = {
       event: 'start',
       start: { source: starting.source, nonce: starting.nonce, ...(starting.floor !== undefined && { floor: starting.floor }) },
-    })
-    if (answer.ok && gen === current() && sheet.kept?.starting?.nonce === starting.nonce) {
+    }
+    const answer = await step(port, gen, event)
+    if (!answer.ok || gen !== current() || sheet.kept?.starting?.nonce !== starting.nonce) {
+      return { answer }
+    }
+    const context = await afterStart(port, gen, answer, event)
+    if (gen === current() && sheet.kept?.starting?.nonce === starting.nonce) {
       // A start forgets every call (I5): nothing is left to acknowledge.
       gen.toAck.clear()
       keep({ started: gen.session, starting: undefined })
+      if (gen.isStartRouted) routeContext(gen, context)
+      deliver(port, gen)
     }
-    return answer
+    return { answer, context }
   })()
   gen.starting = { nonce: starting.nonce, attempt }
   void attempt.finally(() => {
@@ -374,6 +473,9 @@ async function check(port: Port) {
     for (const callId of [...gen.unsettled]) {
       await settleLate(port, gen, callId)
     }
+    if (gen.landOwed.size > 0) await orderKeys(port, gen, 'landed', [...gen.landOwed])
+    if (gen.rerouteOwed.size > 0) await orderKeys(port, gen, 'reroute', [...gen.rerouteOwed])
+    if (gen.isContextOwed) await drain(port, gen, [], 'compact')
     const size = await port.size(inbox(gen.session)).catch(() => undefined)
     const view = gen.held
     if (view === undefined || gen.isDrainOwed || (size !== undefined && size > view.offset && size !== gen.drainedAt)) {
@@ -416,6 +518,286 @@ export async function sheetNudge(keys: unknown): Promise<{ ok: true; result: Rec
     if (verdict !== undefined) verdicts[key] = verdict
   }
   return { ok: true, result: { verdicts } }
+}
+
+// ------------------------------------------------------------------ delivery (I9)
+
+type Envelope = View['ready'][number]
+
+const isSame = (a: Recipient, b: Recipient) => (a === 'main' ? b === 'main' : b !== 'main' && a.agentId === b.agentId)
+
+/** Whether a key is on a route, or a step that lands or reroutes it has not answered yet. */
+const isInFlight = (gen: Gen, key: string) => gen.landing.has(key) || gen.flights.some((flight) => flight.keys.includes(key))
+
+/** A recipient's ready envelope: the view's, when none of its keys is in a flight (I9). */
+function readyFor(gen: Gen, recipient: Recipient): Envelope | undefined {
+  const envelope = gen.held?.ready.find((ready) => isSame(ready.recipient, recipient))
+  return envelope !== undefined && !envelope.keys.some((key) => isInFlight(gen, key)) ? envelope : undefined
+}
+
+/** The main conversation's routes are the tool's to open in a terminal session; in a MAWS-run one, MAWS delivers (§5.4). */
+const isTerminal = () => sheet.runner === 'terminal'
+
+/**
+ * The routes a view opens (I9): the idle route, when no main turn runs and
+ * the main conversation's ready envelope wakes; a send to each subagent with
+ * an envelope ready that has not stopped. Each takes its envelope here, in
+ * one synchronous step, so no other route takes it, and goes from a
+ * `$.clock.after(0)` hop, never inside a hook's dispatch (C0's P1).
+ */
+function deliver(port: Port, gen: Gen) {
+  if (!isStarted(gen)) {
+    return
+  }
+  if (isTerminal() && sheet.mainTurn === undefined) {
+    const envelope = readyFor(gen, 'main')
+    if (envelope !== undefined && envelope.wakes && !envelope.keys.some((key) => gen.noIdle.has(key))) {
+      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
+      gen.flights.push(flight)
+      port.after(() => void submitIdle(port, gen, flight))
+    }
+  }
+  for (const envelope of gen.held?.ready ?? []) {
+    const recipient = envelope.recipient
+    if (recipient !== 'main' && !sheet.stopped.has(recipient.agentId) && readyFor(gen, recipient) !== undefined) {
+      const flight: Flight = { route: 'send', keys: envelope.keys, text: envelope.text, agentId: recipient.agentId, turnsAt: sheet.turns }
+      gen.flights.push(flight)
+      port.after(() => void sendTo(port, gen, flight))
+    }
+  }
+}
+
+/**
+ * The idle route: the envelope as this plugin's prompt, which starts a turn
+ * once the session is idle. It fails when the submit is dropped, rejects, or
+ * enters without the envelope; it lands by its row. Its own turn is one that
+ * started after the submit: a turn that was running already, or a prompt
+ * queued ahead of it, ends without settling it.
+ */
+async function submitIdle(port: Port, gen: Gen, flight: Flight) {
+  let entered: { drop?: string; text?: string }
+  try {
+    entered = await port.submit(flight.text)
+  } catch (error) {
+    failFlight(port, gen, flight, message(error))
+    return
+  }
+  if (!gen.flights.includes(flight)) {
+    // Its row landed it already.
+    return
+  }
+  if (entered.drop !== undefined) {
+    failFlight(port, gen, flight, entered.drop)
+  } else if (typeof entered.text === 'string' && !keysIn([entered.text]).some((key) => flight.keys.includes(key))) {
+    failFlight(port, gen, flight, 'a hook took the envelope out of the prompt')
+  } else {
+    turnOf(flight)
+  }
+}
+
+/** A flight that entered: its turn is the main turn that started since it was handed over, else the next to start. */
+function turnOf(flight: Flight) {
+  if (sheet.mainTurn !== undefined && sheet.turns > flight.turnsAt) {
+    flight.turnId = sheet.mainTurn
+  } else {
+    flight.awaitsTurn = true
+  }
+}
+
+/** A send to a running subagent (§6): delivered is its landing (C0's P2); not delivered, or a rejection, reroutes it to the main conversation. */
+async function sendTo(port: Port, gen: Gen, flight: Flight) {
+  let sent: { isDelivered: boolean; reason?: string }
+  try {
+    sent = await port.send(flight.agentId as string, flight.text)
+  } catch (error) {
+    sent = { isDelivered: false, reason: message(error) }
+  }
+  gen.flights = gen.flights.filter((other) => other !== flight)
+  if (sent.isDelivered) {
+    land(port, gen, flight.keys)
+  } else {
+    port.log(`sheet: a send to the subagent ${flight.agentId} was not delivered (${sent.reason ?? 'no reason'}); its answers go to the main conversation`)
+    flight.keys.forEach((key) => gen.landing.add(key))
+    void orderKeys(port, gen, 'reroute', flight.keys)
+  }
+}
+
+/** A flight that did not go: its envelope is ready again, for the next route (today's toast). An idle one starts no turn again by itself. */
+function failFlight(port: Port, gen: Gen, flight: Flight, why: string) {
+  if (!gen.flights.includes(flight)) {
+    return
+  }
+  gen.flights = gen.flights.filter((other) => other !== flight)
+  if (flight.route === 'idle') {
+    flight.keys.forEach((key) => gen.noIdle.add(key))
+  }
+  port.log(`sheet: an envelope's ${flight.route} route failed (${why}); ${flight.keys.length} answers wait for the next route`)
+  if (gen === current()) {
+    port.toast(`An answer did not reach the model (${why}); it goes with the next message.`)
+  }
+}
+
+/**
+ * Keys the evidence says landed (I9): their flights are done, and a
+ * `landed` step is ordered, never awaited by the hook that saw them; until
+ * it answers they stay in flight, so no route sends them again.
+ */
+function land(port: Port, gen: Gen, keys: readonly string[]) {
+  if (keys.length === 0) {
+    return
+  }
+  gen.flights = gen.flights.filter((flight) => !flight.keys.some((key) => keys.includes(key)))
+  keys.forEach((key) => gen.landing.add(key))
+  void orderKeys(port, gen, 'landed', keys)
+}
+
+/** A `landed` or `reroute` step for keys, 200 an event (I5); with no answer, owed to the next check. */
+async function orderKeys(port: Port, gen: Gen, event: 'landed' | 'reroute', keys: readonly string[]) {
+  const owed = event === 'landed' ? gen.landOwed : gen.rerouteOwed
+  for (let i = 0; i < keys.length; i += EVENT_KEYS) {
+    const chunk = keys.slice(i, i + EVENT_KEYS)
+    const answer = await step(port, gen, { event, keys: chunk })
+    if (answer.ok || answer.code === 'no-record') {
+      chunk.forEach((key) => {
+        owed.delete(key)
+        gen.landing.delete(key)
+        if (event === 'landed') gen.noIdle.delete(key)
+      })
+      if (event === 'landed' && gen === current()) port.redraw()
+    } else {
+      chunk.forEach((key) => owed.add(key))
+    }
+  }
+  deliver(port, gen)
+}
+
+/** A context for the next result or prompt route, once (I10): the newer replaces one still waiting. */
+function routeContext(gen: Gen, context: string | undefined) {
+  if (context !== undefined && context !== '') {
+    gen.context = context
+  }
+}
+
+/**
+ * What a result or a prompt route carries (I9), taken in one synchronous
+ * step: the ready envelope as a flight of its own, the notices waiting, and
+ * a context owed; each an entry of its own.
+ */
+function take(gen: Gen, route: 'result' | 'prompt'): { entries: string[]; flight?: Flight; notices: string[]; context?: string } {
+  const envelope = readyFor(gen, 'main')
+  const flight: Flight | undefined = envelope === undefined ? undefined : { route, keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
+  if (flight !== undefined) gen.flights.push(flight)
+  const notices = gen.notices.splice(0)
+  const context = gen.context
+  gen.context = undefined
+  return { entries: [...(flight === undefined ? [] : [flight.text]), ...notices, ...(context === undefined ? [] : [context])], ...(flight !== undefined && { flight }), notices, ...(context !== undefined && { context }) }
+}
+
+/**
+ * What a prompt route took, back where it was, but for what the prompt that
+ * entered still carries (`entered`, its context; none for a prompt that did
+ * not enter).
+ */
+function putBack(port: Port, gen: Gen, taken: ReturnType<typeof take>, why: string, entered: readonly string[] = []) {
+  if (taken.flight !== undefined) failFlight(port, gen, taken.flight, why)
+  gen.notices.unshift(...taken.notices.filter((notice) => !entered.includes(notice)))
+  if (taken.context !== undefined && !entered.includes(taken.context)) gen.context ??= taken.context
+}
+
+/** The generation a route of the main conversation may open in: the current one, started, in a terminal session. */
+function routable(): Gen | undefined {
+  const gen = current()
+  return sheet.port !== undefined && isStarted(gen) && isTerminal() ? gen : undefined
+}
+
+/**
+ * A main turn ended (I9): each flight it settles that neither landed nor
+ * failed is looked for in the conversation the model holds; held, it lands,
+ * else it is ready again (a context a hook outside this plugin dropped,
+ * which no return value reports). A turn that ends while an idle flight's
+ * prompt has not entered settles nothing of it. Then, a turn that ended
+ * with the model's answer opens the idle route for what wakes.
+ */
+async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
+  const due = gen.flights.filter((flight) => flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId)
+  if (due.length > 0) {
+    let held = new Set<string>()
+    try {
+      held = heldKeys(await port.api())
+    } catch (error) {
+      port.log(`sheet: the conversation could not be read at a turn's end (${message(error)})`)
+    }
+    for (const flight of due) {
+      if (!gen.flights.includes(flight)) continue
+      if (flight.keys.some((key) => held.has(key))) {
+        land(port, gen, flight.keys)
+      } else if (flight.turnId === undefined && flight.tentative === turnId) {
+        // A prompt typed over this turn that it did not take: its own turn is the next.
+        flight.tentative = undefined
+        flight.awaitsTurn = true
+      } else {
+        failFlight(port, gen, flight, 'the conversation does not hold it at its turn\'s end')
+      }
+    }
+  }
+  if (reason === 'answer') {
+    deliver(port, gen)
+  }
+}
+
+/** A subagent stopped with questions open (E14): named to the main conversation once, from the view the drain answered. */
+function noticeEnded(gen: Gen, agentId: string) {
+  const open = (gen.held?.open ?? []).filter((q) => q.asker !== 'main' && q.asker.agentId === agentId)
+  if (open.length === 0 || open.every((q) => gen.named.has(q.id))) {
+    return
+  }
+  open.forEach((q) => gen.named.add(q.id))
+  const asker = open[0]?.asker as { agentId: string; name: string }
+  gen.notices.push(endedNotice(asker, open))
+}
+
+/**
+ * After a start answered (M4's decisions): when its effects name outcomes
+ * pending before its drain, the transcript is searched for the envelopes
+ * that landed and their keys handed to `landed`, then the start is ordered
+ * again under its nonce, so its context lists what is still owed; the
+ * context of the start that answered last. A search that fails lands
+ * nothing: those outcomes go again, owed across a stop.
+ */
+async function afterStart(port: Port, gen: Gen, answer: Extract<Answer, { ok: true }>, event: Record<string, unknown>): Promise<string | undefined> {
+  const start = answer.effects.start
+  // In a MAWS-run session only a `delivered` line moves an outcome of the main conversation (§5.4).
+  if (start === undefined || start.beforeCount === 0 || gen.transcript === undefined || !isTerminal()) {
+    return answer.effects.context
+  }
+  const found = await searchLanded(port, gen.transcript)
+  // When `before` lists every key pending, a key it does not list was not pending: landing it would do nothing.
+  const keys = start.beforeCount <= start.before.length ? found.filter((key) => start.before.includes(key)) : found
+  if (keys.length === 0) {
+    return answer.effects.context
+  }
+  keys.forEach((key) => gen.landing.add(key))
+  await orderKeys(port, gen, 'landed', keys)
+  const again = await step(port, gen, event)
+  return again.ok ? again.effects.context : answer.effects.context
+}
+
+/** The keys of the envelopes the transcript holds in rows of the routes' kinds: one perl pass (ask.tsx's search, given the block's form). */
+async function searchLanded(port: Port, transcript: string): Promise<string[]> {
+  try {
+    const search = await port.exec(searchArgs(transcript, DELIVERY_FORMS))
+    if (search.exitCode === 1) return []
+    if (search.exitCode !== 0) {
+      port.log(`sheet: the transcript's search for delivered envelopes exited ${search.exitCode}; nothing is taken as landed`)
+      return []
+    }
+    const lines = search.stdout.split('\n')
+    // A cut output ends inside a line: the whole lines before it still count.
+    return searchedKeys(search.isStdoutTruncated ? lines.slice(0, -1) : lines)
+  } catch (error) {
+    port.log(`sheet: the transcript could not be searched for delivered envelopes (${message(error)}); nothing is taken as landed`)
+    return []
+  }
 }
 
 // ------------------------------------------------------------------ a call (I6; M3's decisions)
@@ -632,8 +1014,12 @@ async function removeLeft(port: Port, left: string): Promise<boolean> {
  * A process starts a session (E11): the session it is in now, the floor of
  * its conversation, and its `start` step, under a nonce of its own that every
  * retry repeats (I5). Kept, so a reload before it answers orders it still.
+ * Answers the context for the conversation (I10), which the SessionStart
+ * returns; when `isRouted` (the SessionStart has returned already) or the
+ * start gives no answer, the start that answers puts it on the next result
+ * or prompt route instead.
  */
-async function sessionStarted(port: Port, source: StartSource, session: string, transcript: string) {
+async function sessionStarted(port: Port, source: StartSource, session: string, transcript: string, isRouted = false): Promise<string | undefined> {
   if (sheet.gen?.session !== session || source === 'clear') {
     // Another conversation in this process (a /clear, a /branch, a fork):
     // the work of the one before is retired, as at a /clear.
@@ -641,6 +1027,8 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
     sheet.gen = newGen(session)
   }
   const gen = sheet.gen
+  gen.transcript = transcript
+  gen.isStartRouted = isRouted
   // A new conversation's floor is known at once, and its start is kept for a
   // retry before anything is awaited; a resumed one's is read first.
   const isNew = source === 'startup' || source === 'clear'
@@ -658,14 +1046,20 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   } else {
     const floor = await floorAtStart(port, gen, source, transcript)
     if (gen !== current()) {
-      return
+      return undefined
     }
     if (floor !== undefined) {
       gen.floor = floor
     }
     keep({ starting: { nonce: newName('n'), source, ...(floor !== undefined && { floor }) } })
   }
-  await startStep(port, gen)
+  const started = await startStep(port, gen)
+  if (started === undefined || !started.answer.ok) {
+    // The retry the next check orders puts its context on a route.
+    gen.isStartRouted = true
+    return undefined
+  }
+  return gen.isStartRouted ? undefined : started.context
 }
 
 /**
@@ -729,6 +1123,12 @@ function portOf($: EngineInterface): Port {
     log: (text) => $.ui.log(text, { to: 'debug' }),
     keep: (kept) => void $.state.set(KEPT, kept).catch((error: unknown) => $.ui.log(`sheet: the choice is not kept for a reload: ${message(error)}`, { to: 'debug' })),
     invalidate: () => $.ui.invalidate('tool.describe'),
+    submit: (text) => $.prompt.submit({ text }),
+    send: (agentId, text) => $.session.send({ to: { agentId }, text }),
+    after: (fn) => void $.clock.after(0, fn),
+    api: () => $.session.messages({ as: 'api' }),
+    redraw: () => $.ui.invalidate('ui.render'),
+    toast: (text) => $.ui.toast(text),
   }
 }
 
@@ -826,7 +1226,8 @@ export function registerSheet(on: On) {
     }
     $.clock.every(TICK_MS, () => void check(port))
     if (early !== undefined) {
-      await sessionStarted(port, early.source, early.session, early.transcript)
+      // Its SessionStart has returned: the start's context goes by the next result or prompt route.
+      await sessionStarted(port, early.source, early.session, early.transcript, true)
     }
     if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined)) {
       void check(port)
@@ -850,21 +1251,27 @@ export function registerSheet(on: On) {
     if (port === undefined || !isSheetChosen()) {
       return next(e)
     }
+    let context: string | undefined
     if (e.source === 'compact') {
       const gen = current()
       if (isStarted(gen)) {
-        // Queued, never awaited (K4: a SessionStart is held on no other
-        // work): through the drain queue, so it never runs beside another
-        // drain, and one that fails is owed to the next trigger. The seam
-        // for M4: this drain's answer carries I10's context
-        // (`effects.context`), which reaches the model by the next route a
-        // context takes, as an envelope does, not through this hook's result.
-        void drain(port, gen, [], 'compact')
+        // Its own step, awaited as its own `$` call (K4 allows it; the
+        // record's lock serializes it with any other step): a drain that
+        // composes I10's context, which this hook returns. With no answer
+        // the next check's drain composes it for the next result or prompt
+        // route.
+        const answer = await step(port, gen, { event: 'drain', context: 'compact' })
+        if (answer.ok) {
+          context = answer.effects.context
+        } else {
+          gen.isContextOwed = true
+        }
       }
     } else {
-      await sessionStarted(port, e.source, e.session_id, e.transcript_path)
+      context = await sessionStarted(port, e.source, e.session_id, e.transcript_path)
     }
-    return next(e)
+    const result = await next(e)
+    return context === undefined || context === '' ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), context] }
   }).catch((_, e, next) => next(e))
 
   // A /clear leaves the session (E15): its record goes, here first, since the
@@ -906,7 +1313,8 @@ export function registerSheet(on: On) {
     if (id !== undefined && gen !== undefined) sheet.dispatching.set(id, gen)
     const answered = await askCall(port, e as unknown as Record<string, unknown>)
     if (id !== undefined) sheet.dispatching.delete(id)
-    return answered
+    // The tool's own result is a route like any other's (I9).
+    return withResultRoute(e.agentId, next.origin, next.signal, answered)
   }).catch((_, e, next) => {
     if (next.called || !isSheetChosen()) {
       return next(e)
@@ -930,28 +1338,135 @@ export function registerSheet(on: On) {
     return isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e)
   }).catch((_, e, next) => (!next.called && isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e)))
 
-  // The check of K4 alone, at the dispatches the sheet's hooks see.
-  on('tool.call', { tool: /^/ }, (_, e, next) => {
+  // The check of K4 at every tool call; the result route on the model's
+  // main-loop calls (I9).
+  on('tool.call', { tool: /^/ }, async (_, e, next) => {
     triggerCheck()
-    return next(e)
-  })
-  on('prompt.submit', { text: /^/ }, (_, e, next) => {
-    triggerCheck()
-    return next(e)
-  })
-  on('turn.complete', { turnId: /./ }, (_, e, next) => {
-    triggerCheck()
-    return next(e)
+    const result = await next(e)
+    return withResultRoute(e.agentId, next.origin, next.signal, result)
   })
 
-  // A subagent stops (E14): a drain, so its pending outcomes go to the main conversation.
-  on('classic.SubagentStop', { hook_event_name: 'SubagentStop' }, (_, e, next) => {
-    const gen = current()
-    if (sheet.port !== undefined && isStarted(gen)) {
-      void drain(sheet.port, gen)
+  // The prompt route (I9): what is ready rides any prompt that enters, as
+  // context of its own; a prompt dropped beneath, or one that entered
+  // without it, puts it back.
+  on('prompt.submit', { text: /^/ }, async (_, e, next) => {
+    triggerCheck()
+    const gen = routable()
+    // A slash command's prompt is passed over: what it runs may never reach the model.
+    if (gen === undefined || e.command !== undefined) {
+      return next(e)
+    }
+    const port = sheet.port as Port
+    const taken = take(gen, 'prompt')
+    if (taken.entries.length === 0) {
+      return next(e)
+    }
+    let result: Awaited<ReturnType<typeof next>>
+    try {
+      result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
+    } catch (error) {
+      putBack(port, gen, taken, message(error))
+      throw error
+    }
+    const flight = taken.flight
+    if (result.drop !== undefined) {
+      putBack(port, gen, taken, result.drop)
+    } else if (flight !== undefined && !keysIn([...(result.context ?? [])]).some((key) => flight.keys.includes(key))) {
+      putBack(port, gen, taken, 'a hook took it out of the prompt', result.context)
+    } else if (flight !== undefined && gen.flights.includes(flight)) {
+      if (e.turnId === undefined) {
+        // Its prompt opened a turn, started by now.
+        turnOf(flight)
+      } else {
+        // Typed over a running turn: it enters that turn, or the next.
+        flight.tentative = e.turnId
+      }
+    }
+    return result
+  }).catch((_, e, next) => next(e))
+
+  // The main turn: which runs (the idle route waits for none), and which
+  // flights a turn's start makes its own. A subagent that starts again is
+  // no longer stopped.
+  on('turn.start', { turnId: /./ }, (_, e, next) => {
+    if (e.agentId === undefined) {
+      sheet.mainTurn = e.turnId
+      sheet.turns += 1
+      for (const flight of current()?.flights ?? []) {
+        if (flight.awaitsTurn === true) {
+          flight.awaitsTurn = false
+          flight.turnId = e.turnId
+        }
+      }
+    } else {
+      sheet.stopped.delete(e.agentId)
     }
     return next(e)
   })
+
+  // The check of K4; a main turn's end settles the flights it holds (I9).
+  on('turn.complete', { turnId: /./ }, (_, e, next) => {
+    triggerCheck()
+    if (e.agentId === undefined) {
+      if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
+      const gen = routable()
+      if (gen !== undefined) {
+        void endTurn(sheet.port as Port, gen, e.turnId, e.reason)
+      }
+    }
+    return next(e)
+  })
+
+  // Landing (I9): a row of the routes' kinds, as stored, that holds a block
+  // lands its keys, whichever module sent it. A human's prompt that quotes
+  // one, or a steer, is another kind of row and lands nothing.
+  on('session.append', { door: /./ }, async (_, e, next) => {
+    const stored = await next(e)
+    const gen = routable()
+    if (gen !== undefined && stored.message !== undefined && isRouteRow(e)) {
+      const keys = keysIn(contentTexts(stored.message.content))
+      if (keys.length > 0) {
+        sheet.port?.log(`sheet: a ${e.door} row (${JSON.stringify(e.origin)}) landed ${keys.length} ${keys.length === 1 ? 'key' : 'keys'}: ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? ', …' : ''}`)
+        land(sheet.port as Port, gen, keys)
+      }
+    }
+    return stored
+  })
+
+  // A subagent stops (E14): a drain, so its pending outcomes go to the main
+  // conversation; and, when it stopped with questions open, a notice.
+  on('classic.SubagentStop', { hook_event_name: 'SubagentStop' }, (_, e, next) => {
+    const gen = current()
+    if (isSheetChosen()) {
+      sheet.stopped.add(e.agent_id)
+    }
+    if (sheet.port !== undefined && isStarted(gen)) {
+      void drain(sheet.port, gen).then(() => noticeEnded(gen, e.agent_id))
+    }
+    return next(e)
+  })
+}
+
+/**
+ * The result route (I9): a call of the model's main loop that returned, not
+ * denied and not aborted, carries what is ready as context on its result:
+ * the envelope, a flight of the running turn, and the notices and a context
+ * waiting.
+ */
+function withResultRoute<R extends object>(agentId: string | undefined, origin: { plugin: string }, signal: AbortSignal, result: R): R {
+  const gen = routable()
+  const { deny, context } = result as { deny?: unknown; context?: readonly string[] }
+  if (gen === undefined || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
+    return result
+  }
+  const taken = take(gen, 'result')
+  if (taken.entries.length === 0) {
+    return result
+  }
+  if (taken.flight !== undefined) {
+    taken.flight.turnId = sheet.mainTurn ?? '*'
+  }
+  return { ...result, context: [...(context ?? []), ...taken.entries] }
 }
 
 /** For tests: the same entry points the hooks use, on a port of the test's own. */

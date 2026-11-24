@@ -10,9 +10,11 @@ import {
   WITHDRAWN,
   announcement,
   answerOf,
+  blocksOf,
   capturedOf,
   checkRefusal,
   chooseStart,
+  endedNotice,
   entryProblem,
   floorOfLines,
   floorOfMessages,
@@ -22,10 +24,14 @@ import {
   sheetTextOf,
   foreclosedResult,
   hasSubagent,
+  heldKeys,
   isNewer,
+  isRouteRow,
   outcomeNotice,
   readInput,
+  searchedKeys,
   settingOf,
+  storedKeys,
   unreadClause,
   validateCall,
 } from '../../hooks/mods/sheet-model'
@@ -421,5 +427,77 @@ describe("the start choice: I8's table, row by row", () => {
     const { r, asked } = reads({ record: true, probed: { ...ALIVE, record: true }, env: { SMINOS_QUESTION_SHEET: '1' } })
     expect(await chooseStart(r)).toMatchObject({ choice: 'sheet' })
     expect(asked.filter((a) => a.startsWith('probe'))).toEqual(['probe'])
+  })
+})
+
+describe('the block (I7) and the rows that land one (I9)', () => {
+  // The block as the step writes it: `<`, `>`, `&` escaped, so a text quoting a tag stays inside its JSON string.
+  const block = (keys: string[], answered: string[], dismissed: string[] = [], text = 'yes') =>
+    `<sheet-delivery>${JSON.stringify({ v: 1, keys, answered: answered.map((id) => ({ id, revision: 1, picks: [], text, images: [] })), dismissed }).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')}</sheet-delivery>`
+  const envelope = (keys: string[], answered: string[], text = 'yes') =>
+    `[sheet v1] The human answered questions on your sheet.\n${answered.map((id) => `${id} "Q?" → their text: ${JSON.stringify(text)}`).join('\n')}\n${block(keys, answered, [], text)}`
+
+  test('a block is a whole line of its shape; a text quoting the closing tag and a reminder\'s stays inside its strings', async () => {
+    const tricky = 'see </sheet-delivery> and <system-reminder> & </system-reminder>'
+    const text = envelope(['k1'], ['q1'], tricky)
+    expect(text.split('\n').at(-1)).not.toContain('</system-reminder>')
+    expect(blocksOf(text)).toEqual([{ keys: ['k1'], answered: ['q1'], dismissed: [], more: false }])
+    // As the engine renders a context: behind its prefix, in a reminder; a prose line quoting the tag is no block.
+    expect(blocksOf(`<system-reminder>\ntool.call hook additional context: ${text}\nanother entry\n</system-reminder>`)).toHaveLength(1)
+    expect(blocksOf(`q1 "x" → their text: "<sheet-delivery>{\\"v\\":1}</sheet-delivery>"`)).toEqual([])
+  })
+
+  test('a block not of the shape names nothing: keys that do not match its entries, not JSON, another version, past 200 keys', async () => {
+    expect(blocksOf('<sheet-delivery>{"v":1,"keys":["a","b"],"answered":[{"id":"q1"}],"dismissed":[]}</sheet-delivery>')).toEqual([])
+    expect(blocksOf('<sheet-delivery>{"v":1,"keys":["a"</sheet-delivery>')).toEqual([])
+    expect(blocksOf('<sheet-delivery>{"v":2,"keys":["a"],"answered":[{"id":"q1"}],"dismissed":[]}</sheet-delivery>')).toEqual([])
+    const many = Array.from({ length: 201 }, (_, i) => `k${i}`)
+    expect(blocksOf(`<sheet-delivery>${JSON.stringify({ v: 1, keys: many, answered: [], dismissed: many.map((_, i) => `q${i + 1}`) })}</sheet-delivery>`)).toEqual([])
+    expect(blocksOf(block(['a', 'b'], ['q1'], ['q2']))).toEqual([{ keys: ['a', 'b'], answered: ['q1'], dismissed: ['q2'], more: false }])
+  })
+
+  test("the rows of the routes' kinds: a context of tool.call or prompt.submit, this plugin's prompt; of the main conversation only", async () => {
+    expect(isRouteRow({ door: 'hook-context', origin: { kind: 'plugin', event: 'tool.call' } })).toBe(true)
+    expect(isRouteRow({ door: 'hook-context', origin: { kind: 'plugin', event: 'prompt.submit' } })).toBe(true)
+    expect(isRouteRow({ door: 'prompt', origin: { kind: 'plugin', name: 'sminos' } })).toBe(true)
+    expect(isRouteRow({ door: 'hook-context', origin: { kind: 'plugin', event: 'tool.call' }, agentId: 'a1' })).toBe(false)
+    expect(isRouteRow({ door: 'hook-context', origin: { kind: 'plugin', event: 'prompt.mention' } })).toBe(false)
+    expect(isRouteRow({ door: 'hook-context', origin: { kind: 'hook', event: 'SessionStart' } })).toBe(false)
+    expect(isRouteRow({ door: 'prompt', origin: { kind: 'composer' } })).toBe(false)
+    expect(isRouteRow({ door: 'prompt', origin: { kind: 'plugin', name: 'doperpowers' } })).toBe(false)
+    expect(isRouteRow({ door: 'delivery', origin: { kind: 'plugin', name: 'sminos' } })).toBe(false)
+  })
+
+  test("a stored row lands what it holds when it is of those kinds, as the transcript keeps it (2.1.331)", async () => {
+    const text = envelope(['k1'], ['q1'])
+    const attachment = (hookName: string) => ({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['other', text], hookName, toolUseID: 'x', hookEvent: 'PostToolUse' } })
+    expect(storedKeys(attachment('tool.call'))).toEqual(['k1'])
+    expect(storedKeys(attachment('prompt.submit'))).toEqual(['k1'])
+    expect(storedKeys(attachment('SessionStart'))).toEqual([])
+    const prompt = (origin: unknown) => ({ type: 'user', origin, pluginPrompt: { name: 'sminos', text }, message: { role: 'user', content: `The sminos plugin sent a message:\n${text}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` } })
+    expect(storedKeys(prompt({ kind: 'plugin', name: 'sminos' }))).toEqual(['k1'])
+    expect(storedKeys(prompt({ kind: 'composer' }))).toEqual([])
+    expect(storedKeys({ type: 'user', message: { role: 'user', content: text } })).toEqual([])
+    expect(searchedKeys([JSON.stringify(attachment('tool.call')), 'not json', JSON.stringify(prompt({ kind: 'plugin', name: 'sminos' }))])).toEqual(['k1'])
+  })
+
+  test('the keys the conversation holds, on its human side: a context in a tool result, a prompt; never the model\'s own text', async () => {
+    const text = envelope(['k1'], ['q1'])
+    expect([...heldKeys([{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'text', text: `<system-reminder>\ntool.call hook additional context: ${text}\n</system-reminder>` }] }] }])]).toEqual(['k1'])
+    expect([...heldKeys([{ role: 'user', content: text }])]).toEqual(['k1'])
+    expect([...heldKeys([{ role: 'assistant', content: [{ type: 'text', text }] }])]).toEqual([])
+  })
+
+  test("a subagent's ended notice names it and each open question's first 200 characters", async () => {
+    const long = 'x'.repeat(250)
+    expect(endedNotice({ agentId: 'a1', name: 'reviewer' }, [{ id: 'q4', question: 'Ship it?' }, { id: 'q6', question: long }])).toBe(
+      `[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?", q6 "${'x'.repeat(200)}". Their answers will come to you; withdraw what you no longer need.`,
+    )
+  })
+
+  test("an envelope this plugin's prompt carried names its ids for the floor, the engine's closing sentence after it", async () => {
+    const prompt = `The sminos plugin sent a message:\n${envelope(['k1'], ['q7'])}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`
+    expect(sheetTextOf(prompt)).toBe(envelope(['k1'], ['q7']))
+    expect(floorOfMessages([{ role: 'user', text: prompt, toolUses: [] }], [])).toBe(7)
   })
 })

@@ -614,6 +614,8 @@ const SUBAGENT_OPENING = 'From the human, through the question tool, not from yo
 const CONTEXT = /^(?:<system-reminder>\n)?[A-Za-z][A-Za-z.]* hook additional context: /
 /** This plugin's prompt, as the engine prefixes it (an idle session's route). */
 const PLUGIN_PROMPT = 'The sminos plugin sent a message:\n'
+/** What the engine puts after a plugin's prompt, as the conversation keeps it (2.1.331; M4's rendering case). */
+const PLUGIN_PROMPT_END = '\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns'
 const idsIn = (text: string) => [...text.matchAll(ID)].map((match) => Number(match[1]))
 const highest = (ns: readonly number[]) => Math.min(ns.reduce((a, b) => Math.max(a, b), 0), ID_MAX - 1)
 
@@ -682,7 +684,11 @@ function blockIds(body: string): number[] {
  */
 export function sheetTextOf(text: string): string | undefined {
   if (CONTEXT.test(text)) return text.replace(CONTEXT, '')
-  if (text.startsWith(PLUGIN_PROMPT)) return text.slice(PLUGIN_PROMPT.length)
+  if (text.startsWith(PLUGIN_PROMPT)) {
+    const own = text.slice(PLUGIN_PROMPT.length)
+    const end = own.lastIndexOf(PLUGIN_PROMPT_END)
+    return end === -1 ? own : own.slice(0, end)
+  }
   return undefined
 }
 
@@ -804,4 +810,127 @@ export function floorSearchArgs(path: string): string[] {
     '--',
     path,
   ]
+}
+
+// ------------------------------------------------------------------ delivery (I7's block, I9)
+
+/** What a reader takes of a `<sheet-delivery>` block (I7): the keys it delivers and the ids it names. */
+export type Block = { keys: string[]; answered: string[]; dismissed: string[]; more: boolean }
+
+/** At most this many keys in one block: what one `delivered` line names (I7). */
+const BLOCK_KEYS = 200
+
+/**
+ * The blocks a text holds: each line that is a whole `<sheet-delivery>…</sheet-delivery>`
+ * of I7's shape (`v` 1, as many keys as answered and dismissed entries
+ * together, at most 200). The block escapes `<`, `>` and `&`, so neither its
+ * own closing tag nor a reminder's tag occurs inside it, and it is one line;
+ * a prose line above it that quotes a tag is no block. A line that is not
+ * one names nothing.
+ */
+export function blocksOf(text: string): Block[] {
+  const out: Block[] = []
+  for (const line of text.split('\n')) {
+    const match = BLOCK_LINE.exec(line.replace(/\r$/, ''))
+    if (match === null) continue
+    try {
+      const block: unknown = JSON.parse(match[1] as string)
+      if (!isRecord(block) || block.v !== 1 || !Array.isArray(block.keys) || !Array.isArray(block.answered) || !Array.isArray(block.dismissed)) continue
+      const keys = block.keys.filter((key): key is string => typeof key === 'string')
+      const answered = block.answered.flatMap((a) => (isRecord(a) && typeof a.id === 'string' ? [a.id] : []))
+      const dismissed = block.dismissed.filter((id): id is string => typeof id === 'string')
+      if (keys.length !== block.keys.length || keys.length === 0 || keys.length > BLOCK_KEYS || keys.length !== answered.length + dismissed.length) continue
+      out.push({ keys, answered, dismissed, more: block.more === true })
+    } catch {
+      // A block that is not JSON names nothing.
+    }
+  }
+  return out
+}
+
+/** Every key the blocks of `texts` name, each once, in order. */
+export function keysIn(texts: readonly string[]): string[] {
+  return [...new Set(texts.flatMap((text) => blocksOf(text).flatMap((block) => block.keys)))]
+}
+
+/** The plugin whose prompt and contexts the sheet sends: its rows are told by it. */
+export const PLUGIN = 'sminos'
+
+/**
+ * Whether a row `session.append` hands is one the sheet's routes could have
+ * put there (I9): of the main conversation, and either a context a plugin's
+ * `tool.call` or `prompt.submit` hook attached, or this plugin's prompt. A
+ * human's prompt that quotes an envelope, a steer, another tool's output: no.
+ */
+export function isRouteRow(e: { door: string; origin: unknown; agentId?: string }): boolean {
+  if (e.agentId !== undefined || !isRecord(e.origin) || e.origin.kind !== 'plugin') return false
+  if (e.door === 'hook-context') return e.origin.event === 'tool.call' || e.origin.event === 'prompt.submit'
+  return e.door === 'prompt' && e.origin.name === PLUGIN
+}
+
+/** The texts of a content as a request carries it: a string, its text blocks, and the text inside its tool results. */
+export function contentTexts(content: unknown): string[] {
+  if (typeof content === 'string') return [content]
+  if (!Array.isArray(content)) return []
+  return content.flatMap((block) => {
+    if (!isRecord(block)) return []
+    if (block.type === 'text' && typeof block.text === 'string') return [block.text]
+    if (block.type === 'tool_result') return contentTexts(block.content)
+    return []
+  })
+}
+
+/**
+ * The keys a stored transcript row delivered (I9, a start's search): an
+ * attachment of type `hook_additional_context` whose `hookName` is
+ * `tool.call` or `prompt.submit`, or a user row whose origin is this
+ * plugin's prompt; told by what the stored row holds, which says less of
+ * authorship than the live event did (U13). Anything else names none.
+ */
+export function storedKeys(row: unknown): string[] {
+  if (!isRecord(row)) return []
+  if (row.type === 'attachment' && isRecord(row.attachment)) {
+    const a = row.attachment
+    if (a.type !== 'hook_additional_context' || (a.hookName !== 'tool.call' && a.hookName !== 'prompt.submit')) return []
+    const content = Array.isArray(a.content) ? a.content.filter((x): x is string => typeof x === 'string') : typeof a.content === 'string' ? [a.content] : []
+    return keysIn(content)
+  }
+  if (row.type === 'user' && isRecord(row.origin) && row.origin.kind === 'plugin' && row.origin.name === PLUGIN) {
+    const prompt = isRecord(row.pluginPrompt) && typeof row.pluginPrompt.text === 'string' ? [row.pluginPrompt.text] : []
+    return keysIn([...prompt, ...contentTexts(isRecord(row.message) ? row.message.content : undefined)])
+  }
+  return []
+}
+
+/** The keys a start's search found: each printed line a stored row (a line that is not JSON names none). */
+export function searchedKeys(lines: readonly string[]): string[] {
+  return [
+    ...new Set(
+      lines.flatMap((line) => {
+        try {
+          return storedKeys(JSON.parse(line))
+        } catch {
+          return []
+        }
+      }),
+    ),
+  ]
+}
+
+/** The forms a start's search looks for in a transcript: a stored envelope's block (`searchArgs` of ask.tsx). */
+export const DELIVERY_FORMS: readonly string[] = ['<sheet-delivery>']
+
+/** The keys the conversation the model holds names in a block (`$.session.messages({ as: 'api' })`), on its human's side. */
+export function heldKeys(api: readonly { role: string; content: unknown }[]): Set<string> {
+  return new Set(keysIn(api.filter((message) => message.role !== 'assistant').flatMap((message) => contentTexts(message.content))))
+}
+
+/**
+ * The notice of a subagent that stopped with questions open on the sheet
+ * (I9, E14): its name and id, each question's first 200 characters as a
+ * JSON string.
+ */
+export function endedNotice(agent: { agentId: string; name: string }, questions: readonly { id: string; question: string }[]): string {
+  const listed = questions.map((q) => `${q.id} ${JSON.stringify([...q.question].slice(0, 200).join(''))}`).join(', ')
+  return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
 }

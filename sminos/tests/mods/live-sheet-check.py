@@ -27,11 +27,15 @@ does to a capture; without it that part of `secret` is SKIPPED, never passed.
 
 Cases (M3's): many, revise, withdraw, two-surfaces, secret, fork (one
 terminal session asks, revises, withdraws; a subagent's acts; the door;
-the refused references; its copies by --fork-session and /branch), then
-no-surface and nested (sessions of their own). `many` comes first whatever
-is asked: the cases after it act on its questions. It ends
-`live-sheet-check: N passed` and exits 0; a failing check prints
-`FAIL <case>: <what was observed>`.
+the refused references; its copies by --fork-session and /branch, and what
+each copy's first context says), then no-surface and nested (sessions of
+their own). `many` comes first whatever is asked: the cases after it act on
+its questions. M4's, in a session of their own that asks for them: rendering
+(an envelope by each route, read back where the mod's landing hook and a
+start's search read it), subset, note, dismiss, compaction, both, subagent,
+agent-open, then stopped (the session ended, answered, resumed); and
+max-send, in one more session. It ends `live-sheet-check: N passed` and
+exits 0; a failing check prints `FAIL <case>: <what was observed>`.
 """
 import os.path, runpy  # noqa: E401 — the caller's repository kept out first (#623)
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "../git_isolation.py"))
@@ -63,11 +67,33 @@ OUTSIDE = "LIVE_SHEET_OUTSIDE_MARKER_c91e"
 # guard is for.
 GUARDED = "ghp_" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
 DOOR_S = 1.0          # M3's At its end: a `put` to a live session prints its verdict within a second
-CASES = ("many", "revise", "withdraw", "two-surfaces", "secret", "fork", "no-surface", "nested")
+DELIVERY = ("rendering", "subset", "note", "dismiss", "compaction", "both", "subagent", "agent-open", "stopped")
+CASES = ("many", "revise", "withdraw", "two-surfaces", "secret", "fork", "no-surface", "nested") + DELIVERY + ("max-send",)
+# What a session that delivers is told once, so the model's reply shows what it read (the cases match words of it).
+REPEAT = ("When answers from the human's question sheet reach you later, reply by repeating each one: its question "
+          "id, the option picked, and the human's text word for word, and name every question dismissed. Do not read "
+          "any file an answer points to. ")
+SUBAGENT_OPENING = "From the human, through the question tool, not from your coordinator: answers to questions you put on the sheet."
+BLOCK = re.compile(r"^<sheet-delivery>(.*)</sheet-delivery>$")
 
 
-def call_prompt(payload):
-    return ("Call the tool %s exactly once, with exactly this JSON as its input: %s . "
+def blocks(text):
+    """The <sheet-delivery> blocks a text holds, each a whole line (I7): (keys, answered ids, dismissed ids, more)."""
+    out = []
+    for line in (text or "").split("\n"):
+        m = BLOCK.match(line)
+        if not m:
+            continue
+        try:
+            b = json.loads(m.group(1))
+        except ValueError:
+            continue
+        out.append((b.get("keys", []), [a.get("id") for a in b.get("answered", [])], b.get("dismissed", []), bool(b.get("more"))))
+    return out
+
+
+def call_prompt(payload, preface=""):
+    return (preface + "Call the tool %s exactly once, with exactly this JSON as its input: %s . "
             "Then reply with only the first line of the tool's result." % (SHEET_TOOL, json.dumps(payload)))
 
 
@@ -101,7 +127,7 @@ class Sheet(LB.Live):
     def setup(self):
         super().setup()
         with open(os.path.join(self.cfg, "settings.json"), "w") as f:
-            json.dump({"permissions": {"allow": [SHEET_TOOL, "Agent", "Task"], "deny": ["Read(**/.env)"]}}, f)
+            json.dump({"permissions": {"allow": [SHEET_TOOL, "Agent", "Task", "Bash(sleep:*)"], "deny": ["Read(**/.env)"]}}, f)
         with open(os.path.join(self.work, "notes.txt"), "w") as f:
             f.write(NOTES)
         with open(os.path.join(self.work, ".env"), "w") as f:
@@ -238,13 +264,13 @@ class Sheet(LB.Live):
                     results[b.get("tool_use_id")] = text_of(b.get("content"))
         return [(u, i, results.get(u)) if ids else (i, results.get(u)) for u, i in uses]
 
-    def ask(self, name, payload, seconds=180):
+    def ask(self, name, payload, seconds=180, preface=""):
         """The agent calls the tool with `payload`: its result, once the turn is over."""
         sid = self.panes[name][1]
         # Known by its input, not its place: a fork's transcript is written with the conversation it copied only
         # once its first prompt is (C0's P5), after the count a place would rest on.
         before = {u for u, _, _ in self.calls(sid, ids=True)}
-        self.say(name, call_prompt(payload))
+        self.say(name, call_prompt(payload, preface))
         got = wait_for("the call's result", seconds, lambda: [
             r for u, i, r in self.calls(sid, ids=True) if u not in before and gist(i) == gist(payload) and r is not None])
         self.idle(sid)
@@ -296,6 +322,10 @@ class Sheet(LB.Live):
         if self.wants("fork"):
             self.case_fork(main)
         self.close("main")
+        if any(self.wants(c) for c in DELIVERY):
+            self.delivery()
+        if self.wants("max-send"):
+            self.case_max_send()
         if self.wants("no-surface"):
             self.case_no_surface()
         if self.wants("nested"):
@@ -342,10 +372,14 @@ class Sheet(LB.Live):
                    "%.2fs; %s" % (took, (code, out, err)))
         r = self.cli("sheet", "answer", "--session", sid, "q2@2", "--pick", "1")
         out = json.loads(r.stdout) if r.returncode == 0 else {}
-        pending = [o for o in (self.show(sid) or {}).get("pending", []) if o.get("id") == "q2"]
+        m = self.show(sid) or {}
+        pending = [o for o in m.get("pending", []) if o.get("id") == "q2"]
+        closed = (m.get("closed") or {}).get("q2") or {}
+        # From M4 the answer is delivered at once to an idle session: pending, or already delivered, it picked Red.
         self.check("revise: q2@2 --pick 1 is applied to the new first option",
-                   r.returncode == 0 and pending and pending[0].get("picks") == ["Red"],
-                   "%s; pending %s" % (out or r.stderr.strip(), pending))
+                   r.returncode == 0 and ((pending and pending[0].get("picks") == ["Red"]) or closed.get("receipt") == "Red"),
+                   "%s; pending %s; closed %s" % (out or r.stderr.strip(), pending, closed))
+        self.idle(sid)
 
     def case_withdraw(self, sid):
         result = self.ask("main", {"withdraw": ["q3"]})
@@ -375,6 +409,7 @@ class Sheet(LB.Live):
         _, a, _, ta = self.timed_put(sid, [dict(line, key=one)])
         _, b, _, tb = self.timed_put(sid, [dict(line, key=two)])
         sa, sb = (((x or {}).get("results") or [{}])[0].get("state") for x in (a, b))
+        self.idle(sid)
         self.check("two-surfaces: two answers to one question: the first taken, the second closed, each verdict "
                    "within %ss" % DOOR_S,
                    sa in ("accepted", "applied", "delivered") and sb == "closed" and max(ta, tb) < DOOR_S,
@@ -444,6 +479,9 @@ class Sheet(LB.Live):
         self.check("fork (--fork-session): the copy's sheet starts empty and its next id is past every id it holds",
                    copy != sid and m.get("open") == [] and added and int(added.group(1)) > floor,
                    "copy %s; open %s; floor q%d; result %r" % (copy, m.get("open"), floor, result))
+        said = self.contexts(copy, "SessionStart")
+        self.check("fork (--fork-session): the copy's first context says its sheet starts empty",
+                   any(t.startswith("[sheet v1] This conversation is a copy") for t in said), [t[:100] for t in said])
         self.close("forked")
         pid, _ = self.panes["main"]
         self.say("main", "/branch")
@@ -457,6 +495,337 @@ class Sheet(LB.Live):
         self.check("fork (/branch): the copy's sheet starts empty and its next id is past every id it holds",
                    m.get("open") == [] and added and int(added.group(1)) > floor,
                    "branch %s; open %s; floor q%d; result %r" % (branch, m.get("open"), floor, result))
+        said = self.contexts(branch, "SessionStart")
+        self.check("fork (/branch): the copy's first context says its sheet starts empty",
+                   any(t.startswith("[sheet v1] This conversation is a copy") for t in said), [t[:100] for t in said])
+
+    # -- delivery (M4)
+
+    def envelopes(self, sid, sub=False):
+        """The envelopes a transcript holds in rows of the routes' kinds and the SessionStart's, as a start's search
+        reads them: (row index, kind, the entry's text, its blocks). Kinds: tool.call, prompt.submit and SessionStart
+        (a hook's context), plugin (this plugin's prompt)."""
+        out = []
+        for i, row in enumerate(self.rows(sid, sub)):
+            a = row.get("attachment") if row.get("type") == "attachment" else None
+            if isinstance(a, dict) and a.get("type") == "hook_additional_context":
+                content = a.get("content")
+                for text in content if isinstance(content, list) else [content]:
+                    if isinstance(text, str):
+                        out.append((i, a.get("hookName"), text, blocks(text)))
+            elif row.get("type") == "user" and row.get("origin") == {"kind": "plugin", "name": "sminos"}:
+                text = text_of((row.get("message") or {}).get("content"))
+                out.append((i, "plugin", text, blocks(text)))
+        return out
+
+    def contexts(self, sid, kind):
+        return [t for _, k, t, _ in self.envelopes(sid) if k == kind]
+
+    def carrying(self, sid, key, sub=False):
+        """The envelope rows that deliver `key`: [(kind, text, keys)]."""
+        return [(k, t, b[0]) for _, k, t, bs in self.envelopes(sid, sub) for b in bs if key in b[0]]
+
+    def replies(self, sid, since):
+        """The model's text in the rows after `since`."""
+        return "\n".join(text_of((r.get("message") or {}).get("content")) for r in self.rows(sid)[since:]
+                         if r.get("type") == "assistant")
+
+    def put_answers(self, sid, answers):
+        """One call of the door: [(q, revision, text, pick or None)] answered; the keys, in order."""
+        keys = ["live-%s" % uuid.uuid4().hex[:16] for _ in answers]
+        lines = [dict({"v": 1, "key": k, "kind": "answer", "id": q, "revision": rev, "text": text, "by": "cli"},
+                      **({"picks": [pick]} if pick else {})) for k, (q, rev, text, pick) in zip(keys, answers)]
+        code, out, err = self.put(sid, lines)
+        return keys if code == 0 else []
+
+    def dismiss(self, sid, q):
+        key = "live-%s" % uuid.uuid4().hex[:16]
+        self.put(sid, [{"v": 1, "key": key, "kind": "dismiss", "id": q, "by": "cli"}])
+        return key
+
+    def landed(self, sid, keys, seconds=120):
+        """Waits until no key is pending; whether they all left."""
+        try:
+            wait_for("the keys delivered", seconds, lambda: not {o["key"] for o in self.state(sid)["pending"]} & set(keys))
+            return True
+        except TimeoutError:
+            return False
+
+    def running_turn(self, sid, seconds=60):
+        wait_for("a main turn", seconds, lambda: (self.ping(sid) or {}).get("result", {}).get("state", {}).get("mainTurn"))
+
+    def debug_lines(self, name, needle):
+        return [line for line in self.debug(name).splitlines() if needle in line]
+
+    def delivery(self):
+        name = "deliver"
+        sid = self.open(name, env={"SMINOS_QUESTION_SHEET": "1"})
+        labels = {13: ["Saturn", "Jupiter"], 14: ["Oak", "Pine"]}
+        entries = [{"question": "D%d: which colour?" % i, "header": "Colour %d" % i,
+                    "options": [{"label": x} for x in labels.get(i, ["Red", "Blue"])]} for i in range(1, 16)]
+        first = self.ask(name, {"ask": entries[:8]}, preface=REPEAT)
+        second = self.ask(name, {"ask": entries[8:]})
+        ok = first.startswith("Added q1, q2, q3, q4, q5, q6, q7, q8.") and second.startswith("Added q9, q10, q11, q12, q13, q14, q15.")
+        if not ok:
+            self.check("delivery: the session's fifteen questions", False, (first, second))
+            return
+        if any(self.wants(c) for c in ("rendering",)):
+            self.case_rendering(name, sid)
+        if self.wants("subset"):
+            self.case_subset(name, sid)
+        if self.wants("note"):
+            self.case_note(name, sid)
+        if self.wants("dismiss"):
+            self.case_dismiss(name, sid)
+        if self.wants("compaction"):
+            self.case_compaction(name, sid)
+        if self.wants("both") or self.wants("subagent") or self.wants("agent-open"):
+            self.case_subagents(name, sid)
+        if self.wants("stopped"):
+            self.case_stopped(name, sid)
+        self.close(name)
+
+    def case_rendering(self, name, sid):
+        # The idle route: an answer while no turn runs is this plugin's prompt, which starts a turn.
+        keys = self.put_answers(sid, [("q1", 1, "alpha-idle", "Red")])
+        try:
+            wait_for("the idle prompt's row", 60, lambda: self.carrying(sid, keys[0]))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        rows = self.carrying(sid, keys[0])
+        seen = self.debug_lines(name, 'a prompt row ({"kind":"plugin","name":"sminos"}) landed 1 key: %s' % keys[0])
+        self.check("rendering: the idle route's prompt, its row seen by the mod's own session.append (door prompt, origin "
+                   "this plugin's) and stored as a user row of this plugin's origin",
+                   [k for k, _, _ in rows] == ["plugin"] and seen and self.landed(sid, keys, 5),
+                   "rows %s; debug %s" % ([k for k, _, _ in rows], seen[:1]))
+        # The result route: an answer while a turn runs rides its next tool result.
+        since = len(self.rows(sid))
+        self.say(name, "Run the Bash command `sleep 6` with the Bash tool, then reply with only: done.")
+        self.running_turn(sid)
+        keys = self.put_answers(sid, [("q2", 1, "beta-result", "Blue")])
+        self.idle(sid)
+        rows = self.carrying(sid, keys[0])
+        seen = self.debug_lines(name, 'a hook-context row ({"kind":"plugin","event":"tool.call"}) landed 1 key: %s' % keys[0])
+        self.check("rendering: the result route's context, door hook-context with origin tool.call, stored as a "
+                   "hook_additional_context attachment of hookName tool.call",
+                   [k for k, _, _ in rows] == ["tool.call"] and seen and self.landed(sid, keys, 5),
+                   "rows %s; debug %s; replies %r" % ([k for k, _, _ in rows], seen[:1], self.replies(sid, since)[-200:]))
+        # The prompt route: a dismissal starts no turn and rides the next prompt that enters.
+        key = self.dismiss(sid, "q3")
+        time.sleep(4)
+        self.say(name, "Reply with only: ok.")
+        self.idle(sid)
+        rows = self.carrying(sid, key)
+        seen = self.debug_lines(name, 'a hook-context row ({"kind":"plugin","event":"prompt.submit"}) landed 1 key: %s' % key)
+        self.check("rendering: the prompt route's context, door hook-context with origin prompt.submit, stored as a "
+                   "hook_additional_context attachment of hookName prompt.submit",
+                   [k for k, _, _ in rows] == ["prompt.submit"] and seen and self.landed(sid, [key], 5),
+                   "rows %s; debug %s" % ([k for k, _, _ in rows], seen[:1]))
+
+    def case_subset(self, name, sid):
+        opened = len((self.show(sid) or {}).get("open", []))
+        since = len(self.rows(sid))
+        self.say(name, "Run the Bash command `sleep 8` with the Bash tool, then reply with only: done.")
+        self.running_turn(sid)
+        keys = self.put_answers(sid, [("q4", 1, "kiwi-4", None), ("q5", 1, "plum-5", None), ("q6", 1, "fig-6", None)])
+        self.idle(sid)
+        rows = self.carrying(sid, keys[0])
+        said = self.replies(sid, since)
+        left = len((self.show(sid) or {}).get("open", []))
+        self.check("subset: three answers sent as one while a turn runs reach it in one envelope with three keys; the agent "
+                   "quotes them; the rest stay open",
+                   len(rows) == 1 and set(rows[0][2]) == set(keys) and all(w in said for w in ("kiwi-4", "plum-5", "fig-6"))
+                   and left == opened - 3, "rows %s; open %d -> %d; replies %r" % ([(k, len(ks)) for k, _, ks in rows], opened, left, said[-300:]))
+        since = len(self.rows(sid))
+        keys = self.put_answers(sid, [("q7", 1, "lime-7", None), ("q8", 1, "pear-8", None), ("q9", 1, "date-9", None)])
+        try:
+            wait_for("a turn the answers start", 60, lambda: self.carrying(sid, keys[0]))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        rows = self.carrying(sid, keys[0])
+        said = self.replies(sid, since)
+        self.check("subset: three more while idle start a turn by themselves, one envelope, quoted",
+                   [k for k, _, _ in rows] == ["plugin"] and set(rows[0][2]) == set(keys) and all(w in said for w in ("lime-7", "pear-8", "date-9")),
+                   "rows %s; replies %r" % ([(k, len(ks)) for k, _, ks in rows], said[-300:]))
+
+    def case_note(self, name, sid):
+        since = len(self.rows(sid))
+        keys = self.put_answers(sid, [("q10", 1, "only on tuesdays", "Blue")])
+        try:
+            wait_for("the answer's turn", 60, lambda: self.carrying(sid, keys[0]))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        said = self.replies(sid, since)
+        self.check("note: an answer with a pick and a text; the agent repeats both",
+                   "Blue" in said and "only on tuesdays" in said.lower(), repr(said[-300:]))
+
+    def case_dismiss(self, name, sid):
+        since = len(self.rows(sid))
+        key = self.dismiss(sid, "q11")
+        time.sleep(20)
+        turned = [r for r in self.rows(sid)[since:] if r.get("type") in ("assistant",) or r.get("origin") == {"kind": "plugin", "name": "sminos"}]
+        self.check("dismiss: a dismissal in an idle session starts no turn within 20 s", not turned and self.carrying(sid, key) == [],
+                   "%d rows of a turn" % len(turned))
+        keys = self.put_answers(sid, [("q12", 1, "last-12", None)])
+        try:
+            wait_for("the answer's turn", 60, lambda: self.carrying(sid, keys[0]))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        rows = self.carrying(sid, key)
+        said = self.replies(sid, since)
+        self.check("dismiss: after another answer the agent is told of the dismissal with it, and names it",
+                   rows and key in rows[0][2] and keys[0] in rows[0][2] and "q11" in said, "rows %s; replies %r" % ([(k, ks) for k, _, ks in rows], said[-300:]))
+
+    def case_compaction(self, name, sid):
+        self.say(name, "/compact")
+        try:
+            wait_for("the compaction", 240, lambda: any(r.get("subtype") == "compact_boundary" for r in self.rows(sid)))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        since = len(self.rows(sid))
+        self.say(name, "Without calling any tool, list the ids of the questions still open on your question sheet, each with its options.")
+        self.idle(sid)
+        said = self.replies(sid, since)
+        told = [t for t in self.contexts(sid, "SessionStart") if t.startswith("[sheet v1] Your question sheet, after a compaction.")]
+        self.check("compaction: after a compaction the agent names its open questions and their options without a tool",
+                   told and all(w in said for w in ("q13", "q14", "Saturn", "Oak")), "context %r; replies %r" % ((told or [""])[-1][:160], said[-400:]))
+
+    def sub_files(self, sid):
+        return glob.glob(os.path.join(self.cfg, "projects", "*", sid, "subagents", "*.jsonl"))
+
+    def subagent_q(self, sid, mark):
+        return next((q for q in (self.show(sid) or {}).get("open", []) if mark in q.get("question", "")), None)
+
+    def case_subagents(self, name, sid):
+        # A subagent asks and keeps running (a sleep) while one put answers it and the main agent's q15.
+        inner = call_prompt({"ask": [{"question": "Sub-A: which planet?", "options": [{"label": "Mars"}, {"label": "Venus"}]}]})
+        inner = inner.replace("Then reply with only the first line of the tool's result.",
+                              "Then run the Bash command `sleep 25` with the Bash tool. Then reply with any message you received while working, word for word.")
+        subs = set(self.sub_files(sid))
+        self.say(name, "Use the Agent tool once (subagent_type general-purpose, description sheet-asker) with this as its whole prompt: %s "
+                       "Then reply with only what the agent reported." % json.dumps(inner))
+        q = None
+        try:
+            q = wait_for("the subagent's question", 180, lambda: self.subagent_q(sid, "Sub-A"))
+        except TimeoutError:
+            pass
+        asker = (q or {}).get("asker")
+        if self.wants("subagent"):
+            self.check("subagent: a subagent asks; show names it as the asker", isinstance(asker, dict) and asker.get("agentId"), q)
+        keys = self.put_answers(sid, [(q["id"], 1, "sub-only-a", "Mars"), ("q15", 1, "main-only-b", "Red")]) if q else []
+        self.idle(sid, 300)
+        sub_text = "".join(open(p, errors="replace").read() for p in self.sub_files(sid) if p not in subs)
+        main_rows = self.envelopes(sid)
+        main_keys = {k for _, _, _, bs in main_rows for b in bs for k in b[0]}
+        if keys and self.wants("subagent"):
+            self.check("subagent: answered while it runs, its own transcript holds the envelope under its opening line, the main one does not",
+                       keys[0] in sub_text and SUBAGENT_OPENING in sub_text and keys[0] not in main_keys,
+                       "sub has key %s, opening %s; main has it %s" % (keys[0] in sub_text, SUBAGENT_OPENING in sub_text, keys[0] in main_keys))
+        if keys and self.wants("both"):
+            self.check("both: one put answers the main agent's question and a running subagent's; each conversation holds its own key only",
+                       keys[0] in sub_text and keys[1] not in sub_text and keys[1] in main_keys and keys[0] not in main_keys,
+                       "sub %s; main %s" % ([k in sub_text for k in keys], [k in main_keys for k in keys]))
+        # A subagent asks and ends: the main agent's next tool result names its open question; the answer given after
+        # it ended goes to the main conversation, naming it, and does not resume it.
+        inner = call_prompt({"ask": [{"question": "Sub-B: which metal?", "options": [{"label": "Gold"}, {"label": "Iron"}]}]})
+        self.say(name, "Use the Agent tool once (subagent_type general-purpose, description metal-asker) with this as its whole prompt: %s "
+                       "Then reply with only: asked." % json.dumps(inner))
+        q = None
+        try:
+            q = wait_for("the second subagent's question", 180, lambda: self.subagent_q(sid, "Sub-B"))
+        except TimeoutError:
+            pass
+        self.idle(sid, 240)
+        self.say(name, "Read notes.txt with the Read tool once, then reply with only: done.")
+        self.idle(sid)
+        noticed = [t for t in self.contexts(sid, "tool.call") if "ended with questions still open" in t]
+        if self.wants("agent-open"):
+            self.check("agent-open: a subagent that ends with a question open is named on the main agent's next tool result",
+                       q and noticed and q["id"] in noticed[-1], "question %s; notices %r" % (q and q["id"], [t[:160] for t in noticed]))
+        if q is None:
+            return
+        sub_files = self.sub_files(sid)
+        sizes = {p: os.path.getsize(p) for p in sub_files}
+        keys = self.put_answers(sid, [(q["id"], 1, "late-gold", "Gold")])
+        try:
+            wait_for("the late answer's turn", 60, lambda: self.carrying(sid, keys[0]))
+        except TimeoutError:
+            pass
+        self.idle(sid)
+        rows = self.carrying(sid, keys[0])
+        grown = [p for p in sub_files if os.path.getsize(p) != sizes[p]]
+        if self.wants("subagent"):
+            self.check("subagent: answered after it ended, the main conversation's envelope names it; it was not resumed",
+                       rows and "which has ended" in rows[0][1] and "from the subagent" in rows[0][1] and not grown,
+                       "rows %r; transcripts grown %d" % ([t[:200] for _, t, _ in rows], len(grown)))
+
+    def case_stopped(self, name, sid):
+        self.close(name)
+        pid = self.panes[name][0]
+        wait_for("the session's process gone", 30, lambda: not LB._alive(pid))
+        m = self.show(sid) or {}
+        opened = [q["id"] for q in m.get("open", [])]
+        a = self.cli("sheet", "answer", "--session", sid, "q13", "--pick", "Saturn", "--text", "rings")
+        b = self.cli("sheet", "answer", "--session", sid, "q14", "--pick", "Oak")
+        ka = ((json.loads(a.stdout) if a.returncode == 0 else {}).get("results") or [{}])[0]
+        kb = ((json.loads(b.stdout) if b.returncode == 0 else {}).get("results") or [{}])[0]
+        r = self.cli("sheet", "retract", "--session", sid, kb.get("key", "-"))
+        self.check("stopped: show lists a stopped session's questions; answer prints queued; retract takes one back",
+                   "q13" in opened and "q14" in opened and ka.get("state") == "queued" and kb.get("state") == "queued" and r.returncode == 0,
+                   "open %s; %s %s; retract exit %s %s" % (opened, ka, kb, r.returncode, r.stdout.strip()[:120]))
+        resumed = self.open("resumed", args=["--resume", sid], env={"SMINOS_QUESTION_SHEET": "1"})
+        since = len(self.rows(sid))
+        time.sleep(6)
+        started = [x for x in self.rows(sid)[since:] if x.get("type") == "assistant"]
+        self.say("resumed", "Reply with only: ok.")
+        self.idle(resumed)
+        rows = self.carrying(sid, ka.get("key", "-"))
+        dropped = self.carrying(sid, kb.get("key", "-"))
+        self.check("stopped: resumed, the first prompt carries the answer with its two times, and not the one taken back; "
+                   "no turn started by itself",
+                   [k for k, _, _ in rows] == ["prompt.submit"] and "while this session was stopped" in rows[0][1]
+                   and "rings" in rows[0][1] and not dropped and not started,
+                   "rows %r; retracted's rows %d; turns before the prompt %d" % ([t[:240] for _, t, _ in rows], len(dropped), len(started)))
+        self.close("resumed")
+
+    def case_max_send(self):
+        name = "max"
+        sid = self.open(name, env={"SMINOS_QUESTION_SHEET": "1"})
+        ids = []
+        for n, (lo, hi) in enumerate(((1, 21), (21, 41), (41, 51))):
+            result = self.ask(name, {"ask": [{"question": "M%d?" % i} for i in range(lo, hi)]},
+                              preface=("When answers from the human's question sheet reach you, reply with only: received. "
+                                       "Never read a file an answer points to. ") if n == 0 else "")
+            ids += re.findall(r"q\d+", (result or "").split("\n")[0])
+        if len(ids) != 50:
+            self.check("max-send: fifty questions asked", False, ids)
+            return
+        text = lambda i: ("answer %02d " % i) + ("abcdefghij" * 2000)[:20000 - 10]
+        keys = self.put_answers(sid, [(q, 1, text(i), None) for i, q in enumerate(ids)])
+        done = self.landed(sid, keys, 600)
+        self.idle(sid, 300)
+        rows = [(k, t, b) for _, k, t, bs in self.envelopes(sid) for b in bs if set(b[0]) & set(keys)]
+        carried = [k for _, _, b in rows for k in b[0]]
+        files_ok, full = True, 0
+        for _, t, _ in rows:
+            for m in re.finditer(r"their text, 20,000 characters, is in (\S+) and begins: ", t):
+                files_ok = files_ok and os.path.exists(m.group(1))
+            full += sum(1 for i in range(50) if text(i) in t)
+        heads = sum(len(re.findall(r"their text, 20,000 characters, is in ", t)) for _, t, _ in rows)
+        mores = [b[3] for _, _, b in rows]
+        self.check("max-send: fifty answers of 20,000 characters arrive whole: every envelope uncut with at most 200 keys, "
+                   "each text in full or by its head and a file that exists, every key landed, each but the last saying more follows",
+                   done and sorted(carried) == sorted(keys) and all(len(b[0]) <= 200 for _, _, b in rows) and files_ok
+                   and full + heads == 50 and mores == [True] * (len(rows) - 1) + [False]
+                   and all("More follows." in t.split("\n")[0] for _, t, b in rows if b[3]),
+                   "landed %s; envelopes %d (%s); in full %d, by file %d; files exist %s" % (
+                       done, len(rows), [(k, len(b[0]), b[3]) for k, _, b in rows], full, heads, files_ok))
+        self.close(name)
 
     def case_no_surface(self):
         ssh = {"SSH_CONNECTION": "192.0.2.1 50000 192.0.2.2 22"}

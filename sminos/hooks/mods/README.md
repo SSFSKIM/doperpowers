@@ -603,12 +603,36 @@ The work of one session (its view, the calls waiting for a step, its notices,
 its drains, its one start in flight) is a generation that a /clear, a
 /branch or a fork retires; the ask's SessionStart takes up a resumed
 session's asks only once the choice is made, so under the sheet it takes up
-none. No SessionStart waits on other work: a compaction's drain is queued.
+none. No SessionStart waits on another hook's work.
+
+Delivery (the plan's I9): each view a step answers holds the envelopes ready
+for each recipient, and the routes take them. In a terminal session the main
+conversation's envelope goes as this plugin's prompt when no main turn runs
+and it holds a fresh answer (from a `$.clock.after(0)` hop, never inside a
+dispatch), as context on the result of the model's next main-loop call, or
+as context on the next prompt that enters; a running subagent's goes by
+`$.session.send`, and one not delivered is rerouted to the main
+conversation. An envelope lands when the `session.append` hook finds its
+block in a row of those kinds as stored (a `landed` step, never awaited);
+one a turn ended without (a context a hook dropped) is looked for in the
+conversation at the end of the turn it belongs to, which for an idle prompt
+is only the turn its own prompt opened. An idle prompt that did not land
+starts no turn again: its envelope waits for the next result or prompt. A
+start searches the transcript for the blocks that landed while the session
+was stopped (`searchArgs` of the ask, given the block's form), lands them,
+and returns the start's context (I10) as the SessionStart's
+`additionalContext`; a compaction orders its own drain and returns its
+context the same way, and either goes on the next result or prompt route
+when no SessionStart could return it. A subagent that stops with questions
+open is named to the main conversation, once. In a MAWS-run session no route
+of the main conversation opens and no row lands (MAWS delivers there).
 `sheet-model.tsx` holds what takes no `$` (the schema and its validation,
-the start choice, the result texts, the floor of a conversation's ids);
-`sheet.tsx` the hooks. Tests `tests/mods/sheet-model.test.ts`,
-`tests/mods/sheet.test.ts`, and `tests/mods/test-sheet-step.sh` against the
-real step; live check `tests/mods/live-sheet-check.py`.
+the start choice, the result texts, the floor of a conversation's ids, the
+block's parser and the rows that land one, the notices); `sheet.tsx` the
+hooks. Tests `tests/mods/sheet-model.test.ts`, `tests/mods/sheet.test.ts`,
+`tests/mods/sheet-delivery.test.ts` (on `tests/mods/sheet-harness.ts`), and
+`tests/mods/test-sheet-step.sh` against the real step; live check
+`tests/mods/live-sheet-check.py`.
 
 ## Developing
 

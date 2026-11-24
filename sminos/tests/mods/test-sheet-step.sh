@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # The sheet mod against the real `sminos sheet step` (plan
-# docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M3): a start
-# and calls staged by the mod's own code and ordered through the command, in a
-# scratch SMINOS_HOME; the transcript search the floor uses, run for real; and
-# the tool as registered, against C1's description and the published schema.
+# docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M3 and M4): a
+# start and calls staged by the mod's own code and ordered through the
+# command, in a scratch SMINOS_HOME; the transcript searches the floor and a
+# start's landing use, run for real; the envelopes the real composer packs,
+# taken by the mod's routes; the block's parser on every published envelope;
+# and the tool as registered, against C1's description and the published
+# schema.
 # The mods' own tests cannot reach a process or the repository's files; bun
 # runs the module directly, on a port of plain functions.
 set -euo pipefail
@@ -20,7 +23,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, floorOfLines, floorOfSheetText, floorSearchArgs } from '$root/hooks/mods/sheet-model.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, blocksOf, floorOfLines, floorOfSheetText, floorSearchArgs } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -106,7 +109,16 @@ const port: Port = {
   log: (text) => void logs.push(text),
   keep: () => {},
   invalidate: () => {},
+  submit: async (text) => (submitted.push(text), { text }),
+  send: async () => ({ isDelivered: true }),
+  // The hop is the test's to run: what the routes hand over waits here.
+  after: (fn) => void hops.push(fn),
+  api: async () => [],
+  redraw: () => {},
+  toast: () => {},
 }
+const submitted: string[] = []
+const hops: (() => void)[] = []
 sheetForTests.set(port, { shape: 1, choice: 'sheet', runner: 'terminal', session: SESSION }, HOME)
 
 await sheetForTests.sessionStarted(port, 'startup', SESSION, '$work/none.jsonl')
@@ -177,6 +189,68 @@ const footer = /New ids continue from q([0-9]+)\.$/.exec(resumed)
 check('the quoting question is on the sheet, and the context quotes the sentence before its footer',
   'result' in quoted && quoted.result.startsWith('Added') && resumed.includes('q42') && footer !== null && footer[1] !== '42', { quoted, resumed })
 check("its floor is the footer's, not the quote's", floorOfLines(asContext(resumed)) === Number(footer?.[1]) - 1, [floorOfLines(asContext(resumed)), footer?.[1]])
+
+// The block's parser on every published envelope (I7): one block, the last line, as many keys as entries.
+for (const name of ['terminal', 'long', 'more', 'imported', 'subagent', 'split', 'split/then']) {
+  for (const file of ['envelope.txt', 'steer.txt']) {
+    const path = \`$root/types/sheet/examples/\${name}/\${file}\`
+    if (!existsSync(path)) continue
+    const text = readFileSync(path, 'utf8')
+    const blocks = blocksOf(text)
+    const last = text.replace(/\n$/, '').split('\n').at(-1) ?? ''
+    check(\`the published \${name}/\${file} holds one block, its last line\`, blocks.length === 1 && last.startsWith('<sheet-delivery>') && blocks[0]!.keys.length === blocks[0]!.answered.length + blocks[0]!.dismissed.length, blocks)
+  }
+}
+
+// A start's search, for real (I9): the transcript holds a context row that delivered one of two answers, and a
+// human's prompt quoting the other's envelope; the first lands, the other stays owed across the stop, and the context
+// the SessionStart returns lists only it.
+const sminos = (args: string[], input = '') => spawnSync('$root/skills/sminos/scripts/sminos', args, { input, encoding: 'utf8', env: { ...process.env, SMINOS_HOME: HOME } })
+const S2 = '5eed0000-0000-4000-8000-00000000c3b2'
+await sheetForTests.sessionStarted(port, 'startup', S2, '$work/none.jsonl')
+const two = await call('toolu_b1', { ask: [{ question: 'First?' }, { question: 'Second?' }] })
+check('two questions on the second sheet', 'result' in two && two.result.startsWith('Added q1, q2.'), two)
+sminos(['sheet', 'put', '--session', S2, '--no-wait'], ['ka000001', 'kb000002'].map((key, i) => JSON.stringify({ v: 1, key, kind: 'answer', id: \`q\${i + 1}\`, revision: 1, text: \`answer \${i + 1}\`, by: 'cli' })).join('\n') + '\n')
+await sheetForTests.drain(port, sheetForTests.sheet().gen!)
+hops.splice(0)
+const ready = sheetForTests.sheet().gen?.held?.ready[0]
+check('the drain holds both in one envelope', ready?.keys.join() === 'ka000001,kb000002', ready)
+const delivered = '<sheet-delivery>{"v":1,"keys":["ka000001"],"answered":[{"id":"q1","revision":1,"picks":[],"text":"answer 1","images":[]}],"dismissed":[]}</sheet-delivery>'
+const quoted2 = '<sheet-delivery>{"v":1,"keys":["kb000002"],"answered":[{"id":"q2","revision":1,"picks":[],"text":"answer 2","images":[]}],"dismissed":[]}</sheet-delivery>'
+writeFileSync('$work/s2.jsonl', [
+  JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [\`[sheet v1] The human answered questions on your sheet.\nq1 "First?" → their text: "answer 1"\n\${delivered}\`], hookName: 'tool.call', hookEvent: 'PostToolUse' } }),
+  JSON.stringify({ type: 'user', origin: { kind: 'composer' }, message: { role: 'user', content: \`[sheet v1] The human answered questions on your sheet.\n\${quoted2}\` } }),
+].join('\n') + '\n')
+const context = await sheetForTests.sessionStarted(port, 'resume', S2, '$work/s2.jsonl')
+const s2 = JSON.parse(readFileSync(\`\${HOME}/sheet/\${S2}/state.json\`, 'utf8'))
+check('the delivered answer landed; the quoted one is still owed, across the stop', s2.pending.map((o: { key: string }) => o.key).join() === 'kb000002' && s2.pending[0].acrossStop === true && s2.closed.q1?.deliveredAt !== undefined, s2.pending)
+check("the start's context lists only what is still owed", typeof context === 'string' && context.includes('q2 (revision 1)') && !context.includes('q1 (revision 1)'), context)
+check('nothing went by a route while the start searched', submitted.length === 0 && hops.length === 0, { submitted, hops: hops.length })
+
+// A fresh answer after two hundred owed across a stop that fill an envelope: the composer packs it first, so the
+// envelope the mod takes wakes and goes by the idle route, from the hop.
+const S3 = '5eed0000-0000-4000-8000-00000000c3b3'
+await sheetForTests.sessionStarted(port, 'startup', S3, '$work/none.jsonl')
+for (let c = 0; c < 11; c++) {
+  const n = c < 10 ? 20 : 1
+  await call(\`toolu_c\${c}\`, { ask: Array.from({ length: n }, (_, i) => ({ question: \`Old \${c * 20 + i + 1}?\` })) })
+}
+for (let b = 0; b < 4; b++) {
+  sminos(['sheet', 'put', '--session', S3, '--no-wait'], Array.from({ length: 50 }, (_, i) => JSON.stringify({ v: 1, key: \`old-\${String(b * 50 + i + 1).padStart(4, '0')}\`, kind: 'answer', id: \`q\${b * 50 + i + 1}\`, revision: 1, text: 'old', by: 'cli' })).join('\n') + '\n')
+}
+await sheetForTests.sessionStarted(port, 'resume', S3, '$work/none.jsonl')
+hops.splice(0)
+const owed = sheetForTests.sheet().gen?.held
+check('two hundred owed across the stop, none of them waking', owed?.owedAcrossStop === 200 && owed.ready[0]?.wakes === false, owed && { owed: owed.owedAcrossStop, ready: owed.ready.map((r) => [r.keys.length, r.wakes]) })
+sminos(['sheet', 'put', '--session', S3, '--no-wait'], JSON.stringify({ v: 1, key: 'fresh-0201', kind: 'answer', id: 'q201', revision: 1, text: 'fresh', by: 'cli' }) + '\n')
+await sheetForTests.drain(port, sheetForTests.sheet().gen!)
+const fresh = sheetForTests.sheet().gen?.held?.ready[0]
+// Its keys stand in the order of the ids (I7): the fresh answer's, q201's, last.
+check('the first envelope holds the fresh answer and wakes; more follows', fresh !== undefined && fresh.keys.includes('fresh-0201') && fresh.wakes && fresh.more && fresh.keys.length < 201, fresh && { last: fresh.keys.at(-1), n: fresh.keys.length, wakes: fresh.wakes, more: fresh.more })
+check('the idle route waits for the hop', submitted.length === 0 && hops.length === 1, hops.length)
+hops.splice(0).forEach((fn) => fn())
+await new Promise((resolve) => setTimeout(resolve, 10))
+check('from the hop, the idle route submits that envelope', submitted.length === 1 && submitted[0] === fresh?.text, submitted.map((t) => t.slice(0, 80)))
 
 process.exit(failed === 0 ? 0 : 1)
 TS
