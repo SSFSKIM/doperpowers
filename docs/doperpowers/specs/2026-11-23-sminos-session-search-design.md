@@ -10,7 +10,7 @@ To see it working: on the MacBook, after a session compacts, `sminos who @<its s
 
 - [x] (2026-11-23) Design approved by the owner, as presented in the brainstorm.
 - [x] (2026-11-23) Spec review (`doperpowers:adversarial-reviewer`, the spec and its execution section): two rounds, folded.
-- [ ] M1 — the summary: derived, recorded, shown by `who @<session>`; every compaction derives.
+- [x] (2026-11-24) M1 — the summary: derived, recorded, shown by `who @<session>`; every compaction derives. Reviewed clean after one fix round (a withdrawn historical row inherited a predecessor's summary; a mark beside unmarked text on one line corrupted the fallback fields). `6f354d356..5782858e3`, ci-gate GREEN.
 - [ ] M2 — `find` as the org's search.
 - [ ] Whole-branch review (review-code, medium), merge, release.
 - [ ] Live acceptance 7–10 on both Macs.
@@ -46,11 +46,11 @@ Why these three: `made:` is what lets a question name an artifact ("who touched 
 
 An answer can arrive marked: a session under the to-human output style wraps what it says in `<message>` spans (`extract_marks`), and today `answer_text` keeps only the first span. With four or five lines to read, a model may split them across spans, mark only some of them, or wrap commentary around them, so one reader, `answer_fields(text) -> AnswerFields(line, name, summary)`, replaces the reading in `answer_line`, `answer_name` and the new summary, and those three become its fields:
 
-- **Labelled fields** — `name:`, `doing:`, `made:`, `next:` (a line beginning, after optional whitespace, with the label and a colon, case-insensitive; `NAME_LINE_RE` and a new `SUMMARY_LINE_RE`): each is the first such line in the marked text (every span, in order), else in the unmarked text. Its value is the text after the label, trimmed of whitespace and of backticks and quotes at its ends; `name` is then read as `answer_name` reads it today (lowercased, one trailing period dropped); each summary value is cut to `SUMMARY_LINE_MAX` (200) characters.
+- **Labelled fields** — `name:`, `doing:`, `made:`, `next:` (a line beginning, after optional whitespace, with the label and a colon, case-insensitive; `NAME_LINE_RE` and a new `SUMMARY_LINE_RE`): each is the first such line in the marked text (every span, in order), else in the unmarked text. Its value is the text after the label, trimmed of whitespace and of backticks and quotes at its ends; `name` is then read as `answer_name` reads it today (lowercased, one trailing period dropped); each summary value is cut to `SUMMARY_LINE_MAX` (200) characters. The backticks or quotes come off only when one pair wraps the whole value, so `` `a.py` and `b.py` `` stays whole, and a value made only of those delimiters is empty.
 - **The line** — the first non-empty line that carries no label, taken from the marked text when any span holds one, else from the unmarked text; cut to `DERIVE_LINE_MAX` (120) as today. Commentary outside the marks never becomes the line while a mark holds one, which is today's behavior for an answer whose first span is the line.
 - **The summary** — `{"doing": …, "made": …, "next": …}` when all three labels are present with non-empty values, else `None`. Three are required, not some: a partial summary would show as if whole, and the ask tells the session to write `next:` even when nothing is pending.
 
-An unmarked answer reads exactly as today: the line is its first unlabelled line, the name its first `name:` line.
+An unmarked answer reads exactly as today: the line is its first unlabelled line, the name its first `name:` line. "The unmarked text" is the answer outside its marks (`unmarked_text`), with a line break wherever a mark stood, so words beside a mark on the same line never join a marked field; a closing tag with no open mark is no boundary, and an unclosed mark runs to the end.
 
 ### 1c. Recorded on the line's event
 
@@ -66,11 +66,11 @@ A field on the existing event, not a new event kind: the `in-charge` event is al
 
 ### 1d. Read into the member
 
-`summary_of(member, events, info)` returns `(summary, ts)`: the latest event, by `latest_across_writers`, among the in-charge events of the member's visible sessions that carries a well-formed `summary` (a dict with the three keys, each a non-empty string), and that event's `ts`; `(None, "")` when none does. `_member` sets two new `Member` fields from it, `summary` and `summary_age` (seconds, by `ts_age`). A later line set by `sminos charge` or a spawn's `--brief` does not clear a summary; its age says how old it is.
+`summary_of(member, events, info)` returns `(summary, ts)`: the latest event, by `latest_across_writers`, among the in-charge events of the member's visible sessions that carries a well-formed `summary` (a dict with the three keys, each a non-empty string), and that event's `ts`; `(None, "")` when none does, or when the member's own session is unlisted to this reader (a retired, withdrawn successor rebuilt by `who <commit>` would otherwise inherit a visible predecessor's summary). `_member` sets two new `Member` fields from it, `summary` and `summary_age` (seconds, by `ts_age`). A later line set by `sminos charge` or a spawn's `--brief` does not clear a summary; its age says how old it is.
 
 The member's visible sessions are `member.session`, the sessions of `member.former` that the log does not show unlisted to this reader (`unlisted_here(x, info[x])`), and `member.thread_sessions`, which `thread_sessions` already filters that way. Not `charge_of`'s set as it stands: `former` comes from `lineage`, which does not filter, so a visible session that continues a withdrawn one would otherwise carry the withdrawn one's summary into `who` and into `find`'s corpus. A summary is richer than a line (paths, PRs, decisions), and the owner's withdrawal of a session's view must hide it. `who_lines` likewise prints a summary only for a session not unlisted to this reader: `who <commit>`'s historical path (`who_matches`, which rebuilds rows of retired sessions from `view.info` without that filter) prints no summary for a session `unlisted_here` holds.
 
-`member_json` carries `"summary"` (the dict, or `null`) and `"summary_age"`, so `list --json` and programs reading it (the desk, later, if MAWS wants it) have it. Text rows of `list`, `chart` and `tui` do not change: the summary is for search and for looking at one session, not for scanning a list.
+`member_json` carries `"summary"` (the dict, or `null`) and `"summary_age"`, so `list --json` and programs reading it (the desk, later, if MAWS wants it) have it. `channel show --json` embeds `member_json`, so it carries the two fields too. Text rows of `list`, `chart` and `tui` do not change, and `derive` does not print the summary (the daemon's log would grow three lines a member a run): the summary is for search and for looking at one session, not for scanning a list.
 
 ## 2. Every compaction derives
 
@@ -155,6 +155,8 @@ For each match, in the model's order: the member's `list` row (`row_cells`, as `
 | a member of a machine the org retired (`--all`) | `unreachable_hint`'s retired-machine words |
 | a retired seat (`--all`) | `unreachable_hint`'s retired-seat words |
 
+`reach_lines` (as built in M1) takes the cases in this order: a retired machine's member, a retired seat, an ended thread, live, a stopped seat, a local `gone` member, then the rest as `who_lines` had them; the `transcript` row's line reads "leave it a message" with no "or" and no resume command, and `who <commit>` shows the same lines for those rows. In practice a local seatless member is rarely `gone`: reconciliation adopts it into a thread its human opened, which reads as `stopped`; the suite reaches that row by patching `stopped_human`.
+
 Where `unreachable_hint` builds its sentence inside a refusal, the sentence is factored out so `reach_lines` and the refusal say the same thing.
 
     $ sminos find "who runs CI for these repositories"
@@ -173,7 +175,7 @@ A call that fails — it does not start, times out, exits non-zero, returns an e
 
 ## 4. Looking at one session: `who @<session>`
 
-`sminos who @<session>` prints what `who` prints for a commit's session — who it is now and how to reach it — for a session named as a message tag names one: `@<short>` anywhere in the org, `@<project>/<alias>`, or a bare `@<alias>` in the caller's project and channels, through the same resolution `say` applies to its tags (`resolve_tags`' rules). `who_lines` gains the summary after the in-charge line, `doing (<age>): …`, `made: …`, `next: …`, so `who <commit|PR>` shows it too.
+`sminos who @<session>` prints what `who` prints for a commit's session — who it is now and how to reach it — for a session named as a message tag names one: `@<short>` anywhere in the org, `@<project>/<alias>`, or a bare `@<alias>` in the caller's project and channels, through the same resolution `say` applies to its tags (`resolve_tags`' rules). It prints a `<tag>:` header, then the session's lines; `@all`, more than one tag, extra words, or `--session` beside it are usage errors (exit 2). `who_lines` gains the summary after the in-charge line, `doing (<age>): …`, `made: …`, `next: …`, so `who <commit|PR>` shows it too.
 
 The approved design named `who --session <short>` for this. That form already has a consumer: the session's address mod calls `who --session <id>` and takes its output as the `Sminos-Session:` line it appends to every commit message and PR body. Its output cannot grow; `who @<session>` is the form that reads as "who is this", and `who`'s existing text for a session is the right body.
 
