@@ -49,6 +49,7 @@ import importlib.util
 import json
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -584,23 +585,27 @@ class Sheet(LB.Live):
                    [(u, [q.get("question") for q in qs], (r or "")[:60]) for u, qs, r in calls])
         if len(asked) < 2:
             return
-        # A read that cannot be whole: the transcript padded past what ask.tsx reads at once (a row of a type the
-        # engine does not know), so it is searched, and the search fails (perl and grep that exit 2 first on PATH).
+        # A read that cannot be whole: the transcript padded past what one read takes (a row of a type the engine
+        # does not know), so it is searched, and the asks' search fails: first on PATH, a perl that exits 2 for it (it
+        # names its stored forms, more than the floor's four arguments) and runs the real one for the rest, and a grep
+        # that exits 2.
         path = glob.glob(os.path.join(self.cfg, "projects", "*", sid + ".jsonl"))[0]
         with open(path, "a") as f:
             f.write(json.dumps({"type": "live-check-padding", "padding": "x" * (READ_LIMIT + 65536)}) + "\n")
         stubs = os.path.join(self.root, "failing-search")
         os.makedirs(stubs, exist_ok=True)
-        for tool in ("perl", "grep"):
+        bodies = {"perl": '#!/bin/sh\n[ "$#" -gt 4 ] && exit 2\nexec %s "$@"\n' % shlex.quote(shutil.which("perl")),
+                  "grep": "#!/bin/sh\nexit 2\n"}
+        for tool, body in bodies.items():
             with open(os.path.join(stubs, tool), "w") as f:
-                f.write("#!/bin/sh\nexit 2\n")
+                f.write(body)
             os.chmod(os.path.join(stubs, tool), 0o755)
         first = self.resumed("import-1", sid, env={"PATH": stubs + ":" + os.environ.get("PATH", "")})
-        unread = self.debug_lines("import-1", "no async ask is rebuilt")
+        unread = self.debug_lines("import-1", "asks of today's tool was not definite")
         held = self.imported(first)
         self.check("import: resumed under the sheet when the read cannot be whole, nothing is imported or recorded "
                    "as imported", first == sid and unread and held == [] and not self.state(sid)["import"]["calls"],
-                   "session %s; ask's debug %s; imported %s; import %s" % (first, [x[-120:] for x in unread[:1]], held,
+                   "session %s; the start's debug %s; imported %s; import %s" % (first, [x[-120:] for x in unread[:1]], held,
                                                                           self.state(sid).get("import")))
         self.close("import-1")
         self.resumed("import-2", sid)
