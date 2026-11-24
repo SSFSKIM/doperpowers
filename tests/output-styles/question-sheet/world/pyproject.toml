@@ -1,0 +1,22 @@
+[project]
+name = "tally"
+version = "3.14.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "psycopg[binary]>=3.2",
+    "redis>=5.0",
+    "pydantic>=2.9",
+    "boto3>=1.35",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-postgresql>=6.1", "ruff>=0.8", "mypy>=1.13", "hypothesis>=6.118"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["slow: needs the 2M-row fixture (make fixtures)"]
+
+[tool.ruff]
+line-length = 120
