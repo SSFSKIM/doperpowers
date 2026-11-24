@@ -1380,7 +1380,12 @@ behind an envelope of old ones that starts no turn. An envelope is
   hands it over, so no two routes take it. It carries one envelope; when
   `more` is set, the view after its landing carries the next.
 - A notice goes as a context entry of its own beside the envelope, or
-  alone, on the result and prompt routes only: a notice starts no turn.
+  alone, on the result and prompt routes; a notice starts no turn. When
+  the idle route opens while a notice waits, the notice also goes in the
+  idle prompt's text, above the envelope: that turn starts for the
+  envelope anyway, and the engine raises no `prompt.submit` for a
+  plugin's own submit (M4's probe: "skipped: re-entry"), so the notice
+  would otherwise wait past it.
 - A dismissal and an outcome owed across a stop never make an envelope
   wake; they leave with whichever route opens first, a fresh answer's
   idle turn included (§5.2, U11).
@@ -2450,7 +2455,7 @@ rests on it fails, and names the probe.
 | `withdraw` | the agent withdraws a question: `show` no longer lists it and the row reads `Withdrawn`; a subagent told to revise and to withdraw the main agent's question is refused both | Acceptance 16 |
 | `compaction` | compacts, then asks the agent to list its open questions and their options without calling a tool: it names them | Acceptance 17 |
 | `fork` | forks the session, by `/branch` and by `--fork-session`: `show` on each copy is empty, the copy's first context says so, and its next question's id is past every id the conversation holds | Acceptance 17 |
-| `agent-open` | a subagent ends with a question open: the main agent's next tool result carries the notice | Acceptance 18 |
+| `agent-open` | a subagent ends with a question open: the main conversation's next route (a tool result or a prompt; on 2.1.331 usually the subagent's completion prompt, since the main loop's Agent runs in the background) carries the notice, once | Acceptance 18 (as the composite's writer reworded it, 2026-11-24) |
 | `two-surfaces` | two `put`s answer one question: `applied`, then `closed`; then the stand-in is stopped, the agent asks again and its result ends with the no-surface sentence; the stand-in returns and `show` lists the question | Acceptance 19 |
 | `import` | a session with two open asks of today's tool is resumed under the sheet: both are on the sheet, and are there once after two more resumes; with the transcript's search made to fail, nothing is imported and the next resume imports; a fork of such a session is empty after its own resume | G2 |
 
