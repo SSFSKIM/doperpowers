@@ -17,7 +17,9 @@ import {
   floorOfLines,
   floorOfMessages,
   floorOfResult,
-  floorOfText,
+  floorOfSheetText,
+  floorOfRows,
+  sheetTextOf,
   foreclosedResult,
   hasSubagent,
   isNewer,
@@ -258,36 +260,57 @@ describe('the floor (I10)', () => {
     expect(floorOfResult('Nothing done.')).toBe(0)
   })
 
-  test("the tool's texts where it writes them: a block, the New ids sentence (the next id, so n − 1), a late outcome's notice", async () => {
+  test("the sheet's texts: a block, the New ids sentence where M2's step writes it (n − 1), a late outcome's notice", async () => {
     const block = '<sheet-delivery>{"v":1,"keys":["k1"],"answered":[{"id":"q9","revision":1,"picks":[],"text":"x","images":[]}],"dismissed":["q11"]}</sheet-delivery>'
-    expect(floorOfText(`[sheet v1] The human answered questions on your sheet.\nq9 "…" → their text: "x"\n${block}`)).toBe(11)
-    expect(floorOfText('[sheet v1] Your question sheet, after a resume.\nOpen: q3 (revision 1) "a"\nNew ids continue from q12.')).toBe(11)
-    expect(floorOfText('[sheet v1] This conversation is a copy: its question sheet starts empty. …\nNew ids start at q30.')).toBe(29)
-    expect(floorOfText('[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5, q6.')).toBe(6)
+    expect(floorOfSheetText(`[sheet v1] The human answered questions on your sheet.\nq9 "…" → their text: "x"\n${block}`)).toBe(11)
+    expect(floorOfSheetText('[sheet v1] Your question sheet, after a resume.\nOpen: q3 (revision 1) "a"\nNew ids continue from q12.')).toBe(11)
+    // The fork's and the lost record's lines carry it inline (sminos_sheet_step.context).
+    expect(floorOfSheetText('[sheet v1] This conversation is a copy: its question sheet starts empty. Questions asked before the copy belong to the conversation it was copied from, and their answers will not come here; ask again what you still need. New ids start at q30.')).toBe(29)
+    expect(floorOfSheetText("[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open. New ids start at q8.")).toBe(7)
+    expect(floorOfSheetText('[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5, q6.')).toBe(6)
+    // No sheet head: the sentence is no sheet's.
+    expect(floorOfSheetText('New ids continue from q41.')).toBe(0)
   })
 
-  test('a quote of those inside a file names nothing: it does not start a line', async () => {
-    expect(floorOfText('    12\tNew ids continue from q501.\n    13\t<sheet-delivery>{"v":1,"answered":[],"dismissed":["q900"]}</sheet-delivery>')).toBe(0)
-    expect(floorOfText('"is at most q999999999 (`q` and 1 to 9 digits)" [sheet v1]')).toBe(0)
+  test("only what the engine marks as a plugin's: a hook's context, this plugin's prompt", async () => {
+    expect(sheetTextOf('<system-reminder>\nSessionStart hook additional context: [sheet v1] x')).toBe('[sheet v1] x')
+    expect(sheetTextOf('tool.call hook additional context: [sheet v1] x')).toBe('[sheet v1] x')
+    expect(sheetTextOf('The sminos plugin sent a message:\n[sheet v1] x')).toBe('[sheet v1] x')
+    expect(sheetTextOf('[sheet v1] Your question sheet, after a resume.\nNew ids continue from q41.')).toBeUndefined()
   })
 
-  test("a transcript's rows: the tool's own results, paired with its calls; the model's text and other tools' results say nothing", async () => {
+  test("a transcript's rows: the tool's own results, paired with its calls, and the hooks' contexts; the model's text, other tools' results and the human's words name nothing", async () => {
+    const quoted = '[sheet v1] Your question sheet, after a resume.\nNew ids continue from q42.'
     const rows = [
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: SHEET_TOOL, input: { ask: [{ question: 'a' }] } }, { type: 'tool_use', id: 't2', name: 'Bash', input: {} }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Added q4.' }, { type: 'tool_result', tool_use_id: 't2', content: 'Added q90.' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Added q4.' }, { type: 'tool_result', tool_use_id: 't2', content: `Added q90.\n${quoted}` }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Added q70.' }] } },
+      { type: 'user', message: { content: quoted } },
       { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['[sheet v1] Your question sheet, after a start.\nNew ids continue from q6.'], hookName: 'SessionStart' } },
     ]
     expect(floorOfLines([...rows.map((row) => JSON.stringify(row)), '{"torn":'])).toBe(5)
   })
 
+  test('an unrelated tool result quoting the sentence names nothing', async () => {
+    const rows = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't9', name: 'Read', input: {} }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't9', content: [{ type: 'text', text: '[sheet v1] This conversation is a copy: its question sheet starts empty. New ids start at q42.' }] }] } },
+    ]
+    expect(floorOfRows(rows)).toBe(0)
+    expect(floorOfMessages([], [{ role: 'user', content: rows[1]?.message.content }])).toBe(0)
+  })
+
   test('the conversation the engine holds: results of the tool, the contexts in the api form', async () => {
     const messages = [
       { role: 'assistant', text: '', toolUses: [{ tool: SHEET_TOOL, text: 'Added q3.' }, { tool: 'Bash', text: 'Added q50.' }] },
-      { role: 'user', text: 'see q80', toolUses: [] },
+      { role: 'user', text: '[sheet v1] see q80\nNew ids continue from q81.', toolUses: [] },
     ]
     expect(floorOfMessages(messages, [])).toBe(3)
-    const api = [{ role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: 'ok\n<system-reminder>\nPostToolUse hook additional context: [sheet v1] …\nNew ids continue from q9.\n</system-reminder>' }] }] }]
+    const api = [
+      { role: 'system', content: 'SessionStart hook additional context: [sheet v1] Your question sheet, after a resume.\nNew ids continue from q7.' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'u1', content: [{ type: 'text', text: 'ok' }, { type: 'text', text: '<system-reminder>\ntool.call hook additional context: [sheet v1] …\nNew ids continue from q9.\n</system-reminder>' }] }] },
+    ]
     expect(floorOfMessages(messages, api)).toBe(8)
   })
 })

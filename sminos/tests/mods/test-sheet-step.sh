@@ -20,7 +20,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { askCall, sheetForTests, type Port } from '$root/hooks/mods/sheet.tsx'
-import { DESCRIPTION, INPUT_SCHEMA, floorOfLines, floorSearchArgs } from '$root/hooks/mods/sheet-model.tsx'
+import { DESCRIPTION, INPUT_SCHEMA, floorOfLines, floorOfSheetText, floorSearchArgs } from '$root/hooks/mods/sheet-model.tsx'
 
 const HOME = '$work/home'
 const CWD = '$work/cwd'
@@ -47,8 +47,30 @@ const canonical = (value: unknown): unknown =>
   : typeof value === 'object' && value !== null ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, canonical((value as Record<string, unknown>)[k])]))
   : value
 const published = JSON.parse(readFileSync('$root/types/sheet/schema/tool-input.schema.json', 'utf8'))
+// The one difference besides the descriptions: the published file's \`title\`, a note to an implementer, is not
+// registered (the model reads the schema).
+check('the published schema has a title, the registered one none', typeof published.title === 'string' && !('title' in INPUT_SCHEMA))
 delete published.title
 check('the schema is the published one, less its title, plus descriptions', JSON.stringify(canonical(strip(INPUT_SCHEMA))) === JSON.stringify(canonical(strip(published))), canonical(strip(INPUT_SCHEMA)))
+
+// Each property's description is C1's stub's for its field (FIELD_DESCRIPTIONS in question_sheet.py); a
+// reference's path and lines have none there, and none here.
+const c1 = JSON.parse(execFileSync('python3', ['-c', 'import json, sys; sys.path.insert(0, sys.argv[1]); import question_sheet; print(json.dumps(question_sheet.FIELD_DESCRIPTIONS))', '$repo/tests/output-styles'], { encoding: 'utf8' })) as Record<string, string>
+const properties: [string, unknown][] = []
+const walk = (node: unknown): void => {
+  if (Array.isArray(node)) return node.forEach(walk)
+  if (typeof node !== 'object' || node === null) return
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'properties' && typeof value === 'object' && value !== null) {
+      for (const [name, property] of Object.entries(value)) properties.push([name, (property as Record<string, unknown>).description])
+    }
+    walk(value)
+  }
+}
+walk(INPUT_SCHEMA)
+const wrong = properties.filter(([name, text]) => (name === 'path' || name === 'lines' ? text !== undefined : text !== c1[name]))
+check("every property carries C1's description for its field; path and lines none", wrong.length === 0 && properties.length === Object.keys(c1).length + 2, wrong)
+check("every field C1 describes is a property", Object.keys(c1).every((name) => properties.some(([n]) => n === name)), Object.keys(c1))
 
 const logs: string[] = []
 const port: Port = {
@@ -84,6 +106,7 @@ const port: Port = {
   log: (text) => void logs.push(text),
   keep: () => {},
   invalidate: () => {},
+  after: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 }
 sheetForTests.set(port, { shape: 1, choice: 'sheet', runner: 'terminal', session: SESSION }, HOME)
 
@@ -106,26 +129,44 @@ const state = JSON.parse(readFileSync(\`\${HOME}/sheet/\${SESSION}/state.json\`,
 const held = state.questions[0]?.references?.[0]
 const body = held === undefined ? '' : readFileSync(\`\${HOME}/sheet/\${SESSION}/refs/\${held.sha256}\`, 'utf8')
 check("the reference's lines are the record's body", body === 'line two\\nline three\\n' && held.startLine === 2 && held.numLines === 2, { held, body })
-check('the view held is the step\'s', sheetForTests.sheet().held?.view.nextId === 2, sheetForTests.sheet().held)
+check('the view held is the step\'s', sheetForTests.sheet().gen?.held?.nextId === 2, sheetForTests.sheet().gen?.held)
 
 const withdrawn = await call('toolu_02', { withdraw: ['q1'] })
 check('a withdraw-only call', 'result' in withdrawn && withdrawn.result.startsWith('Withdrew q1.'), withdrawn)
 const twice = await call('toolu_02', { withdraw: ['q1'] })
 check('the same call id again is answered from the record, not done twice', JSON.stringify(twice) === JSON.stringify(withdrawn), twice)
-check('nothing was left unsettled', sheetForTests.sheet().unsettled.size === 0, [...sheetForTests.sheet().unsettled])
+check('nothing was left unsettled', sheetForTests.sheet().gen?.unsettled.size === 0, [...(sheetForTests.sheet().gen?.unsettled ?? [])])
 
 // The floor's search of a transcript too large to read whole finds what a whole read finds.
 const result = (id: string, content: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content }] } })
 const use = (id: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'mcp__sminos__AskUserQuestion', input: {} }] } })
 const lines = [
   use('t1'), result('t1', 'Added q3, q4.'),
-  JSON.stringify({ type: 'user', message: { role: 'user', content: '[sheet v1] Your question sheet.\nNew ids continue from q9.' } }),
+  JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: ['[sheet v1] Your question sheet, after a resume.\nNew ids continue from q9.'], hookName: 'SessionStart' } }),
   JSON.stringify({ type: 'user', message: { role: 'user', content: 'a file that quotes Added q99 and New ids continue from q500.' } }),
   JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Added q77.' }] } }),
 ]
 writeFileSync('$work/t.jsonl', lines.join('\n') + '\n')
 const searched = execFileSync(floorSearchArgs('$work/t.jsonl')[0] as string, floorSearchArgs('$work/t.jsonl').slice(1), { encoding: 'utf8' }).split('\n')
 check('the search finds the floor a whole read finds', floorOfLines(searched) === floorOfLines(lines) && floorOfLines(lines) === 8, [floorOfLines(searched), floorOfLines(lines)])
+// The contexts M2's step composes, read back as the conversation holds them (a SessionStart's context): the fork's
+// line and the lost record's carry the New ids sentence inline.
+const contextOf = (session: string, start: Record<string, unknown>) => {
+  const p = spawnSync('$root/skills/sminos/scripts/sminos', ['sheet', 'step', '--session', session], { input: JSON.stringify({ event: 'start', runner: 'terminal', start }), encoding: 'utf8', env: { ...process.env, SMINOS_HOME: HOME } })
+  return String(JSON.parse(p.stdout).effects?.context ?? '')
+}
+const asContext = (text: string) => [JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [text], hookName: 'SessionStart' } })]
+const forked = contextOf('5eed0000-0000-4000-8000-00000000c3a2', { source: 'fork', nonce: 'n1', floor: 9 })
+check("the step's fork context gives the floor it was started with", forked.startsWith('[sheet v1] This conversation is a copy') && floorOfLines(asContext(forked)) === 9, forked)
+const lost = contextOf('5eed0000-0000-4000-8000-00000000c3a3', { source: 'resume', nonce: 'n2', floor: 6 })
+check("the step's lost-record context gives the floor", lost.startsWith("[sheet v1] The question sheet's record was not found") && floorOfSheetText(lost) === 6 && floorOfLines(asContext(lost)) === 6, lost)
+// A tool's output quoting it names nothing.
+const quoting = [
+  JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: {} }] } }),
+  JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content: forked }] } }),
+]
+check('a tool result quoting it names nothing', floorOfLines(quoting) === 0)
+
 writeFileSync('$work/none.jsonl', JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }) + '\n')
 check('a transcript with no form exits 1', spawnSync('perl', floorSearchArgs('$work/none.jsonl').slice(1)).status === 1)
 

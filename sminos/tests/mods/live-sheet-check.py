@@ -19,7 +19,11 @@ sminos plugin loaded with --plugin-dir, a tmux server of its own, and the
 stand-in surface (sminos/tests/sheet_surface.py); every process it started is
 stopped at its end.
 
-    sminos/tests/mods/live-sheet-check.py [--case <name>]... [--keep]
+    sminos/tests/mods/live-sheet-check.py [--case <name>]... [--guard-plugin <dir>] [--keep]
+
+`--guard-plugin` loads the owner's secrets guard (devcloud's, as installed: give its directory, found on the
+machine at run time) into the scratch sessions beside the checkout's sminos, so `secret` observes what that guard
+does to a capture; without it that part of `secret` is SKIPPED, never passed.
 
 Cases (M3's): many, revise, withdraw, two-surfaces, secret, fork (one
 terminal session asks, revises, withdraws; a subagent's acts; the door;
@@ -55,6 +59,10 @@ NO_SURFACE = "No surface can show these questions right now; they wait on the sh
 NOTES = "first line of the notes\nsecond line of the notes\n"
 SECRET = "LIVE_SHEET_SECRET_VALUE_7f3a"
 OUTSIDE = "LIVE_SHEET_OUTSIDE_MARKER_c91e"
+# A token of a credential's shape, made at run time (nothing of the kind is in the repository): what a secrets
+# guard is for.
+GUARDED = "ghp_" + uuid.uuid4().hex + uuid.uuid4().hex[:4]
+DOOR_S = 1.0          # M3's At its end: a `put` to a live session prints its verdict within a second
 CASES = ("many", "revise", "withdraw", "two-surfaces", "secret", "fork", "no-surface", "nested")
 
 
@@ -76,8 +84,10 @@ def text_of(content):
 
 
 class Sheet(LB.Live):
-    def __init__(self, keep, cases):
+    def __init__(self, keep, cases, guard=None):
         super().__init__(keep)
+        self.guard = guard
+        self.skipped = []        # (name, why)
         self.tmux = ["tmux", "-L", "shl-%d" % os.getpid(), "-f", "/dev/null"]
         self.cases = cases
         self.surface = None
@@ -97,6 +107,8 @@ class Sheet(LB.Live):
         os.makedirs(os.path.dirname(self.outside))
         with open(self.outside, "w") as f:
             f.write(OUTSIDE + "\n")
+        with open(os.path.join(self.work, "deploy.cfg"), "w") as f:
+            f.write("github_token = %s\n" % GUARDED)
         self.surface_up()
 
     def surface_up(self):
@@ -123,7 +135,7 @@ class Sheet(LB.Live):
     def open(self, name, args=(), env=None):
         """A terminal session in this check's tmux server, `env` exported over the env file's, with a debug log."""
         exports = "".join("export %s=%s; " % (k, shlex.quote(v)) for k, v in (env or {}).items())
-        dirs = "--plugin-dir %s" % shlex.quote(self.plugin)
+        dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in [self.plugin] + ([self.guard] if self.guard else []))
         debug = os.path.join(self.root, "debug-%s.log" % name)
         inner = "set -e; . %s; %scd %s; exec claude %s --model haiku --permission-mode default --debug-file %s %s" % (
             shlex.quote(self.envfile), exports, shlex.quote(self.work), dirs, shlex.quote(debug),
@@ -191,6 +203,10 @@ class Sheet(LB.Live):
         time.sleep(0.4)
         self.keys_to(name, "Enter")
 
+    def pane_of(self, name):
+        r = subprocess.run(self.tmux + ["capture-pane", "-p", "-t", name], capture_output=True, text=True)
+        return r.stdout
+
     def keys_to(self, name, *keys):
         subprocess.run(self.tmux + ["send-keys", "-t", name] + list(keys), check=True)
 
@@ -247,6 +263,16 @@ class Sheet(LB.Live):
     def check(self, name, ok, detail):
         self.results.append((name, bool(ok), detail))
         print("  %s %s — %s" % ("ok  " if ok else "FAIL", name, detail), flush=True)
+
+    def skip(self, name, why):
+        self.skipped.append((name, why))
+        print("  SKIP %s — %s" % (name, why), flush=True)
+
+    def timed_put(self, sid, lines):
+        """`put`, and how long it took to print."""
+        t0 = time.monotonic()
+        code, out, err = self.put(sid, lines)
+        return code, out, err, time.monotonic() - t0
 
     def wants(self, case):
         return not self.cases or case in self.cases
@@ -305,11 +331,13 @@ class Sheet(LB.Live):
         self.check("revise: an answer to q2 at its first revision is refused, naming q2@2",
                    r.returncode == 2 and "q2@2" in r.stderr, "exit %s: %s" % (r.returncode, r.stderr.strip()))
         key = "live-stale-%s" % uuid.uuid4().hex[:12]
-        code, out, err = self.put(sid, [{"v": 1, "key": key, "kind": "answer", "id": "q2", "revision": 1,
-                                         "picks": ["Apple"], "by": "cli"}])
+        code, out, err, took = self.timed_put(sid, [{"v": 1, "key": key, "kind": "answer", "id": "q2", "revision": 1,
+                                                     "picks": ["Apple"], "by": "cli"}])
         verdict = ((out or {}).get("results") or [{}])[0]
-        self.check("revise: a door line at revision 1 is stale, current 2 (the bridge's sheet op answered it)",
-                   code == 0 and verdict.get("state") == "stale" and verdict.get("current") == 2, (code, out, err))
+        self.check("revise: a door line at revision 1 is stale, current 2, its verdict printed within %ss (the "
+                   "bridge's sheet op answered it)" % DOOR_S,
+                   code == 0 and verdict.get("state") == "stale" and verdict.get("current") == 2 and took < DOOR_S,
+                   "%.2fs; %s" % (took, (code, out, err)))
         r = self.cli("sheet", "answer", "--session", sid, "q2@2", "--pick", "1")
         out = json.loads(r.stdout) if r.returncode == 0 else {}
         pending = [o for o in (self.show(sid) or {}).get("pending", []) if o.get("id") == "q2"]
@@ -342,11 +370,13 @@ class Sheet(LB.Live):
     def case_two_surfaces(self, sid):
         one, two = ("live-two-%d-%s" % (n, uuid.uuid4().hex[:10]) for n in (1, 2))
         line = {"v": 1, "kind": "answer", "id": "q6", "revision": 1, "picks": ["Pear"], "by": "cli"}
-        _, a, _ = self.put(sid, [dict(line, key=one)])
-        _, b, _ = self.put(sid, [dict(line, key=two)])
+        _, a, _, ta = self.timed_put(sid, [dict(line, key=one)])
+        _, b, _, tb = self.timed_put(sid, [dict(line, key=two)])
         sa, sb = (((x or {}).get("results") or [{}])[0].get("state") for x in (a, b))
-        self.check("two-surfaces: two answers to one question: the first taken, the second closed",
-                   sa in ("accepted", "applied", "delivered") and sb == "closed", (a, b))
+        self.check("two-surfaces: two answers to one question: the first taken, the second closed, each verdict "
+                   "within %ss" % DOOR_S,
+                   sa in ("accepted", "applied", "delivered") and sb == "closed" and max(ta, tb) < DOOR_S,
+                   "%.2fs, %.2fs; %s" % (ta, tb, (a, b)))
         self.surface_down()
         result = self.ask("main", {"ask": [{"question": "Asked with no surface up?"}]})
         self.check("two-surfaces: with the stand-in stopped the result ends with the no-surface sentence",
@@ -366,12 +396,24 @@ class Sheet(LB.Live):
         self.check("secret: the denied and the outside references refuse their entries, naming each",
                    re.match(r"Added q\d+ \(entry 3\)\.", result or "") and "entry 1, the reference .env could not be read" in result
                    and "entry 2, the reference %s could not be read" % self.outside in result, repr(result))
-        leaked = subprocess.run(["grep", "-rlF", "-e", SECRET, "-e", OUTSIDE, os.path.join(self.smh, "sheet")],
-                                capture_output=True, text=True).stdout.split()
-        self.check("secret: nothing of either file is staged or under refs/", not leaked, leaked)
-        guard = [d for d in glob.glob(os.path.join(self.cfg, "plugins", "*")) if "devcloud" in d]
-        self.check("secret: the owner's secrets guard is not in this scratch HOME (its denial is not observed here)",
-                   True, "devcloud plugin dirs: %s" % (guard or "none"))
+        found, scan = self.scan(SECRET, OUTSIDE)
+        self.check("secret: nothing of either file is staged or under refs/", scan == 1 and not found,
+                   "grep exit %s; files %s" % (scan, found))
+        if not self.guard:
+            self.skip("secret: the owner's secrets guard", "no --guard-plugin given")
+            return
+        result = self.ask("main", {"ask": [{"question": "About the deploy config?", "references": [{"path": "deploy.cfg"}]}]})
+        found, scan = self.scan(GUARDED)
+        refused = "the reference deploy.cfg could not be read" in (result or "")
+        self.check("secret: under the owner's guard the credential reaches neither the staging nor refs/ (refused, or "
+                   "captured as the guard left it)", scan == 1 and not found and (refused or re.match(r"Added q\d+\.", result or "")),
+                   "%s; grep exit %s; files %s" % (repr(result), scan, found))
+
+    def scan(self, *needles):
+        """grep over the sheet's files: (the files holding any needle, grep's exit: 0 found, 1 none, 2 an error)."""
+        args = ["grep", "-rlF"] + [x for n in needles for x in ("-e", n)] + [os.path.join(self.smh, "sheet")]
+        r = subprocess.run(args, capture_output=True, text=True)
+        return r.stdout.split(), r.returncode
 
     def highest(self, sid):
         """The highest id the conversation's sheet results name on their first line."""
@@ -410,22 +452,25 @@ class Sheet(LB.Live):
                 self.surface_up() if up else self.surface_down()
             name = "today-%d" % len(self.results)
             sid = self.open(name, env=env)
-            before = len(self.calls(sid))
-            self.say(name, "Ask me with your question tool which colour I prefer, Red or Blue, then end your turn.")
-            # Today's tool: an async call is stored with its input; a blocking one opens the engine's dialog, the
-            # mod's raise of the built-in naming today's `questions` in the debug log, and is stored once answered.
+            self.say(name, "Ask me with your question tool, with async set to false so that you wait for my answer, which "
+                           "colour I prefer, Red or Blue.")
+            # Today's tool, blocking: the engine's own dialog, which the mod raises as the built-in with today's
+            # `questions` (the debug log names the raise) and the terminal draws with both options.
             raised = "$.tool.call (sminos): AskUserQuestion (questions)"
             try:
-                got = wait_for("the question's call", 180, lambda: [i for i, _ in self.calls(sid)[before:]]
-                               or ([{"questions": "the dialog"}] if raised in self.debug(name) else None))
+                wait_for("the engine's dialog", 180, lambda: raised in self.debug(name)
+                         and "Red" in self.pane_of(name) and "Blue" in self.pane_of(name))
+                up = True
             except TimeoutError:
-                got = []
+                up = False
+            uses = [i for i, _ in self.calls(sid)]
             chose = [line.split("sheet: ", 1)[1] for line in self.debug(name).splitlines() if "sheet: today" in line]
-            self.check("no-surface (%s): today's tool (questions in its input, or its dialog), no record" % label,
-                       got and "questions" in got[0] and "ask" not in got[0] and chose
+            self.check("no-surface (%s): today's tool, its blocking dialog up, no record" % label,
+                       up and chose and not any("ask" in (i or {}) for i in uses)
                        and not os.path.exists(os.path.join(self.smh, "sheet", sid, "state.json")),
-                       "%s; choice %s" % ("the dialog raised" if got and got[0] == {"questions": "the dialog"}
-                                          else "input keys %s" % (sorted(got[0]) if got else None), chose[:1]))
+                       "dialog %s; choice %s; pane: %s" % ("up" if up else "not seen", chose[:1],
+                                                           " | ".join(x.strip() for x in self.pane_of(name).splitlines() if x.strip())[-300:]))
+            self.keys_to(name, "Escape")
             self.close(name)
         if not self.surfaces_alive():
             self.surface_up()
@@ -454,7 +499,10 @@ def main():
     unknown = [c for c in cases if c not in CASES]
     if unknown:
         sys.exit("live-sheet-check: no case %s (cases: %s)" % (", ".join(unknown), ", ".join(CASES)))
-    live = Sheet("--keep" in args, cases)
+    guard = next((args[i + 1] for i, a in enumerate(args) if a == "--guard-plugin" and i + 1 < len(args)), None)
+    if guard and not os.path.isfile(os.path.join(guard, ".claude-plugin", "plugin.json")):
+        sys.exit("live-sheet-check: --guard-plugin takes a plugin's directory (one holding .claude-plugin/plugin.json)")
+    live = Sheet("--keep" in args, cases, guard)
     print("live sheet check (%s):" % live.root, flush=True)
     try:
         live.run()
@@ -465,7 +513,10 @@ def main():
     failed = [r for r in live.results if not r[1]]
     for name, _, detail in failed:
         print("FAIL %s: %s" % (name.split(":")[0], detail))
-    print("live-sheet-check: %d passed%s" % (len(live.results) - len(failed), ", %d failed" % len(failed) if failed else ""))
+    for name, why in live.skipped:
+        print("SKIPPED %s: %s" % (name, why))
+    print("live-sheet-check: %d passed%s%s" % (len(live.results) - len(failed), ", %d failed" % len(failed) if failed else "",
+                                             ", %d skipped" % len(live.skipped) if live.skipped else ""))
     sys.exit(1 if failed else 0)
 
 

@@ -465,6 +465,35 @@ export function yieldAsk() {
 /** Whether the ask has yielded to the sheet. */
 export const isAskYielded = () => isYielded
 
+/**
+ * The sheet's start choice while its session.start makes it (sheet.tsx): a
+ * launch's classic SessionStart can run meanwhile (2.1.331), and the ask takes
+ * up no ask until it knows whether it serves (I11).
+ */
+let choosing: { promise: Promise<void>; resolve: () => void } | undefined
+/** What a yielded ask read back from a resumed session or a copy: the sheet's import takes it up (M5). */
+let readWhileYielded: OpenAsk[] = []
+/** How long the ask's SessionStart waits for the choice: inside the hook's 10 s. */
+const CHOICE_WAIT_MS = 8_000
+
+/** The sheet begins its choice: the ask's SessionStart waits for it. */
+export function askAwaitsChoice() {
+  if (choosing === undefined) {
+    let resolve: () => void = () => {}
+    const promise = new Promise<void>((settle) => (resolve = settle))
+    choosing = { promise, resolve }
+  }
+}
+
+/** The sheet's choice is made (after `yieldAsk` when it is the sheet). */
+export function askChoiceMade() {
+  choosing?.resolve()
+  choosing = undefined
+}
+
+/** The asks a yielded ask read back at its session's start, for the sheet's import. */
+export const asksReadWhileYielded = (): readonly OpenAsk[] => readWhileYielded
+
 /** A stored call's result in the sheet's form: its first line is one of I6's three. */
 const SHEET_RESULT = /^(?:(?:Added|Revised|Withdrew) q[1-9]|Nothing done\.|Outcome not known yet\.)/
 
@@ -541,6 +570,8 @@ export function resetAsk() {
   external = undefined
   keep = undefined
   isYielded = false
+  choosing = undefined
+  readWhileYielded = []
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -1592,23 +1623,40 @@ export function registerAsk(on: On) {
   // copy's from the conversation it copied; a cleared one has none, and a
   // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
-    if (isYielded) {
+    if (isYielded && choosing === undefined) {
       return next(e)
     }
-    store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
-    if (e.source !== 'compact') {
-      forgetAsyncAsks()
-    }
+    let read: OpenAsk[] | undefined
     if (e.source === 'resume' || e.source === 'fork') {
       // A copy's transcript is unwritten, but for /branch's, written whole
       // before the session starts and read with no cap on its length.
-      asks =
+      read =
         e.source === 'fork' && !(await $.fs.exists(e.transcript_path))
           ? await historyAsks($).catch((error: unknown) => {
               $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
               return []
             })
           : await readAsks($, e.transcript_path)
+    }
+    // What was read is taken up only once the sheet's choice says the ask serves.
+    const waiting = choosing?.promise
+    if (waiting !== undefined) {
+      let isLate = false
+      await Promise.race([waiting, new Promise<void>((resolve) => void $.clock.after(CHOICE_WAIT_MS, () => ((isLate = true), resolve())))])
+      if (isLate) {
+        $.ui.log(`ask: the sheet's choice took over ${CHOICE_WAIT_MS} ms; the session's asks are taken up as the ask stands`, { to: 'debug' })
+      }
+    }
+    if (isYielded) {
+      readWhileYielded = read ?? []
+      return next(e)
+    }
+    store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
+    if (e.source !== 'compact') {
+      forgetAsyncAsks()
+    }
+    if (read !== undefined) {
+      asks = read
       $.ui.invalidate('ui.render')
       for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
         note({ kind: 'open', id: ask.id, questions: ask.questions })

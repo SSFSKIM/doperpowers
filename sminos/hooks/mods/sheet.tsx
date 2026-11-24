@@ -1,7 +1,7 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
 import type { SheetKept } from '../../types/sminos'
-import { yieldAsk } from './ask'
+import { askAwaitsChoice, askChoiceMade, yieldAsk } from './ask'
 import {
   DESCRIPTION,
   INPUT_SCHEMA,
@@ -46,6 +46,8 @@ const KEPT = { plugin: 'sminos', key: 'sheet' } as const
 const STEP_TIMEOUT_MS = 20_000
 /** The check of K4 runs on this timer too: a nudge can be lost, and an idle session dispatches no hook. */
 export const TICK_MS = 5_000
+/** How long a compaction's SessionStart waits for its drain behind another: inside the hook's 10 s. */
+const COMPACT_WAIT_MS = 8_000
 /** How many times a call with no answer from its step is settled in the same dispatch (I5). */
 const SETTLES = 3
 /** The keys one drain asks verdicts for: what the step takes in one event (I5). */
@@ -88,6 +90,8 @@ export type Port = {
   log: (text: string) => void
   keep: (kept: SheetKept) => void
   invalidate: () => void
+  /** Resolves after `ms` (`$.clock.after`). */
+  after: (ms: number) => Promise<void>
 }
 
 type Failure = { ok: false; code: string; error: string }
@@ -104,14 +108,44 @@ function newName(prefix: string): string {
 }
 
 /**
- * The process's sheet: its choice, the view it holds, and what waits for a
- * step. One module serves one process; a reload starts a new one, which takes
- * the choice up from `$.state`.
+ * One session's work in this process: the view a step answered, the calls
+ * waiting for a step, the notices, the drains. A session change (a /clear, a
+ * /branch, a fork) retires it and starts another: work still in flight
+ * completes into the generation it began in, which nothing reads any more, so
+ * a parent's call is never settled against its copy's record and no late
+ * completion publishes into the session after it.
+ */
+type Gen = {
+  session: string
+  /** The last view a step answered for the session. */
+  held?: View
+  /** Calls the mod holds an answer for, acknowledged on its next step (E18). */
+  toAck: Set<string>
+  /** Calls answered `Outcome not known yet.`, settled at every trigger until a settle answers (I5). */
+  unsettled: Set<string>
+  /** Notices composed for the conversation, which M4's routes carry (I9). */
+  notices: string[]
+  /** The highest id the conversation names, once read (I10). */
+  floor?: number
+  /** The inbox's size at the last drain that answered, so an unfinished write at its end drains once. */
+  drainedAt?: number
+  /** A drain that gave no answer: ordered again at the next trigger. */
+  isDrainOwed: boolean
+  draining?: Promise<Answer>
+  queued?: { keys: Set<string>; context?: 'compact'; promise: Promise<Answer>; resolve: (answer: Promise<Answer>) => void }
+  /** The start in flight, by its nonce: one attempt at a time (I5); another only once it settled with no answer. */
+  starting?: { nonce: string; attempt: Promise<Answer> }
+  isChecking: boolean
+}
+
+/**
+ * The process's sheet: its choice and the session generation it serves. One
+ * module serves one process; a reload starts a new one, which takes the
+ * choice up from `$.state`.
  */
 type Sheet = {
   port?: Port
   home: string
-  command: string
   kept?: SheetKept
   runner: Runner
   remote: boolean
@@ -119,23 +153,9 @@ type Sheet = {
   isWithdrawing: boolean
   /** The built-in was described already, so a choice made after it describes it again. */
   wasBuiltinDescribed: boolean
-  /** The last view a step answered, and the session it is of. */
-  held?: { session: string; view: View }
-  /** Calls the mod holds an answer for, acknowledged on its next step (E18). */
-  toAck: Set<string>
-  /** Calls answered `Outcome not known yet.`, settled at every trigger until a settle answers (I5). */
-  unsettled: Set<string>
-  /** Notices composed for the main conversation, which M4's routes carry (I9). */
-  notices: string[]
-  /** The highest id the conversation this process holds names, once read (I10). */
-  floor?: number
-  /** The inbox's size at the last drain that answered, so an unfinished write at its end drains once. */
-  drainedAt?: number
-  /** A drain that gave no answer: ordered again at the next trigger. */
-  isDrainOwed: boolean
-  draining?: Promise<Answer>
-  queued?: { keys: Set<string>; promise: Promise<Answer>; resolve: (answer: Promise<Answer>) => void }
-  isChecking: boolean
+  gen?: Gen
+  /** The start a retired generation still has in flight: a removal waits for it, so no late start makes the record again. */
+  retiring?: Promise<unknown>
   /**
    * A launch's classic SessionStart that came before the choice was made: at
    * a terminal's launch the engine runs it while session.start still awaits
@@ -146,8 +166,10 @@ type Sheet = {
 }
 
 function fresh(): Sheet {
-  return { home: '', command: '', runner: 'terminal', remote: false, isWithdrawing: false, wasBuiltinDescribed: false, toAck: new Set(), unsettled: new Set(), notices: [], isDrainOwed: false, isChecking: false }
+  return { home: '', runner: 'terminal', remote: false, isWithdrawing: false, wasBuiltinDescribed: false }
 }
+
+const newGen = (session: string): Gen => ({ session, toAck: new Set(), unsettled: new Set(), notices: [], isDrainOwed: false, isChecking: false })
 
 let sheet: Sheet = fresh()
 
@@ -159,11 +181,14 @@ export function resetSheet() {
 /** Whether this process asks through the sheet. */
 export const isSheetChosen = () => sheet.kept?.choice === 'sheet'
 
-/** The notices composed and not yet carried (M4 takes them). */
-export const sheetNotices = (): readonly string[] => sheet.notices
+/** The current session's generation, when it is the session the process is in. */
+const current = (): Gen | undefined => (sheet.gen !== undefined && sheet.gen.session === sheet.kept?.session ? sheet.gen : undefined)
 
-/** The view the mod holds, for the session it is in. */
-export const sheetView = (): View | undefined => (sheet.held !== undefined && sheet.held.session === sheet.kept?.session ? sheet.held.view : undefined)
+/** The notices composed for the current session's conversation (M4 carries them). */
+export const sheetNotices = (): readonly string[] => current()?.notices ?? []
+
+/** The view the mod holds for the session it is in, if any. */
+export const sheetView = (): View | undefined => current()?.held
 
 const staging = (session: string) => `${sheet.home}/sheet/.staging/${session}`
 const inbox = (session: string) => `${sheet.home}/sheet/${session}/inbox.jsonl`
@@ -177,20 +202,30 @@ function keep(change: Partial<SheetKept>) {
   sheet.port?.keep(sheet.kept)
 }
 
+/** Retires the current generation (a session change): its start in flight is remembered for a removal to wait on. */
+function retire() {
+  const attempt = sheet.gen?.starting?.attempt
+  if (attempt !== undefined) {
+    sheet.retiring = attempt.catch(() => undefined)
+  }
+  sheet.gen = undefined
+}
+
 // ------------------------------------------------------------------ the step
 
 /**
- * One step (I5): the event, with what every event carries (the runner, the
- * reach, the calls now acknowledged, the running agents where the view holds
- * a subagent's question or outcome), to `sminos sheet step`. A view answered
- * is adopted in the record's order. Anything but `ok: true` is no answer: the
- * caller orders the event again, or settles a call.
+ * One step (I5) of a generation's session: the event, with what every event
+ * carries (the runner, the reach, the calls now acknowledged, the running
+ * agents where the view holds a subagent's question or outcome), to `sminos
+ * sheet step`. A view answered is adopted in the record's order, into the
+ * generation the step was ordered for. Anything but `ok: true` is no answer:
+ * the caller orders the event again, or settles a call.
  */
-async function step(port: Port, session: string, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
+async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
   const own = isRecord(event.call) ? event.call.callId : undefined
-  const acked = [...sheet.toAck].filter((id) => id !== own)
+  const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
-  if (running === undefined && hasSubagent(sheetView())) {
+  if (running === undefined && hasSubagent(gen.held)) {
     running = await runningAgents(port).catch(() => undefined)
   }
   const full = {
@@ -202,7 +237,7 @@ async function step(port: Port, session: string, event: Record<string, unknown>,
   }
   let answer: Answer
   try {
-    const out = await port.run(['sheet', 'step', '--session', session], JSON.stringify(full))
+    const out = await port.run(['sheet', 'step', '--session', gen.session], JSON.stringify(full))
     answer = answerOf(out.stdout) ?? { ok: false, code: 'no-answer', error: `the step answered no JSON (exit ${out.exitCode}${out.stderr.trim() === '' ? '' : `: ${out.stderr.trim().slice(0, 300)}`})` }
   } catch (error) {
     answer = { ok: false, code: 'no-answer', error: message(error) }
@@ -211,9 +246,9 @@ async function step(port: Port, session: string, event: Record<string, unknown>,
     port.log(`sheet: a ${String(event.event)} step gave no answer (${answer.code}: ${answer.error})`)
     return answer
   }
-  acked.forEach((id) => sheet.toAck.delete(id))
-  if (session === sheet.kept?.session && isNewer(sheet.held, session, answer.view)) {
-    sheet.held = { session, view: answer.view }
+  acked.forEach((id) => gen.toAck.delete(id))
+  if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
+    gen.held = answer.view
   }
   return answer
 }
@@ -222,115 +257,132 @@ async function runningAgents(port: Port): Promise<string[]> {
   return (await port.agents()).filter((agent) => RUNNING.has(agent.status)).map((agent) => agent.id)
 }
 
-/** Whether a step may be ordered for the session the process is in: its start has answered (I8). */
-const isStarted = () => sheet.kept !== undefined && sheet.kept.choice === 'sheet' && sheet.kept.started === sheet.kept.session
+/**
+ * Whether a step other than `start` may be ordered for a generation: it is
+ * the current one, and its session's start has answered (I8).
+ */
+const isStarted = (gen: Gen | undefined): gen is Gen => gen !== undefined && gen === current() && isSheetChosen() && sheet.kept?.started === gen.session
 
 /**
- * A drain (K4): single-flight, one running and at most one more remembered,
- * which takes the keys of every request made meanwhile. Each request resolves
- * with the step that took its keys.
+ * A drain (K4) of a generation: single-flight, one running and at most one
+ * more remembered, which takes the keys of every request made meanwhile, and
+ * the compaction's context when one asked for it. Each request resolves with
+ * the step that took its keys.
  */
-function drain(port: Port, keys: string[] = []): Promise<Answer> {
-  if (sheet.draining === undefined) {
-    sheet.draining = runDrain(port, keys)
-    return sheet.draining
+function drain(port: Port, gen: Gen, keys: string[] = [], context?: 'compact'): Promise<Answer> {
+  if (gen.draining === undefined) {
+    gen.draining = runDrain(port, gen, keys, context)
+    return gen.draining
   }
-  if (sheet.queued === undefined) {
+  if (gen.queued === undefined) {
     let resolve: (answer: Promise<Answer>) => void = () => {}
     const promise = new Promise<Answer>((settle) => (resolve = settle))
-    sheet.queued = { keys: new Set(), promise, resolve }
+    gen.queued = { keys: new Set(), promise, resolve }
   }
-  keys.forEach((key) => sheet.queued?.keys.add(key))
-  return sheet.queued.promise
+  keys.forEach((key) => gen.queued?.keys.add(key))
+  if (context !== undefined) gen.queued.context = context
+  return gen.queued.promise
 }
 
-async function runDrain(port: Port, keys: string[]): Promise<Answer> {
+async function runDrain(port: Port, gen: Gen, keys: string[], context?: 'compact'): Promise<Answer> {
   try {
-    const session = sheet.kept?.session
-    if (session === undefined || !isStarted()) {
+    if (!isStarted(gen)) {
       return { ok: false, code: 'no-sheet', error: 'the sheet has not started in this session' }
     }
-    const size = await port.size(inbox(session)).catch(() => undefined)
-    const answer = await step(port, session, { event: 'drain', ...(keys.length > 0 && { keys: keys.slice(0, EVENT_KEYS) }) })
-    sheet.isDrainOwed = !answer.ok
-    if (answer.ok) sheet.drainedAt = size
+    const size = await port.size(inbox(gen.session)).catch(() => undefined)
+    const answer = await step(port, gen, { event: 'drain', ...(keys.length > 0 && { keys: keys.slice(0, EVENT_KEYS) }), ...(context !== undefined && { context }) })
+    gen.isDrainOwed = !answer.ok
+    if (answer.ok) gen.drainedAt = size
     return answer
   } finally {
-    sheet.draining = undefined
-    const queued = sheet.queued
-    sheet.queued = undefined
+    gen.draining = undefined
+    const queued = gen.queued
+    gen.queued = undefined
     if (queued !== undefined) {
-      sheet.draining = runDrain(port, [...queued.keys])
-      queued.resolve(sheet.draining)
+      gen.draining = runDrain(port, gen, [...queued.keys], queued.context)
+      queued.resolve(gen.draining)
     }
   }
 }
 
-/** The start step of the session the process is in, when one is owed: ordered again at every trigger until it answers. */
-async function startStep(port: Port): Promise<Answer | undefined> {
+/**
+ * The start step owed for the generation's session (kept as `starting`):
+ * single-flight by its nonce, so a trigger while one runs joins it; ordered
+ * again only once an attempt settled with no answer. Its answer marks the
+ * session started only while the generation is current and the start the
+ * one kept.
+ */
+function startStep(port: Port, gen: Gen): Promise<Answer> | undefined {
   const starting = sheet.kept?.starting
-  const session = sheet.kept?.session
-  if (starting === undefined || session === undefined) {
+  if (starting === undefined || gen !== current()) {
     return undefined
   }
-  const answer = await step(port, session, {
-    event: 'start',
-    start: { source: starting.source, nonce: starting.nonce, ...(starting.floor !== undefined && { floor: starting.floor }) },
-  })
-  if (answer.ok && sheet.kept?.session === session) {
-    // A start forgets every call (I5): nothing is left to acknowledge.
-    sheet.toAck.clear()
-    keep({ started: session, starting: undefined })
+  if (gen.starting !== undefined && gen.starting.nonce === starting.nonce) {
+    return gen.starting.attempt
   }
-  return answer
+  const attempt = (async (): Promise<Answer> => {
+    const answer = await step(port, gen, {
+      event: 'start',
+      start: { source: starting.source, nonce: starting.nonce, ...(starting.floor !== undefined && { floor: starting.floor }) },
+    })
+    if (answer.ok && gen === current() && sheet.kept?.starting?.nonce === starting.nonce) {
+      // A start forgets every call (I5): nothing is left to acknowledge.
+      gen.toAck.clear()
+      keep({ started: gen.session, starting: undefined })
+    }
+    return answer
+  })()
+  gen.starting = { nonce: starting.nonce, attempt }
+  void attempt.finally(() => {
+    if (gen.starting?.attempt === attempt) gen.starting = undefined
+  })
+  return attempt
 }
 
-/** A call answered `Outcome not known yet.`, settled again: once a settle answers, its outcome is a notice (I9). */
-async function settleLate(port: Port, session: string, callId: string) {
-  const answer = await step(port, session, { event: 'settle', call: { callId } })
+/** A call answered `Outcome not known yet.`, settled again: once a settle answers, its outcome is a notice of its generation (I9). */
+async function settleLate(port: Port, gen: Gen, callId: string) {
+  const answer = await step(port, gen, { event: 'settle', call: { callId } })
   if (answer.ok) {
-    sheet.unsettled.delete(callId)
-    sheet.toAck.add(callId)
-    sheet.notices.push(outcomeNotice(callId, answer.effects.result !== undefined ? { result: answer.effects.result } : { foreclosed: true }))
+    gen.unsettled.delete(callId)
+    gen.toAck.add(callId)
+    gen.notices.push(outcomeNotice(callId, answer.effects.result !== undefined ? { result: answer.effects.result } : { foreclosed: true }))
   } else if (answer.code === 'gone' || answer.code === 'no-record') {
     // Nothing is left to settle: a start forgot it, or the record went.
-    sheet.unsettled.delete(callId)
+    gen.unsettled.delete(callId)
   }
 }
 
 /**
  * The check of K4, at every hook dispatch it is triggered from and on the
- * timer: a start owed is ordered again; then, once the session's start has
- * answered, every call still unsettled is settled, and a drain is ordered
- * when the inbox is longer than the view's offset (one `$.fs.stat`), or a
- * drain is owed. Never awaited by a hook: a hook that only triggers a drain
- * returns before the step does.
+ * timer, for the current generation: a start owed is ordered (or joined);
+ * then, once the session's start has answered, every call still unsettled is
+ * settled, and a drain is ordered when the inbox is longer than the view's
+ * offset (one `$.fs.stat`), or a drain is owed. Never awaited by a hook: a
+ * hook that only triggers a drain returns before the step does.
  */
 async function check(port: Port) {
-  if (!isSheetChosen() || sheet.isChecking) {
+  const gen = current()
+  if (!isSheetChosen() || gen === undefined || gen.isChecking) {
     return
   }
-  sheet.isChecking = true
+  gen.isChecking = true
   try {
-    if (sheet.kept?.starting !== undefined) {
-      await startStep(port)
-    }
-    const session = sheet.kept?.session
-    if (session === undefined || !isStarted()) {
+    await startStep(port, gen)
+    if (!isStarted(gen)) {
       return
     }
-    for (const callId of [...sheet.unsettled]) {
-      await settleLate(port, session, callId)
+    for (const callId of [...gen.unsettled]) {
+      await settleLate(port, gen, callId)
     }
-    const size = await port.size(inbox(session)).catch(() => undefined)
-    const view = sheetView()
-    if (view === undefined || sheet.isDrainOwed || (size !== undefined && size > view.offset && size !== sheet.drainedAt)) {
-      await drain(port)
+    const size = await port.size(inbox(gen.session)).catch(() => undefined)
+    const view = gen.held
+    if (view === undefined || gen.isDrainOwed || (size !== undefined && size > view.offset && size !== gen.drainedAt)) {
+      await drain(port, gen)
     }
   } catch (error) {
     port.log(`sheet: the check failed: ${message(error)}`)
   } finally {
-    sheet.isChecking = false
+    gen.isChecking = false
   }
 }
 
@@ -349,11 +401,12 @@ function triggerCheck() {
  */
 export async function sheetNudge(keys: unknown): Promise<{ ok: true; result: Record<string, unknown> } | { ok: false; error: string; code: string }> {
   const port = sheet.port
-  if (port === undefined || !isStarted()) {
+  const gen = current()
+  if (port === undefined || !isStarted(gen)) {
     return { ok: false, code: 'no-sheet', error: 'this session does not ask through a question sheet, or its sheet has not started' }
   }
   const asked = Array.isArray(keys) ? keys.filter((key): key is string => typeof key === 'string').slice(0, EVENT_KEYS) : []
-  const answer = await drain(port, asked)
+  const answer = await drain(port, gen, asked)
   if (!answer.ok) {
     return { ok: false, code: answer.code, error: answer.error }
   }
@@ -409,10 +462,7 @@ async function capture(port: Port, reference: Reference, cwd: string): Promise<C
 }
 
 /** The asker of a call: the main conversation, or the subagent by its id and its name (its description, else its type). */
-function askerOf(agentId: string | undefined, agents: { id: string; description: string; type: string }[] | undefined): Asker {
-  if (agentId === undefined) {
-    return 'main'
-  }
+function askerOf(agentId: string, agents: { id: string; description: string; type: string }[] | undefined): Asker {
   const agent = agents?.find((candidate) => candidate.id === agentId)
   return { agentId, name: agent?.description || agent?.type || agentId }
 }
@@ -422,22 +472,22 @@ function askerOf(agentId: string | undefined, agents: { id: string; description:
  * ids are fixed while the record has assigned none. Undefined where it cannot
  * be read yet.
  */
-async function floorNow(port: Port): Promise<number | undefined> {
-  if (sheet.floor !== undefined) {
-    return sheet.floor
+async function floorNow(port: Port, gen: Gen): Promise<number | undefined> {
+  if (gen.floor !== undefined) {
+    return gen.floor
   }
   try {
     const { messages, api } = await port.messages()
-    sheet.floor = floorOfMessages(messages, api)
+    gen.floor = floorOfMessages(messages, api)
   } catch (error) {
     port.log(`sheet: the conversation could not be read for its ids (${message(error)})`)
   }
-  return sheet.floor
+  return gen.floor
 }
 
 /** The result of a call's answered step: its result text, or a foreclosed call's. */
-function outcomeOf(port: Port, callId: string, effects: Effects, why: string, input: SheetInput): { result: string } {
-  sheet.toAck.add(callId)
+function outcomeOf(port: Port, gen: Gen, callId: string, effects: Effects, why: string, input: SheetInput): { result: string } {
+  gen.toAck.add(callId)
   if (effects.result === undefined) {
     return { result: foreclosedResult(why) }
   }
@@ -464,13 +514,13 @@ export async function askCall(port: Port, e: Record<string, unknown>): Promise<{
     return { deny: denial }
   }
   const call = input as SheetInput
-  const session = sheet.kept?.session
-  if (session === undefined || !isStarted()) {
+  const gen = current()
+  if (!isStarted(gen)) {
     return { result: foreclosedResult(STARTING) }
   }
+  const session = gen.session
   const callId = typeof e.tool_use_id === 'string' && CALL_ID.test(e.tool_use_id) && !e.tool_use_id.startsWith('start-') ? e.tool_use_id : newName('call-')
   const agentId = typeof e.agentId === 'string' ? e.agentId : undefined
-  const agents = agentId !== undefined || hasSubagent(sheetView()) ? await port.agents().catch(() => undefined) : undefined
   const dir = `${staging(session)}/${callId}`
   try {
     const cwd = await port.cwd()
@@ -507,26 +557,28 @@ export async function askCall(port: Port, e: Record<string, unknown>): Promise<{
       await port.write(`${dir}/entry-${n}.json`, JSON.stringify(entry))
       entries.push({ file: `entry-${n}.json`, captures })
     }
-    await port.write(`${dir}/call.json`, JSON.stringify({ asker: askerOf(agentId, agents), entries, withdraw: call.withdraw ?? [] }))
+    const asker = agentId === undefined ? 'main' : askerOf(agentId, await port.agents().catch(() => undefined))
+    await port.write(`${dir}/call.json`, JSON.stringify({ asker, entries, withdraw: call.withdraw ?? [] }))
   } catch (error) {
     // Never ordered: the sheet is as it was.
     port.log(`sheet: call ${callId} could not be staged: ${message(error)}`)
     return { result: foreclosedResult(`its input could not be staged: ${message(error)}`) }
   }
-  const view = sheetView()
-  const floor = view === undefined || view.nextId === 1 ? await floorNow(port) : undefined
-  const running = agents?.filter((agent) => RUNNING.has(agent.status)).map((agent) => agent.id)
-  const first = await step(port, session, { event: 'call', call: { callId, ...(floor !== undefined && { floor }) } }, running)
+  const view = gen.held
+  const floor = view === undefined || view.nextId === 1 ? await floorNow(port, gen) : undefined
+  // The running agents as the call is ordered, after its staging (a capture can be slow).
+  const running = agentId !== undefined || hasSubagent(view) ? await runningAgents(port).catch(() => undefined) : undefined
+  const first = await step(port, gen, { event: 'call', call: { callId, ...(floor !== undefined && { floor }) } }, running)
   if (first.ok) {
-    return outcomeOf(port, callId, first.effects, 'a settle foreclosed it', call)
+    return outcomeOf(port, gen, callId, first.effects, 'a settle foreclosed it', call)
   }
   for (let i = 0; i < SETTLES; i++) {
-    const settled = await step(port, session, { event: 'settle', call: { callId } }, running)
+    const settled = await step(port, gen, { event: 'settle', call: { callId } }, running)
     if (settled.ok) {
-      return outcomeOf(port, callId, settled.effects, first.error, call)
+      return outcomeOf(port, gen, callId, settled.effects, first.error, call)
     }
   }
-  sheet.unsettled.add(callId)
+  gen.unsettled.add(callId)
   return { result: NOT_KNOWN }
 }
 
@@ -539,7 +591,7 @@ export async function askCall(port: Port, e: Record<string, unknown>): Promise<{
  * conversation the engine holds, which a launch's first start cannot read
  * yet (C0's P5), and then every call carries it.
  */
-async function floorAtStart(port: Port, source: StartSource, transcript: string): Promise<number | undefined> {
+async function floorAtStart(port: Port, gen: Gen, source: StartSource, transcript: string): Promise<number | undefined> {
   if (source === 'startup' || source === 'clear') {
     return 0
   }
@@ -558,7 +610,7 @@ async function floorAtStart(port: Port, source: StartSource, transcript: string)
     }
     return undefined
   }
-  return floorNow(port)
+  return floorNow(port, gen)
 }
 
 /** The record a /clear left, removed (U10): `sminos sheet remove --cleared`. True once it is gone or was never there. */
@@ -581,30 +633,33 @@ async function removeLeft(port: Port, left: string): Promise<boolean> {
  * retry repeats (I5). Kept, so a reload before it answers orders it still.
  */
 async function sessionStarted(port: Port, source: StartSource, session: string, transcript: string) {
-  const previous = sheet.kept?.session
-  if (source === 'clear') {
-    // The SessionStart names only the new session (C0's P5): the session
-    // left is the one the end hook kept.
-    const left = sheet.kept?.left
-    sheet.held = undefined
-    sheet.unsettled.clear()
-    sheet.toAck.clear()
-    sheet.notices = []
-    sheet.drainedAt = undefined
-    sheet.isDrainOwed = false
-    if (left !== undefined && (await removeLeft(port, left))) {
+  if (sheet.gen?.session !== session || source === 'clear') {
+    // Another conversation in this process (a /clear, a /branch, a fork):
+    // the work of the one before is retired, as at a /clear.
+    retire()
+    sheet.gen = newGen(session)
+  }
+  const gen = sheet.gen
+  keep({ session, started: undefined, starting: undefined })
+  // The SessionStart names only the new session (C0's P5): the session a
+  // /clear left is the one the end hook kept. A start of it still in flight
+  // lands first, so the removal is the last word.
+  const left = source === 'clear' ? sheet.kept?.left : undefined
+  if (left !== undefined) {
+    await sheet.retiring
+    if (await removeLeft(port, left)) {
       keep({ left: undefined })
     }
   }
-  if (previous !== session) {
-    sheet.floor = undefined
+  const floor = await floorAtStart(port, gen, source, transcript)
+  if (gen !== current()) {
+    return
   }
-  const floor = await floorAtStart(port, source, transcript)
   if (floor !== undefined) {
-    sheet.floor = floor
+    gen.floor = floor
   }
-  keep({ session, started: undefined, starting: { nonce: newName('n'), source, ...(floor !== undefined && { floor }) } })
-  await startStep(port)
+  keep({ starting: { nonce: newName('n'), source, ...(floor !== undefined && { floor }) } })
+  await startStep(port, gen)
 }
 
 // ------------------------------------------------------------------ the hooks
@@ -645,6 +700,7 @@ function portOf($: EngineInterface): Port {
     log: (text) => $.ui.log(text, { to: 'debug' }),
     keep: (kept) => void $.state.set(KEPT, kept).catch((error: unknown) => $.ui.log(`sheet: the choice is not kept for a reload: ${message(error)}`, { to: 'debug' })),
     invalidate: () => $.ui.invalidate('tool.describe'),
+    after: (ms) => new Promise<void>((resolve) => void $.clock.after(ms, () => resolve())),
   }
 }
 
@@ -672,6 +728,8 @@ export function registerSheet(on: On) {
   // the ask yields before its own session.start runs. A reload takes the kept
   // choice up and drains for a view (E13).
   on('session.start', { cwd: /^/ }, async ($, e, next) => {
+    // Before any await: a SessionStart the engine runs meanwhile waits for the choice.
+    askAwaitsChoice()
     const kept = await keptBefore($)
     const session = await $.session.id()
     sheet.home = await sminosHome($)
@@ -712,15 +770,20 @@ export function registerSheet(on: On) {
       ...(kept?.left !== undefined && { left: kept.left }),
     }
     sheet.port = port
+    if (sheet.gen?.session !== session) {
+      sheet.gen = newGen(session)
+    }
     port.keep(sheet.kept)
     const early = sheet.early
     sheet.early = undefined
     if (chosen.choice !== 'sheet') {
+      askChoiceMade()
       return next(e)
     }
     sheet.runner = chosen.runner ?? 'terminal'
     sheet.isWithdrawing = true
     yieldAsk()
+    askChoiceMade()
     const result = await next(e)
     try {
       await $.tool.register({ name: 'AskUserQuestion', description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
@@ -740,7 +803,11 @@ export function registerSheet(on: On) {
       void check(port)
     }
     return result
-  }).catch((_, e, next) => next(e))
+  }).catch((_, e, next) => {
+    // A choice that failed is no sheet: the ask serves as today.
+    askChoiceMade()
+    return next(e)
+  })
 
   // A process starts a session (E11): its start step; a compaction (E12): a
   // drain that composes the context M4 hands the model.
@@ -755,8 +822,13 @@ export function registerSheet(on: On) {
       return next(e)
     }
     if (e.source === 'compact') {
-      if (isStarted() && sheet.kept !== undefined) {
-        await step(port, sheet.kept.session, { event: 'drain', context: 'compact' })
+      const gen = current()
+      if (isStarted(gen)) {
+        // Through the drain queue, so it never runs beside another drain, and
+        // one that fails is owed to the next trigger. Waiting on another
+        // hook's step is not this hook's own `$` call, so the wait is bounded
+        // inside the hook's 10 s: past it the drain goes on, unawaited.
+        await Promise.race([drain(port, gen, [], 'compact'), port.after(COMPACT_WAIT_MS)])
       }
     } else {
       await sessionStarted(port, e.source, e.session_id, e.transcript_path)
@@ -770,8 +842,17 @@ export function registerSheet(on: On) {
   on('session.end', { sessionId: /./ }, (_, e, next) => {
     const port = sheet.port
     if (port !== undefined && isSheetChosen() && e.reason === 'clear') {
-      keep({ left: e.sessionId, started: undefined })
-      void removeLeft(port, e.sessionId).then((isGone) => isGone && sheet.kept?.left === e.sessionId && keep({ left: undefined }))
+      // The session's work retired, its start forgotten, so no trigger orders
+      // it again; a start already in flight lands before the removal.
+      retire()
+      keep({ left: e.sessionId, started: undefined, starting: undefined })
+      const inFlight = sheet.retiring
+      void (async () => {
+        await inFlight
+        if ((await removeLeft(port, e.sessionId)) && sheet.kept?.left === e.sessionId) {
+          keep({ left: undefined })
+        }
+      })()
     }
     return next(e)
   })
@@ -793,6 +874,8 @@ export function registerSheet(on: On) {
     if (port === undefined || !isSheetChosen()) {
       return next(e)
     }
+    // K4's check first: this hook answers the call and the catch-all below never sees it.
+    triggerCheck()
     return askCall(port, e as unknown as Record<string, unknown>)
   }).catch((_, e, next) => {
     if (next.called || !isSheetChosen()) {
@@ -801,14 +884,16 @@ export function registerSheet(on: On) {
     // The hook failed (it ran out of time, or threw) with the call perhaps
     // committed: settled at the next trigger, its outcome a notice.
     const id = (e as { tool_use_id?: string }).tool_use_id
-    if (id !== undefined) sheet.unsettled.add(id)
+    if (id !== undefined) current()?.unsettled.add(id)
     return { result: NOT_KNOWN }
   })
 
   // The built-in, withdrawn: a model's call of it is refused.
-  on('tool.call', { tool: 'AskUserQuestion' }, (_, e, next) =>
-    isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
-  ).catch((_, e, next) => (!next.called && isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e)))
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e, next) => {
+    // K4's check first, as the refusal answers without reaching the catch-all below.
+    triggerCheck()
+    return isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e)
+  }).catch((_, e, next) => (!next.called && isSheetChosen() && sheet.isWithdrawing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e)))
 
   // The check of K4 alone, at the dispatches the sheet's hooks see.
   on('tool.call', { tool: /^/ }, (_, e, next) => {
@@ -826,8 +911,9 @@ export function registerSheet(on: On) {
 
   // A subagent stops (E14): a drain, so its pending outcomes go to the main conversation.
   on('classic.SubagentStop', { hook_event_name: 'SubagentStop' }, (_, e, next) => {
-    if (sheet.port !== undefined && isStarted()) {
-      void drain(sheet.port)
+    const gen = current()
+    if (sheet.port !== undefined && isStarted(gen)) {
+      void drain(sheet.port, gen)
     }
     return next(e)
   })
@@ -842,6 +928,7 @@ export const sheetForTests = {
     sheet.port = port
     sheet.kept = kept
     sheet.home = home
+    sheet.gen = newGen(kept.session)
   },
   sheet: () => sheet,
 }

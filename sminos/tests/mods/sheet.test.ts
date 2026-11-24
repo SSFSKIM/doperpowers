@@ -1,7 +1,8 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { ASYNC_RESULT, registerAsk, registerAskBand, resetAsk } from '../../hooks/mods/ask'
+import { ASYNC_RESULT, asksReadWhileYielded, asyncAsks, observeAsks, registerAsk, registerAskBand, resetAsk } from '../../hooks/mods/ask'
+import type { AskNote } from '../../hooks/mods/ask'
 import { DESCRIPTION, INPUT_SCHEMA, NOT_KNOWN, SHEET_TOOL, WITHDRAWN } from '../../hooks/mods/sheet-model'
 import type { Probe, View } from '../../hooks/mods/sheet-model'
 import { TICK_MS, registerSheet, resetSheet, sheetNotices, sheetNudge, sheetView } from '../../hooks/mods/sheet'
@@ -40,7 +41,7 @@ const view = (over: Partial<View> = {}): View => ({
 const ok = (seq: number, effects: Record<string, unknown> = {}, over: Partial<View> = {}) =>
   JSON.stringify({ ok: true, seq, view: view({ seq, ...over }), effects: { applied: [], skipped: 0, verdicts: {}, owed: 0, ...effects } })
 
-type StepEvent = Record<string, unknown> & { event: string; call?: { callId: string; floor?: number }; start?: Record<string, unknown>; acked?: string[]; agents?: unknown }
+type StepEvent = Record<string, unknown> & { event: string; session?: string; call?: { callId: string; floor?: number }; start?: Record<string, unknown>; acked?: string[]; agents?: unknown }
 /** What a scripted step does: print `stdout`, or reject (the process did not start or ran out of time). */
 type StepScript = (event: StepEvent, n: number) => string | Promise<string>
 
@@ -116,6 +117,8 @@ function harness(
       stat: async (path: string, opts?: { resolve?: boolean }) => {
         calls.push({ op: 'fs.stat', args: path })
         const text = files.get(path)
+        // The sheet's own files are there when written; a reference's file stands (Read refuses a missing one).
+        if (text === undefined && path.startsWith(`${HOME}/`)) throw new Error(`ENOENT: ${path}`)
         return { kind: 'file', size: text === undefined ? 5 : new TextEncoder().encode(text).length, mtimeMs: 1763900000000, isLink: false, ...(opts?.resolve === true && { realPath: `/real${path}` }) }
       },
     },
@@ -131,7 +134,8 @@ function harness(
           return { exitCode: options.remove ?? 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
         }
         if (verb === 'sheet' && op === 'step') {
-          const event = JSON.parse(init?.stdin ?? '{}') as StepEvent
+          // The session a step is ordered for, beside its event.
+          const event = { ...(JSON.parse(init?.stdin ?? '{}') as StepEvent), session: argv[4] }
           steps.push(event)
           const stdout = await (options.step ?? defaultStep)(event, steps.length)
           return { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
@@ -320,10 +324,13 @@ describe('the start choice, at session.start (I8)', () => {
     engine.process.run = async (argv, init) => (argv[2] === 'probe' ? (await new Promise<void>((r) => (release = r)), run(argv, init)) : run(argv, init))
     const starting = h.start()
     await h.settle()
-    await h.classicStart('startup')
+    // The ask's SessionStart waits for the choice, as the sheet's orders nothing yet.
+    const classic = h.classicStart('startup')
+    await h.settle()
     expect(h.steps).toEqual([])
     release()
     await starting
+    await classic
     await h.settle()
     expect(h.steps).toHaveLength(1)
     expect(h.steps[0]).toMatchObject({ event: 'start', start: { source: 'startup', floor: 0 } })
@@ -675,7 +682,7 @@ describe('views and drains', () => {
     await h.start()
     await h.classicStart('fork', S2)
     expect(h.steps[0]?.start).not.toHaveProperty('floor')
-    h.converse({ rows: [], api: [{ role: 'user', content: '[sheet v1] Your question sheet, after a resume.\nNew ids continue from q5.' }] })
+    h.converse({ rows: [], api: [{ role: 'system', content: 'SessionStart hook additional context: [sheet v1] Your question sheet, after a resume.\nNew ids continue from q5.' }] })
     await h.ask({ ask: [{ question: 'First?' }] })
     expect(h.steps.at(-1)?.call).toMatchObject({ floor: 4 })
     await h.ask({ ask: [{ question: 'Second?' }] })
@@ -695,6 +702,242 @@ describe('the other triggers (E12, E14)', () => {
     expect(h.steps.at(-1)).toMatchObject({ event: 'drain' })
     expect(h.steps.at(-1)).not.toHaveProperty('context')
     expect(h.steps).toHaveLength(3)
+  })
+})
+
+/** A step script whose events of the kinds named wait until released, each by its own release. */
+function gated(kinds: readonly string[], otherwise: StepScript = defaultStep) {
+  const waiting: { event: StepEvent; release: (stdout?: string | Error) => void }[] = []
+  const script: StepScript = (event, n) =>
+    kinds.includes(event.event)
+      ? new Promise<string>((resolve, reject) =>
+          waiting.push({ event, release: (out) => (out instanceof Error ? reject(out) : resolve(out ?? (otherwise(event, n) as string))) }),
+        )
+      : otherwise(event, n)
+  return { script, waiting }
+}
+
+describe("a resume's legacy asks wait for the choice (I11)", () => {
+  /** A transcript holding one open async ask of today's tool, as the engine stores it. */
+  const legacy = () => {
+    const question = { question: 'Which port?', header: 'Port', multiSelect: false, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }] }
+    const rows = [
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't-open', name: SHEET_TOOL, input: { questions: [question], async: true } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't-open', content: ASYNC_RESULT }] } },
+    ]
+    return rows.map((row, i) => JSON.stringify({ parentUuid: i === 0 ? null : `u${i - 1}`, uuid: `u${i}`, ...row })).join('\n') + '\n'
+  }
+
+  /** The SessionStart of a resume that comes while the choice's probe waits; the choice then made. */
+  async function earlyResume(over: Parameters<typeof harness>[0]) {
+    const h = harness({ ...over, files: { [`/t/${S1}.jsonl`]: legacy() } })
+    const notes: AskNote[] = []
+    observeAsks((note) => notes.push(note))
+    let release: () => void = () => {}
+    const engine = h.engine as unknown as { process: { run: (argv: string[], init?: unknown) => Promise<unknown> } }
+    const run = engine.process.run
+    engine.process.run = async (argv, init) => (argv[2] === 'probe' ? (await new Promise<void>((r) => (release = r)), run(argv, init)) : run(argv, init))
+    const starting = h.start()
+    await h.settle()
+    const classic = h.classicStart('resume')
+    await h.settle()
+    // Read, not taken up: nothing published while the choice is open.
+    expect(notes).toEqual([])
+    expect(asyncAsks()).toEqual([])
+    release()
+    await starting
+    await classic
+    await h.settle()
+    return { h, notes }
+  }
+
+  test("the choice the sheet: the ask takes up none of them and publishes nothing; what it read is kept for the sheet's import", async () => {
+    const { h, notes } = await earlyResume({ env: SHEET_ON, probe: ALIVE })
+    expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('sheet')
+    expect(notes).toEqual([])
+    expect(asyncAsks()).toEqual([])
+    expect(asksReadWhileYielded().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+    expect(await h.render('AbovePrompt', { hasSurvey: false })).toBe('beneath')
+  })
+
+  test('the choice today: the ask takes them up as it does today, once the choice is made', async () => {
+    const { h, notes } = await earlyResume({ env: SHEET_ON, probe: { ...ALIVE, surface: null, surfaces: 0 } })
+    expect((h.kept.get('sminos.sheet') as { choice: string }).choice).toBe('today')
+    expect(notes).toEqual([expect.objectContaining({ kind: 'open', id: 't-open' })])
+    expect(asyncAsks().map((ask) => [ask.id, ask.status])).toEqual([['t-open', 'open']])
+  })
+})
+
+describe('one start at a time (I5)', () => {
+  test('a trigger while the start runs joins it: one start step, and nothing else ordered before it answers', async () => {
+    const g = gated(['start'])
+    const h = sheetOn({ step: g.script })
+    await h.start()
+    const starting = h.classicStart('startup')
+    await h.settle()
+    await h.tick()
+    await h.tick()
+    expect(sheetNudge([])).resolves.toMatchObject({ ok: false, code: 'no-sheet' })
+    expect(h.steps.map((s) => s.event)).toEqual(['start'])
+    g.waiting.shift()?.release()
+    await starting
+    await h.settle()
+    expect(h.steps.filter((s) => s.event === 'start')).toHaveLength(1)
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ started: S1 })
+  })
+
+  test('a start that settled with no answer is ordered again at the next trigger, under the same nonce', async () => {
+    const g = gated(['start'])
+    const h = sheetOn({ step: g.script })
+    await h.start()
+    const starting = h.classicStart('startup')
+    await h.settle()
+    g.waiting.shift()?.release(new Error('timed out'))
+    await starting
+    await h.tick()
+    expect(h.steps.map((s) => s.event)).toEqual(['start', 'start'])
+    expect(h.steps[1]?.start).toEqual(h.steps[0]?.start)
+    g.waiting.shift()?.release()
+    await h.settle()
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ started: S1 })
+  })
+})
+
+describe('a session change fences the work of the one before (I5)', () => {
+  /** A session whose call got no answer from three settles: unsettled in S1. */
+  async function unsettled(over: { settle?: () => string | Promise<string> } = {}) {
+    let isDown = true
+    const h = sheetOn({
+      messages: { rows: [], api: [] },
+      step: (event, n) => {
+        if (event.event === 'call' && isDown) return Promise.reject(new Error('timed out'))
+        if (event.event === 'settle') return isDown ? Promise.reject(new Error('timed out')) : (over.settle?.() ?? ok(n, { result: 'Added q1.' }))
+        return defaultStep(event, n)
+      },
+    })
+    await h.ready()
+    const { id } = await h.ask({ ask: [{ question: 'Parent?' }] })
+    return { h, id, up: () => (isDown = false) }
+  }
+
+  test("a /branch's session never settles the parent's call against its record, nor tells the copy of it", async () => {
+    const { h, up } = await unsettled()
+    await h.classicStart('fork', S2)
+    up()
+    await h.tick()
+    await h.tick()
+    const before = h.steps.findIndex((s) => s.session === S2)
+    expect(h.steps.slice(before).filter((s) => s.event === 'settle')).toEqual([])
+    expect(sheetNotices()).toEqual([])
+  })
+
+  test("a settle in flight when the session changes completes into the generation it began in", async () => {
+    let release: (stdout: string) => void = () => {}
+    const { h, id, up } = await unsettled({ settle: () => new Promise<string>((r) => (release = r)) })
+    up()
+    void h.tick()
+    await h.settle()
+    expect(h.steps.at(-1)).toMatchObject({ event: 'settle', session: S1, call: { callId: id } })
+    await h.classicStart('fork', S2)
+    release(ok(9, { result: 'Added q1.' }))
+    await h.settle()
+    expect(sheetNotices()).toEqual([])
+    await sheetNudge([])
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', session: S2 })
+    expect(h.steps.at(-1)).not.toHaveProperty('acked')
+  })
+
+  test("a fork's session starts with nothing of the parent's to acknowledge", async () => {
+    const h = sheetOn({ step: (event, n) => (event.event === 'call' ? 'lost' : event.event === 'settle' ? ok(n, { result: 'Added q1.' }) : ok(n)) })
+    await h.ready()
+    await h.ask({ ask: [{ question: 'Parent?' }] })
+    await h.classicStart('fork', S2)
+    await sheetNudge([])
+    expect(h.steps.filter((s) => s.session === S2).every((s) => s.acked === undefined)).toBe(true)
+  })
+
+  test("a /clear retires the session's start: no trigger orders it again, and the removal waits for one in flight", async () => {
+    const g = gated(['start'])
+    const h = sheetOn({ step: g.script })
+    await h.start()
+    void h.classicStart('startup')
+    await h.settle()
+    await h.sessionEnd('clear')
+    await h.settle()
+    expect(h.kept.get('sminos.sheet')).not.toHaveProperty('starting')
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([])
+    await h.tick()
+    expect(h.steps.map((s) => s.event)).toEqual(['start'])
+    g.waiting.shift()?.release()
+    await h.settle()
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared`])
+    expect(h.kept.get('sminos.sheet')).not.toHaveProperty('started')
+  })
+})
+
+describe("the check of K4 where the sheet's own hooks answer", () => {
+  test("the tool's own call and the built-in's refusal trigger it", async () => {
+    const h = sheetOn({ files: { [`${HOME}/sheet/${S1}/inbox.jsonl`]: '' } })
+    await h.ready()
+    const drains = () => h.steps.filter((s) => s.event === 'drain').length
+    h.files.set(`${HOME}/sheet/${S1}/inbox.jsonl`, '{"v":1}\n')
+    await h.ask({})
+    await h.settle()
+    expect(drains()).toBe(1)
+    h.files.set(`${HOME}/sheet/${S1}/inbox.jsonl`, '{"v":1}\n{"v":1}\n')
+    await h.call('AskUserQuestion', { questions: [] })
+    await h.settle()
+    expect(drains()).toBe(2)
+  })
+})
+
+describe('a compaction drains through the queue (E12)', () => {
+  test('one that comes while a drain runs is the one more step, carrying its context and the keys asked meanwhile', async () => {
+    const g = gated(['drain'])
+    const h = sheetOn({ step: g.script })
+    await h.ready()
+    const nudged = sheetNudge(['k1'])
+    await h.settle()
+    const compacting = h.classicStart('compact')
+    const nudgedAgain = sheetNudge(['k2'])
+    await h.settle()
+    expect(h.steps.filter((s) => s.event === 'drain')).toHaveLength(1)
+    g.waiting.shift()?.release()
+    await h.settle()
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', context: 'compact', keys: ['k2'] })
+    g.waiting.shift()?.release()
+    await Promise.all([nudged, compacting, nudgedAgain])
+    expect(h.steps.filter((s) => s.event === 'drain')).toHaveLength(2)
+  })
+
+  test("its wait is bounded inside the hook's budget: past it the hook returns and the drain goes on", async () => {
+    const g = gated(['drain'])
+    const h = sheetOn({ step: g.script })
+    await h.ready()
+    void sheetNudge([])
+    await h.settle()
+    let isReturned = false
+    void h.classicStart('compact').then(() => (isReturned = true))
+    await h.settle()
+    expect(isReturned).toBe(false)
+    h.timers.at(-1)?.()
+    await h.settle()
+    expect(isReturned).toBe(true)
+    g.waiting.shift()?.release()
+    await h.settle()
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', context: 'compact' })
+  })
+
+  test('a compaction drain that fails is owed: the next trigger orders a drain', async () => {
+    let fails = true
+    const h = sheetOn({ step: (event, n) => (event.event === 'drain' && fails ? Promise.reject(new Error('timed out')) : defaultStep(event, n)) })
+    await h.ready()
+    await h.classicStart('compact')
+    expect(h.steps.at(-1)).toMatchObject({ event: 'drain', context: 'compact' })
+    fails = false
+    const before = h.steps.length
+    await h.tick()
+    expect(h.steps.slice(before).map((s) => s.event)).toEqual(['drain'])
   })
 })
 

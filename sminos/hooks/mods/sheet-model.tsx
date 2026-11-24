@@ -594,9 +594,15 @@ const ID_MAX = 999_999_999
 
 const ID = /\bq([1-9][0-9]{0,8})\b/g
 const RESULT_IDS = /^(?:Added|Revised|Withdrew) q[1-9]/
-const NEW_IDS = /(?:^|\n)New ids (?:continue from|start at) q([1-9][0-9]{0,8})\./g
-const BLOCK = /(?:^|\n)<sheet-delivery>(.*?)<\/sheet-delivery>/g
-const NOTICE = /(?:^|\n)\[sheet v1\] Your earlier call \([^)\n]*\) did change the sheet: ([^\n]*)/g
+const NEW_IDS = /New ids (?:continue from|start at) q([1-9][0-9]{0,8})\./g
+const BLOCK = /<sheet-delivery>(.*?)<\/sheet-delivery>/gs
+const NOTICE = /\[sheet v1\] Your earlier call \([^)\n]*\) did change the sheet: ([^\n]*)/g
+/** What every text the sheet puts in a conversation carries: its heads, the fork's and the lost record's lines (M2's step). */
+const SHEET_MARK = '[sheet v1]'
+/** A hook's context as a conversation holds it: the engine's own prefix (C0's P5), in a reminder or bare. */
+const CONTEXT = /^(?:<system-reminder>\n)?[A-Za-z][A-Za-z.]* hook additional context: /
+/** This plugin's prompt, as the engine prefixes it (an idle session's route). */
+const PLUGIN_PROMPT = 'The sminos plugin sent a message:\n'
 
 const idsIn = (text: string) => [...text.matchAll(ID)].map((match) => Number(match[1]))
 const highest = (ns: readonly number[]) => Math.min(ns.reduce((a, b) => Math.max(a, b), 0), ID_MAX - 1)
@@ -611,15 +617,15 @@ export function floorOfResult(text: string): number {
 }
 
 /**
- * The highest question number a text the tool put in the conversation names,
- * each form where the tool writes it, at the start of a line: an envelope's
- * block (its answered and dismissed ids), the `New ids … from q<n>` sentence
- * that ends a start's context (it names the next id, so the floor it gives is
- * n − 1), and a notice of a call's late outcome. A quote of these inside a
- * file (a Read's numbered lines, a string in code) does not start a line. 0
- * for none.
+ * The highest question number a text the sheet put in the conversation
+ * names (a hook's context, or this plugin's prompt; the caller knows it is
+ * one): an envelope's block (its answered and dismissed ids); in a text of
+ * the sheet's (`[sheet v1]`), the `New ids … q<n>.` sentence, at a line's
+ * start after a start's context or inline after the fork's and the lost
+ * record's lines (it names the next id, so the floor it gives is n − 1); and
+ * a notice of a call's late outcome. 0 for none.
  */
-export function floorOfText(text: string): number {
+export function floorOfSheetText(text: string): number {
   const found: number[] = []
   for (const [, body] of text.matchAll(BLOCK)) {
     try {
@@ -633,45 +639,88 @@ export function floorOfText(text: string): number {
       // A block that is not JSON names nothing.
     }
   }
-  found.push(...[...text.matchAll(NEW_IDS)].map((match) => Number(match[1]) - 1))
-  found.push(...[...text.matchAll(NOTICE)].map((match) => floorOfResult(match[1] as string)))
+  if (text.includes(SHEET_MARK)) {
+    found.push(...[...text.matchAll(NEW_IDS)].map((match) => Number(match[1]) - 1))
+    found.push(...[...text.matchAll(NOTICE)].map((match) => floorOfResult(match[1] as string)))
+  }
   return highest(found)
 }
 
-/** Every string a value holds, each a text of its own. */
-function stringsOf(value: unknown, into: string[] = []): string[] {
-  if (typeof value === 'string') into.push(value)
-  else if (Array.isArray(value)) value.forEach((inner) => stringsOf(inner, into))
-  else if (isRecord(value)) Object.values(value).forEach((inner) => stringsOf(inner, into))
-  return into
+/**
+ * The text a conversation's item carries when the engine marks it as one a
+ * plugin put there: a hook's context (behind the engine's prefix), or this
+ * plugin's prompt. Anything else (the human's words, a tool's output, the
+ * model's) is no sheet's text: undefined.
+ */
+export function sheetTextOf(text: string): string | undefined {
+  if (CONTEXT.test(text)) return text.replace(CONTEXT, '')
+  if (text.startsWith(PLUGIN_PROMPT)) return text.slice(PLUGIN_PROMPT.length)
+  return undefined
 }
 
-/** The blocks of a stored row's message of one type. */
-function blocksOf(row: Record<string, unknown>, type: string): Record<string, unknown>[] {
-  const content = isRecord(row.message) ? row.message.content : undefined
+const floorOfItem = (text: string) => {
+  const own = sheetTextOf(text)
+  return own === undefined ? 0 : floorOfSheetText(own)
+}
+
+/** The texts of a content: a string, or its text blocks. */
+function textsOf(content: unknown): string[] {
+  if (typeof content === 'string') return [content]
+  return Array.isArray(content) ? content.flatMap((block) => (isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? [block.text] : [])) : []
+}
+
+/** The blocks of a content of one type. */
+function blocksIn(content: unknown, type: string): Record<string, unknown>[] {
   return Array.isArray(content) ? content.filter((block): block is Record<string, unknown> => isRecord(block) && block.type === type) : []
 }
 
 /** A tool result's text: a string, or its text blocks joined. */
 function resultText(content: unknown): string {
-  if (typeof content === 'string') return content
-  return Array.isArray(content) ? content.flatMap((block) => (isRecord(block) && typeof block.text === 'string' ? [block.text] : [])).join('\n') : ''
+  return textsOf(content).join('\n')
 }
 
 /**
- * The floor of a transcript's rows, as the engine stores them: the results of
- * the tool's calls (paired with their calls by id), and the texts the tool
- * put beside them (contexts, prompts); the model's own rows say nothing.
+ * The floor of one user-side content: the results of the tool's own calls
+ * (paired by id), and the items the engine marks as a plugin's, a context
+ * in a tool result's blocks included. Another tool's output, and the
+ * human's words, name nothing whatever they quote.
+ */
+function floorOfContent(content: unknown, calls: ReadonlySet<string>): number {
+  let floor = Math.max(0, ...textsOf(content).map(floorOfItem))
+  for (const block of blocksIn(content, 'tool_result')) {
+    if (calls.has(String(block.tool_use_id))) {
+      floor = Math.max(floor, floorOfResult(resultText(block.content)))
+    } else {
+      floor = Math.max(floor, ...blocksIn(block.content, 'text').map((inner) => floorOfItem(String(inner.text))))
+    }
+  }
+  return floor
+}
+
+/** The ids of the tool's calls in a list of assistant contents. */
+const sheetCalls = (contents: readonly unknown[]) =>
+  new Set(contents.flatMap((content) => blocksIn(content, 'tool_use').filter((b) => b.name === SHEET_TOOL).map((b) => String(b.id))))
+
+/**
+ * The floor of a transcript's rows, as the engine stores them: the results
+ * of the tool's calls (paired with their calls by id), the hooks' contexts
+ * (attachment rows) and a plugin's prompt; the model's rows, another tool's
+ * output and the human's words name nothing.
  */
 export function floorOfRows(rows: readonly Record<string, unknown>[]): number {
-  const calls = new Set(rows.flatMap((row) => (row.type === 'assistant' ? blocksOf(row, 'tool_use').filter((b) => b.name === SHEET_TOOL).map((b) => String(b.id)) : [])))
+  const contentOf = (row: Record<string, unknown>) => (isRecord(row.message) ? row.message.content : undefined)
+  const calls = sheetCalls(rows.filter((row) => row.type === 'assistant').map(contentOf))
   let floor = 0
   for (const row of rows) {
-    if (row.type === 'assistant') continue
-    for (const block of blocksOf(row, 'tool_result')) {
-      if (calls.has(String(block.tool_use_id))) floor = Math.max(floor, floorOfResult(resultText(block.content)))
+    if (row.type === 'user') {
+      floor = Math.max(floor, floorOfContent(contentOf(row), calls))
+    } else if (row.type === 'attachment' && isRecord(row.attachment) && row.attachment.type === 'hook_additional_context') {
+      const content = row.attachment.content
+      const texts = Array.isArray(content) ? content.filter((item): item is string => typeof item === 'string') : typeof content === 'string' ? [content] : []
+      floor = Math.max(floor, ...texts.map(floorOfSheetText))
+    } else if (row.type === 'system' && typeof row.content === 'string') {
+      floor = Math.max(floor, floorOfItem(row.content))
     }
-    floor = Math.max(floor, ...stringsOf(row).map(floorOfText))
   }
   return floor
 }
@@ -692,7 +741,8 @@ export function floorOfLines(lines: readonly string[]): number {
 /**
  * The floor of the conversation the engine holds (`$.session.messages()`,
  * then its `{ as: 'api' }` form): the tool's own calls' results, and the
- * human's side of the conversation, where a context and a plugin's prompt sit.
+ * items the engine marks as a plugin's (a hook's context, a plugin's
+ * prompt), on the human's and the system's side.
  */
 export function floorOfMessages(
   messages: readonly { role: string; text: string; toolUses: readonly { tool: string; text?: string }[] }[],
@@ -703,10 +753,11 @@ export function floorOfMessages(
     for (const use of message.toolUses) {
       if (use.tool === SHEET_TOOL && use.text !== undefined) floor = Math.max(floor, floorOfResult(use.text))
     }
-    if (message.role === 'user') floor = Math.max(floor, floorOfText(message.text))
+    if (message.role !== 'assistant') floor = Math.max(floor, floorOfItem(message.text))
   }
+  const calls = sheetCalls(api.filter((message) => message.role === 'assistant').map((message) => message.content))
   for (const message of api) {
-    if (message.role === 'user') floor = Math.max(floor, ...stringsOf(message.content).map(floorOfText))
+    if (message.role !== 'assistant') floor = Math.max(floor, floorOfContent(message.content, calls))
   }
   return floor
 }
@@ -721,7 +772,7 @@ export function floorSearchArgs(path: string): string[] {
   return [
     'perl',
     '-e',
-    'binmode STDOUT; my $path = pop @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|New ids (?:continue from|start at) q[1-9]|did change the sheet|"name":"mcp__sminos__AskUserQuestion"/) { print $line; $found = 1 } } exit($found ? 0 : 1);',
+    'binmode STDOUT; my $path = pop @ARGV; open(my $fh, "<:raw", $path) or exit 2; my $found = 0; while (my $line = <$fh>) { if ($line =~ /(?:Added|Revised|Withdrew) q[1-9]|<sheet-delivery>|\\[sheet v1\\]|"name":"mcp__sminos__AskUserQuestion"/) { print $line; $found = 1 } } exit($found ? 0 : 1);',
     '--',
     path,
   ]
