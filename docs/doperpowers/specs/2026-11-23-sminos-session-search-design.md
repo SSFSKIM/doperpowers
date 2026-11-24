@@ -13,8 +13,8 @@ To see it working: on the MacBook, after a session compacts, `sminos who @<its s
 - [x] (2026-11-24) M1 — the summary: derived, recorded, shown by `who @<session>`; every compaction derives. Reviewed clean after one fix round (a withdrawn historical row inherited a predecessor's summary; a mark beside unmarked text on one line corrupted the fallback fields). `6f354d356..5782858e3`, ci-gate GREEN.
 - [x] (2026-11-24) M2 — `find` as the org's search. Reviewed clean after one fix round (transcript cleanup confined to the minted id, `list`'s scope shared and the newest join kept, no credentials in test logs, failure wording). `76361ce2c..d71d7dfb0`, ci-gate GREEN; the real-model check ranked the CI session first and answered the Klingon question with no match, exit 4.
 - [x] (2026-11-24) Whole-branch review (review-code, medium): one fix wave (the model call's environment widened to every provider switch and telemetry, reach tags checked to resolve to the matched session, withdrawn predecessors' in-charge lines kept out, the child killed before cleanup on any interrupted wait, the project shell-quoted); its re-review's one remaining case and the settings-file credential route left as Unresolved Review Findings on the PR.
-- [ ] Merge, release.
-- [ ] Live acceptance 7–10 on both Macs.
+- [x] (2026-11-24) Merged (doperpowers #633, 264f99de), sminos 1.58.0; both Macs on it, each daemon re-executed on the new code by itself.
+- [x] (2026-11-24) Live acceptance 7–10 on both Macs: all pass (Outcomes).
 
 ## Terms
 
@@ -330,6 +330,15 @@ What the reviews changed, and what a later reader should know:
 - **The visibility filter now covers the in-charge line too.** The summary was designed to follow `unlisted_here`; review found that `charge_of`'s unfiltered `former` chain carried a withdrawn session's line into `who <commit>`, `list` and the corpus. Fixed on this branch, so the line and the summary now hide alike.
 - **A short is not an address by itself.** The resolver reads `@<short>` as an alias first, so a reach line prints the short only when it resolves to the matched session, else the full id (`reach_tag`). The full id is not itself checked (TECH-DEBT).
 - **The boundary is what `model_env` enforces.** The env scrub is a denylist widened to every `CLAUDE_CODE_USE_*` and `OTEL_*` variable; a settings-file credential route (`apiKeyHelper`, managed settings) is the machine owner's own and is not verified. `claude auth status` cannot gate it: it reports `authMethod: oauth_token` with `ANTHROPIC_API_KEY` set.
-- **Latency is half reconciliation.** On the MacBook's real home a warm `find` took about 24 s: about 11 s building the corpus (the reconciliation `list --org` already does) and about 17 s for haiku at medium effort. Acceptance 8's bar is 60 s by the owner's ruling; if it tightens, the corpus build is the first lever, not the effort.
+- **Latency is half reconciliation.** On the MacBook's real home a warm `find` took about 24 s: about 11 s building the corpus (the reconciliation `list --org` already does) and about 17 s for haiku at medium effort. Acceptance 8's bar was lowered from 30 s to 60 s by the orchestrator on that measurement (and reported to the owner); live, on the machines' own homes, the calls took 4–8 s, so the 24 s was mostly the cold copy's reconciliation. If the bar tightens, the corpus build is the first lever, not the effort.
 - **A seatless local member is rarely `gone`.** Reconciliation adopts it into a thread its human opened, which reads as `stopped`, so §3d's `gone` row is reached in the suite by patching.
 - **The derive parser reads around marks.** Words beside a `<message>` mark on one line used to join the marked field; the unmarked text is now the answer outside its marks, each mark a line break.
+
+Live acceptance, 2026-11-24, on sminos 1.58.0:
+
+- **7 passes.** A derive on the MacBook (`derive <session> --compacted`, through the session's `btw`, 5 s) recorded a summary that names a PR with its repository, a spec path and an issue, and no coined label; `who @<short>` on the mini printed the same three lines a minute later, so the hub carries the field (the delegated unknown, resolved).
+- **8 passes.** From the mini, `find "who runs CI for these repositories"` named the MacBook's CI session alone, with a fitting reason, in 7.8 s; on the MacBook, 6 s.
+- **9 passes.** `find "who is translating the Klingon dictionary"` printed `no session matches` with a note and exited 4, on both Macs.
+- **10 passes, by the line rather than the summary.** `find "who decides what the gateway does when a Claude account's quota runs out"` named two stopped sessions of another project, best first, each with its resume command and "message it, which wakes it". No stopped session had a summary yet (summaries start with 1.58.0's derives, and a session its human stopped is not derived), so the match came from their in-charge lines; the summary path for stopped sessions fills in as sessions that derived on 1.58.0 stop.
+- **MAWS (§6)**: its landing session recorded the three-part scene change in MAWS's tech-debt tracker, tied to the change that moves the scene's sminos pin past 264f99de.
+
