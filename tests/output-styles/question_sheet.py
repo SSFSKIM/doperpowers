@@ -164,8 +164,6 @@ def validate(inp):
             if o.get("preview") and e.get("multiSelect"):
                 raise InputError(f"{where}: a preview is for single-select questions only")
             labels.append(o["label"])
-        if len(set(labels)) != len(labels):
-            raise InputError(f"{where}: option labels must be unique within a question")
         refs = e.get("references") or []
         if not isinstance(refs, list) or len(refs) > LIMITS["references"]:
             raise InputError(f"{where}: references takes at most {LIMITS['references']}")
@@ -201,6 +199,8 @@ class Sheet:
         if path not in self.fs.files:
             return None, f"the reference {ref['path']} could not be read: no such file"
         lines = ref.get("lines")
+        if not lines and len(self.fs.files[path].encode()) > 256 * 1024:
+            return None, (f"the reference {ref['path']} could not be read: the file is over 256 KB; name a line range")
         body = self.fs.read(path, *(lines and (lines[0], lines[1] - lines[0] + 1) or ()))
         return {"path": ref["path"], "lines": lines, "body": body}, None
 
@@ -227,6 +227,11 @@ class Sheet:
                 if q["asker"] != asker:
                     refused.append((n, f"entry {n}, {qid} was asked by another asker"))
                     continue
+            labels = [o["label"] for o in e.get("options") or []]
+            dup = next((l for l in labels if labels.count(l) > 1), None)
+            if dup is not None:
+                refused.append((n, f"entry {n}, two options are labelled {dup!r}; labels must be unique within a question"))
+                continue
             refs, why = [], None
             for r in e.get("references") or []:
                 cap, why = self.capture(r)
@@ -278,7 +283,7 @@ def result_text(added, revised, withdrew, refused):
                                             for n, q, r in revised) + ".")
     if withdrew:
         first.append("Withdrew " + ", ".join(withdrew) + ".")
-    lines = [" ".join(first)] if first else []
+    lines = [" ".join(first) if first else "Nothing done."]
     if refused:
         lines.append("Not done: " + " ".join(why.rstrip(".") + "." for _, why in refused))
     return "\n".join(lines)
@@ -852,10 +857,13 @@ def plain(content):
     return out
 
 
-def live(client, model, effort, system, tools, prefix, env, max_steps, stop_after_sheet=1):
+def live(client, model, effort, system, tools, prefix, env, max_steps, done=None):
     """Continues a session from its prefix until the turn ends, a final message ends it, `max_steps` responses
-    have run, or `stop_after_sheet` more responses have run after the first sheet call. Returns the steps, each
-    {"stop", "blocks", "results", "usage"}, and how the run ended."""
+    have run, or one more response has run after `done(env, calls)` first holds (calls: the sheet calls made
+    live; by default, any). Returns the steps, each {"stop", "blocks", "results", "usage"}, and how the run
+    ended."""
+    done = done or (lambda env, calls: bool(calls))
+    n0 = len(env.sheet.calls)
     msgs = with_breakpoint(prefix)
     steps, sheet_seen, ended = [], None, "max_steps"
     for i in range(max_steps):
@@ -879,9 +887,9 @@ def live(client, model, effort, system, tools, prefix, env, max_steps, stop_afte
         if ends_on_final(blocks):
             ended = "final_message"
             break
-        if sheet_seen is None and any(b.name == SHEET_TOOL for b in uses):
+        if sheet_seen is None and done(env, env.sheet.calls[n0:]):
             sheet_seen = i
-        if sheet_seen is not None and i - sheet_seen >= stop_after_sheet:
+        if sheet_seen is not None and i - sheet_seen >= 1:
             ended = "after_sheet"
             break
         msgs = msgs + [{"role": "assistant", "content": plain(resp.content)}, {"role": "user", "content": results}]

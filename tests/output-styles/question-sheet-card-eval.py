@@ -129,7 +129,11 @@ def run(job, args, arms):
     env, prefix, system, tools = qs.session(ss.e2_script(scenario, history), arms[arm],
                                             [(r"smoke-staging|tests\.smoke|tally\.export\.audit", again)],
                                             simulator=(client, args.shell_model))
-    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps)
+    want = len(ss.E2_TRIGGERS[scenario]["matters"])  # stop once as many questions as the scenario has matters
+
+    def enough(env, calls):
+        return sum(len(c.get("added", [])) for c in calls) >= want
+    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps, enough)
     cards = []
     for step_i, b in qs.sheet_calls(steps):
         call = next((c for c in env.sheet.calls if c.get("call_id") == b["id"]), None)

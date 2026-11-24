@@ -55,7 +55,6 @@ check("empty ask and withdraw refused", refuses({"ask": [], "withdraw": []}, "at
 check("21 entries refused", refuses({"ask": [entry()] * 21}, "1 to 20"))
 check("an id named twice refused", refuses({"ask": [entry(id="q1")], "withdraw": ["q1"]}, "more than once"))
 check("multiSelect without options refused", refuses({"ask": [entry(multiSelect=True)]}, "needs options"))
-check("equal labels refused", refuses({"ask": [entry(options=[{"label": "A"}, {"label": "A"}])]}, "unique"))
 check("a preview on multi-select refused",
       refuses({"ask": [entry(multiSelect=True, options=[{"label": "A", "preview": "x"}])]}, "single-select"))
 check("an unknown field refused", refuses({"ask": [entry(async_=True)]}, "does not take"))
@@ -84,20 +83,26 @@ check("a refused add before a revise keeps places", r == "Revised q3 (entry 2, r
       "the reference nope.py could not be read: no such file.", r)
 r = sheet.call({"ask": [entry("I?")]})
 check("ids are never reused", r == "Added q5.", r)
+r = sheet.call({"ask": [entry("Dup?", options=[{"label": "A"}, {"label": "A"}])], "withdraw": ["q2"]})
+check("a call in which nothing was done says so on its first line", r == "Nothing done.\nNot done: entry 1, two options "
+      "are labelled 'A'; labels must be unique within a question. q2 is not open (withdrawn).", r)
+r = sheet.call({"ask": [entry("Dup?", options=[{"label": "A"}, {"label": "A"}]), entry("Fine?")]})
+check("equal labels refuse their entry alone", r.startswith("Added q6 (entry 2).") and "entry 1, two options" in r, r)
+sheet.call({"withdraw": ["q6"]})
 r = sheet.call({"ask": [entry("J?", id="q1")]}, asker="a01")
 check("a subagent cannot revise the main agent's question", "asked by another asker" in r and
       sheet.questions["q1"]["revision"] == 2, r)
 r = sheet.call({"withdraw": ["q5"]}, asker="a01")
 check("a subagent cannot withdraw it either", "another asker" in r and sheet.questions["q5"]["state"] == "open", r)
 r = sheet.call({"ask": [entry("K?")]}, asker="a01")
-r2 = sheet.call({"withdraw": ["q6"]})
-check("the main conversation may withdraw a subagent's question", r == "Added q6." and r2 == "Withdrew q6.", (r, r2))
+r2 = sheet.call({"withdraw": ["q7"]})
+check("the main conversation may withdraw a subagent's question", r == "Added q7." and r2 == "Withdrew q7.", (r, r2))
 n = len(sheet.calls)
 try:
     sheet.call({"ask": [entry("L?"), entry("M?", multiSelect=True)]})
     check("a schema failure raises", False)
 except qs.InputError:
-    check("a schema failure changes nothing", sheet.next_id == 7 and len(sheet.calls) == n + 1 and "error" in sheet.calls[-1])
+    check("a schema failure changes nothing", sheet.next_id == 8 and len(sheet.calls) == n + 1 and "error" in sheet.calls[-1])
 cap, why = sheet.capture({"path": "tally/http/downloads.py", "lines": [1, 3]})
 check("a reference is captured as Read shows it", why is None and cap["body"].split("\n")[0].endswith(
     '\t"""Download links for generated files (print view today; the CSV export\'s') and len(cap["body"].split("\n")) == 3, cap)
@@ -218,6 +223,7 @@ fake = Fake([[use(1, "Read", {"file_path": "tally/http/downloads.py"})],
              [use(3, "Bash", {"command": "git status"})],
              [BetaTextBlock(type="text", text="never reached")]])
 steps, ended = qs.live(fake, "claude-opus-5-5", "high", system, tools, prefix, env, 8)
+
 req = fake.requests[0]
 check("requests carry the gateway's shape", req["system"][0]["text"].startswith("You are Claude Code") and
       "claude-code-20250219" in req["betas"] and req["thinking"]["display"] == "updates")
@@ -228,6 +234,14 @@ check("a run stops one response after its first sheet call", ended == "after_she
 check("the stub applied the live call", steps[1]["results"] == ["Revised q1 (revision 2)."] and
       env.sheet.questions["q1"]["revision"] == 2, steps[1]["results"])
 check("the notes around a call are captured", qs.notes_before(steps, 1) == "Revising q1.")
+
+env, prefix, system, tools = qs.session(ss.e1_script("option_gone", "short"), qs.DEFAULT_ARM)
+fake = Fake([[use(4, qs.SHEET_TOOL, {"ask": [entry("Unrelated?")]})], [use(5, "Bash", {"command": "git status"})],
+             [use(6, qs.SHEET_TOOL, {"ask": [entry("Cap?", id="q1")]})], [use(7, "Bash", {"command": "ls"})],
+             [BetaTextBlock(type="text", text="never reached")]])
+touched = lambda env, calls: any("q1" in c.get("revised", []) for c in calls)
+steps, ended = qs.live(fake, "claude-opus-5-5", "medium", system, tools, prefix, env, 20, touched)
+check("an early unrelated call does not stop an E1 run", ended == "after_sheet" and len(steps) == 4, (ended, len(steps)))
 
 # -- E1's outcomes
 

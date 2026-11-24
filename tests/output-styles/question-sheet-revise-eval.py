@@ -41,7 +41,9 @@ numbers the session showed); a command it cannot answer goes to
 problem (question_sheet.Env.simulate); each such answer is kept on the run.
 
 A run ends at the turn's end, a final message, --max-steps responses, or one
-response after its first sheet call. Its outcome, from the stub's record:
+response after the call that revises or withdraws the target (in the
+control, after its first sheet call): an agent that asks early may put
+another question first and come to the target later. Its outcome, from the stub's record:
 
   revised                 the target revised (an `ask` entry with its id)
   replaced                the target withdrawn and a question for the same
@@ -116,10 +118,16 @@ def run(job, args, arms):
     env, prefix, system, tools = qs.session(ss.e1_script(scenario, history), arms[arm], simulator=(client, args.shell_model))
     n0 = len(env.sheet.calls)
     before = {q: json.loads(json.dumps(v)) for q, v in env.sheet.questions.items()}
-    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps)
+    target = ss.E1_TRIGGERS[scenario]["target"]
+
+    def touched(env, calls):  # the target revised or withdrawn; in the control, any call
+        return any(target in c.get("revised", []) + c.get("withdrew", []) for c in calls) if target else bool(calls)
+    steps, ended = qs.live(client, args.model, args.effort, system, tools, prefix, env, args.max_steps, touched)
     first = qs.sheet_calls(steps)
+    hit = next((i for i, b in first if any(c.get("call_id") == b["id"] and target in c.get("revised", []) +
+                                           c.get("withdrew", []) for c in env.sheet.calls)), None)
     return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "ended": ended, "steps": steps,
-            "first_sheet_step": first[0][0] if first else None,
+            "first_sheet_step": first[0][0] if first else None, "target_step": hit,
             "calls": env.sheet.calls[n0:], "before": before, "simulated": env.simulated,
             "after": {q: {k: v for k, v in env.sheet.questions[q].items() if k != "history"} for q in env.sheet.questions}}
 
@@ -173,6 +181,8 @@ def summary(results):
         r["runs"] += 1
         if x.get("first_sheet_step") is not None:
             r["responses_before_sheet"].append(x["first_sheet_step"])
+        if x.get("target_step") is not None:
+            r.setdefault("responses_before_target", []).append(x["target_step"])
         r["outcomes"][x["outcome"]] = r["outcomes"].get(x["outcome"], 0) + 1
         r["schema_errors"] += x["schema_errors"]
     return rows
@@ -224,7 +234,8 @@ if __name__ == "__main__":
     for key, r in sorted(summary(out).items()):
         fails = sum(v for k, v in r["outcomes"].items() if k in FAIL)
         print(*key, f"runs {r['runs']}", json.dumps(r["outcomes"]), f"failures {fails}", f"schema errors {r['schema_errors']}",
-              f"responses before the first sheet call {sorted(r['responses_before_sheet'])}")
+              f"responses before the first sheet call {sorted(r['responses_before_sheet'])}",
+              f"before the target's revision {sorted(r.get('responses_before_target', []))}")
     for x in out:
         if "error" in x:
             print("error", x["job"], x["error"])

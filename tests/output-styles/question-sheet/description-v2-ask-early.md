@@ -1,6 +1,6 @@
 Put questions for the human on this session's question sheet. The human reads the sheet apart from this conversation and answers any question, in any order, when they choose; the answers reach you later as a message. The call returns at once and nothing waits on it: keep working on whatever does not depend on the answers.
 
-Put a question on the sheet as soon as you know you need it, not at the end of your turn: the human may be reading the sheet now. Questions you have at the same moment go in one call; `ask` takes up to 20.
+Ask when a question comes up, not at the end of your turn: the human may be reading the sheet now. Put every question you have at that moment in one call (`ask` takes up to 20), then keep working.
 
 A question stays open until the human answers or dismisses it. When something changes an open question you asked (a fact it rests on, an option that no longer holds, what you would recommend), revise that question: an `ask` entry with its `id` replaces it in place, and the human sees it marked as updated. Do not ask a second question in its stead, since the human would have to work out which of the two stands. Put in `withdraw` a question that no longer needs an answer.
 
