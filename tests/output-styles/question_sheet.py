@@ -572,6 +572,9 @@ Command line:
             if re.search(rx, command, re.S | re.I):
                 return out(self) if callable(out) else out
         outputs = []
+        # "$(cat <<'EOF' ... EOF)", Claude Code's form for a commit message: the message itself, quoted
+        command = re.sub(r"\"?\$\(cat\s*<<-?\s*['\"]?(\w+)['\"]?\n(.*?)\n\s*\1\s*\)\"?",
+                         lambda m: shlex.quote(m.group(2)), command, flags=re.S)
         heredoc = re.compile(r"(?:cat|tee)\s*(?:>\s*(\S+)\s*)?<<-?\s*['\"]?(\w+)['\"]?\s*(?:>\s*(\S+))?\n(.*?)\n\2\s*(?:\n|$)", re.S)
         while True:
             m = heredoc.search(command)
@@ -701,7 +704,11 @@ Command line:
             if not mod and not new:
                 return "On branch csv-export\nnothing to commit, working tree clean"
             self.commits += 1
-            msg = next((args[i + 1] for i, a in enumerate(args) if a in ("-m", "--message") and i + 1 < len(args)), "wip")
+            msg = next((args[i + 1] for i, a in enumerate(args) if a in ("-m", "--message") and i + 1 < len(args)), None)
+            path = next((args[i + 1] for i, a in enumerate(args) if a in ("-F", "--file") and i + 1 < len(args)), None)
+            if msg is None and path and self.fs.resolve(path) in self.fs.files:
+                msg = self.fs.files[self.fs.resolve(path)]
+            msg = (msg or "").strip() or "Update"
             sha = f"{0x5a3c1e0 + self.commits * 0x10f3b:07x}"
             self.committed = dict(self.fs.files)
             self.git_log = f"{sha} {msg.splitlines()[0]}\n" + self.git_log

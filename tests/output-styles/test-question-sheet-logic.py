@@ -150,7 +150,11 @@ check("sed -i edits in place", 'format(value.normalize(), "g")' in env.fs.files[
 check("git diff shows the edit", '+        return format(value.normalize(), "g")' in sh("git diff"), sh("git diff"))
 out = sh("git add -A && git commit -m 'wip: two tests'")
 check("a commit cleans the tree", "2 files changed" in out and "nothing to commit" in sh("git status"), out)
-check("git log shows the commit", sh("git log --oneline -3").split("\n")[0].endswith("wip: two tests"))
+sh("echo x > tests/export/y.py")
+sh("touch tests/export/z.py")
+out = sh("git add -A && git commit -m \"$(cat <<'EOF'\nexport: a message\n\nwith a body\nEOF\n)\"")
+check("a commit message in Claude Code's heredoc form is kept", "export: a message" in out, out)
+check("git log shows the commit", sh("git log --oneline -3").split("\n")[1].endswith("wip: two tests"))
 check("git log honours -N", len(sh("git log --oneline -3").split("\n")) == 3)
 check("commands split outside quotes only", qs.simple_commands('git commit -m "a; b" && git log | head -2') ==
       [["git", "commit", "-m", "a; b"], ["git", "log"]])
