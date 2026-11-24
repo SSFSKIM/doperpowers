@@ -11,7 +11,7 @@ To see it working: on the MacBook, after a session compacts, `sminos who @<its s
 - [x] (2026-11-23) Design approved by the owner, as presented in the brainstorm.
 - [x] (2026-11-23) Spec review (`doperpowers:adversarial-reviewer`, the spec and its execution section): two rounds, folded.
 - [x] (2026-11-24) M1 — the summary: derived, recorded, shown by `who @<session>`; every compaction derives. Reviewed clean after one fix round (a withdrawn historical row inherited a predecessor's summary; a mark beside unmarked text on one line corrupted the fallback fields). `6f354d356..5782858e3`, ci-gate GREEN.
-- [ ] M2 — `find` as the org's search.
+- [x] (2026-11-24) M2 — `find` as the org's search. Reviewed clean after one fix round (transcript cleanup confined to the minted id, `list`'s scope shared and the newest join kept, no credentials in test logs, failure wording). `76361ce2c..d71d7dfb0`, ci-gate GREEN; the real-model check ranked the CI session first and answered the Klingon question with no match, exit 4.
 - [ ] Whole-branch review (review-code, medium), merge, release.
 - [ ] Live acceptance 7–10 on both Macs.
 
@@ -90,7 +90,7 @@ The words after `find` are joined with spaces into the question, so `sminos find
 
 ### 3a. The corpus
 
-The corpus is `list --org`'s own scope and rows, never a wider read: the projects `list_scope` returns under `--org` (every project known here but one that has left this machine, `has_left`, whose retained log no longer updates), and in each the rows `project_rows` yields, keeping those with a session whose state is live (`FILLED`: busy, idle, waiting) or held (`HELD_STATES`: stopped, gone) and that has not ended (`m.end` empty). Each session is one entry (a member that shows in several projects' rows, as a channel's roster does, is one), and the caller is left out: the session `CLAUDE_CODE_SESSION_ID` names, with the sessions of its thread. `--all` adds the retired rows and, as `cmd_list` does under `--all`, the ended threads `view_of(p).ended` holds. The owner chose live and stopped: a stopped session still holds the context of work it did, and an addressed message wakes it (or is held for it, its reach line says why), so it is a session one can ask.
+The corpus is `list --org`'s own scope and rows, never a wider read: the projects `list_scope` returns under `--org` (every project known here but one that has left this machine, `has_left`, whose retained log no longer updates), and in each the rows `project_rows` yields, keeping those with a session whose state is live (`FILLED`: busy, idle, waiting) or held (`HELD_STATES`: stopped, gone) and that has not ended (`m.end` empty). Each session is one entry (a member that shows in several projects' rows, as a channel's roster does, is one), and the caller is left out: the session `CLAUDE_CODE_SESSION_ID` names, with its current thread (`sminos_threads.stamp`), not a thread it has left. The projects come from `widened_scope()`, extracted from `list_scope` so the two cannot drift, and a member in two projects (a move's dual membership) is kept in the one it joined last, by the directory's own deduplicator (`one_per_session`). With `--all` a retired or ended entry says why (retired, ended after it stopped, or its machine retired). `--all` adds the retired rows and, as `cmd_list` does under `--all`, the ended threads `view_of(p).ended` holds. The owner chose live and stopped: a stopped session still holds the context of work it did, and an addressed message wakes it (or is held for it, its reach line says why), so it is a session one can ask.
 
 Because it is built from `project_rows`, `find` sees what `list --org` sees and nothing more. That includes per-session visibility: a session whose owner withdrew this machine's view of it (`unlisted`, `sminos_visibility`) is out of `project_rows` here, so out of `list --org` and out of the corpus, and its summary never reaches the model. The summary it adds is in the same project logs every enrolled machine already reads.
 
@@ -167,11 +167,11 @@ Where `unreachable_hint` builds its sentence inside a refusal, the sentence is f
       next: …
       reach: sminos say "@a45b97a3 ..."
 
-When the model named shorts the corpus does not hold, a last line says so: `(the model named 1 session that is not in the directory; left out)`. With no match left: `no session matches: <note>` (the note omitted when empty), exit 4 (`EXIT_UNKNOWN`, the CLI's code for "nothing answers to it", as `who` uses). `--json` prints one object: `{"question", "corpus": <entries>, "matches": [<member_json(m, p, private=False)> + "why"], "note", "dropped"}`, exit 0 or 4 as in text.
+A short is matched after its brackets and `@` are stripped and it is lowercased. `why:` prints even when the reason is empty; the note, cleaned as `why` is, prints as `note: …` after the matches when there are any. When the model named shorts the corpus does not hold, a last line says so (repeats are dropped silently, not counted): `(the model named 1 session that is not in the directory; left out)`. With no match left: `no session matches: <note>` (the note omitted when empty), exit 4 (`EXIT_UNKNOWN`, the CLI's code for "nothing answers to it", as `who` uses). `--json` prints one object: `{"question", "corpus": <entries>, "matches": [<member_json(m, p, private=False)> + "why"], "note", "dropped"}`, exit 0 or 4 as in text.
 
 ### 3e. Failure
 
-A call that fails — it does not start, times out, exits non-zero, returns an error result, no parseable JSON object, or one without a `matches` list — or a prompt over budget (§3a) prints `sminos: find: <reason>` on stderr and exits 1. There is no fallback to keyword filtering: a silent substitute would hand back a different kind of answer under the same name; the error tells the caller `list --org <words>` exists.
+A call that fails — it does not start, times out, exits non-zero, returns an error result, no parseable JSON object, or one without a `matches` list — or a prompt over budget (§3a) prints `sminos: find: <reason>` on stderr and exits 1; a call or parse failure ends `; list --org <words> lists the sessions some words match`, and under `--json` stdout stays empty. An unusable `SMINOS_FIND_TIMEOUT` is refused the same way before anything is read or called. There is no fallback to keyword filtering: a silent substitute would hand back a different kind of answer under the same name; the error tells the caller `list --org <words>` exists.
 
 ## 4. Looking at one session: `who @<session>`
 
@@ -201,7 +201,7 @@ What 3a protected on the sminos side holds for the new `find` by construction (�
 
 - **The hub carries the new field.** The MAWS hub (`apps/desk-hub`) shows no filter on log event kinds or fields: session-plane kinds are listed (`SESSION_KINDS`), log events are not. Resolved by acceptance 7: a summary written on the MacBook shows on the mini.
 - **The corpus outgrowing its budget.** At about 150 tokens a session, `FIND_PROMPT_MAX` (§3a) holds a couple of thousand sessions; past it `find` refuses with a clear message. When the org nears it, `find` splits the corpus and asks the parts in parallel, as `query-transcript --all` asks segments. Not built now.
-- **Effort and latency.** `--effort medium` is the starting point; acceptance 8 measures the call's time on the real corpus. A slower-than-30-second answer, or poor ranking, moves the effort.
+- **Effort and latency.** `--effort medium` is the starting point; acceptance 8 measures the call's time on the real corpus. M2's check on the MacBook against a copy of its home: the CI question 45 s on a cold copy; warm runs about 24 s, about 11 s of it building the corpus (the reconciliation `list --org` does) and about 17 s the model call. The corpus build, not only the effort, is the lever if the mini runs over. A slower-than-30-second answer, or poor ranking, moves the effort.
 
 ## Acceptance
 
@@ -304,9 +304,11 @@ In `sminos/skills/sminos/scripts/sminos.py`:
 
 In `sminos/skills/sminos/scripts/sminos_fork.py`:
 
-    def run_internal(args, *, cwd, env, timeout, stdin_text=None, minted=()) -> dict
-        # the gate (read must succeed before exec), the marker, the run, the result JSON, cleanup (§3b);
-        # headless_fork and ask_model both call it
+    def run_internal(args, *, cwd, env, timeout, stdin_text=None, cleanup=None, what="fork") -> dict
+        # the gate (read must succeed before exec), the marker, the run, the result JSON and its empty-answer check (§3b);
+        # `cleanup` is the caller's own (headless_fork keeps its transcript cleanup, sparing its parent's;
+        # ask_model removes only <child's config dir>/projects/*/<minted>.jsonl), the marker removed even if it raises;
+        # `what` names the process in errors; headless_fork and ask_model both call it
     def ask_model(prompt, *, model="haiku", effort="medium", timeout=120) -> ForkAnswer
         # a fresh internal `claude -p` (§3b) on the caller's first-party login (no gateway, no API key), prompt on stdin;
         # ForkFailed as headless_fork raises it
