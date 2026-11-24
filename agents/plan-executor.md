@@ -87,6 +87,19 @@ round and you fold it in then; no reply means proceed. A checkpoint
 message is not an escalation — a genuinely blocked plan still returns
 (Escalation).
 
+## Waiting on a worker
+
+Before you end a turn to wait for a worker, start one background command
+of your own that exits when the worker's report file exists, or at a bound
+after which you would look in on it anyway:
+`for i in $(seq 720); do [ -f <report file> ] && break; sleep 10; done`.
+The engine counts a worker that has stopped to wait on its own gate run
+as finished; with nothing of yours running it then demands your hand-back,
+which ends your run mid-plan and sends the worker's report to the
+dispatching session instead of you. Stop a watch that is still running
+before you hand back: each one notifies the dispatching session again
+when it exits.
+
 ## Finishing
 
 The whole-branch review — subagent-driven-execution's final review, or for
