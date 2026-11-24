@@ -33,6 +33,8 @@ ENVELOPE_KEYS = 200           # what one `delivered` line can name (I3)
 BLOCK_TEXT = 500              # the block's text, and a filed text's head in the prose (I7)
 PROSE_CUT = 200               # a question, a label, a name in the envelope's prose
 VIEW_PENDING, VIEW_CLOSED, VIEW_READY = 200, 500, 4
+BEFORE_KEYS = 200             # effects.start.before: the first of what was pending, beside its count
+IMPORT_BUDGET = 10000         # the context's import summary, in UTF-16 units, inside the context's own budget
 CUT_VIEW_QUESTION, CUT_VIEW_HEADER, CUT_VIEW_RECEIPT = 300, 60, 200
 CONTEXT_QUESTION, CONTEXT_LABEL = 300, 80
 EVENTS = ("start", "drain", "call", "settle", "landed", "reroute")
@@ -92,9 +94,14 @@ def when(iso):
 
 
 def local(iso, tz, fmt):
-    """A record's UTC time in the machine's zone (tz None) or the one given, as a model reads it."""
-    t = when(iso)
-    return (t.astimezone(tz) if tz is not None else t.astimezone()).strftime(fmt)
+    """A record's UTC time in the machine's zone (tz None) or the one given, as a model reads it. A stored time the
+    line's pattern let through that is no calendar time (2026-02-30) is written as it was stored: no composer fails
+    on a record's time."""
+    try:
+        t = when(iso)
+        return (t.astimezone(tz) if tz is not None else t.astimezone()).strftime(fmt)
+    except (ValueError, OverflowError, OSError):
+        return iso
 
 
 def defuse(v):
@@ -152,8 +159,11 @@ def closed_base(q, how, now):
 
 
 def closed_order(st):
-    """The closed questions' ids, oldest closing first (by when, then by id)."""
-    return sorted(st["closed"], key=lambda i: (st["closed"][i]["at"], idnum(i)))
+    """The closed questions' ids, oldest closing first: by when, then in the order they closed, which the record's
+    `closed` keeps (a step adds a closing at its end and writes the object in order; a record written by another
+    hand, sorted by key, breaks ties by that order instead)."""
+    pos = {i: n for n, i in enumerate(st["closed"])}
+    return sorted(st["closed"], key=lambda i: (st["closed"][i]["at"], pos[i]))
 
 
 def find_open(st, id_):
@@ -528,6 +538,11 @@ def run_start(st, start, new, session, fx):
     today = start.get("today") or {}
     if today.get("definite") and not st["import"]["never"]:
         import_asks(st, today.get("asks") or [], session, fx)
+    again = start.get("again")
+    if again is not None:
+        # The same start, ordered again after its answer was lost: the record is as the first left it, so the first's
+        # answer is the evidence of what it found (an empty sheet, what it imported, what was pending before it).
+        fx["start"].update({k: again[k] for k in ("empty", "before", "beforeCount", "imported")})
 
 
 # ------------------------------------------------------------------ the step
@@ -540,7 +555,8 @@ def apply(state, data, event, now, session, surface=None, tz=None):
     fx = {"applied": [], "skipped": 0, "verdicts": {}}
     writes, answered_now = {}, []
     if name == "start":
-        fx["start"] = {"empty": None, "before": [o["key"] for o in st["pending"]], "imported": []}
+        before = [o["key"] for o in st["pending"]]
+        fx["start"] = {"empty": None, "before": before[:BEFORE_KEYS], "beforeCount": len(before), "imported": []}
     drain(st, data, event, now, session, fx, writes, answered_now)
     keep_answers(st, answered_now)
     acked = set(event.get("acked") or [])
@@ -785,6 +801,28 @@ def question_line(lead, id_, revision, asker, header, question, labels, qcut=Non
     return s
 
 
+def moved(qs, session):
+    """The import's summary line, at most IMPORT_BUDGET units: each question while they fit, then how many more and
+    where they are read."""
+    lead = "Moved onto the sheet from the earlier question tool: "
+    items = ["%s %s (call %s, question %d)" % (q["id"], jstr(mark(q["question"], PROSE_CUT)),
+                                               q["importedFrom"]["callId"], q["importedFrom"]["index"] + 1) for q in qs]
+    whole = lead + ", ".join(items) + "."
+    if units(whole) <= IMPORT_BUDGET:
+        return whole
+
+    def rest(k):
+        left = qs[k:]
+        span = left[0]["id"] if len(left) == 1 else "%s to %s" % (left[0]["id"], left[-1]["id"])
+        return "and %d more, %s: sminos sheet show --session %s prints them." % (len(left), span, session)
+
+    k, used = 0, units(lead)
+    while k < len(items) and used + units(items[k]) + 2 + units(rest(k + 1)) <= IMPORT_BUDGET:
+        used += units(items[k]) + 2
+        k += 1
+    return lead + "".join(x + ", " for x in items[:k]) + rest(k)
+
+
 def context(st, session, after, empty=None, floor_known=False, imported=()):
     """I10's text for the main conversation at a start (`after`: "a resume", "a compaction", "a start"), or "" when
     the sheet has nothing to say."""
@@ -812,10 +850,8 @@ def context(st, session, after, empty=None, floor_known=False, imported=()):
     head = "[sheet v1] Your question sheet, after %s." % after
     foot = []
     if imported:
-        foot.append("Moved onto the sheet from the earlier question tool: %s." % ", ".join(
-            "%s %s (call %s, question %d)" % (q["id"], jstr(mark(q["question"], PROSE_CUT)),
-                                              q["importedFrom"]["callId"], q["importedFrom"]["index"] + 1)
-            for q in st["questions"] if q.get("importedFrom", {}).get("callId") in imported))
+        foot.append(moved([q for q in st["questions"] if q.get("importedFrom", {}).get("callId") in imported],
+                          session))
     foot.append("New ids continue from q%d." % st["nextId"])
     whole = "\n".join([head] + [x for _, x in items()] + foot)
     if units(whole) <= BUDGET:

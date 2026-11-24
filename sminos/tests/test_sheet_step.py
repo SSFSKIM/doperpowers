@@ -35,6 +35,7 @@ sheet = sminos.sibling_module("sminos_sheet")
 step_module = sminos.sibling_module("sminos_sheet_step")
 UTC = datetime.timezone.utc
 REAL_REPLACE, REAL_WRITE = os.replace, os.write    # a death is a patched os call, restored after each test
+REAL_RMTREE, REAL_SHUTIL_RMTREE = sheet._rmtree, shutil.rmtree
 
 
 def load(path):
@@ -56,7 +57,7 @@ def tree(root):
             rel = os.path.relpath(p, root)
             with open(p, "rb") as f:
                 data = f.read()
-            out[rel] = dump(json.loads(data)) if n == "state.json" else data
+            out[rel] = dump(json.loads(data)) if n in ("state.json", ".start-receipt.json") else data
     return out
 
 
@@ -105,8 +106,9 @@ class Replay(unittest.TestCase):
                 self.assertTrue(out["ok"], out)
                 self.assertEqual(out["effects"]["verdicts"], {k: v for k, v in c["verdicts"].items()
                                                               if k in c["event"].get("keys", [])})
+                # a fixture is the record's: the staging, the mod's own place, is the vectors' to pin
                 want = tree(os.path.join(SET, "fixtures", case, "after"))
-                got = {p: d for p, d in tree(h).items() if not p.endswith(".lock")}
+                got = {p: d for p, d in tree(h).items() if p.startswith("sheet/%s/" % c["session"])}
                 self.assertEqual(sorted(got), sorted(want))
                 for p in want:
                     self.assertEqual(got[p], want[p], p)
@@ -129,8 +131,8 @@ class Replay(unittest.TestCase):
                     self.assertEqual(out["effects"], v["answer"]["effects"])
                 else:
                     self.assertEqual(out["code"], v["answer"]["code"])
-                want = {rel: (dump(json.loads(content(c))) if rel.endswith("state.json") else content(c))
-                        for rel, c in v["after"].items()}
+                want = {rel: (dump(json.loads(content(c))) if rel.endswith(("state.json", ".start-receipt.json"))
+                              else content(c)) for rel, c in v["after"].items()}
                 got = without_locks(tree(h))
                 self.assertEqual(sorted(got), sorted(want))
                 for p in want:
@@ -847,6 +849,7 @@ class Bounds(unittest.TestCase):
     """A record at every bound answers a step under 3 MiB and a probe under 4 KiB (I5)."""
 
     def tearDown(self):
+        shutil.rmtree(os.environ["SMINOS_HOME"], ignore_errors=True)     # some hundreds of megabytes each
         os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
 
     def write_state(self, h, st, inbox=b""):
@@ -940,20 +943,23 @@ class AtOnce(unittest.TestCase):
         step(ev("start", start={"source": "startup"}))
         step(inline_call("toolu_c", [{"question": "Q%d?" % i, "options": opts("Yes", "No")} for i in range(1, 151)]))
         path = os.path.join(h, "sheet", SESSION, "state.json")
-        stop, seen, bad = threading.Event(), [], []
+        stop, seen, bad, failed = threading.Event(), [], [], []
 
         def reader():
-            while not stop.is_set():
-                with open(path, "rb") as f:
-                    raw = f.read()
-                try:
-                    seen.append(json.loads(raw)["seq"])
-                except ValueError:
-                    bad.append(raw[:80])
-                try:
-                    sheet.model(SESSION)
-                except sheet.Busy:
-                    pass
+            try:
+                while not stop.is_set():
+                    with open(path, "rb") as f:
+                        raw = f.read()
+                    try:
+                        seen.append(json.loads(raw)["seq"])
+                    except ValueError:
+                        bad.append(raw[:80])
+                    try:
+                        sheet.model(SESSION)
+                    except sheet.Busy:
+                        pass
+            except BaseException as e:    # a reader that fails fails the test
+                failed.append(repr(e))
 
         def door(i):
             x = line("page-%08d" % i, "answer", id="q%d" % (i % 150 + 1), revision=1, picks=["Yes" if i % 2 else "No"])
@@ -970,8 +976,13 @@ class AtOnce(unittest.TestCase):
         t.start()
         try:
             with ThreadPoolExecutor(12) as pool:
-                jobs = [pool.submit(door, i) for i in range(200)] + [pool.submit(a_step, i) for i in range(50)]
-                results = [j.result() for j in jobs]
+                # interleaved: a step after every four doors, so steps run while doors still append
+                order = [("door", i) for i in range(200)]
+                for n in range(50):
+                    order.insert(n * 5 + 4, ("step", n))
+                jobs = [(kind, pool.submit(door if kind == "door" else a_step, i)) for kind, i in order]
+                results = [j.result() for kind, j in jobs if kind == "door"] + \
+                    [j.result() for kind, j in jobs if kind == "step"]
         finally:
             stop.set()
             t.join()
@@ -979,8 +990,10 @@ class AtOnce(unittest.TestCase):
         for r in results[200:]:
             self.assertTrue(json.loads(r[1])["ok"], r)
         step(ev("drain"))
+        self.assertEqual(failed, [])
         self.assertEqual(bad, [])
         self.assertEqual(seen, sorted(seen), "seq only rises")
+        self.assertGreater(len(set(seen)), 10, "the reader saw the record change under it")
         st = state_of()
         keys = ["page-%08d" % i for i in range(200)]
         self.assertEqual([k for k in keys if k not in st["verdicts"]], [], "every key has its verdict")
@@ -1015,8 +1028,348 @@ class AtOnce(unittest.TestCase):
         self.assertTrue(os.path.isfile(os.path.join(h, "sheet", SESSION + ".lock")))
 
 
+# ------------------------------------------------------------------ fix wave 1 (the task review of M2)
+
+
+class TheAcknowledgementWindow(unittest.TestCase):
+    """Finding 1: what the replace forgets is made unavailable before it, so a death at either side of the replace
+    never lets a late step of the call apply again."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+        os.replace = REAL_REPLACE
+        sheet._rmtree = REAL_RMTREE
+
+    def committed(self, name="call-add"):
+        v, h = vector_home(name)
+        self.assertTrue(sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)["ok"])
+        return v, h
+
+    def late(self, v):
+        return sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+
+    def die_after_the_replace(self, v, event):
+        def death(path):
+            raise KeyboardInterrupt("killed after the replace")
+        sheet._rmtree = death
+        with self.assertRaises(KeyboardInterrupt):
+            sheet.run_step(v["session"], json.dumps(event).encode(), now=v["now"], tz=UTC)
+        sheet._rmtree = REAL_RMTREE
+
+    def test_an_acknowledgement_killed_after_its_replace(self):
+        v, h = self.committed()
+        self.die_after_the_replace(v, ev("drain", acked=["toolu_v01"]))
+        self.assertEqual(state_of(v["session"])["calls"], [])
+        late = self.late(v)
+        self.assertEqual(late.get("code"), "gone", late)
+        self.assertEqual(len(state_of(v["session"])["questions"]), 3, "q2 and q3 once")
+
+    def test_an_acknowledgement_killed_before_its_replace(self):
+        v, h = self.committed()
+        os.replace = lambda src, dst: (_ for _ in ()).throw(KeyboardInterrupt()) if dst.endswith("state.json") \
+            else REAL_REPLACE(src, dst)
+        with self.assertRaises(KeyboardInterrupt):
+            sheet.run_step(v["session"], json.dumps(ev("drain", acked=["toolu_v01"])).encode(), now=v["now"], tz=UTC)
+        os.replace = REAL_REPLACE
+        late = self.late(v)
+        self.assertEqual(late["effects"]["result"], "Added q2, q3.", "the recorded outcome answers it")
+        self.assertEqual(len(state_of(v["session"])["questions"]), 3)
+        self.assertTrue(step(ev("drain", acked=["toolu_v01"]), session=v["session"], now=v["now"])["ok"])
+        self.assertEqual(self.late(v)["code"], "gone")
+
+    def test_a_foreclosed_call_acknowledged_and_killed(self):
+        v, h = vector_home("settle-forecloses")
+        self.assertTrue(sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)["ok"])
+        self.die_after_the_replace(v, ev("drain", acked=["toolu_s02"]))
+        late = sheet.run_step(v["session"], json.dumps(ev("call", call={"callId": "toolu_s02"})).encode(),
+                              now=v["now"], tz=UTC)
+        self.assertEqual(late.get("code"), "gone", late)
+        self.assertEqual(len(state_of(v["session"])["questions"]), 1)
+
+    def test_a_start_that_forgets_the_calls_killed_after_its_replace(self):
+        v, h = self.committed()
+        self.die_after_the_replace(v, ev("start", start={"source": "resume"}))
+        self.assertEqual(state_of(v["session"])["calls"], [])
+        self.assertEqual(self.late(v).get("code"), "gone")
+        self.assertEqual(len(state_of(v["session"])["questions"]), 3)
+
+
+class AStartOrderedAgain(unittest.TestCase):
+    """Finding 2: a start ordered again answers what the first did."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+        os.replace = REAL_REPLACE
+
+    def twice(self, name):
+        v, h = vector_home(name)
+        first = sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        again = sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now="2026-11-24T10:00:03.000Z", tz=UTC)
+        self.assertEqual((again["seq"], again["effects"]), (first["seq"], first["effects"]))
+        return v, first
+
+    def test_a_fork_a_lost_record_and_an_import(self):
+        self.assertIn("This conversation is a copy", self.twice("start-fork")[1]["effects"]["context"])
+        self.assertIn("record was not found", self.twice("start-lost")[1]["effects"]["context"])
+        v, first = self.twice("start-import")
+        self.assertIn("Moved onto the sheet", first["effects"]["context"])
+
+    def test_an_import_whose_replace_failed_is_imported_by_the_retry(self):
+        v, h = vector_home("start-import")
+        os.replace = lambda src, dst: (_ for _ in ()).throw(OSError(5, "no")) if dst.endswith("state.json") \
+            else REAL_REPLACE(src, dst)
+        with self.assertRaises(OSError):
+            sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        os.replace = REAL_REPLACE
+        out = sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        self.assertEqual(out["effects"], v["answer"]["effects"])
+        self.assertEqual([q["id"] for q in state_of(v["session"])["questions"]], ["q1", "q2", "q3"])
+
+    def test_a_later_start_is_not_the_first_one_again(self):
+        v, h = vector_home("start-lost")
+        sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        step(ev("drain"), session=v["session"])
+        later = sheet.run_step(v["session"], json.dumps(v["event"]).encode(), now=v["now"], tz=UTC)
+        self.assertEqual((later["effects"]["start"]["empty"], later["effects"]["context"]), (None, ""))
+
+    def test_a_staged_ask_that_is_missing_is_no_evidence(self):
+        v, h = vector_home("start-import")
+        e = json.loads(json.dumps(v["event"]))
+        e["start"]["today"]["asks"].append({"file": "start-0002/ask-9.json"})
+        before = without_locks(tree(h))
+        out = sheet.run_step(v["session"], json.dumps(e).encode(), now=v["now"], tz=UTC)
+        self.assertEqual(out["code"], "bad-event")
+        self.assertEqual(without_locks(tree(h)), before)
+
+
+class BadRegistrations(unittest.TestCase):
+    """Finding 3: a registration that cannot be read as alive is not alive, and masks no other."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_an_impossible_date_and_a_pid_past_the_platform(self):
+        h = scratch()
+        d = os.path.join(h, "sheet", "surfaces")
+        os.makedirs(d)
+        good = {"v": 1, "name": "mawsd", "pid": 1, "url": "http://ok.localhost", "reach": "local",
+                "heartbeatAt": "2026-11-24T09:59:59.000Z"}
+        for name, reg in (("a-date", dict(good, name="a-date", heartbeatAt="2026-02-30T09:59:59.000Z")),
+                          ("b-pid", dict(good, name="b-pid", pid=2 ** 70)), ("mawsd", good)):
+            with open(os.path.join(d, name + ".json"), "w") as f:
+                json.dump(reg, f)
+        self.assertEqual([(r["name"], r["alive"]) for r in sheet.surfaces(NOW)],
+                         [("mawsd", True), ("a-date", False), ("b-pid", False)])
+        out = step(ev("start", start={"source": "startup"}))
+        self.assertEqual((out["view"]["surface"]["name"], out["view"]["surfaces"]), ("mawsd", 1))
+        with open(os.path.join(d, "mawsd.json"), "w") as f:      # the probe runs on the machine's clock
+            json.dump(dict(good, heartbeatAt=sheet._now_ms()), f)
+        code, probe_out, err = run_cli(["sheet", "probe", "--session", SESSION])
+        self.assertEqual((code, json.loads(probe_out)["surfaces"]), (0, 1), err)
+
+
+class NoCalendarDate(unittest.TestCase):
+    """Finding 4: a line's `at` that matches the pattern and is no calendar date is kept as the door took it, and no
+    composer fails on it."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_february_the_thirtieth_through_put_then_a_start_and_a_drain(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_d", [{"question": "Ship?", "options": opts("Yes", "No")}]))
+        x = line("page-00000030", "answer", at="2026-02-30T10:00:00.000Z", id="q1", revision=1, picks=["Yes"])
+        code, out, err = run_cli(["sheet", "put", "--session", SESSION, "--no-wait"],
+                                 stdin=(json.dumps(x) + "\n").encode())
+        self.assertEqual(code, 0, err)
+        started = step(ev("start", start={"source": "resume"}), now="2026-11-24T11:00:00.000Z")
+        self.assertTrue(started["ok"], started)
+        self.assertIn("answered 2026-02-30T10:00:00.000Z, while this session was stopped",
+                      started["view"]["ready"][0]["text"])
+        self.assertTrue(step(ev("drain"), now="2026-11-24T11:00:01.000Z")["ok"])
+
+    def test_a_composer_that_fails_commits_nothing(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        put_raw(SESSION, [line("page-00000031", "dismiss", id="q9")])
+        before = state_of()
+        real = step_module.view
+        step_module.view = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("a composer failed"))
+        try:
+            with self.assertRaises(RuntimeError):
+                step(ev("drain"))
+        finally:
+            step_module.view = real
+        self.assertEqual(state_of(), before)
+
+
+class TheImportsBudget(unittest.TestCase):
+    """Finding 5: the import's summary is budgeted like the open list; `New ids` always ends the context."""
+
+    def test_a_start_that_imports_one_hundred_and_eighty(self):
+        asks = [{"callId": "toolu_i%02d" % c, "askedAt": "2026-11-23T08:00:00.000Z",
+                 "questions": [{"question": ("Imported question %d.%d: " % (c, n) + "why " * 600)[:2000],
+                                "header": "H", "options": [{"label": "L%d" % j} for j in range(4)],
+                                "multiSelect": False} for n in range(4)]} for c in range(45)]
+        st, fx, _ = step_module.apply(None, b"", {"event": "start", "start": {
+            "source": "resume", "today": {"definite": True, "asks": asks}}}, NOW, SESSION)
+        self.assertEqual(len(st["questions"]), 180)
+        c = step_module.context(st, SESSION, "a resume", imported=[a["callId"] for a in asks])
+        self.assertLessEqual(step_module.units(c), 60000)
+        lines = c.splitlines()
+        self.assertEqual(lines[-1], "New ids continue from q181.")
+        self.assertTrue(lines[-2].startswith("Moved onto the sheet from the earlier question tool: q1 "))
+        self.assertRegex(lines[-2], r", and \d+ more, q\d+ to q180: sminos sheet show --session %s prints them\.$"
+                         % SESSION)
+        self.assertLessEqual(step_module.units(lines[-2]), step_module.IMPORT_BUDGET)
+
+
+class TheWholeAnswerIsBounded(unittest.TestCase):
+    """Finding 6: start.before is the first 200 and a count; an event's keys are at most 200; the answer is measured
+    as it is printed."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_a_start_after_a_large_backlog(self):
+        h = scratch()
+        st = built([{"question": "Q%d?" % i} for i in range(1, 501)])      # at most 500 open at once
+        st, _, _ = drained(st, answers(range(1, 501), lambda i: "yes"))
+        call = {"callId": "toolu_b2", "asker": "main", "withdraw": [],
+                "entries": [{"entry": {"question": "Q%d?" % i}, "captures": []} for i in range(501, 1001)]}
+        st, _, _ = step_module.apply(st, b"", {"event": "call", "call": call}, NOW, SESSION, SURF)
+        st, _, _ = drained(st, answers(range(501, 1001), lambda i: "yes"))
+        self.assertEqual(len(st["pending"]), 1000)
+        d = os.path.join(h, "sheet", SESSION)
+        os.makedirs(d)
+        with open(os.path.join(d, "state.json"), "w") as f:
+            json.dump(st, f)
+        open(os.path.join(d, "inbox.jsonl"), "w").close()
+        code, out, err = run_cli(["sheet", "step", "--session", SESSION],
+                                 stdin=json.dumps(ev("start", start={"source": "resume"})).encode())
+        o = json.loads(out)
+        self.assertEqual((len(o["effects"]["start"]["before"]), o["effects"]["start"]["beforeCount"]), (200, 1000))
+        self.assertEqual(out.strip(), json.dumps(o, ensure_ascii=False, separators=(",", ":")), "printed as measured")
+
+    def test_more_than_two_hundred_keys_is_a_bad_event(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        out = step(ev("drain", keys=["page-%08d" % i for i in range(201)]))
+        self.assertEqual(out["code"], "bad-event")
+
+    def test_every_part_of_the_view_is_cut_until_it_fits(self):
+        big = {"ok": True, "seq": 1, "effects": {"applied": []}, "view": {
+            "ready": [], "closed": {}, "answered": [],
+            "open": [{"id": "q%d" % i, "question": FOUR * 300, "header": FOUR * 60} for i in range(1, 3001)]}}
+        b = sheet._bounded(big)
+        self.assertLessEqual(len(sheet._dumps(b).encode()), sheet.ANSWER_MAX)
+        self.assertEqual(b["view"]["open"][0]["id"], "q1", "the newest go first")
+
+
+class RemoveUnderTheLock(unittest.TestCase):
+    """Finding 7: liveness again under the lock; a deletion that fails is said."""
+
+    def setUp(self):
+        self.home = scratch()
+        step(ev("start", start={"source": "startup"}))
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+        shutil.rmtree = REAL_SHUTIL_RMTREE
+        sminos.__dict__.pop("session_running", None)
+
+    def test_a_session_that_started_while_remove_waited(self):
+        answers_ = iter([None, {"sessionId": SESSION, "pid": 1}])
+        sminos.session_running = lambda s: next(answers_)
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()) as err:
+            sheet.remove(SESSION)
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("started while this waited", err.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(self.home, "sheet", SESSION, "state.json")))
+
+    def test_a_deletion_that_fails_is_said(self):
+        def failing(path, *a, **k):
+            raise OSError(13, "permission denied")
+        shutil.rmtree = failing
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()) as err:
+            sheet.remove(SESSION, cleared=True)
+        shutil.rmtree = REAL_SHUTIL_RMTREE
+        self.assertEqual(e.exception.code, 1)
+        self.assertIn("could not be deleted", err.getvalue())
+        self.assertIn(".removed-", err.getvalue())
+        self.assertIsNone(sheet.model(SESSION), "the record is detached all the same")
+
+
+class ClosingOrder(unittest.TestCase):
+    """Finding 8: ties in closing time are broken by the order questions closed, not by their ids."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_a_batch_in_reverse_id_order(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_r", [{"question": "Q%d?" % i} for i in range(1, 42)]))
+        put_raw(SESSION, answers(range(40, 0, -1), lambda i: "a%d" % i, batch="page-b00000rv"))
+        out = step(ev("drain"))
+        kept = [i for i, c in state_of()["closed"].items() if "answer" in c]
+        self.assertEqual(sorted(kept, key=lambda i: int(i[1:])), ["q%d" % i for i in range(1, 33)])
+        self.assertEqual([a["id"] for a in out["view"]["answered"]], ["q%d" % i for i in range(32, 0, -1)])
+        put_raw(SESSION, answers([41], lambda i: "later"))
+        out = step(ev("drain"), now="2026-11-24T10:00:01.000Z")
+        self.assertNotIn("answer", state_of()["closed"]["q32"], "q32 closed first among the 32 kept")
+        self.assertIn("answer", state_of()["closed"]["q1"])
+        self.assertEqual(out["view"]["answered"][0]["id"], "q31")
+
+
+class PicksAreAsciiDigits(unittest.TestCase):
+    """Finding 9."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_a_label_that_is_a_superscript_digit(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_s", [{"question": "Which power?", "options": opts("x", "²")}]))
+        code, out, err = run_cli(["sheet", "answer", "--session", SESSION, "q1", "--pick", "²"])
+        self.assertEqual(code, 0, err)
+        step(ev("drain"))
+        self.assertEqual(state_of()["pending"][0]["picks"], ["²"])
+
+
+class QueuedEntriesByKind(unittest.TestCase):
+    """Finding 11 (M1's reader): a queued `sent` entry shows only its own kind's fields."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_a_field_of_another_kind_is_not_shown(self):
+        import sheet_schema
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_k", [{"question": "Ship?", "options": opts("Yes", "No")}, {"question": "Why?"}]))
+        lines = [line("page-0000000a", "answer", id="q1", revision=1, picks=["Yes"], target="page-0000000z"),
+                 line("page-0000000b", "dismiss", id="q2", target="page-0000000z"),
+                 line("page-0000000c", "retract", target="page-0000000z", id="q1"),
+                 line("page-0000000d", "delivered", keys=["page-0000000z"], id="q1", target="page-0000000z")]
+        code, _, err = run_cli(["sheet", "put", "--session", SESSION, "--no-wait"],
+                               stdin="".join(json.dumps(x) + "\n" for x in lines).encode())
+        self.assertEqual(code, 0, err)
+        code, out, err = run_cli(["sheet", "show", "--session", SESSION, "--json"])
+        m = json.loads(out)
+        self.assertEqual({x["key"]: sorted(x) for x in m["sent"]}, {
+            "page-0000000a": ["id", "key", "kind", "state"], "page-0000000b": ["id", "key", "kind", "state"],
+            "page-0000000c": ["key", "kind", "state", "target"], "page-0000000d": ["key", "kind", "state"]})
+        self.assertEqual(sheet_schema.errors(load(os.path.join(SET, "schema", "show.schema.json")), m), [])
+
+
 if __name__ == "__main__":
-    r = unittest.main(exit=False, verbosity=1).result
+    try:
+        r = unittest.main(exit=False, verbosity=1).result
+    finally:
+        shutil.rmtree(BASE, ignore_errors=True)
     ok = r.wasSuccessful()
     print("test_sheet_step: %d %s" % (r.testsRun, "passed" if ok else "run, %d failed" % (len(r.failures) + len(r.errors))))
     sys.exit(0 if ok else 1)

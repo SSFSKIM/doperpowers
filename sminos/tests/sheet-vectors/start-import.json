@@ -1,5 +1,42 @@
 {
  "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/.start-receipt.json": {
+   "before": [],
+   "beforeCount": 0,
+   "empty": null,
+   "floor": null,
+   "imported": [
+    {
+     "callId": "toolu_B",
+     "ids": [
+      "q2",
+      "q3"
+     ]
+    }
+   ],
+   "seq": 4,
+   "source": "resume"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-1.json": {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "callId": "toolu_A",
+   "questions": [
+    {
+     "header": "Gate",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-2.json": "{\"callId\": \"toolu_B\", \"askedAt\": \"2026-11-23T08:00:00.000Z\", \"questions\": [{\"question\": \"Which screens get the new layout?\", \"header\": \"Screens \\udc00\", \"options\": [{\"label\": \"Home\", \"description\": \"The landing screen.\", \"preview\": \"## Home\"}, {\"label\": \"Settings\"}], \"multiSelect\": true}, {\"question\": \"Anything to add?\", \"options\": []}]}\n",
   "sheet/5eed0000-0000-4000-8000-000000000125/inbox.jsonl": "",
   "sheet/5eed0000-0000-4000-8000-000000000125/state.json": {
    "calls": [],
@@ -138,6 +175,7 @@
    "skipped": 0,
    "start": {
     "before": [],
+    "beforeCount": 0,
     "empty": null,
     "imported": [
      {

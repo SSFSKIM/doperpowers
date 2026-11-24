@@ -1,5 +1,35 @@
 {
  "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000123/.start-receipt.json": {
+   "before": [],
+   "beforeCount": 0,
+   "empty": "fork",
+   "floor": 11,
+   "imported": [],
+   "seq": 1,
+   "source": "fork"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000123/start-0001/ask-1.json": {
+   "askedAt": "2026-11-24T09:00:00.000Z",
+   "callId": "toolu_f1",
+   "questions": [
+    {
+     "header": "Migration",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "Now.",
+       "label": "Yes"
+      },
+      {
+       "description": "Later.",
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
   "sheet/5eed0000-0000-4000-8000-000000000123/inbox.jsonl": "",
   "sheet/5eed0000-0000-4000-8000-000000000123/state.json": {
    "calls": [],
@@ -42,6 +72,7 @@
    "skipped": 0,
    "start": {
     "before": [],
+    "beforeCount": 0,
     "empty": "fork",
     "imported": []
    },
@@ -80,7 +111,7 @@
    "v": 1
   }
  },
- "covers": "a fork's first start: a new record taking the floor and import.never, so today's asks the event carries are not imported, now or later; the context says the sheet starts empty and where ids start",
+ "covers": "a fork's first start: a new record taking the floor and import.never, so today's asks the event carries are not imported, now or later; the context says the sheet starts empty and where ids start; its own staged asks kept for its retry",
  "event": {
   "acked": [],
   "event": "start",

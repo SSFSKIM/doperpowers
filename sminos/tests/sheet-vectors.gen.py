@@ -73,6 +73,17 @@ def vector(name, covers, n, event, before, after, answer, now=NOW, surface=True)
                      "before": dict(before, **s), "after": dict(after, **s), "answer": answer}
 
 
+def receipt(sess, seq, source, floor=None, empty=None, before=(), imported=()):
+    """What a start leaves in the staging for its own retry: its answer, and the seq it left the record at."""
+    return {"sheet/.staging/%s/.start-receipt.json" % sess: {
+        "seq": seq, "source": source, "floor": floor, "empty": empty, "before": list(before),
+        "beforeCount": len(before), "imported": list(imported)}}
+
+
+def started(before=(), empty=None, imported=()):
+    return {"empty": empty, "before": list(before), "beforeCount": len(before), "imported": list(imported)}
+
+
 def entry(q, **f):
     return dict({"question": q}, **f)
 
@@ -421,18 +432,19 @@ CONTEXT = "\n".join([
     'Answered, the answer not yet delivered to you: q2 (revision 1), asked by the subagent reviewer (a1b2c3) '
     '"Migration" — "Ship the migration today?" Options: 1. Yes; 2. No.',
     "New ids continue from q4."])
-vector("start-existing", "a start on a record that exists: calls and the session's staging emptied; every pending "
-       "outcome owed across a stop and the main conversation's; the context names what is open and what is owed",
+vector("start-existing", "a start on a record that exists: calls forgotten and every call's staging, and an earlier "
+       "start's, made unavailable; every pending outcome owed across a stop and the main conversation's; the "
+       "context names what is open and what is owed; the start's answer kept for its retry",
        22, ev("start", agents={"running": ["a1b2c3"], "direct": True},
               start={"source": "resume", "today": {"definite": False, "asks": []}}),
        {**rec(S, record(S, 9, 4, offset(ka, kr), [qe], [oa, orr], cl, vs, 6,
                         calls=[{"callId": "toolu_x1", "result": "Nothing done.\nNot done: q7 is not open (never "
                                                                 "asked)."}]), [ka, kr]), **STAGE},
-       rec(S, record(S, 10, 4, offset(ka, kr), [qe], [dict(oa, acrossStop=True),
-                                                      dict(orr, recipient="main", taken=False, acrossStop=True)],
-                     cl, vs, 6), [ka, kr]),
-       {"ok": True, "effects": fx(start={"empty": None, "before": [ka["key"], kr["key"]], "imported": []},
-                                  context=CONTEXT)})
+       {**rec(S, record(S, 10, 4, offset(ka, kr), [qe], [dict(oa, acrossStop=True),
+                                                         dict(orr, recipient="main", taken=False, acrossStop=True)],
+                        cl, vs, 6), [ka, kr]),
+        **receipt(S, 10, "resume", before=[ka["key"], kr["key"]])},
+       {"ok": True, "effects": fx(start=started([ka["key"], kr["key"]]), context=CONTEXT)})
 
 S = session(23)
 ASK = {"callId": "toolu_f1", "askedAt": "2026-11-24T09:00:00.000Z",
@@ -442,12 +454,14 @@ FORK = ("[sheet v1] This conversation is a copy: its question sheet starts empty
         "belong to the conversation it was copied from, and their answers will not come here; ask again what you "
         "still need. New ids start at q12.")
 vector("start-fork", "a fork's first start: a new record taking the floor and import.never, so today's asks the event "
-       "carries are not imported, now or later; the context says the sheet starts empty and where ids start", 23,
+       "carries are not imported, now or later; the context says the sheet starts empty and where ids start; its own "
+       "staged asks kept for its retry", 23,
        ev("start", start={"source": "fork", "floor": 11, "today": {"definite": True,
                                                                    "asks": [{"file": "start-0001/ask-1.json"}]}}),
        staged(S, "start-0001", {"ask-1.json": ASK}),
-       rec(S, record(S, 1, 12, 0, log_next=1, projects={}, never=True)),
-       {"ok": True, "effects": fx(start={"empty": "fork", "before": [], "imported": []}, context=FORK)})
+       {**rec(S, record(S, 1, 12, 0, log_next=1, projects={}, never=True)), **staged(S, "start-0001", {"ask-1.json": ASK}),
+        **receipt(S, 1, "fork", 11, "fork")},
+       {"ok": True, "effects": fx(start=started(empty="fork"), context=FORK)})
 
 S = session(24)
 LOST = ("[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier "
@@ -455,8 +469,8 @@ LOST = ("[sheet v1] The question sheet's record was not found, so the sheet star
 vector("start-lost", "a resume whose conversation holds the sheet's ids (a floor) and whose record is gone: a new "
        "record from the floor, and the context says so", 24,
        ev("start", start={"source": "resume", "floor": 7, "today": {"definite": True, "asks": []}}),
-       {}, rec(S, record(S, 1, 8, 0, log_next=1, projects={})),
-       {"ok": True, "effects": fx(start={"empty": "lost", "before": [], "imported": []}, context=LOST)})
+       {}, {**rec(S, record(S, 1, 8, 0, log_next=1, projects={})), **receipt(S, 1, "resume", 7, "lost")},
+       {"ok": True, "effects": fx(start=started(empty="lost"), context=LOST)})
 
 S = session(25)
 qi = question("q1", "Which rollout gate?", "2026-11-22T18:00:00.000Z", "toolu_A", [opt("Every gate"), opt("No gate")],
@@ -488,11 +502,12 @@ vector("start-import", "a start's import of today's asks, read definitely: an as
            {"file": "start-0002/ask-1.json"}, {"file": "start-0002/ask-2.json"}]}}),
        {**rec(S, record(S, 3, 2, 0, [qi], log_next=2, imports={"toolu_A": ["q1"]})),
         **staged(S, "start-0002", {"ask-1.json": ASK_A, "ask-2.json": ASK_B})},
-       rec(S, record(S, 4, 4, 0, [qi, qb1, qb2], log_next=4, projects={"q1": G["PROJECT"]},
-                     owed=[owed_question(2, S, qb1), owed_question(3, S, qb2)],
-                     imports={"toolu_A": ["q1"], "toolu_B": ["q2", "q3"]})),
-       {"ok": True, "effects": fx(start={"empty": None, "before": [],
-                                         "imported": [{"callId": "toolu_B", "ids": ["q2", "q3"]}]},
+       {**rec(S, record(S, 4, 4, 0, [qi, qb1, qb2], log_next=4, projects={"q1": G["PROJECT"]},
+                        owed=[owed_question(2, S, qb1), owed_question(3, S, qb2)],
+                        imports={"toolu_A": ["q1"], "toolu_B": ["q2", "q3"]})),
+        **staged(S, "start-0002", {"ask-1.json": ASK_A, "ask-2.json": ASK_B}),
+        **receipt(S, 4, "resume", imported=[{"callId": "toolu_B", "ids": ["q2", "q3"]}])},
+       {"ok": True, "effects": fx(start=started(imported=[{"callId": "toolu_B", "ids": ["q2", "q3"]}]),
                                   context=CONTEXT, owed=2)})
 
 S = session(26)
@@ -500,8 +515,8 @@ vector("start-indefinite", "a start whose read of today's asks was not definite:
        "recorded, so the next start reads again; the floor raises a record that has assigned no id", 26,
        ev("start", start={"source": "resume", "floor": 5, "today": {"definite": False, "asks": [ASK_A]}}),
        rec(S, record(S, 1, 1, 0, log_next=1, projects={})),
-       rec(S, record(S, 2, 6, 0, log_next=1, projects={})),
-       {"ok": True, "effects": fx(start={"empty": None, "before": [], "imported": []}, context="")})
+       {**rec(S, record(S, 2, 6, 0, log_next=1, projects={})), **receipt(S, 2, "resume", 5)},
+       {"ok": True, "effects": fx(start=started(), context="")})
 
 # ------------------------------------------------------------------ a compaction's context; no record
 

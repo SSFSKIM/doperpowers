@@ -346,11 +346,14 @@ def model(session, keys=None):
         sent.append({"key": key, "state": st, **v})
     for x in queued:
         s = {"key": x["key"], "kind": x["kind"], "state": "queued"}
-        for f in ("id", "target"):
-            if f in x:
-                s[f] = x[f]
-        if x["key"] in cancelled:
-            s["cancelled"] = True
+        # projected by kind, as show's schema tells the three apart: a line may carry a field of another kind's,
+        # which the line's schema allows and no reader shows
+        if x["kind"] in ("answer", "dismiss"):
+            s["id"] = x["id"]
+            if x["key"] in cancelled:
+                s["cancelled"] = True
+        elif x["kind"] == "retract":
+            s["target"] = x["target"]
         sent.append(s)
     pending = [bounded(o) for o in state.get("pending") or []]
     out = {"v": 1, "session": state.get("session", session), "seq": state.get("seq")}
@@ -610,11 +613,14 @@ def surfaces(now=None):
                 and r.get("reach") in ("local", "remote") and isinstance(r.get("heartbeatAt"), str)
                 and TIME_RE.fullmatch(r["heartbeatAt"])):
             continue
-        age = (t - STEP().when(r["heartbeatAt"])).total_seconds()
         reg = {f: r[f] for f in ("v", "name", "pid", "url", "reach", "heartbeatAt")}
         if reg["url"].endswith("/") and len(reg["url"]) > 1:
             reg["url"] = reg["url"][:-1]
-        reg["alive"] = age <= HEARTBEAT_S and _running(int(r["pid"]))
+        try:                              # a well-shaped date that is no date, a pid the platform cannot hold
+            age = (t - STEP().when(r["heartbeatAt"])).total_seconds()
+            reg["alive"] = age <= HEARTBEAT_S and _running(int(r["pid"]))
+        except (ValueError, OverflowError, OSError):
+            reg["alive"] = False
         out.append((r["name"] != "mawsd", r["name"], n, reg))
     return [x[-1] for x in sorted(out, key=lambda x: x[:3])]
 
@@ -630,6 +636,14 @@ def suiting(regs, remote):
 
 STAGED_AGE_S = 86400
 CALL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
+EVENT_KEYS = 200
+RECEIPT = ".start-receipt.json"       # in the session's staging: the last start's answer, for its retry
+GONE = ".gone-"                       # a staging directory made unavailable, deleted after the replace
+
+
+def _call_id_ok(c):
+    """A call id names a directory of the staging: never one of the names the staging keeps for itself."""
+    return isinstance(c, str) and bool(CALL_ID_RE.fullmatch(c)) and not c.startswith((".", "start-"))
 
 
 def STEP():
@@ -671,6 +685,12 @@ def _sweep(rec, stage):
         for n in os.listdir(rec):
             if n.startswith(".tmp-"):
                 os.unlink(os.path.join(rec, n))
+    except OSError:
+        pass
+    try:
+        for n in os.listdir(stage):
+            if n.startswith(GONE):
+                _rmtree(os.path.join(stage, n))
     except OSError:
         pass
     cutoff = time.time() - STAGED_AGE_S
@@ -776,6 +796,8 @@ def _event_error(e):
     for f in ("acked", "keys"):
         if not (isinstance(e.get(f, []), list) and all(isinstance(x, str) for x in e.get(f, []))):
             return "%s is a list of strings" % f
+    if len(e.get("keys", [])) > EVENT_KEYS:
+        return "keys are at most %d" % EVENT_KEYS
     if "agents" in e:
         a = e["agents"]
         if not (isinstance(a, dict) and isinstance(a.get("running", []), list)
@@ -785,8 +807,8 @@ def _event_error(e):
         return "context is compact"
     if e["event"] in ("call", "settle"):
         c = e.get("call")
-        if not (isinstance(c, dict) and isinstance(c.get("callId"), str) and CALL_ID_RE.fullmatch(c["callId"])
-                and c["callId"].strip(".") and (c.get("floor") is None or _count(c["floor"], 0))):
+        if not (isinstance(c, dict) and _call_id_ok(c.get("callId"))
+                and (c.get("floor") is None or _count(c["floor"], 0))):
             return "call is {callId, floor?}"
         if c["callId"] in e.get("acked", []):
             return "a call is not acknowledged in its own step"
@@ -832,13 +854,9 @@ def _normalize(event, stage, state):
     if e["event"] == "start":
         s = dict(e["start"])
         t = dict(s.get("today") or {"definite": False, "asks": []})
-        asks = []
-        for x in t.get("asks") or []:
-            try:
-                asks.append(_ask(x, stage))
-            except FileNotFoundError:
-                pass                      # a start ordered again: the first emptied the staging, and recorded
-        t["asks"] = asks                  # what it imported under each call id
+        raw = t.get("asks") or []
+        s["files"] = [x["file"] for x in raw if isinstance(x, dict) and isinstance(x.get("file"), str)]
+        t["asks"] = [_ask(x, stage) for x in raw]
         s["today"] = t
         e["start"] = s
     return e
@@ -848,18 +866,35 @@ def _dumps(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+ANSWER_MAX = 3 << 20
+
+
 def _bounded(out):
-    """An answer under 3 MiB (I5): ready envelopes left out from the last recipient back, then closed entries from
-    the oldest, until it is."""
-    limit = 3 << 20
-    size = len(_dumps(out).encode())
+    """An answer under 3 MiB as it is printed (I5): ready envelopes left out from the last recipient back, then
+    closed entries from the oldest, then open questions from the newest, until it is. Each cut is estimated, then the
+    whole is measured again."""
     v = out["view"]
-    while size > limit and v["ready"]:
-        size -= len(_dumps(v["ready"].pop()).encode()) + 1
-    for k in list(v["closed"]):
-        if size <= limit:
-            break
-        size -= len(_dumps({k: v["closed"].pop(k)}).encode()) - 1
+    size = len(_dumps(out).encode())
+    while size > ANSWER_MAX:
+        over = size - ANSWER_MAX
+        if v["ready"]:
+            parts = [v["ready"]]
+        elif v["closed"]:
+            parts = [v["closed"]]
+        elif v["open"]:
+            parts = [v["open"]]
+        elif v["answered"]:
+            parts = [v["answered"]]
+        else:
+            break                         # nothing of the view is left to cut; the effects are bounded by the event
+        part = parts[0]
+        while over > 0 and part:
+            if isinstance(part, dict):
+                k = next(iter(part))
+                over -= len(_dumps({k: part.pop(k)}).encode())
+            else:
+                over -= len(_dumps(part.pop()).encode())
+        size = len(_dumps(out).encode())
     return out
 
 
@@ -881,6 +916,33 @@ def run_step(session, raw, now=None, tz=None):
         return _bad("busy", "the sheet's lock was not had in %d s" % LOCK_WAIT_S)
 
 
+def _receipt(stage, state, event):
+    """The last start's answer, when this start is that start ordered again: the record is as that start left it (its
+    seq), and the source and floor are the same. Any other step removes the receipt."""
+    try:
+        r = _read_json(os.path.join(stage, RECEIPT))
+    except (OSError, ValueError):
+        return None
+    s_ = event["start"]
+    if not isinstance(r, dict) or state is None or r.get("seq") != state["seq"] \
+            or r.get("source") != s_["source"] or r.get("floor") != s_.get("floor"):
+        return None
+    return r
+
+
+def _hide(stage, name):
+    """A staging directory made unavailable at once (renamed), to be deleted after the replace."""
+    try:
+        os.rename(os.path.join(stage, name), os.path.join(stage, GONE + uuid.uuid4().hex))
+    except FileNotFoundError:
+        pass
+
+
+def _start_dirs(norm):
+    """The start-<nonce> directories this start's asks were staged in: kept for its retry until the next start."""
+    return {x.split("/", 1)[0] for x in norm["start"].get("files", [])}
+
+
 def _step_locked(session, event, now, tz):
     STEP_ = STEP()
     rec, stage = record_dir(session), staging_dir(session)
@@ -890,7 +952,8 @@ def _step_locked(session, event, now, tz):
         state = _read_json(path)
     except FileNotFoundError:
         state = None
-    if state is None and event["event"] != "start":
+    name = event["event"]
+    if state is None and name != "start":
         return _bad("no-record", "%s has no question sheet: only a start makes one" % session)
     try:
         norm = _normalize(event, stage, state)
@@ -899,6 +962,10 @@ def _step_locked(session, event, now, tz):
                     % event["call"]["callId"])
     except (OSError, ValueError) as e:
         return _bad("bad-event", str(e))
+    if name == "start":
+        again = _receipt(stage, state, event)
+        if again is not None:
+            norm["start"]["again"] = again
     data = b""
     if state is not None:
         try:
@@ -910,6 +977,48 @@ def _step_locked(session, event, now, tz):
     regs = surfaces(now)
     surface, alive = suiting(regs, event.get("remote", False))
     new, fx, writes = STEP_.apply(state, data, norm, now, session, surface, tz)
+    unchanged = state is not None and dict(new, seq=state["seq"]) == state
+    new["seq"] = state["seq"] if unchanged else (state["seq"] if state is not None else 0) + 1
+
+    # The whole answer is composed before anything is written: no composer's failure follows a committed state.
+    running = (event.get("agents") or {}).get("running") or []
+    where = os.path.abspath(rec)
+    if name == "start" or event.get("context") == "compact":
+        after = {"resume": "a resume"}.get(norm["start"]["source"], "a start") if name == "start" \
+            else "a compaction"
+        st = fx.get("start") or {}
+        fx["context"] = STEP_.context(new, session, after, st.get("empty"),
+                                      floor_known=name == "start" and norm["start"].get("floor") is not None,
+                                      imported=[x["callId"] for x in st.get("imported", [])])
+    view = STEP_.view(new, event.get("runner", "terminal"), where, surface, alive, tz, running)
+    out = _bounded({"ok": True, "seq": new["seq"], "view": view, "effects": fx})
+
+    # What the replace forgets is made unavailable first: an acknowledged call's staging, and at a start every call's.
+    # A death between the two leaves the outcome in `calls`, which answers a late step of that call; after the
+    # replace, a late step finds no staging and is gone.
+    for call_id in event.get("acked") or []:
+        if _call_id_ok(call_id):
+            _hide(stage, call_id)
+    if name == "start":
+        keep = _start_dirs(norm)
+        try:
+            listed = os.listdir(stage)
+        except FileNotFoundError:
+            listed = []
+        for n in listed:
+            if n != RECEIPT and not n.startswith(GONE) and n not in keep:
+                _hide(stage, n)
+        os.makedirs(stage, mode=0o700, exist_ok=True)
+        _write_file(stage, RECEIPT, _dumps({"seq": new["seq"], "source": norm["start"]["source"],
+                                            "floor": norm["start"].get("floor"),
+                                            **{k: fx["start"][k] for k in ("empty", "before", "beforeCount",
+                                                                           "imported")}}).encode())
+    else:
+        try:
+            os.unlink(os.path.join(stage, RECEIPT))
+        except FileNotFoundError:
+            pass
+
     if state is None:
         os.makedirs(rec, mode=0o700, exist_ok=True)
         if not os.path.exists(os.path.join(rec, "inbox.jsonl")):
@@ -918,29 +1027,15 @@ def _step_locked(session, event, now, tz):
         p = os.path.join(rec, rel)
         if not (os.path.isfile(p) and os.path.getsize(p) == len(body)):
             _write_file(rec, rel, body)
-    unchanged = state is not None and dict(new, seq=state["seq"]) == state
     if not unchanged:
-        new["seq"] = (state["seq"] if state is not None else 0) + 1
         _write_file(rec, "state.json", _dumps(new).encode())
-    else:
-        new = state
-    for call_id in event.get("acked") or []:
-        if CALL_ID_RE.fullmatch(call_id) and call_id.strip("."):
-            _rmtree(os.path.join(stage, call_id))
-    if event["event"] == "start":
-        _rmtree(stage)
-    running = (event.get("agents") or {}).get("running") or []
-    where = os.path.abspath(rec)
-    if event["event"] == "start" or event.get("context") == "compact":
-        after = {"resume": "a resume"}.get(norm["start"]["source"], "a start") if event["event"] == "start" \
-            else "a compaction"
-        st = fx.get("start") or {}
-        fx["context"] = STEP_.context(new, session, after, st.get("empty"),
-                                      floor_known=event["event"] == "start" and
-                                      norm["start"].get("floor") is not None,
-                                      imported=[x["callId"] for x in st.get("imported", [])])
-    view = STEP_.view(new, event.get("runner", "terminal"), where, surface, alive, tz, running)
-    return _bounded({"ok": True, "seq": new["seq"], "view": view, "effects": fx})
+    try:
+        for n in os.listdir(stage):
+            if n.startswith(GONE):
+                _rmtree(os.path.join(stage, n))
+    except FileNotFoundError:
+        pass
+    return out
 
 
 def probe(session, remote=False):
@@ -987,7 +1082,7 @@ def _resolve_pick(q, word):
     """A pick as `answer` takes one: a place among the options (from 1), or a label in any case."""
     labels = [o["label"] for o in q.get("options") or []]
     w = word.strip()
-    if w.isdigit() and 1 <= int(w) <= len(labels):
+    if re.fullmatch(r"[0-9]+", w) and 1 <= int(w) <= len(labels):
         return labels[int(w) - 1]
     exact = [x for x in labels if x == w]
     folded = [x for x in labels if x.lower() == w.lower()]
@@ -1059,21 +1154,38 @@ def _send(session, lines):
 
 
 def remove(session, cleared=False):
-    """A stopped session's record and its staging, under the lock; the lock file stays (I1)."""
+    """A stopped session's record and its staging (I1, M2). Liveness is checked before the lock and again under it (a
+    session resumed while this waited); under the lock the record and the staging are detached, each by one rename
+    inside sheet/, so no reader or step sees part of a removal; then they are deleted, and what could not be is said.
+    The lock file stays."""
     if not cleared and S.session_running(session):
         S.die("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)" % session, 2)
+    detached = []
     try:
         with Lock(session):
             rec = record_dir(session)
             if not os.path.isfile(os.path.join(rec, "state.json")):
                 S.die("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
-            _rmtree(rec)
-            _rmtree(staging_dir(session))
+            if not cleared and S.running_now(session):
+                S.die("sheet remove: %s started while this waited; its sheet stays" % session, 2)
+            for d in (rec, staging_dir(session)):
+                if os.path.exists(d):
+                    to = os.path.join(sheet_root(), ".removed-" + uuid.uuid4().hex)
+                    try:
+                        os.rename(d, to)
+                    except OSError as e:
+                        S.die("sheet remove: %s could not be detached (%s); it is still there" % (d, e), 1)
+                    detached.append(to)
     except Busy:
         S.die("sheet remove: %s's sheet is busy; try again" % session, EXIT_BUSY)
-
-
-# ------------------------------------------------------------------ the verbs
+    left = []
+    for d in detached:
+        try:
+            shutil.rmtree(d)
+        except OSError as e:
+            left.append("%s (%s)" % (d, e))
+    if left:
+        S.die("sheet remove: %s's sheet is removed, but these could not be deleted: %s" % (session, "; ".join(left)), 1)
 
 
 def resolve(a, verb):
@@ -1180,7 +1292,7 @@ def cmd_sheet(a):
         if not a.session or not S.UUID_RE.fullmatch(a.session):
             S.die("sheet %s: --session takes an engine session id" % op)
         if op == "step":
-            print(json.dumps(run_step(a.session, sys.stdin.buffer.read()), ensure_ascii=False))
+            print(_dumps(run_step(a.session, sys.stdin.buffer.read())))
         else:
             try:
                 out = probe(a.session, remote=a.remote)

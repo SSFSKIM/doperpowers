@@ -1,5 +1,14 @@
 {
  "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000124/.start-receipt.json": {
+   "before": [],
+   "beforeCount": 0,
+   "empty": "lost",
+   "floor": 7,
+   "imported": [],
+   "seq": 1,
+   "source": "resume"
+  },
   "sheet/5eed0000-0000-4000-8000-000000000124/inbox.jsonl": "",
   "sheet/5eed0000-0000-4000-8000-000000000124/state.json": {
    "calls": [],
@@ -42,6 +51,7 @@
    "skipped": 0,
    "start": {
     "before": [],
+    "beforeCount": 0,
     "empty": "lost",
     "imported": []
    },
