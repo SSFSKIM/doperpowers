@@ -86,9 +86,9 @@ owner's fleet at the end (M5), which is parent acceptance line 5.
   code, and the gates on the final head. Commits 24c394442 and a8bd68be0,
   fix b554a06bb; review clean. GREEN on b554a06bb: `sminos-idle` 32105,
   `sminos-channels` 3m18s, `sminos-suites-c` 13m06s.
-- [ ] The whole range read once (Decision Log, "Verification"), its fix
+- [x] (2026-11-23) The whole range read once (Decision Log, "Verification"), its fix
   wave, and the merge.
-- [ ] M5 — The live check, on the merged change.
+- [x] (2026-11-23) M5 — The live check, on the merged change: two runs, each one VM made and downed (Outcomes).
 
 Each milestone's entry records, when it closes, the commit its gates were
 GREEN on and the figure the `sminos-idle` gate read there.
@@ -1145,7 +1145,7 @@ its timeout in `.github/ci-kit.yml`.
 | 10 the notice's own delivery is unchanged | M3: `test_idle.py`, `test_lease.py` (the chain's calls as before, the fourth call, exit 2, exit 0 with a waiting line), `test_channels_pools.py` (the queued event, once, after its release), the `devcloud-host` gate (the host's services against the sminos stand-in) |
 | 11 nothing else changed | M1 to M3: a comparison with the merge base's sminos, extracted from git, in each milestone's suite (the banner, the preamble, the request and the outcome of a spawn with no channel; a `say`; `channel show` of a pool of one; the two parsers, flag by flag and prefix by prefix, differing in `spawn --c` and `say --p` and nowhere else). For `say` the parser is compared with the merge base (1b5b56f9, `T/test_channels_pools.py`) and the output with CH2's base (61b27ebee, `test_channels_say.SameAsBase`, unchanged): between those two bases `say`'s output did not change (1.55.1 only escaped globs), and a second copy of the scene would lengthen `sminos-channels` for nothing (the holder's word); M4: every gate on the final head |
 | 12 what sessions are taught is true | M4: the evaluation's report; the tests that pin the preamble's lines and `sminos help` |
-| 13 on the fleet | M5 |
+| 13 on the fleet | M5 (2026-11-23, two runs, each one VM made and downed): the first run observed every step of the scene but the child's first message (its check did not wait); the second run observed that message, by the qualified address, in the spawner's project log and as the spawner's frame, 23 s after the child started |
 
 **M5, the scene.** Run by the plan's executor in a session on a Mac where
 devcloud's driver runs, after this child's pull request is merged, as one
@@ -2320,7 +2320,7 @@ preamble and `sminos help` teach it, evaluated against the text before
 (acceptance 12). sminos 1.56.0, devcloud 0.19.0. Every gate GREEN on the
 final head; `sminos-idle` read 32105 to 32858 calls a second across the
 milestones against 33570, `sminos-channels` 3m18s to 4m11s against 8
-minutes. Acceptance 13 (M5) is not claimed: it runs after the merge.
+minutes. Acceptance 13 (M5) ran after the merge; its record is the last entry of this section.
 
 **What the reviews found.** Each milestone's review sent it back once or
 twice; nothing reached a design decision but two wordings this plan
@@ -2360,6 +2360,36 @@ written to take one; a scoped deadline (`waits_until`) reaches the rest.
 A plan's sentences given in full are still claims about code that does
 not exist yet; two of them were wrong in ways only the built code showed,
 and the taught text is where such a claim does harm.
+
+2026-11-23 — **M5 complete; acceptance 13 claimed.** There were two runs on the merged versions, each with one VM, made under devcloud's caps without `--vm-confirmed` and downed inside its run. In each, a scratch thread made the VM by running `spawn --on new --channel` as its own task.
+
+Both ends ran the merged versions, sminos 1.56.0 and devcloud 0.19.0:
+- **The Mac** called both by their own paths, and sminos's finder resolved the marketplace clone's devcloud 0.19.0. A seat on an older sminos could not have made the VM, since 1.55 refuses `--channel`.
+- **The VM** carried the same two versions in its marketplace clone.
+
+Both runs' scratch channels, seats, worktrees and branches were removed, and nothing of either is left. The channels' logs stay at the hub.
+
+**The first run, the whole scene.** Every step but one expectation was observed:
+- **Placement.** The VM, enrolled minutes before, waited about a minute to read its spawner. It then placed its thread: `en-live-<run>#<sid>: in en-live-<run>` followed `seat spawned on <vm>`, and `sminos list <C>` listed the thread on `<vm>` at once.
+- **devcloud's real answer.** `channel show` printed `<vm>  1 live, 0 stopped  vm owned by en-live-a-<run>#<A>, up 11m, 0.02 USD so far`. After `vm owner` the line named the new owner. The only partial-coverage line was for another account, one whose provider this Mac has not registered.
+- **The host's notice through the real endpoint and hub.** The host printed `devcloud notice: channels: recorded <vm>/human:1 in en-live-<run>`, the recorded line and not the waiting one. Two seconds later the Mac's copy of the channel held one `human` event under `<vm>/human`, with `notice` `devcloud`, `to` `"*"` and the full text. `chat` printed it from `devcloud@<vm>`. The owning thread was handed the same full text in its project, as G1 delivers it, and no frame was made for the channel's record.
+- **The retires.** The thread that made the VM was refused its retire, naming the VM, `vm down` and `vm owner`. It was retired after the handover. The new owner was refused, then retired after the down. The VM's thread left the roster and the pool 153 s after the down.
+- **Not observed: the child's first message.** That run checked for it once, at once, rather than over the plan's two minutes, and downed the VM about three minutes after the child's launch. No `say` from the child reached any log.
+
+**The second run, for that message alone** (the holder's word). The child started 23 s before its message was recorded, and that first message used the qualified address the preamble gave it:
+- It typed `@<A's project id>/<A's short>` and ran `sminos say` once.
+- The VM printed `recorded <child>:7 in doperpowers | en-live-a-<run>: recorded (on <the Mac>)`, and the command exited 0.
+- The event reached A's project log on the Mac within seconds: kind `say`, writer `<vm>/<child session>`, `to` A's session.
+- A was handed it as a frame: `[sminos chat doperpowers <child>:7 from en-live-<run> … → @you]`.
+
+So the first run's miss was the scene's (the VM was downed while the child's first turn had not yet spoken), not the address's. The second run cannot show that directly, but there is nothing in it of a refused, misaddressed or unuploaded `say`.
+
+**Measured.**
+- `channel show` with the VM in the pool took 6.43 s, 5.99 s and 6.26 s, and 6.23 s with `--json`, against 1.43 s for a pool of one. That is about 5 s for the devcloud question, inside its 20 s bound.
+- On the 4-vCPU VM, MAWS's daemon (`mawsd`, built and started by the host's devenv about 9 min after creation) used 55–59 % of one core over its life in the minute and a half sampled. Over 24 s intervals it used 54–71 %. sminos's uplink, downloading the logs, used 24–58 %.
+- In the second run, five minutes after mawsd started, a single sample read mawsd at 62 % and the uplink at 50 %, with a load of 3.1.
+
+**Cost.** Two VMs of about 14 minutes each, at 0.110635 USD/h, about 0.05 USD.
 
 ## For the composite's writer
 
