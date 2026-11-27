@@ -2040,10 +2040,10 @@ export function registerToHuman(on: On) {
       unsent.add(e.props.tool_use_id)
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
-    // A collapsed group never draws ToolUse, so a call it still holds is
-    // standalone (on resume the group can unmount without redrawing) unless
-    // a hook beneath us expanded the group before the engine drew its children.
-    if (held !== undefined && isRead(e.props.tool) && !expanded.has(held) && !e.props.isExpanded) {
+    // On the terminal, a collapsed group never draws ToolUse, so a call
+    // it still holds is standalone (on resume the group can unmount without
+    // redrawing) unless a hook beneath us expanded the group.
+    if (e.surface === 'terminal' && held !== undefined && isRead(e.props.tool) && !expanded.has(held) && !e.props.isExpanded) {
       if (leaveGroup(e.requestId) && isFolding()) {
         $.ui.invalidate('ui.render')
       }
@@ -2076,7 +2076,7 @@ export function registerToHuman(on: On) {
       note(view, e.requestId, e.props)
       see($, view, e.requestId, read ? 'marked' : 'record')
     }
-    if (!isFolding() || (read && group === undefined)) {
+    if (!isFolding() || (read && (group === undefined || !expanded.has(group) || !unfolded.has(runStart(view.order, view.rowOf, group))))) {
       return next(e)
     }
     if (group !== undefined) {

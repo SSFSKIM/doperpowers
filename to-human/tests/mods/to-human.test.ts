@@ -1956,6 +1956,22 @@ describe('the message tool', () => {
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test('a standalone message stays visible until its result releases it from an unmounted folded group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [groupedMessage])
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await group.unmount()
+
+    // The standalone call draws before its separate result, still carrying isExpanded.
+    const call = await callRow($, groupedMessage.tool_use_id, { ...groupedMessage, isExpanded: true })
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+  })
+
   test('shrinking an expanded group redraws a message that already drew as a grouped call', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -1975,7 +1991,7 @@ describe('the message tool', () => {
     expect(await call.find({ type: 'Markdown', text: 'Done.' })).toBeDefined()
   })
 
-  test('an errored desktop message and its nested result keep their group unfolded', async ($, on) => {
+  test('an errored desktop message and its nested call and result keep their group unfolded', async ($, on) => {
     mock.env(on, { MAWS_NATIVE_TO_HUMAN: '9' })
     mock.store(on)
     on('ui.render', { component: 'ToolResult' }, (_, e) => ({ type: 'Text', children: [String(e.props.output)] }))
@@ -1990,6 +2006,14 @@ describe('the message tool', () => {
       props: { calls: [failed], isExpanded: false, isActive: false },
     })
     await group.press({ key: 'to-human-toggle' })
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await group.find(fold)).toBeDefined()
+    const child = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolUse', requestId: failed.tool_use_id,
+      props: failed,
+    })
+    expect(await group.find(fold)).toBeDefined()
+    expect(await child.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
     const result = await $.ui.mount({
       plugin: PLUGIN, surface: 'desktop', component: 'ToolResult', requestId: failed.tool_use_id,
       props: { tool_use_id: failed.tool_use_id, tool: MESSAGE_TOOL, output: failed.output, isErrored: true },
@@ -2000,7 +2024,7 @@ describe('the message tool', () => {
     expect(await result.find({ type: 'Text', text: 'Message was refused.' })).toBeDefined()
   })
 
-  test('a child drawn after a downstream hook expands its group keeps the run unfolded', async ($, on) => {
+  test('a group expanded by a downstream hook stays unfolded with a single fold control', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     on('ui.render', { component: 'ToolGroup' }, (_, e, next) => next({ ...e, props: { ...e.props, isExpanded: true } }))
@@ -2014,7 +2038,9 @@ describe('the message tool', () => {
     // The engine draws the child with the rewritten expansion state, not the group's incoming props.
     const child = await callRow($, groupedMessage.tool_use_id, { ...groupedMessage, isExpanded: true })
 
-    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await group.findAll(fold)).toHaveLength(1)
+    expect(await child.find(fold)).toBeUndefined()
     expect(await child.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
     expect(await child.find({ type: 'Markdown', text: 'Done.' })).toBeUndefined()
   })
