@@ -1197,14 +1197,15 @@ export type Surface = { name: string; url: string; reach: string }
 /**
  * A text the terminal draws as one line of text (§8.3; the row, the band and
  * the notification of a call's first question):
- * a line break, and a tab, a space; every other control character, C0, DEL
+ * a line break (U+2028 and U+2029 among them, as the command's cleaner
+ * reads them), and a tab, a space; every other control character, C0, DEL
  * and C1 (ESC and the sequences it opens among them), gone, so neither a
  * model's question nor a person's answer nor a registration's url breaks the
  * line or reaches the terminal as a command. Only for drawing: what is stored
  * and what any JSON carries stay as written.
  */
 function terminalText(text: string): string {
-  return text.replace(/\r\n|[\t\n\v\f\r\u0085]/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+  return text.replace(/\r\n|[\t\n\v\f\r\u0085\u2028\u2029]/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
 }
 
 /**

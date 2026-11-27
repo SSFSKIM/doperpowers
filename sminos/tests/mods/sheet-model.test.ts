@@ -726,7 +726,7 @@ describe("the terminal's drawing (M5, §8.3)", () => {
       expect(rowLines(input, { form: 'unknown' }, none)).toEqual(['outcome not known'])
     })
 
-    test("what the terminal is given is one line of text: a control character (ESC, a CSI or OSC 8 sequence's, a C1) goes, a line break (CR, LF, U+0085) is a space; in a question, a header, a receipt, a label", async () => {
+    test("what the terminal is given is one line of text: a control character (ESC, a CSI or OSC 8 sequence's, a C1) goes, a line break (CR, LF, U+0085, U+2028, U+2029) is a space; in a question, a header, a receipt, a label", async () => {
       const ESC = '\u001b'
       const odd = {
         ask: [
@@ -744,6 +744,8 @@ describe("the terminal's drawing (M5, §8.3)", () => {
       expect(rowLines(odd, added, { view, delivered: new Map() })).toEqual([`${name} → Yes[1A no more`])
       expect(rowLines(odd, added, { delivered: new Map([['q7', { how: 'answered', revision: 1, picks: [1], text: '' }]]) as never })).toEqual([`${name} → OAuth[2J1m`])
       expect(rowLines(odd, added, { delivered: new Map([['q7', { how: 'answered', revision: 1, picks: [], text: `two${ESC}]8;;http://y.example${ESC}\\\nlines` }]]) as never })).toEqual([`${name} → two]8;;http://y.example\\ lines`])
+      // U+2028 and U+2029 break a line as well, as the command's cleaner reads them.
+      expect(rowLines({ ask: [{ question: 'Which\u2028one?', header: 'A\u2029B' }] }, added, none)).toEqual(['q7 A B — Which one?'])
     })
   })
 })
