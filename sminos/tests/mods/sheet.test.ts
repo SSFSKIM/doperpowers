@@ -118,6 +118,22 @@ describe('the start choice, at session.start (I8)', () => {
     expect(reloaded.steps[0]).toMatchObject({ event: 'start', start: { source: 'resume', nonce } })
     expect((reloaded.kept.get('sminos.sheet') as { started?: string }).started).toBe(S1)
   })
+
+  test("a reload that finds the process in another session: the start owed for the one before, or being made ready for it, is not carried over, nor ordered for the session it is in now", async () => {
+    for (const owed of [{ starting: { nonce: 'n1', source: 'resume', transcript: `/t/${S1}.jsonl` } }, { preparing: { nonce: 'n1', source: 'resume', transcript: `/t/${S1}.jsonl` } }]) {
+      const kept = new Map<string, unknown>([['sminos.sheet', { shape: 1, choice: 'sheet', runner: 'terminal', session: S1, ...owed }]])
+      const reloaded = harness({ kept, session: S2, probe: ALIVE })
+      await reloaded.start()
+      await reloaded.settle()
+      await reloaded.tick()
+      expect(reloaded.steps).toEqual([])
+      expect(reloaded.writes()).toEqual([])
+      const now = reloaded.kept.get('sminos.sheet') as Record<string, unknown>
+      expect(now).toMatchObject({ choice: 'sheet', session: S2 })
+      expect(now).not.toHaveProperty('starting')
+      expect(now).not.toHaveProperty('preparing')
+    }
+  })
 })
 
 describe('the ask yields (I11)', () => {

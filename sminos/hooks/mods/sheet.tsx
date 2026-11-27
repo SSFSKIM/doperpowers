@@ -1704,25 +1704,28 @@ export function registerSheet(on: On) {
     })
     chosen.log?.forEach((line) => port.log(line))
     port.log(`sheet: ${chosen.choice}${chosen.runner === undefined ? '' : ` (${chosen.runner})`}: ${chosen.why}`)
+    // A start owed is its session's: one kept for another session (the process moved on before this reload) is not
+    // ordered under this one, its nonce, transcript and asks being that session's.
+    const owed = kept?.session === session ? { starting: kept.starting, preparing: kept.preparing } : {}
     sheet.kept = {
       shape: 1,
       choice: chosen.choice,
       ...(chosen.runner !== undefined && { runner: chosen.runner }),
       session,
       ...(kept?.started !== undefined && { started: kept.started }),
-      ...(kept?.starting !== undefined && { starting: kept.starting }),
-      ...(kept?.preparing !== undefined && { preparing: kept.preparing }),
+      ...(owed.starting !== undefined && { starting: owed.starting }),
+      ...(owed.preparing !== undefined && { preparing: owed.preparing }),
       ...(kept?.left !== undefined && { left: kept.left }),
     }
     sheet.port = port
     if (sheet.gen?.session !== session) {
       sheet.gen = newGen(session)
-      const owed = kept?.starting ?? kept?.preparing
-      if (owed !== undefined) {
+      const start = owed.starting ?? owed.preparing
+      if (start !== undefined) {
         // A start a module before this reload left unanswered, or still being made ready (made ready again then, under
         // its nonce): its retry searches the transcript it was given, and its context goes by a route, its
         // SessionStart long returned.
-        sheet.gen.transcript = owed.transcript
+        sheet.gen.transcript = start.transcript
         sheet.gen.isStartRouted = true
       }
     }
@@ -1758,7 +1761,7 @@ export function registerSheet(on: On) {
       // own calls (a resume's read of its asks included), so no prompt enters before the start has answered.
       await sessionStarted(port, early.source, early.session, early.transcript, true)
     }
-    if (kept?.choice === 'sheet' && (kept.started === session || kept.starting !== undefined || kept.preparing !== undefined)) {
+    if (kept?.choice === 'sheet' && (kept.started === session || owed.starting !== undefined || owed.preparing !== undefined)) {
       void check(port)
     }
     return result
