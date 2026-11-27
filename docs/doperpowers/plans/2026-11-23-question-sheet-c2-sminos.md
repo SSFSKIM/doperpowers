@@ -120,9 +120,13 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   three additions (a /clear's removal refuses while another process runs
   the session; the notification and `show`'s plain print cleaned), in
   `eddab4478..` the wave's head, two executors in parallel. Task review
-  then two re-reviews, converged. TECH-DEBT rows 51 to 55. The live
-  check whole: `live-sheet-check: 52 passed`. Mods 1,063 pass;
-  `test_sheet_step` 102, `test_sheet_log` 59, `test_sheet_contract` 40.
+  then two re-reviews, converged. TECH-DEBT rows 51 to 55. The
+  writer's re-review then found five more: two fixed (a /clear's witness
+  bound to the record's start count; a corrective drain for an outcome
+  given to a stopped subagent), three logged (rows 56 to 58); their task
+  review added row 59. The live
+  check whole: `live-sheet-check: 52 passed`. Mods 1,066 pass;
+  `test_sheet_step` 102, `test_sheet_log` 63, `test_sheet_contract` 40.
 - [ ] The merges (M1's alone and first: done, `2594002af`; M2 to M7 in
   one pull request, open, its gates GREEN; the merge is the composite's
   writer's).
@@ -1824,7 +1828,11 @@ these, none of them the published set:
   `--clearing <pid>`, and under the lock refuses while any other live
   process runs the session (`running_elsewhere`, failing closed on any
   unreadable listing or record). The mod removes nothing once it has
-  itself resumed the left session.
+  itself resumed the left session. The witness also binds the record's
+  count of starts (`started` in the staging's `.start-receipt.json`,
+  raised by every start applied, floored by the clock, kept past the
+  staging's expiry): a record started since the witness, by a resume
+  that has since stopped or by a replay of an older start, is kept.
 - *Identity* exists only when `.incarnation` holds the minted 32 hex
   digits (read as at most 64 bytes); anything else is no identity. A
   removal needs a confirmed match; a projection's write to a live record
@@ -1844,7 +1852,11 @@ these, none of them the published set:
   with no view held reads the agents first, and each settle reads them
   again; a reload carries `starting`/`preparing` only for its own
   session; a failed idle submit reconsiders delivery at once, spending
-  only its own wake's keys.
+  only its own wake's keys. A view that gives an outcome to a subagent
+  seen stopped, with no send in flight owning it, orders one corrective
+  drain with the current agents (`correctStopped`); the pair is spent only
+  by a step whose agent list left that agent out, so a failed lookup
+  keeps it owed for the next check.
 - *What a person reads.* The row, the band, the notification and the
   plain prints of `show` and `surfaces` drop C0 and C1 controls (ESC
   included) and draw a line break as a space, by one rule in both

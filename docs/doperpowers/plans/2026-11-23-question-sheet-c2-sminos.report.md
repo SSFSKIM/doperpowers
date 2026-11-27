@@ -363,3 +363,28 @@ in the person's own sminos home ships as TECH-DEBT.
 - The gates, on the final head: in the pull request's Validation Evidence.
 - The executors' full accounts with each RED and GREEN run are in the SDE ledger's task-8a and task-8b reports
   (gitignored, not committed).
+
+## The writer's re-review, and its last wave
+
+The dispatching session re-reviewed `eddab4478..2b510a937` and found five more items: two to fix and three logged.
+
+- Fixed:
+  - **A.** A resume keeps the record's directory and nonce, so a delayed /clear retry, once the resuming process had
+    stopped, still deleted the record. The clear's witness now carries the record's count of starts. Every start
+    applied raises the count (a replay of an older start included), the clock is its floor, and it outlives the
+    staging's expiry. The count is compared under the lock.
+  - **B.** A settle sampled the agents before its lock, so a subagent's stop drain landing in between left a fresh
+    answer assigned to the stopped agent, and nothing rerouted it. A view that gives an outcome to a stopped
+    subagent with no send owning it now orders one corrective drain with the current agents. A failed agent lookup
+    keeps that correction owed for the next check.
+- Logged: TECH-DEBT rows 56 (a failed agent lookup on the first drain after a reload), 57 (a start in flight at a
+  /clear) and 58 (`--pick ' 1 '` read as a place).
+- This wave's task review:
+  - First pass: A's nonce could be replayed (fixed by the count); the receipt expired with the staging (fixed); a
+    failed lookup spent B's only correction (fixed). B missed outcomes visible only in `ready` behind a backlog of
+    more than 200 (row 59).
+  - Second pass: clean, with two Minors. The manual's wording is fixed. The other is left: a busy corrective drain
+    can be followed by one more drain in the same check, which is bounded.
+- Evidence: mods 1,066 pass, 0 fail; `test_sheet_step` 102, `test_sheet_log` 63, `test_sheet_contract` 40 passed;
+  the vectors check (28) passes; the digest is unchanged. The whole live check passed on `5ed483615` (52) and was
+  run again on the wave's last code.
