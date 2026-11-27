@@ -10,6 +10,8 @@ import re
 import shutil
 import subprocess
 
+from record import one_line
+
 TIMEOUT = 30
 CLONE = ".claude/plugins/marketplaces/doperpowers/sminos/skills/sminos/scripts/sminos"
 # As sminos writes the line (`session_address`): `alias#short (project on machine)` or `short (project on
@@ -57,7 +59,8 @@ def address():
     if done is None or done.returncode != 0:
         return None
     m = _ADDRESS.search(done.stdout.strip())
-    return m.group(1) if m else None
+    # An address is written into a record: a line break of any kind in it would start a key of its own.
+    return m.group(1) if m and one_line(m.group(1)) else None
 
 
 def thread(name):
@@ -90,7 +93,8 @@ def thread_address(answer):
     project = answer.get("project")
     if not isinstance(project, dict) or not isinstance(project.get("name"), str) or not project["name"]:
         return None
-    return "%s (%s on %s)" % (thread_who(answer), project["name"], answer["machine"])
+    address = "%s (%s on %s)" % (thread_who(answer), project["name"], answer["machine"])
+    return address if one_line(address) else None
 
 
 def say(text):

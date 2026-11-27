@@ -13,12 +13,30 @@ OPEN = "```task-record"
 CLOSE = "```"
 KEYS = ("registered-by", "for", "due", "spec", "adopted")
 _LINE = re.compile(r"([a-z-]+): (\S.*)")
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def digest(body):
     """`sha256:` and the hex SHA-256 of the body as the API returns it."""
     return "sha256:" + hashlib.sha256((body or "").encode("utf-8")).hexdigest()
+
+
+def one_line(value):
+    """Whether a value is one line by every boundary `str.splitlines`
+    honors (CR, VT, FF, the separators \x1c-\x1e, NEL, U+2028, U+2029, as
+    well as LF): the parser reads a body by those, so any of them in a
+    value would start a key of its own."""
+    return isinstance(value, str) and value.splitlines() == [value]
+
+
+class ValueNotOneLine(ValueError):
+    pass
+
+
+def _check_values(keys):
+    for key, value in keys.items():
+        if value is not None and not one_line(value):
+            raise ValueNotOneLine("the record's %s must be one line, and %r is not" % (key, value))
 
 
 def valid_date(text):
@@ -108,6 +126,7 @@ def _append(prose, block):
 def compose(prose, keys):
     """A new body: the prose, then a block of `keys` (in order; None
     skipped) when there is one."""
+    _check_values(keys)
     lines = "".join("%s: %s\n" % (k, v) for k, v in keys.items() if v is not None)
     return _append(prose.rstrip(), OPEN + "\n" + lines + CLOSE) if lines else prose
 
@@ -124,6 +143,7 @@ def with_keys(body, updates):
     """The body with each key of `updates` set (None: removed) in its record
     block; every other line of the block and the text above it unchanged. A
     block left with no line is dropped; a body without one gains one."""
+    _check_values(updates)
     p = parse(body)
     if p.misplaced:
         raise ValueError("a record block that is doubled or not last takes no key")

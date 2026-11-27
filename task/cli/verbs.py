@@ -41,6 +41,11 @@ class Context:
     def repo(self):
         return self.board.repo
 
+    def cmd(self, words):
+        """A command the CLI prints for its reader to run: it names the
+        board, so that it works from any directory."""
+        return "task %s --repo %s" % (words, shlex.quote(self.repo))
+
     def address(self):
         """This session's address, asked of sminos once."""
         if self._address is False:
@@ -105,8 +110,8 @@ def check_record_values(args):
         raise usage("--batch takes a name of letters, digits, '.', '_' and '-' (44 at most), not %r" % batch)
     for flag in ("spec", "title"):
         value = getattr(args, flag, None)
-        if value is not None and (not value.strip() or "\n" in value):
-            raise usage("--%s takes one non-empty line" % flag)
+        if value is not None and (not value.strip() or not record.one_line(value)):
+            raise usage("--%s takes one non-empty line (no line break of any kind)" % flag)
 
 
 def resolve_to(name):
@@ -117,9 +122,14 @@ def resolve_to(name):
     answer, why = sminos.thread(name)
     if answer is None:
         raise failed("sminos names no thread for --to %s (%s): nothing was written" % (name, why))
+    if not answer["session"]:
+        # A seat between sessions: the message would go out with no tag.
+        raise failed("the thread --to %s is (%s) has no current session, so no message can reach it: nothing was "
+                     "written" % (name, answer["thread"] or "no thread id"))
     address = sminos.thread_address(answer)
     if address is None:
-        raise failed("sminos names no project for the thread --to %s is: nothing was written" % name)
+        raise failed("sminos gives no one-line address with a project for the thread --to %s is: nothing was "
+                     "written" % name)
     return answer, address
 
 
@@ -173,17 +183,22 @@ def create(ctx):
     except Exception as e:  # the issue exists: whatever stopped the rest, say what is left and how to finish
         print("%d %s" % (number, url))
         said = getattr(e, "message", None) or str(e) or type(e).__name__
+        finish = ctx.cmd("set %d --readiness %s" % (number, a.readiness))
+        unsent = "; no message was sent to the thread --to named" if for_answer is not None else ""
+        if step == "its readiness label" and not (isinstance(e, GitHubError) and e.refused):
+            # No refusal was heard: the label may have been written.
+            raise failed("#%d was opened, and the write of its readiness label had no definite answer (%s): whether "
+                         "it carries %s is unconfirmed. Read it with %s; if it lacks the label, %s%s"
+                         % (number, said, a.readiness, ctx.cmd("show %d" % number), finish, unsent))
         raise failed("#%d was opened, and %s could not be written (%s): it is left untracked, with no readiness "
                      "label, so that it is never seen as ready unfinished. Finish it: write any edge it lacks with "
-                     "task edge, then task set %d --readiness %s%s"
-                     % (number, step, said, number, a.readiness,
-                        "; no message was sent to the thread --to named" if for_answer is not None else ""))
+                     "%s, then %s%s" % (number, step, said, ctx.cmd("edge %d" % number), finish, unsent))
     print("%d %s" % (number, url))
     if for_answer is not None:
         # The tag `say` resolves to that one thread: its current session's whole id (sminos's tag grammar reads a
         # bare id as an id across the org), never the display address, whose alias may not be a tag at all.
-        message = ("@%s a ticket is registered for you: %s#%d %s (%s). Read it with: task show %d --repo %s"
-                   % (for_answer["session"], repo, number, a.title, url, number, repo))
+        message = ("@%s a ticket is registered for you: %s#%d %s (%s). Read it with: %s"
+                   % (for_answer["session"], repo, number, a.title, url, ctx.cmd("show %d" % number)))
         if not sminos.say(message):
             print("sminos did not take the message to %s; send it yourself:" % for_address)
             print("sminos say %s" % shlex.quote(message))
@@ -321,20 +336,21 @@ def lint(ctx):
     fails = [f for f in findings if f["level"] == "FAIL"]
     warns = [f for f in findings if f["level"] == "WARN"]
     lines = ["%s #%d %s: %s" % (f["level"], f["number"], f["what"], f["repair"]) for f in findings]
-    lines.append("%d FAIL, %d WARN; %d untracked open issue%s (task list --untracked)"
-                 % (len(fails), len(warns), untracked, "" if untracked == 1 else "s"))
+    lines.append("%d FAIL, %d WARN; %d untracked open issue%s (%s)"
+                 % (len(fails), len(warns), untracked, "" if untracked == 1 else "s", ctx.cmd("list --untracked")))
     emit(ctx, {"repo": ctx.repo, "fail": fails, "warn": warns, "untracked": untracked}, "\n".join(lines))
     if fails:
         raise refused("") if ctx.args.json else refused("the board breaks %d of its rules" % len(fails))
 
 
 # ── writing ───────────────────────────────────────────────────────────────
-def _untrusted(t):
+def _untrusted(ctx, t):
     v = t.node
     return refused("#%d's body is not trusted (authored by %s, last edited by %s): task writes no body it does not "
-                   "trust. Read it whole with task show %d; on the owner's word, task adopt %d --digest %s"
+                   "trust. Read it whole with %s; on the owner's word, %s"
                    % (t.number, (v.get("author") or {}).get("login", "unknown"),
-                      (v.get("editor") or {}).get("login", "nobody"), t.number, t.number, record.digest(t.body)))
+                      (v.get("editor") or {}).get("login", "nobody"), ctx.cmd("show %d" % t.number),
+                      ctx.cmd("adopt %d --digest %s" % (t.number, record.digest(t.body)))))
 
 
 def _axis_changes(labels, wanted, axis):
@@ -370,11 +386,11 @@ def set_(ctx):
     if a.to is not None:
         updates["for"] = resolve_to(a.to)[1]
     if (updates or text is not None) and not t.body_trusted:
-        raise _untrusted(t)
+        raise _untrusted(ctx, t)
     if updates and text is None and t.parsed.problems:
-        raise refused("#%d's record block cannot be read (%s): give the body's prose with task set %d --body-file "
-                      "<file>, which drops the unreadable block, and set its keys again with their flags"
-                      % (a.number, "; ".join(t.parsed.problems), a.number))
+        raise refused("#%d's record block cannot be read (%s): give the body's prose with %s, which drops the "
+                      "unreadable block, and set its keys again with their flags"
+                      % (a.number, "; ".join(t.parsed.problems), ctx.cmd("set %d --body-file <file>" % a.number)))
     body, dropped = t.body, None
     if text is not None:
         if t.parsed.problems:
@@ -434,7 +450,7 @@ def adopt(ctx):
     now = record.digest(t.body)
     if now != a.digest:
         raise refused("#%d's body has changed since it was read (its digest is now %s): read it whole again with "
-                      "task show %d" % (a.number, now, a.number))
+                      "%s" % (a.number, now, ctx.cmd("show %d" % a.number)))
     if t.body_trusted:
         print("#%d's body is already trusted: nothing to adopt" % a.number)
         return

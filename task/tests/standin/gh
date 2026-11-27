@@ -371,7 +371,10 @@ def main(argv):
         if rule.get("times", 1) > 0 and rule["match"] in joined:
             rule["times"] = rule.get("times", 1) - 1
             save(s)
-            sys.stderr.write("gh: %s (HTTP %d)\n" % (rule.get("message", "stand-in failure"), rule.get("status", 500)))
+            status = rule.get("status", 500)
+            # A rule with no status plays a failure no answer was heard for (a timeout, the transport).
+            sys.stderr.write("gh: %s%s\n" % (rule.get("message", "stand-in failure"),
+                                              " (HTTP %d)" % status if status is not None else ""))
             return 1
     try:
         if path == "graphql":

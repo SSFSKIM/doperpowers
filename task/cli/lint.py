@@ -64,6 +64,11 @@ def _cycles(repo, nodes):
 def lint(repo, nodes, login):
     """(findings, untracked count). A finding: level, number, what, repair."""
     out, untracked = [], 0
+
+    def cmd(words):
+        """A repair command that names the board, whatever directory it is run from."""
+        return "task %s --repo %s" % (words, shlex.quote(repo))
+
     for node in nodes:
         t = B.Ticket(repo, node, login)
         n, labels = t.number, t.labels
@@ -71,40 +76,40 @@ def lint(repo, nodes, login):
         statuses = B.statuses_of(labels)
         if statuses:
             _find(out, "FAIL", n, "a status label of the old vocabulary (%s)" % ", ".join(statuses),
-                  "task set %d --readiness <R>, which takes it off" % n)
+                  "%s, which takes it off" % cmd("set %d --readiness <R>" % n))
         if not readiness:
             untracked += 1
             if horizons:
                 _find(out, "FAIL", n, "a horizon label (%s) on an open issue with no readiness label"
-                      % ", ".join(horizons), "task set %d --readiness <R>" % n)
+                      % ", ".join(horizons), cmd("set %d --readiness <R>" % n))
             if B.CLAIMED in labels:
                 _find(out, "FAIL", n, "`claimed` on an open issue with no readiness label",
-                      "task set %d --readiness <R>" % n)
+                      cmd("set %d --readiness <R>" % n))
             continue
         if len(readiness) > 1:
             _find(out, "FAIL", n, "more than one readiness label (%s)" % ", ".join(readiness),
-                  "task set %d --readiness <R>" % n)
+                  cmd("set %d --readiness <R>" % n))
         if not horizons:
-            _find(out, "FAIL", n, "no horizon label", "task set %d --horizon <H>" % n)
+            _find(out, "FAIL", n, "no horizon label", cmd("set %d --horizon <H>" % n))
         elif len(horizons) > 1:
             _find(out, "FAIL", n, "more than one horizon label (%s)" % ", ".join(horizons),
-                  "task set %d --horizon <H>" % n)
+                  cmd("set %d --horizon <H>" % n))
         priorities, categories = B.priorities_of(labels), B.categories_of(labels)
         if len(priorities) > 1:
-            _find(out, "FAIL", n, "two priorities (%s)" % ", ".join(priorities), "task set %d --priority <P>" % n)
+            _find(out, "FAIL", n, "two priorities (%s)" % ", ".join(priorities), cmd("set %d --priority <P>" % n))
         elif not priorities:
-            _find(out, "WARN", n, "no priority", "task set %d --priority <P>" % n)
+            _find(out, "WARN", n, "no priority", cmd("set %d --priority <P>" % n))
         if len(categories) > 1:
-            _find(out, "FAIL", n, "two categories (%s)" % ", ".join(categories), "task set %d --category <C>" % n)
+            _find(out, "FAIL", n, "two categories (%s)" % ", ".join(categories), cmd("set %d --category <C>" % n))
         elif not categories:
-            _find(out, "WARN", n, "no category", "task set %d --category <C>" % n)
+            _find(out, "WARN", n, "no category", cmd("set %d --category <C>" % n))
         if t.body_trusted and t.parsed.problems:
             _find(out, "FAIL", n, "a malformed record block (%s)" % "; ".join(t.parsed.problems),
-                  "task set %d --body-file <the prose>, which drops the unreadable block; then set its keys again "
-                  "with --due, --spec and --to" % n)
+                  "%s, which drops the unreadable block; then set its keys again with --due, --spec and --to"
+                  % cmd("set %d --body-file <the prose>" % n))
         if horizons == ["planned"] and not t.blockers:
             _find(out, "WARN", n, "planned with no blocker: its order is decided and nothing says after what",
-                  "task edge %d --block <N>, or task set %d --horizon expected" % (n, n))
+                  "%s, or %s" % (cmd("edge %d --block <N>" % n), cmd("set %d --horizon expected" % n)))
         for b in t.blockers:
             if b["state"] in B.STUCK:
                 same = b["repo"].lower() == repo.lower()
@@ -112,12 +117,12 @@ def lint(repo, nodes, login):
                 arg = "%d" % b["number"] if same else shlex.quote("%s#%d" % (b["repo"], b["number"]))
                 how = "as not planned" if b["state"] == "not-planned" else "with no reason GitHub gives as completed"
                 _find(out, "WARN", n, "a blocker closed %s (%s): stuck" % (how, shown),
-                      "task edge %d --unblock %s, or task close %d --not-planned" % (n, arg, n))
+                      "%s, or %s" % (cmd("edge %d --unblock %s" % (n, arg)), cmd("close %d --not-planned" % n)))
     for part in _cycles(repo, nodes):
         a = part[0]
         nxt = next(b["number"] for node in nodes if node["number"] == a for b in node["blockedBy"]["nodes"]
                    if b["number"] in part)
         _find(out, "FAIL", a, "a blocked-by cycle (%s)" % ", ".join("#%d" % x for x in part),
-              "task edge %d --unblock %d, or cut it elsewhere in the cycle" % (a, nxt))
+              "%s, or cut it elsewhere in the cycle" % cmd("edge %d --unblock %d" % (a, nxt)))
     out.sort(key=lambda f: (f["level"] != "FAIL", f["number"]))
     return out, untracked

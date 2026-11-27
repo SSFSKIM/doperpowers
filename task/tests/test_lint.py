@@ -22,6 +22,7 @@ class LintTest(BoardCase):
         self.assertTrue(lines, out)
         self.assertIn(words, lines[0])
         self.assertIn("task ", lines[0])  # names the repair
+        self.assertIn(" --repo acme/widgets", lines[0])  # which works from any directory
         self.assertEqual(code, 3 if level == "FAIL" else 0, out)
         del self.state["repos"]["acme/widgets"]["issues"][str(n)]
         self.save()
@@ -90,9 +91,9 @@ class LintTest(BoardCase):
         code, out = self.lint()
         lines = [l for l in out.splitlines() if l.startswith("WARN #1 ")]
         self.assertEqual(len(lines), 3, out)
-        self.assertIn("task edge 1 --unblock 90,", lines[0] + lines[1] + lines[2])
-        self.assertIn("task edge 1 --unblock 91,", "".join(lines))
-        self.assertIn("task edge 1 --unblock 'acme/gears#7',", "".join(lines))
+        self.assertIn("task edge 1 --unblock 90 --repo acme/widgets, or", "".join(lines))
+        self.assertIn("task edge 1 --unblock 91 --repo acme/widgets, or", "".join(lines))
+        self.assertIn("task edge 1 --unblock 'acme/gears#7' --repo acme/widgets, or", "".join(lines))
 
     def test_json(self):
         self.issue(1, labels=GOOD + ["status:deferred"])

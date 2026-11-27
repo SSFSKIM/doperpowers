@@ -12,6 +12,7 @@ sys.dont_write_bytecode = True
 import verbs  # noqa: E402
 from common import FAILED, USAGE, Stop  # noqa: E402
 from github import GitHubError  # noqa: E402
+from record import ValueNotOneLine  # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 
@@ -152,6 +153,9 @@ def main(argv):
     except GitHubError as e:
         sys.stderr.write("error: GitHub: %s\n" % e.message)
         return FAILED
+    except ValueNotOneLine as e:  # the record writer's own guard, met before any write
+        sys.stderr.write("error: %s\n" % e)
+        return USAGE
     return 0
 
 

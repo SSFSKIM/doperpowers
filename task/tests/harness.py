@@ -96,6 +96,7 @@ class BoardCase(unittest.TestCase):
         return self.load()["repos"][repo]["issues"][str(n)]
 
     def fail_on(self, match, times=1, status=422, message="stand-in refusal"):
+        self.load()  # what earlier commands wrote stays
         self.state["fail"].append({"match": match, "times": times, "status": status, "message": message})
         self.save()
 

@@ -7,6 +7,7 @@ Label writes are single adds and removes, never a replacement of an issue's
 label set, which would drop a label another writer set a moment before."""
 import base64
 import json
+import re
 import subprocess
 import urllib.parse
 
@@ -52,10 +53,19 @@ M_REMOVE_SUB_ISSUE = """mutation TaskRemoveSubIssue($parent: ID!, $child: ID!) {
 
 
 class GitHubError(Exception):
-    def __init__(self, message, not_found=False):
+    """A call that failed. `status` is the HTTP status GitHub answered
+    with, None when no answer was heard (a timeout, the transport)."""
+
+    def __init__(self, message, not_found=False, status=None):
         super().__init__(message)
         self.message = message
         self.not_found = not_found
+        self.status = status
+
+    @property
+    def refused(self):
+        """GitHub answered, and refused: the write did not happen."""
+        return self.status is not None and 400 <= self.status < 500
 
 
 class Client:
@@ -78,7 +88,9 @@ class Client:
         if done.returncode != 0:
             said = (done.stderr.strip() or done.stdout.strip() or "exit %d" % done.returncode).splitlines()
             message = said[-1] if said else "gh failed"
-            raise GitHubError(message, not_found="HTTP 404" in done.stderr or "NOT_FOUND" in done.stdout)
+            status = re.search(r"\(HTTP (\d{3})\)", done.stderr)
+            raise GitHubError(message, not_found="HTTP 404" in done.stderr or "NOT_FOUND" in done.stdout,
+                              status=int(status.group(1)) if status else None)
         try:
             return json.loads(done.stdout) if done.stdout.strip() else None
         except ValueError:

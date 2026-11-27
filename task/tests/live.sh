@@ -62,7 +62,14 @@ PY
 )"
     echo "gh names $gh_names; task lists $task_lists; its open issues' URLs are the scratch repository's: $urls"
     status=0
-    case "$urls" in OTHER*) echo "fork: task returned another repository's issues" >&2; status=1 ;; esac
+    case "$urls" in
+      OTHER*) echo "fork: task returned another repository's issues" >&2; status=1 ;;
+    esac
+    if [ "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["tickets"]))' "$work/list.json")" = 0 ]; then
+      echo "fork: the scratch board listed no ticket, so the URL check read nothing: it needs a standing open" \
+        "ticket there (need-input, undecided, never takeable)" >&2
+      status=1
+    fi
     if [ "$(lower "$gh_names")" != "$(lower "$upstream")" ]; then
       echo "fork: the client did not name the upstream project here, so the case shows nothing about it" >&2
       status=1
