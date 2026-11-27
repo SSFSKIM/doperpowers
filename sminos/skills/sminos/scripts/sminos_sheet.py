@@ -415,7 +415,7 @@ def terminal_safe(v):
 
 def text(m):
     """`show` without --json: a question a block, then what is hidden and what waits for delivery. What a model or a
-    person wrote is printed terminal_safe, one line each."""
+    person wrote is printed terminal_safe, one line each, but for a question's own lines, kept and indented."""
     lines = []
     for q in m["open"]:
         head = q["handle"]
@@ -425,7 +425,11 @@ def text(m):
         if q.get("header"):
             head += "  " + terminal_safe(q["header"])
         lines.append(head)
-        lines.append("  " + terminal_safe(q["question"]))
+        # A question's own lines (LF) stay, where `show` is read in full; each after the first is indented under
+        # it, so none can start a line that reads as a field or another question. A CR is dropped.
+        first, *more = q["question"].replace("\r", "").split("\n")
+        lines.append("  " + terminal_safe(first))
+        lines += ["    " + terminal_safe(x) for x in more]
         for i, o in enumerate(q.get("options") or [], 1):
             lines.append("  %d. %s%s" % (i, terminal_safe(o["label"]),
                                          "  (recommended)" if o.get("recommended") else ""))

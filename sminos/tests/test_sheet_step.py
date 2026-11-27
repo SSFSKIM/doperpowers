@@ -1491,6 +1491,16 @@ class ShowsPlainPrint(unittest.TestCase):
     def tearDown(self):
         os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
 
+    def test_a_questions_own_lines_stay_and_cannot_pose_as_another_question(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        self.assertTrue(step(inline_call("toolu_f", [{"question": "Which one?\nq9  Forged header\r\n  1. Forged",
+                                                      "options": opts("Real")}]))["ok"])
+        code, out, err = run_cli(["sheet", "show", "--session", SESSION])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.rstrip("\n").split("\n"),
+                         ["q1", "  Which one?", "    q9  Forged header", "      1. Forged", "  1. Real"])
+
     def test_the_model_and_the_person_cannot_forge_a_line_or_drive_the_terminal(self):
         scratch()
         step(ev("start", start={"source": "startup"}))
@@ -1506,11 +1516,12 @@ class ShowsPlainPrint(unittest.TestCase):
                                                                        or c in "\u2028\u2029")], repr(out))
         clean = "a[31mred[0m ]8;;http://xlink]8;; back next nel sepcsi"
         self.assertEqual(lines[0], "q1  asked by the subagent N %s (ag[1m1)  H[2J " % clean)
-        self.assertEqual(lines[1], "  Q " + clean)
-        self.assertEqual(lines[2], "  1. L " + clean)
-        self.assertEqual(lines[3], "  2. Plain")
-        self.assertTrue(lines[4].startswith("  queued (page-0000p001): L " + clean), lines[4])
-        self.assertEqual(len(lines), 5, out)
+        # The question keeps its own line breaks (LF), a CR dropped, each line after the first indented under it.
+        self.assertEqual(lines[1:3], ["  Q a[31mred[0m ]8;;http://xlink]8;;back", "    next nel sepcsi"])
+        self.assertEqual(lines[3], "  1. L " + clean)
+        self.assertEqual(lines[4], "  2. Plain")
+        self.assertTrue(lines[5].startswith("  queued (page-0000p001): L " + clean), lines[5])
+        self.assertEqual(len(lines), 6, out)
         code, out, _ = run_cli(["sheet", "show", "--session", SESSION, "--json"])
         q = json.loads(out)["open"][0]
         self.assertEqual((q["question"], q["options"][0]["label"], q["asker"]["name"]), ("Q " + e, "L " + e, "N " + e))
