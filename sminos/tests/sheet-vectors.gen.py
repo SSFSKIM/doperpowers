@@ -73,10 +73,15 @@ def vector(name, covers, n, event, before, after, answer, now=NOW, surface=True)
                      "before": dict(before, **s), "after": dict(after, **s), "answer": answer}
 
 
-def receipt(sess, nonce, empty=None, imported=()):
-    """What a start leaves in the staging for its own retry: its nonce, and what the record cannot give again."""
-    return {"sheet/.staging/%s/.start-receipt.json" % sess: {"nonce": nonce, "empty": empty,
-                                                               "imported": list(imported)}}
+NOW_MS = 1795514400000  # NOW in epoch milliseconds: a first start's count, which the clock floors
+
+
+def receipt(sess, nonce=None, empty=None, imported=()):
+    """What a start leaves in the staging: its count of starts, the record's first here (a clear's witness reads it);
+    and, for a start with a nonce, that nonce and what the record cannot give again, for its own retry."""
+    r = {"started": NOW_MS} if nonce is None else {"nonce": nonce, "empty": empty, "imported": list(imported),
+                                                   "started": NOW_MS}
+    return {"sheet/.staging/%s/.start-receipt.json" % sess: r}
 
 
 def started(before=(), empty=None, imported=()):
@@ -512,10 +517,10 @@ vector("start-import", "a start's import of today's asks, read definitely: an as
 S = session(26)
 vector("start-indefinite", "a start whose read of today's asks was not definite: nothing imported and nothing "
        "recorded, so the next start reads again; the floor raises a record that has assigned no id; a start with no "
-       "nonce (a shell's) is always new and leaves no receipt", 26,
+       "nonce (a shell's) is always new: its receipt keeps only the count of starts", 26,
        ev("start", start={"source": "resume", "floor": 5, "today": {"definite": False, "asks": [ASK_A]}}),
        rec(S, record(S, 1, 1, 0, log_next=1, projects={})),
-       rec(S, record(S, 2, 6, 0, log_next=1, projects={})),
+       {**rec(S, record(S, 2, 6, 0, log_next=1, projects={})), **receipt(S)},
        {"ok": True, "effects": fx(start=started(), context="")})
 
 # ------------------------------------------------------------------ a compaction's context; no record

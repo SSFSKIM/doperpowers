@@ -3,7 +3,8 @@
   "sheet/.staging/5eed0000-0000-4000-8000-000000000123/.start-receipt.json": {
    "empty": "fork",
    "imported": [],
-   "nonce": "0001"
+   "nonce": "0001",
+   "started": 1795514400000
   },
   "sheet/.staging/5eed0000-0000-4000-8000-000000000123/start-0001/ask-1.json": {
    "askedAt": "2026-11-24T09:00:00.000Z",

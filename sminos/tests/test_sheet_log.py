@@ -602,8 +602,9 @@ class ClearsRemoval(Log):
         self.assertEqual(sheet.record_identity(rec)[2], "", "no reader has bound to it yet")
         code, out = self.witness(sid)
         self.assertEqual(code, 0, out)
-        self.assertEqual(out, "%d:%d:%s:" % sheet.record_identity(rec), "and the start it had: none with a nonce")
-        self.assertRegex(out, r"^[0-9]+:[0-9]+:[0-9a-f]{32}:$")
+        counted = sheet._start_count(sheet.staging_dir(sid))
+        self.assertEqual(out, "%d:%d:%s:%d" % (sheet.record_identity(rec) + (counted,)), "and its starts' count")
+        self.assertRegex(out, r"^[0-9]+:[0-9]+:[0-9a-f]{32}:[0-9]+$")
         self.assertEqual(self.witness(sid), (0, out), "minted once")
         sheet.remove_record(sid, cleared=True)
         self.assertEqual(self.witness(sid)[0], sheet.EXIT_NO_SHEET)
@@ -707,6 +708,41 @@ class ClearsRemoval(Log):
         self.assertEqual(code, 2, out)
         self.assertIn("started since", out)
         self.assertEqual([o["id"] for o in self.state(sid)["pending"]], ["q2"], "kept, with its answer")
+
+    def test_a_clears_retry_keeps_a_record_started_again_under_the_witnessed_nonce(self):
+        """A late replay of the start the witness saw (the mod orders a start again after its search) restores its
+        nonce, after a resume between: every start counts, so X, Y, X reads as started since."""
+        sid, clearing = self.opened()
+        x = {"event": "start", "start": {"source": "startup", "nonce": "n-x"}}
+        self.step(sid, x)
+        self.ask(sid, "toolu_1", [entry("Before the clear?")])
+        _, witnessed = self.witness(sid)
+        _, resumed = self.session(sid=sid)
+        self.step(sid, {"event": "start", "start": {"source": "resume", "nonce": "n-y"}})
+        self.ask(sid, "toolu_2", [entry("After the resume?")])
+        self.answer(sid, "q2", ["Yes"])
+        self.step(sid, {"event": "drain"})
+        self.end(resumed)
+        self.step(sid, x)                        # the replay
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("started since", out)
+        self.assertEqual([o["id"] for o in self.state(sid)["pending"]], ["q2"], "kept, with its answer")
+
+    def test_a_receipt_outlives_the_stagings_expiry(self):
+        """The start a record last had is not forgotten after a day: a step's sweep of the staging keeps the
+        receipt, so a record never started again still reads as the witness saw it."""
+        sid, clearing = self.opened()
+        self.step(sid, {"event": "start", "start": {"source": "startup", "nonce": "n-x"}})
+        _, witnessed = self.witness(sid)
+        receipt = os.path.join(sheet.staging_dir(sid), sheet.RECEIPT)
+        t = time.time() - 2 * 86400
+        os.utime(receipt, (t, t))
+        self.step(sid, {"event": "drain"})
+        self.assertTrue(os.path.isfile(receipt))
+        self.assertEqual(self.witness(sid), (0, witnessed))
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 0, out)
 
     def test_a_clears_witness_whose_start_cannot_be_read_is_no_witness(self):
         sid, clearing = self.opened()

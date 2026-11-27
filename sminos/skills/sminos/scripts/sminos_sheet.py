@@ -786,6 +786,8 @@ def _sweep(rec, stage):
     cutoff = time.time() - STAGED_AGE_S
     for d, _, names in os.walk(stage):
         for n in names:
+            if n == RECEIPT and d == stage:
+                continue                  # the last start's receipt outlives the expiry: its count is a witness's
             p = os.path.join(d, n)
             try:
                 if os.lstat(p).st_mtime < cutoff:
@@ -1119,15 +1121,16 @@ def _step_locked(session, event, now, tz):
         for n in listed:
             if n != RECEIPT and not n.startswith(GONE) and n not in keep:
                 _hide(stage, n)
+        # Every start is counted (`started`, past the last count and never below the start's time in ms, so a
+        # receipt lost or unreadable starts above any count a witness took): a /clear's witness binds it (start_mark).
+        prior = _start_count(stage)
+        counted = {"started": max((prior or 0) + 1, int(STEP_.when(now).timestamp() * 1000))}
+        os.makedirs(stage, mode=0o700, exist_ok=True)
         if "nonce" in norm["start"]:
-            os.makedirs(stage, mode=0o700, exist_ok=True)
-            _write_file(stage, RECEIPT, _dumps({"nonce": norm["start"]["nonce"], "empty": fx["start"]["empty"],
-                                                "imported": fx["start"]["imported"]}).encode())
+            _write_file(stage, RECEIPT, _dumps(dict({"nonce": norm["start"]["nonce"], "empty": fx["start"]["empty"],
+                                                     "imported": fx["start"]["imported"]}, **counted)).encode())
         else:
-            try:
-                os.unlink(os.path.join(stage, RECEIPT))
-            except FileNotFoundError:
-                pass
+            _write_file(stage, RECEIPT, _dumps(counted).encode())   # no nonce: no retry of it is known, only its count
 
     if state is None:
         os.makedirs(rec, mode=0o700, exist_ok=True)
@@ -1260,31 +1263,40 @@ def parse_identity(text):
     return (int(m.group(1)), int(m.group(2)), m.group(3)) if m else None
 
 
-WITNESS_RE = re.compile(r"([0-9]+):([0-9]+):([0-9a-f]{32}):([A-Za-z0-9_.-]{0,256})")
+WITNESS_RE = re.compile(r"([0-9]+):([0-9]+):([0-9a-f]{32}):([0-9]{0,20})")
+
+
+def _start_count(stage):
+    """How far the record's starts were counted (the receipt's `started`, which every start raises): 0 for no
+    receipt, or one written before starts were counted; None when the receipt cannot be read."""
+    try:
+        r = _read_json(os.path.join(stage, RECEIPT))
+    except FileNotFoundError:
+        return 0
+    except (OSError, ValueError):
+        return None
+    if not isinstance(r, dict):
+        return None
+    n = r.get("started", 0)
+    return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None
 
 
 def start_mark(session):
-    """Which start the session's record last had, as a /clear's witness binds it: the nonce of the mod's last start
-    (its receipt in the staging, `.start-receipt.json`, which every start with a nonce writes and every other start
-    removes); "" for none there; None when it cannot be read (not known: no witness, and a removal keeps)."""
-    try:
-        r = _read_json(os.path.join(staging_dir(session), RECEIPT))
-    except FileNotFoundError:
-        return ""
-    except (OSError, ValueError):
-        return None
-    nonce = r.get("nonce") if isinstance(r, dict) else None
-    return nonce if isinstance(nonce, str) and _call_id_ok(nonce) else None
+    """Which start the session's record last had, as a /clear's witness binds it: the count of its starts, from the
+    receipt in the staging (every start raises it, a replay of an earlier start's nonce included); "" for none
+    counted; None when it cannot be read (not known: no witness, and a removal keeps)."""
+    n = _start_count(staging_dir(session))
+    return None if n is None else str(n) if n else ""
 
 
 def witness_text(identity, start):
     """A /clear's witness as `sheet witness` prints it: the record's identity and the start it had,
-    `<st_dev>:<st_ino>:<nonce>:<start nonce>`."""
+    `<st_dev>:<st_ino>:<nonce>:<start count>`."""
     return "%s:%s" % (identity_text(identity), start)
 
 
 def parse_witness(text):
-    """A /clear's witness: (identity, start nonce), or None when the text is none."""
+    """A /clear's witness: (identity, start count), or None when the text is none."""
     m = WITNESS_RE.fullmatch(text or "")
     return ((int(m.group(1)), int(m.group(2)), m.group(3)), m.group(4)) if m else None
 
@@ -1654,14 +1666,6 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
                 raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
-            if started is not None:
-                now = start_mark(session)
-                if now is None:
-                    raise Refused("sheet remove: which start %s's sheet last had could not be told; it stays"
-                                  % session, 2)
-                if now != started:
-                    raise Refused("sheet remove: %s's sheet was started since the /clear (a resume); it stays"
-                                  % session, 2)
             if clearing is not None:
                 try:
                     other = S.running_elsewhere(session, clearing)
@@ -1681,6 +1685,14 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
                         and os.stat(os.path.join(rec, "state.json")).st_mtime_ns != touched:
                     raise Refused("sheet remove: %s's sheet is not the record the removal was decided on, or changed "
                                   "since; it stays" % session, 2)
+            if started is not None:
+                now = start_mark(session)
+                if now is None:
+                    raise Refused("sheet remove: which start %s's sheet last had could not be told; it stays"
+                                  % session, 2)
+                if now != started:
+                    raise Refused("sheet remove: %s's sheet was started since the /clear (a resume); it stays"
+                                  % session, 2)
             if confirm is not None:
                 try:
                     confirmed = confirm() is True

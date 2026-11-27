@@ -3,7 +3,8 @@
   "sheet/.staging/5eed0000-0000-4000-8000-000000000124/.start-receipt.json": {
    "empty": "lost",
    "imported": [],
-   "nonce": "0001"
+   "nonce": "0001",
+   "started": 1795514400000
   },
   "sheet/5eed0000-0000-4000-8000-000000000124/inbox.jsonl": "",
   "sheet/5eed0000-0000-4000-8000-000000000124/state.json": {

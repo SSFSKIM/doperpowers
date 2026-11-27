@@ -231,13 +231,28 @@ class Repeats(unittest.TestCase):
         os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
 
     def twice(self, home, session, event, now=NOW):
+        """The event's second step changes nothing, but that a start's second counts as a start (a clear's witness
+        taken between them keeps the record)."""
         first = sheet.run_step(session, json.dumps(event).encode(), now=now, tz=UTC)
-        after_one = without_locks(tree(home))
+        after_one, count_one = self.uncounted(without_locks(tree(home)))
         second = sheet.run_step(session, json.dumps(event).encode(), now=now, tz=UTC)
         self.assertTrue(first["ok"] and second["ok"], (first, second))
-        self.assertEqual(without_locks(tree(home)), after_one)
+        after_two, count_two = self.uncounted(without_locks(tree(home)))
+        self.assertEqual(after_two, after_one)
+        self.assertEqual(count_two, None if count_one is None else count_one + 1)
         self.assertEqual(second["seq"], first["seq"])
         return first, second
+
+    @staticmethod
+    def uncounted(t):
+        """The tree without the receipt's count of starts, and that count (None for no receipt)."""
+        out, count = dict(t), None
+        for p, d in t.items():
+            if p.endswith("/" + sheet.RECEIPT):
+                r = json.loads(d)
+                count = r.pop("started")
+                out[p] = dump(r)
+        return out, count
 
     def test_a_drain_a_landed_a_reroute_and_a_start_ordered_twice_equal_once(self):
         for case in ("batch", "stopped-queue", "retract-too-late"):
@@ -1755,7 +1770,8 @@ class AStartIsKnownByItsNonce(unittest.TestCase):
         one = step(a_start(source="fork", floor=3))
         two = step(a_start(source="fork", floor=3))
         self.assertEqual((one["effects"]["start"]["empty"], two["effects"]["start"]["empty"]), ("fork", None))
-        self.assertFalse(os.path.exists(os.path.join(sheet.staging_dir(SESSION), sheet.RECEIPT)))
+        with open(os.path.join(sheet.staging_dir(SESSION), sheet.RECEIPT)) as f:   # its count alone: no retry known
+            self.assertEqual(json.load(f), {"started": 1795514400000 + 1})        # NOW's ms, then one more start
 
     def test_a_nonce_is_a_name(self):
         self.assertEqual(step(a_start("../x", floor=1))["code"], "bad-event")
