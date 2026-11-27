@@ -104,10 +104,20 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   src)` dedup drops the new question's line). `test_sheet_log` 42
   passed; ten gates GREEN (run 46041678823); live `stopped` with the
   project log passing.
-- [ ] M7 — The description, what is written beside the code, the
-  acceptance (G2, G3). Blocked by: M5, M6; C1.
-- [ ] The merges (M1's alone and first: done, `2594002af`; the rest as
-  its gates hold).
+- [x] (2026-11-27) M7 — The description, what is written beside the code, the
+  acceptance (G2, G3). Commits `c0c6d74a9` (the manuals, TECH-DEBT rows
+  39 to 50), the plan's as-built `fe90b4172`, fix wave `4d9192979` (the
+  task review's four Important and two Minor, all in the manuals).
+  The description is `description-v3.md` word for word. The live check,
+  whole: `live-sheet-check: 52 passed` (the first run's one miss was the
+  1 s door-verdict bound at load average 62; TECH-DEBT #48). C1's evals
+  on the shipped description: E1 `PASS failures 0/30, repurposed 0/10`;
+  E2 `PASS essential 44/47 (93%), reader no 0, pii and tz passing 30/32
+  (93%), cap passing 4/15 (26%) (reported)`. Main merged in (`a904492ed`)
+  and sminos bumped once for M2 to M7, to 1.59.0 (`f645070ac`).
+- [ ] The merges (M1's alone and first: done, `2594002af`; M2 to M7 in
+  one pull request, open, its gates GREEN; the merge is the composite's
+  writer's).
 
 ## Words this document adds
 
@@ -2682,7 +2692,38 @@ Acceptance 14 then states.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+What the plan set out to do, it did: one record per session with one
+writer, the tool that asks on it, the three routes that deliver its
+answers, the terminal's drawing, the import of today's asks, the other
+readers (snapshot, project log) and the sheet's end of life, all behind
+the frozen contract M1 published, which nothing after M1 edited. The
+acceptance holds live (52 checks) and on the gates (24 of 24); C1's two
+evals pass on the shipped description. What is left is written as
+TECH-DEBT rows 37 to 50 and in the pull request's unresolved findings.
+
+Where the effort went. M2 to M4 built close to the plan; M5 and M6 took
+most of the review rounds, and almost every Critical was in a path that
+destroys or overtakes something: a late call reapplied after its ack, a
+removal racing a fresh start, a sweep deleting a record a live session
+still held, an import landing below a floor nobody could read. The rule
+that converged them is one sentence, worth carrying to any writer that
+deletes: without a proven identity (device, inode and the writer's own
+nonce in `.incarnation`), keep. The nonce came from the gates, not from
+the Mac: Linux reused an inode within one test, which no local run
+showed.
+
+What the engine taught. The plan's ordering assumptions were wrong twice
+in the same direction: the classic SessionStart can run before the
+plugin's `session.start`, and a first prompt can overtake the start
+itself. Both were caught live, not by the fixtures; the design absorbed
+them (`sheet.early`, the start nonce, `SheetKept.preparing`) without
+changing a published shape.
+
+What to watch. The 1 s door-verdict bound is load-sensitive (1.13 s at
+load average 62, 0.77 s unloaded); the evals' `cap` scenario passes 4 of
+15 and is reported, not gated, so the description's cap guidance is the
+weakest part of what ships. The floor's rules live twice (TypeScript and
+the perl search) and must change together.
 
 ## For the composite's writer
 

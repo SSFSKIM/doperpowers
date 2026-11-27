@@ -233,3 +233,87 @@ Tests: `--check` passes; `test_sheet_contract: 39 passed`; pyflakes is clean. Th
 Gates: `ci-gate --gates sminos,sminos-suites-c,version-bump,shell-lint` was GREEN on `bd3cf9d55`, run
 https://github.com/SSFSKIM/doperpowers/actions/runs/45355494591. Timings: version-bump 0m07s, shell-lint 0m24s,
 sminos 7m54s, sminos-suites-c 12m47s.
+
+# Question sheet C2, M2 to M7: the report
+
+This covers milestones M2 to M7 of the same plan, run through subagent-driven execution: one executor per milestone,
+a task review after each, fixes resumed on the executor, the plan kept current by the controller between them. Branch
+`question-sheet-c2`, from `b5b91b50e` (M1 merged as `2594002af`).
+
+## Status
+
+DONE. One pull request for M2 to M7, ready for review, not merged. The whole-branch review and the merge are the
+dispatching session's. `sminos/types/sheet/` is untouched since M1 and the generator prints what M1 published
+(`sheet-contract: 21 cases, 6 examples, digest 594200ae…`). Sminos goes from 1.58.0 to 1.59.0, once.
+
+## Commits, per milestone
+
+| Milestone | Build | Fix waves | Gates |
+|---|---|---|---|
+| M2 the record | `97218983c`, `09b485a94` | `17c2827c2`, `b204a4e56` | GREEN, run 45375809111 |
+| M3 asking | `63c6ba718`, `7ea4a11ed` | `9a75c18c2`, `586d91dc2`, `8236347a1` | GREEN, run 45397387138 |
+| M4 delivering | `448e8540e`, `e4ff0d9e1` | `eb5009c7e`, `53d2ce750`, `55ada7748`, `cfdbd4914`, `080859bc2` | (covered by M5's) |
+| M5 drawing, import | `43a2f66f8`, `989f3f836` | `9e16956d3`, `b65335160`, `61394a6e3`, `69d0590f2` | GREEN, run 45456729517 |
+| M6 readers, end of life | `e11ecf907` | `87b3e5e93`, `35936fe3e`, `d34ebdde8`, `5c0c26b7a`, `e11c4922c` | GREEN, run 46041678823 |
+| M7 manuals, acceptance | `c0c6d74a9` | `4d9192979` | GREEN 24/24, run 46047674138 |
+
+Then main merged in (`a904492ed`; one conflict, the `hooks.json` description, resolved keeping both sides' sentences)
+and the version bump (`f645070ac`). Plan commits between them carry each milestone's as-built text and Progress line.
+The final head's gate run is in the pull request's Validation Evidence.
+
+## The acceptance
+
+- The live check, whole (haiku, the secrets guard loaded from the installed plugins at run time, nothing of it
+  committed): the first run ended `live-sheet-check: 51 passed, 1 failed`, the one miss the `two-surfaces` door
+  verdict at 1.13 s against a 1 s bound, at load average 62; `--case two-surfaces` alone passed (0.77 s); the
+  whole check rerun on an unloaded Mac ended `live-sheet-check: 52 passed`, exit 0. The bound's load sensitivity is
+  TECH-DEBT #48. The plan's Concrete Steps said `19 passed` (cases); the check counts checks, 52, and the plan now
+  says so.
+- C1's evals on the shipped description (`description-v3.md`, word for word in `DESCRIPTION`), run by the
+  controller after calibration passed 6 of 6:
+  - E1: `v3: PASS  failures 0/30, repurposed 0/10, runs per scenario {'distinct': 10, 'option_gone': 10, 'premise': 10, 'subagent': 10}`
+  - E2: `v3: PASS  essential 44/47 (93%), reader no 0, pii and tz passing 30/32 (93%), cap passing 4/15 (26%) (reported)`
+  - Subject spend about $18 together (judges not counted), inside the approved budget.
+- Tests at the last code change: `sminos/tests/mods/run.sh` 1,043 pass; `tests/mods/run-mods-tests.sh` 247 pass;
+  `test_sheet_step` 86, `test_sheet_contract` 40, `test_sheet_log` 42 passed; typecheck clean.
+
+## Rulings received from the composite's writer, and applied
+
+The terminal's row (no head line; the first sentence ending in "?" by one sentence rule with eleven cases; receipts
+from the view, else from delivery blocks, drawing only). The surfaces' registration reading (only `*.json`, `mawsd`
+first then by name, one trailing slash stripped, the link `url + "/s/" + session`). `model()` projects queued entries
+by kind (an M1 defect, fixed in M2's wave). The door refuses a linked or non-regular record or inbox (`bad-record`).
+Acceptance 18 reworded (the main conversation's next route, a tool result or a prompt). The waiting notice rides the
+idle prompt (my choice, allowed). The idle-flight rule (only a failed idle submit spends the keys that authorized
+it). The dismissal receipt. `.incarnation` as the writer's own file in I1. The q1 log dedup as residue. Each is
+written into the plan where a later reader needs it, and the composite's sentences they make false are in the
+plan's "For the composite's writer", entries 12 to 22.
+
+## Decisions of my own, as controller
+
+- The first receipt is keyed by the start's nonce, not by (seq, source, floor), which mistook a fresh resume for a
+  retry; it holds only `{nonce, empty, imported}`, with `before` cut to 200 and a `beforeCount`.
+- The rule that converged M6's reviews: a removal or sweep proceeds only on a proven identity (device, inode, and the
+  writer's nonce in `.incarnation`), and keeps on any doubt; expiry rechecks the transcript's absence under the lock.
+- The floor search prints only `{"floor":n}` (the 4 MiB cut had blocked the import), and the step imports with an
+  unknown floor only when `nextId > 1`.
+- M7's executor edited `sminos/hooks/CLAUDE.md`, outside M7's Touches, because M6 changed the two hooks it
+  describes; accepted.
+- M7's task review found only documentation issues; the fix wave was gated and accepted without a re-review.
+
+## Review findings left unresolved (also in the pull request)
+
+- M2 Minor: `RESULT_MAX` assumes at most about 500 withdrawals; a legacy sheet of 1,500 gives a 41,520-character
+  result. The wire's cap still holds.
+- M4 Minor: the flight transitions could be extracted from `sheet.tsx` (about 1,500 lines). Refactor only.
+- M3/M6: a removal that fails during an overlapping `/clear` is left for the sweep.
+- M6, ruled residue: a record made again for the same session whose floor cannot be read restarts at q1, and the
+  project log's `(kind, src)` dedup then drops the new question's line (and can drop its `answered`). Needs both a
+  lost record with a failed floor read, and the same project's log holding that source under the session's writer.
+  TECH-DEBT #50.
+
+## Environment
+
+- `ci-gate --gates all` is refused in this repository (no such gate); plain `ci-gate` runs all 24.
+- One auto-mode block on a plan commit (classified as information leakage); appealed, granted, re-run.
+- The live check's timing bound failed once under heavy machine load; rerun unloaded.
