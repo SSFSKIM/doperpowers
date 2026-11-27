@@ -870,6 +870,36 @@ class TheDoor(unittest.TestCase):
             self.assertEqual(len({x["key"][:-3] for x in call}), 1)
         self.assertEqual(len({x["batch"] for x in got}), 200)
 
+    def test_a_record_path_that_is_a_link_is_refused_and_nothing_outside_is_written(self):
+        outside = tempfile.mkdtemp(prefix="outside.")
+        self.addCleanup(shutil.rmtree, outside)
+        rec = os.path.join(self.h, "sheet", self.s)
+        # The inbox a link to a file outside the record: the door refuses, exit 1, the outside file as it was.
+        target = os.path.join(outside, "elsewhere.jsonl")
+        write(target, b"not the record's\n", "wb")
+        os.unlink(self.inbox)
+        os.symlink(target, self.inbox)
+        rc, out, err = self.put([answer("cli-test0001", "q2", picks=["Yes"])], "--no-wait")
+        self.assertEqual((rc, out), (1, ""), err)
+        self.assertIn("inbox.jsonl is not a file; nothing appended", err)
+        self.assertEqual(raw_bytes(target), b"not the record's\n")
+        # A step on that record reads nothing through the link and writes nothing: it answers bad-record.
+        before = {n: raw_bytes(os.path.join(rec, n)) for n in ("state.json",)}
+        rc, out, err = run(["sheet", "step", "--session", self.s], json.dumps({"event": "drain", "runner": "terminal"}).encode())
+        self.assertEqual(json.loads(out), {"ok": False, "code": "bad-record", "error": "the record's inbox.jsonl is not a file"}, err)
+        self.assertEqual({n: raw_bytes(os.path.join(rec, n)) for n in before}, before)
+        self.assertEqual(raw_bytes(target), b"not the record's\n")
+        os.unlink(self.inbox)
+        write(self.inbox, self.was, "wb")
+        # The record directory itself a link to one outside: refused too, the outside inbox unchanged.
+        moved = os.path.join(outside, "record")
+        shutil.move(rec, moved)
+        os.symlink(moved, rec)
+        rc, out, err = self.put([answer("cli-test0002", "q2", picks=["Yes"])], "--no-wait")
+        self.assertEqual(rc, 1, err)
+        self.assertIn("is not a directory; nothing appended", err)
+        self.assertEqual(raw_bytes(os.path.join(moved, "inbox.jsonl")), self.was)
+
     def test_a_bridge_answers_the_verdicts(self):
         # The stand-in's socket is named through a short link to SMINOS_HOME: a socket's path is bounded.
         link = os.path.join(tempfile.mkdtemp(prefix="sb.", dir="/tmp"), "s")

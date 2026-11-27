@@ -1840,13 +1840,16 @@ def cmd_bridge(a):
 # ------------------------------------------------------------------ watch
 
 
-def watch_session(q):
+def watch_session(q, target=None):
     """The session a member name names here, or exit 4 saying why not. A full
     session id is taken as given, or, when the harness sent it to the
-    background and it no longer runs, as the session it continues in."""
+    background and it no longer runs, as the session it continues in.
+    `target` is find_target's answer for `q` when the caller looked it up
+    already (it reconciles projects: once is enough)."""
     if S.UUID_RE.fullmatch(q):
         return successor(q)
-    target = S.find_target(q)
+    if target is None:
+        target = S.find_target(q)
     if target[0] == "none":
         S.die("no member matching '%s'" % q, S.EXIT_UNKNOWN)
     if target[0] == "seat":

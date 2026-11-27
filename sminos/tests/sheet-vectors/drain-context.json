@@ -1,0 +1,180 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000127/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000127/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 2
+    },
+    {
+     "askedAt": "2026-11-23T09:05:00.000Z",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "callId": "toolu_01Cach",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [],
+     "question": "Which cache?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000127",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "[sheet v1] Your question sheet, after a compaction.\nOpen: q1 (revision 2) \"Auth method\" — \"Which auth method should the login use?\" Options: 1. OAuth; 2. Passkeys; 3. Magic link.\nOpen: q2 (revision 1), asked by the subagent explorer (a7c0ffee) — \"Which cache?\" No options: answered in text.\nNew ids continue from q3.",
+   "owed": 0,
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000127/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000127/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 2
+    },
+    {
+     "askedAt": "2026-11-23T09:05:00.000Z",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "callId": "toolu_01Cach",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [],
+     "question": "Which cache?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000127",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a drain after a compaction composes I10's context: each open question with its revision, asker, header, text and labels in order, and where ids continue",
+ "event": {
+  "acked": [],
+  "context": "compact",
+  "event": "drain",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "drain-context",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000127",
+ "tz": "UTC"
+}

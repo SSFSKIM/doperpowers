@@ -138,8 +138,8 @@ gates:
       done
       bash tests/mods/run-mods-tests.sh
     timeout: 15
-    # appeal's and reload's tests read the snapshot the sminos ask writes, by its contract.
-    paths: ["hooks/**", "tests/mods/**", "sminos/types/**", "sminos/hooks/mods/ask.tsx", ".github/ci-kit.yml", ".github/workflows/**"]
+    # appeal's and reload's tests read the snapshot the sminos ask writes, by its contract, and the question sheet's.
+    paths: ["hooks/**", "tests/mods/**", "sminos/types/**", "sminos/hooks/mods/ask.tsx", "sminos/hooks/mods/sheet-model.tsx", ".github/ci-kit.yml", ".github/workflows/**"]
 
   # The devcloud plugin's mods (its secrets guard), installed as the mods gate is.
   - name: devcloud-mods

@@ -1,0 +1,346 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    },
+    {
+     "captures": [
+      {
+       "abs": "/work/proj/a.ts",
+       "file": "ref-3-1",
+       "kind": "text",
+       "mtimeMs": 1763888400000,
+       "numLines": 1,
+       "ok": true,
+       "size": 400,
+       "startLine": 9,
+       "totalLines": 20
+      }
+     ],
+     "file": "entry-3.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-4.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-5.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-1.json": {
+   "multiSelect": true,
+   "options": [
+    {
+     "label": "Home",
+     "preview": "## Home"
+    },
+    {
+     "label": "Settings"
+    }
+   ],
+   "question": "Which screens?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-2.json": {
+   "multiSelect": true,
+   "question": "Anything else?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-3.json": {
+   "question": "Is this line right?",
+   "references": [
+    {
+     "lines": [
+      9,
+      2
+     ],
+     "path": "a.ts"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-4.json": "{\"question\": \"Half an emoji: \\ud83d, then the rest?\"}\n",
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-5.json": {
+   "options": [
+    {
+     "label": "Yes"
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Should the cache key include the locale?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/ref-3-1": "export const x = 9;\n",
+  "sheet/5eed0000-0000-4000-8000-000000000106/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000106/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v06",
+     "result": "Added q2 (entry 5).\nNot done: entry 1, an option's preview needs a single-select question. entry 2, multiSelect needs options. entry 3, lines must be [a, b] with 1 <= a <= b. entry 4, a string holds a lone UTF-16 surrogate."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [
+     {
+      "choices": [
+       "Yes",
+       "No"
+      ],
+      "kind": "question",
+      "n": 2,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000106:q2",
+      "text": [
+       "Should the cache key include the locale?"
+      ]
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v06",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes"
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Should the cache key include the locale?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000106",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 1,
+   "result": "Added q2 (entry 5).\nNot done: entry 1, an option's preview needs a single-select question. entry 2, multiSelect needs options. entry 3, lines must be [a, b] with 1 <= a <= b. entry 4, a string holds a lone UTF-16 surrogate.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-2.json"
+    },
+    {
+     "captures": [
+      {
+       "abs": "/work/proj/a.ts",
+       "file": "ref-3-1",
+       "kind": "text",
+       "mtimeMs": 1763888400000,
+       "numLines": 1,
+       "ok": true,
+       "size": 400,
+       "startLine": 9,
+       "totalLines": 20
+      }
+     ],
+     "file": "entry-3.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-4.json"
+    },
+    {
+     "captures": [],
+     "file": "entry-5.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-1.json": {
+   "multiSelect": true,
+   "options": [
+    {
+     "label": "Home",
+     "preview": "## Home"
+    },
+    {
+     "label": "Settings"
+    }
+   ],
+   "question": "Which screens?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-2.json": {
+   "multiSelect": true,
+   "question": "Anything else?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-3.json": {
+   "question": "Is this line right?",
+   "references": [
+    {
+     "lines": [
+      9,
+      2
+     ],
+     "path": "a.ts"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-4.json": "{\"question\": \"Half an emoji: \\ud83d, then the rest?\"}\n",
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/entry-5.json": {
+   "options": [
+    {
+     "label": "Yes"
+    },
+    {
+     "label": "No"
+    }
+   ],
+   "question": "Should the cache key include the locale?"
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000106/toolu_v06/ref-3-1": "export const x = 9;\n",
+  "sheet/5eed0000-0000-4000-8000-000000000106/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000106/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000106",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "U14: a preview on a multi-select question, multiSelect without options, a line range out of order and a lone UTF-16 surrogate each refuse their entry alone; nothing of a refused entry's capture is kept under refs/",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v06"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-entry-rules",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000106",
+ "tz": "UTC"
+}

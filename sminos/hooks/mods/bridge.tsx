@@ -37,6 +37,7 @@ import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './br
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
 import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, receiptsAdmitted, receiptsStopped, sessionStarted, stoppedStep, waitAtFence } from './bridge-holder'
 import { receiptRow, receiptsCarried } from './bridge-receipts'
+import { sheetNudge } from './sheet'
 import type { Carried } from './bridge-receipts'
 
 export { MANAGED_OFF_LINE, OFF_LINE, ON_LINE } from './bridge-place'
@@ -309,13 +310,15 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss', 'sheet']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /**
  * The ops an observer refuses (O12 M3): every op that acts on the session.
- * `ping` and `read` only look, and go on answering.
+ * `ping` and `read` only look, and go on answering; so does `sheet`, a door's
+ * nudge that the session's question sheet drain its inbox (sheet.tsx), which
+ * a MAWS-run session's observer answers too: no control.
  */
-const CONTROL_OPS = new Set(OPS.filter((op) => op !== 'ping' && op !== 'read'))
+const CONTROL_OPS = new Set(OPS.filter((op) => op !== 'ping' && op !== 'read' && op !== 'sheet'))
 /** An observer's refusal: MAWS controls this session (its lane B), and two controllers on one session is what observing prevents. */
 export const LANE_B = 'lane-b'
 /** The lane verdict kept for a module reload (types/sminos.d.ts): the process's, so a reload never re-opens the provisional window. */
@@ -468,6 +471,8 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return acceptMedia($, command)
     case 'ask':
       return forkQuestion($, command.id, command.prompt)
+    case 'sheet':
+      return sheetNudge(command.keys)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -1552,6 +1557,8 @@ function onLine($: EngineInterface, generation: number, line: string) {
     // where it stands. What was queued for no child is in that state.
     requeue([{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, ...resyncEvents()])
     pump()
+    // A door may have told no bridge while none answered: the sheet drains (K4).
+    void sheetNudge([])
     return
   }
   if (msg.op === 'lane' && msg.id === undefined) {

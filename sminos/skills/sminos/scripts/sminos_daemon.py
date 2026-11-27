@@ -130,6 +130,15 @@ _BRIDGE_SWEPT = 0.0  # when this process last swept the bridges' files
 OVERRIDE_QUIET_S = 30 * 86400
 OVERRIDE_SWEEP_EVERY = 3600
 _OVERRIDES_SWEPT = 0.0  # when this process last swept them
+# A question sheet's record outlives its session's transcript while it was
+# touched within this long (an index that misses a transcript for a moment
+# must not cost a sheet); swept on the overrides' spacing.
+SHEET_QUIET_S = 3600
+# A /clear's note describes the sheet it witnessed (the record directory's
+# identity, kept beside the note) while neither the record nor the session's
+# transcript has been touched since the note, but this much: the session left
+# writes its last as it ends.
+CLEARED_TIE_S = 5
 
 
 class SyncFailed(Exception):
@@ -2247,10 +2256,158 @@ def override_duty():
     if time.time() - _OVERRIDES_SWEPT < OVERRIDE_SWEEP_EVERY:
         return
     _OVERRIDES_SWEPT = time.time()
+    # The question sheets first: their sweep finds where a transcript was by the launch and config dir records the
+    # overrides' sweep removes (it keeps them while a sheet stays), and a /clear's note names a record it removes.
+    sweep_sheets()
     sweep_overrides()
     sweep_launches()
     sweep_holder_deliveries()
     sweep_cleared()
+
+
+def _cleared_notes():
+    """{session: (when its latest note was written, the identity of the record directory its notes witnessed)} for
+    the sessions the `/clear` notes kept now name (smns-cleared.sh: the engine's SessionEnd payload, and
+    `<pid>.sheet`, the `<st_dev>:<st_ino>:<nonce>` of the session's sheet record as the hook found it). The identity is None
+    when a note witnessed no record, or the notes naming one session disagree on it: such a note authorizes no
+    removal."""
+    d = os.path.join(sminos.root(), sminos.CLEARED)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return {}
+    seen = {}
+    for name in names:
+        if name.endswith(".json"):
+            path = os.path.join(d, name)
+            try:
+                note, at = sminos.json_at(path), os.stat(path).st_mtime
+            except (OSError, ValueError):
+                continue
+            sid = str(note.get("session_id") or "") if isinstance(note, dict) else ""
+            if sminos.UUID_RE.fullmatch(sid):
+                ats, ids = seen.setdefault(sid, ([], set()))
+                ats.append(at)
+                ids.add(_witnessed(path))
+    return {sid: (max(ats), next(iter(ids)) if len(ids) == 1 and isinstance(next(iter(ids)), tuple) else None)
+            for sid, (ats, ids) in seen.items()}
+
+
+WITNESS_UNKNOWN = "unknown"   # a `/clear`'s witness that is there but could not be read: neither a record nor none
+
+
+def _witnessed(note):
+    """The identity (sminos_sheet.record_identity: st_dev, st_ino, nonce) of the sheet record a `/clear` note's hook
+    found, from `<pid>.sheet` beside the note; None when there is none (the hook found no record); WITNESS_UNKNOWN
+    when one is there and could not be read, or reads as no identity: no removal rests on it, and nothing is
+    cleaned up on it either."""
+    try:
+        with open(os.path.splitext(note)[0] + ".sheet", "rb") as f:
+            raw = f.read(256)   # <dev>:<ino>:<nonce>, under 100 bytes
+        return sminos.sibling_module("sminos_sheet").parse_identity(raw.strip().decode("ascii")) or WITNESS_UNKNOWN
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return WITNESS_UNKNOWN
+
+
+def _cleared_sheet(sid, note_at, witnessed):
+    """Whether the question sheet of `sid` is the one a `/clear` note written at `note_at` describes: the record it
+    `witnessed` (sminos_sheet.record_identity), and neither its record nor its transcript touched since
+    (CLEARED_TIE_S), so not one a resume of the session left made or changed since. True; False, confirmed not (no
+    witness, another record or none, one touched since); None, not known: a look that failed for another reason than
+    absence, which neither removes the sheet nor lets the note go."""
+    if not isinstance(witnessed, tuple):
+        return False
+    sheet = sminos.sibling_module("sminos_sheet")
+    rec = sheet.record_dir(sid)
+    try:
+        same = sheet.same_record(sheet.record_identity(rec), witnessed)
+        if same is not True:
+            return same
+        touched = os.stat(os.path.join(rec, "state.json")).st_mtime
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if touched > note_at + CLEARED_TIE_S:
+        return False
+    try:
+        said = sminos.transcript_written_at(sid)   # past the index: a listing that fails is no answer, not none
+    except OSError:
+        return None
+    return said is None or said <= note_at + CLEARED_TIE_S
+
+
+def sweep_sheets():
+    """The question sheets of sessions that are gone (sminos_sheet; the plan
+    docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, M6): what
+    earlier removals left is finished first (a detached record's log
+    written, sminos_sheet.finish_removed); then a record whose session runs
+    nowhere here is removed once its transcript is confirmed gone (the index
+    and a direct look at the transcript's own path agree:
+    sminos.transcript_confirmed_gone, so a listing that failed for a moment,
+    or a path not known, removes nothing) and its state.json has not been
+    touched for SHEET_QUIET_S, and at once when a /clear's note witnessed
+    this record and describes it still (_cleared_sheet, its transcript read
+    past the index; all of it looked at again under the lock). Every
+    removal checks the session runs nowhere
+    again under the record's lock (never `--cleared`); it writes
+    the project log what the record owes and closes its open questions once
+    it is detached (sminos_sheet.remove_record). One it refuses, or leaves
+    detached, is said in daemon.log and finished at a later sweep. No lock
+    file is removed."""
+    sheet = sminos.sibling_module("sminos_sheet")
+    for why in sheet.finish_removed():
+        sminos.daemon_log("a removed question sheet is kept aside: %s" % why)
+    root = sheet.sheet_root()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    sessions = [n for n in names if sminos.UUID_RE.fullmatch(n) and sheet.has_record(n)]
+    if not sessions:
+        return
+    notes = _cleared_notes()
+    sminos.transcripts_now()
+    now = time.time()
+    for sid in sessions:
+        if sminos.session_running(sid):
+            continue
+        # What the decision is about, read together under the lock: the record (its identity, a nonce minted when
+        # it has none) and when its state was last written. The removal looks at both again under the lock.
+        rec = sheet.record_dir(sid)
+        try:
+            with sheet.Lock(sid):
+                identity = sheet.record_identity(rec, mint=True)
+                touched_ns = os.stat(os.path.join(rec, "state.json")).st_mtime_ns
+        except (sheet.Busy, OSError):
+            continue
+        if identity is None or not identity[2]:
+            continue   # no record, or one whose nonce cannot be read: no identity, no removal
+        touched = touched_ns / 1e9
+        confirm = None
+        if sid in notes and sheet.same_record(identity, notes[sid][1]) is True \
+                and _cleared_sheet(sid, *notes[sid]) is True:
+            # What the note describes is looked at again under the lock, as the record is detached: a resume of the
+            # session left that wrote its transcript, or its sheet, meanwhile keeps the sheet.
+            why, confirm = "a /clear left it", (lambda s=sid, n=notes[sid]: _cleared_sheet(s, *n) is True)
+        elif now - touched < SHEET_QUIET_S or sminos.transcript_path(sid) or not sminos.transcript_confirmed_gone(sid):
+            continue
+        else:
+            # Its transcript's absence is looked at again under the lock, as the record is detached: one restored
+            # meanwhile keeps the sheet.
+            why, confirm = "its transcript is gone", (lambda s=sid: sminos.transcript_confirmed_gone(s))
+        try:
+            sheet.remove_record(sid, witnessed=identity, touched=touched_ns, confirm=confirm)
+        except sheet.Refused as e:
+            if e.code != sheet.EXIT_NO_SHEET:
+                sminos.daemon_log("the question sheet of %s was not removed: %s" % (sid[:8], e))
+            continue
+        except Exception as e:  # noqa: BLE001 — one sheet's removal is not the daemon's
+            sminos.daemon_log("the question sheet of %s was not removed: %s: %s" % (sid[:8], type(e).__name__, e))
+            continue
+        sminos.daemon_log("removed the question sheet of %s: %s" % (sid[:8], why))
 
 
 def sweep_holder_deliveries():
@@ -2268,20 +2425,47 @@ def sweep_holder_deliveries():
 
 def sweep_cleared():
     """The note of a `/clear` (`$SMINOS_HOME/cleared/<pid>.json`, kept by
-    smns-cleared.sh for the next session's hooks, sminos.cleared_from) whose
-    engine process runs no more is removed: it is believed for a minute, and
-    only by that process."""
+    smns-cleared.sh for the next session's hooks, sminos.cleared_from, with
+    `<pid>.sheet` beside it) whose engine process runs no more is removed: it
+    is believed for a minute, and only by that process. One that witnessed a
+    question sheet it still describes stays until sweep_sheets has removed
+    that sheet; one that could not be read, or whose witness could not be
+    while its session has a sheet, stays for a later pass."""
     d = os.path.join(sminos.root(), sminos.CLEARED)
     try:
         names = os.listdir(d)
     except OSError:
         return
     running = {str(r.get("pid")) for r in sminos.peer_records() if sminos.peer_running(r)}
+    sheet = sminos.sibling_module("sminos_sheet")
     for name in names:
         pid, ext = os.path.splitext(name)
-        if ext == ".json" and pid.isdigit() and pid not in running:
+        if not pid.isdigit() or pid in running:
+            continue
+        path = os.path.join(d, name)
+        if ext == ".sheet" and pid + ".json" not in names:
+            gone = [path]   # the note was never written, or is gone: what it would have witnessed goes too
+        elif ext == ".json":
             try:
-                os.unlink(os.path.join(d, name))
+                note, at = sminos.json_at(path), os.stat(path).st_mtime
+                sid = str(note.get("session_id") or "") if isinstance(note, dict) else ""
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue   # not read: what it names is not known, so it is kept for a later pass
+            except ValueError:
+                sid = ""
+            witnessed = _witnessed(path) if sminos.UUID_RE.fullmatch(sid) else None
+            if witnessed == WITNESS_UNKNOWN and sheet.has_record(sid):
+                continue   # its witness not read: whether it names this sheet is not known; both kept for a later pass
+            if isinstance(witnessed, tuple) and _cleared_sheet(sid, at, witnessed) is not False:
+                continue   # the sheet it witnessed is still to be removed (sweep_sheets), or not known not to be: kept
+            gone = [os.path.join(d, pid + ".sheet"), path]
+        else:
+            continue
+        for p in gone:
+            try:
+                os.unlink(p)
             except OSError:
                 pass
 
@@ -2305,9 +2489,12 @@ def sweep_overrides():
     (`subagents/<id>.json`) go by the transcript's rule alone, and a recorded
     config dir (`config-dirs/<id>.json`, last: what is judged before it looks
     for the transcript there) once its session runs no more and its
-    transcript is gone."""
+    transcript is gone. A launch directory and a config dir stay while the
+    session has a question sheet: they say where its transcript was, which
+    the sheet's own sweep confirms gone before it removes the sheet."""
     sminos.transcripts_now()
     now = time.time()
+    sheet = sminos.sibling_module("sminos_sheet")
     for sub in ("sessions", "launch", sminos.SUBAGENT_STATES, sminos.CONFIG_DIRS):
         d = os.path.join(sminos.root(), sub)
         try:
@@ -2318,6 +2505,8 @@ def sweep_overrides():
             sid, ext = os.path.splitext(name)
             if ext != ".json" or not sminos.UUID_RE.fullmatch(sid):
                 continue
+            if sub in ("launch", sminos.CONFIG_DIRS) and sheet.has_record(sid):
+                continue   # where the sheet's sweep looks for the transcript (sweep_sheets)
             last = mtime(sminos.transcript_path(sid))
             if sub == sminos.CONFIG_DIRS and (last is not None or sminos.session_running(sid)):
                 continue   # where its transcript is, however quiet, or where its engine writes one

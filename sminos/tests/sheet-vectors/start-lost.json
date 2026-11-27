@@ -1,0 +1,89 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000124/.start-receipt.json": {
+   "empty": "lost",
+   "imported": [],
+   "nonce": "0001",
+   "started": 1795514400000
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000124/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000124/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 1,
+    "owed": [],
+    "projects": {}
+   },
+   "nextId": 8,
+   "pending": [],
+   "questions": [],
+   "seq": 1,
+   "session": "5eed0000-0000-4000-8000-000000000124",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "[sheet v1] The question sheet's record was not found, so the sheet starts empty; questions asked earlier are no longer open. New ids start at q8.",
+   "owed": 0,
+   "skipped": 0,
+   "start": {
+    "before": [],
+    "beforeCount": 0,
+    "empty": "lost",
+    "imported": []
+   },
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a resume whose conversation holds the sheet's ids (a floor) and whose record is gone: a new record from the floor, and the context says so",
+ "event": {
+  "acked": [],
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "floor": 7,
+   "nonce": "0001",
+   "source": "resume",
+   "today": {
+    "asks": [],
+    "definite": true
+   }
+  }
+ },
+ "name": "start-lost",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000124",
+ "tz": "UTC"
+}

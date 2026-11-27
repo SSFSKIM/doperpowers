@@ -1,0 +1,173 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000109/toolu_v09/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "refused": "the reference .env could not be read: denied by a rule in the settings"
+    }
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000109/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000109/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v09",
+     "result": "Nothing done.\nNot done: entry 1, the reference .env could not be read: denied by a rule in the settings."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000109",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 0,
+   "result": "Nothing done.\nNot done: entry 1, the reference .env could not be read: denied by a rule in the settings.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000109/toolu_v09/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "refused": "the reference .env could not be read: denied by a rule in the settings"
+    }
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000109/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000109/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000109",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call every entry of which the mod refused, staged as call.json alone: Nothing done., its clause, the result kept in calls (U4)",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v09"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-all-refused",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000109",
+ "tz": "UTC"
+}

@@ -1,0 +1,204 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000113/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000113/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_s01",
+     "result": "Added q2."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:02:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Ship0002",
+     "header": "Migration",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000113",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 0,
+   "result": "Added q2.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000113/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000113/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_s01",
+     "result": "Added q2."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:02:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Ship0002",
+     "header": "Migration",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000113",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "settle of a call that committed (its answer lost): the recorded result, nothing changed",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_s01"
+  },
+  "event": "settle",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "settle-recorded",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000113",
+ "tz": "UTC"
+}

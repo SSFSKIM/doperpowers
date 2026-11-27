@@ -52,19 +52,84 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   the document follows: M1's task review and the high-rung review of its
   pull request check the published set from here, and a change to the
   set after M1 is a ruling and a re-pin (K2).
-- [ ] M1 — The contracts, published (G1). Blocked by: nothing.
-- [ ] M2 — The record: the step, the lock, the command's other verbs.
-  Blocked by: M1.
-- [ ] M3 — Asking: the start choice, the sheet's schema, a call. Blocked
-  by: M2.
-- [ ] M4 — Delivering: the routes, landing, a start, subagents. Blocked
-  by: M3.
-- [ ] M5 — The terminal's drawing, and the import of today's asks. Blocked
-  by: M3.
-- [ ] M6 — The other readers, and the sheet's end of life. Blocked by: M4.
-- [ ] M7 — The description, what is written beside the code, the
-  acceptance (G2, G3). Blocked by: M5, M6; C1.
-- [ ] The merges (M1's alone and first; the rest as its gates hold).
+- [x] (2026-11-24) M1 — The contracts, published (G1): merged to main as
+  `2594002af` (pull request #628, head `a45f529ee`), sminos 1.57.0, set
+  version 1, digest
+  `594200ae4e539c0688c67b511968861d8ebf03c87d1c45b512903a538326e277`
+  (21 cases, 6 examples). Its high-rung review ran two passes: eleven
+  findings repaired, then seven, five repaired and two logged in
+  `docs/doperpowers/TECH-DEBT.md` (#37, #38). MAWS pins this commit.
+- [x] (2026-11-24) M2 — The record: the step, the lock, the command's
+  other verbs. Commits `97218983c`, `09b485a94` (the I8 ruling on reading
+  registrations), fix waves `17c2827c2` and `b204a4e56`; sminos 1.58.0
+  (the one bump of this pull request). Task review: one Critical (a late
+  call applying again across the acknowledgement's replace), six
+  Important, three Minor, then one Critical of the first fix (a start's
+  identity, now its nonce) and three Important, all repaired; clean on
+  the third pass. Every published fixture and all seven envelopes replay
+  byte for byte; `test_sheet_step: 79 passed`; gates GREEN (run
+  45375809111). Also repaired: M1's reader printing a queued entry's
+  field of another kind (the composite's writer's ruling).
+- [x] (2026-11-24) M3 — Asking: the start choice, the sheet's schema, a
+  call. Commits `63c6ba718`, `7ea4a11ed`, fix waves `9a75c18c2`,
+  `586d91dc2`, `8236347a1`. The live check found the engine's two starts
+  unordered (As built, M3). Task review: six Important and three Minor,
+  then four Important and one Minor, then two Important (one fixed, one
+  deferred to M6's sweep); the last fix, a six-line guard, verified by
+  the controller. `run.sh` 948 passed; gates GREEN (run 45397387138);
+  live, the whole M3 set 22 passed with the owner's guard loaded.
+- [x] (2026-11-24) M4 — Delivering: the routes, landing, a start,
+  subagents. Commits `448e8540e`, `e4ff0d9e1`, fix waves `eb5009c7e`,
+  `53d2ce750` (the record's paths, the composite's writer's ruling),
+  `55ada7748`, `cfdbd4914`, `080859bc2`. Its live probe confirmed the
+  critic's turn ordering and found the main loop's Agent always
+  background (Acceptance 18 reworded in the composite). Task review: one
+  Critical and seven Important, then one Critical and four Important,
+  then one, one (a regression of the previous fix) and clean. 1,003 mod
+  tests; gates GREEN; live, every M4 case passing.
+- [x] (2026-11-24) M5 — The terminal's drawing, and the import of
+  today's asks. Commits `43a2f66f8`, `989f3f836`, fix waves `9e16956d3`,
+  `b65335160`, `61394a6e3`, `69d0590f2`. Task review: six Important and
+  one Minor, then one Important and two Minor, then two Important, the
+  last fix verified by the controller. The question line's sentence
+  follows the composite's writer's one definition. 1,038 mod tests; gates
+  GREEN (run 45456729517); live band, rows, import and fork passing.
+- [x] (2026-11-27) M6 — The other readers, and the sheet's end of life.
+  Commits `e11ecf907`, fix waves `87b3e5e93`, `35936fe3e`, `d34ebdde8`,
+  `5c0c26b7a`, `e11c4922c`. Task review: one Critical and six Important,
+  then two Critical and two Important, then one and one, then two
+  Important, the last fix verified by the controller; one finding ruled
+  residue by the composite's writer (a record made again for the same
+  session with an unknown floor restarts at q1, and the log's `(kind,
+  src)` dedup drops the new question's line). `test_sheet_log` 42
+  passed; ten gates GREEN (run 46041678823); live `stopped` with the
+  project log passing.
+- [x] (2026-11-27) M7 — The description, what is written beside the code, the
+  acceptance (G2, G3). Commits `c0c6d74a9` (the manuals, TECH-DEBT rows
+  39 to 50), the plan's as-built `fe90b4172`, fix wave `4d9192979` (the
+  task review's four Important and two Minor, all in the manuals).
+  The description is `description-v3.md` word for word. The live check,
+  whole: `live-sheet-check: 52 passed` (the first run's one miss was the
+  1 s door-verdict bound at load average 62; TECH-DEBT #48). C1's evals
+  on the shipped description: E1 `PASS failures 0/30, repurposed 0/10`;
+  E2 `PASS essential 44/47 (93%), reader no 0, pii and tz passing 30/32
+  (93%), cap passing 4/15 (26%) (reported)`. Main merged in (`a904492ed`)
+  and sminos bumped once for M2 to M7, to 1.59.0 (`f645070ac`).
+- [x] (2026-11-27) The branch review's fix wave: eighteen findings of
+  the composite's writer's triage (R1 to R7, M1 to M6, S1 to S5), and
+  three additions (a /clear's removal refuses while another process runs
+  the session; the notification and `show`'s plain print cleaned), in
+  `eddab4478..` the wave's head, two executors in parallel. Task review
+  then two re-reviews, converged. TECH-DEBT rows 51 to 55. The
+  writer's re-review then found five more: two fixed (a /clear's witness
+  bound to the record's start count; a corrective drain for an outcome
+  given to a stopped subagent), three logged (rows 56 to 58); their task
+  review added row 59. The live
+  check whole: `live-sheet-check: 52 passed`. Mods 1,066 pass;
+  `test_sheet_step` 102, `test_sheet_log` 63, `test_sheet_contract` 40.
+- [ ] The merges (M1's alone and first: done, `2594002af`; M2 to M7 in
+  one pull request, open, its gates GREEN; the merge is the composite's
+  writer's).
 
 ## Words this document adds
 
@@ -104,7 +169,11 @@ envelope. Added here:
 - **The published set** is `sminos/types/sheet/` as M1 merges it (I1).
 - **The stand-in surface** is `sminos/tests/sheet_surface.py`, which
   writes and heartbeats a surface registration so a session offers the
-  sheet where no page runs yet (C4 builds the page).
+  sheet where no page runs yet (C4 builds the page). As built: name
+  `standin`, url `http://sheet.localhost:47590`, reach `local` by
+  default; a heartbeat every 10 s (`--every`); written at 0600 from a
+  temporary file, as `mawsd` writes; removed on SIGTERM and SIGINT;
+  `--once` leaves a registration whose pid is gone.
 
 ## Verification
 
@@ -514,6 +583,15 @@ Paths are from the repository's root. `S/` is
       .staging/<session>/     what the mod hands a step: <callId>/call.json, entry-<n>.json, ref-<n>-<m>; start-<nonce>/ask-<n>.json
       surfaces/<name>.json    a surface's registration (X4)
 
+`.incarnation` (M6) holds the record's own nonce, minted once by a
+no-clobber link and never written by a step: with the directory's
+`(st_dev, st_ino)` it tells a record from a replacement made at the same
+path, which a removal, the daemon's sweep and the log's projection check
+before they act (no identity, no act). It is the writer's own file: a
+reader does not read it and ignores any name in a record it does not
+know (the composite's writer's ruling of 2026-11-27; the published set
+takes the sentence at its next version).
+
 `texts/<sha256>.txt` holds a human's answer text longer than 2,000
 characters, named by the hash of its UTF-8 bytes, written by the step that
 accepts the answer and kept for the record's life (I7).
@@ -539,7 +617,8 @@ In the plugin:
 
 | path | holds | from |
 |---|---|---|
-| `S/sminos_sheet.py` | the door, the reader, the step with its composer, the projection, removal, the surfaces' liveness, the command's `sheet` verbs | M1, M2, M6 |
+| `S/sminos_sheet.py` | the door, the reader, the step's shell (lock, staging, replace), the projection, removal, the surfaces' liveness, the command's `sheet` verbs | M1, M2, M6 |
+| `S/sminos_sheet_step.py` | the step as a pure function, `apply(state, tail, event, now, …)`, and its composers: the view, the envelopes, I10's context (M2) | M2 |
 | `H/sheet-model.tsx` | what takes no `$`: the input's schema and validation, the block's parser, the result's parser, the notices, the lines of the row and of the band | M3 to M5 |
 | `H/sheet.tsx` | the hooks and everything that takes `$` | M3 to M6 |
 | `sminos/types/sheet/` | the published set | M1 |
@@ -787,6 +866,22 @@ question whatever its revision.
 X2's open point, C2's side of it: MAWS reaches the writer by running the
 command. Nothing is served over the daemon's socket by this child.
 
+**As built (M2).** The command's keys are `cli-` and 16 hex digits; an
+`answer`'s image is copied to `uploads/cli-<16 hex>.<ext>` after the
+refusals are checked. `answer` and `dismiss` refuse a question `show` does
+not list (a queued dismissal still counts as listed for `dismiss`), so the
+human hears it at once rather than as a `closed` verdict later. A `--pick`
+number is ASCII decimal only, so a label such as `²` still matches as a
+label. `remove` takes the lock, checks again under it that the session
+does not run (unless `--cleared`), renames the staging and then the
+record aside to `sheet/.removed-<epoch>-<uuid>` (renaming back what it
+detached when a rename fails), deletes them after the lock, exits non-zero
+naming what it could not delete, and deletes leftovers older than 60 s at
+the next `remove`. `show --json` projects a queued `sent` entry by its
+kind as the show schema's variants say, whatever extra field the line
+carries (the composite's writer's ruling of 2026-11-24 on a defect of
+M1's reader); the door still accepts the field.
+
 ### I4 · What a reader computes
 
 One rule for `sminos sheet show`, MAWS's reader and the page; `show
@@ -898,7 +993,7 @@ not hooks, carries texts whole.
             | { "ok": true, "abs": "…", "kind": "image", "file": "<a staged file: the bytes in base64>", "mediaType": "image/png", "size": …, "mtimeMs": … }
 
     out = { "ok": true, "seq": 42, "view": View, "effects": Effects }
-        | { "ok": false, "code": "busy" | "bad-event" | "no-record" | "gone", "error": "…" }
+        | { "ok": false, "code": "busy" | "bad-event" | "no-record" | "gone" | "bad-record", "error": "…" }
 
     View    = { "seq", "offset", "nextId",
                 "open":    [ { "id", "revision", "asker", "header", "question", "askedAt" } ],   // header cut at 60, question at 300
@@ -971,6 +1066,69 @@ notice (I9). Only once it holds one of these does it acknowledge the id.
 
     sminos sheet probe --session <id> [--remote]     read-only, no lock; one JSON object
     { "record": true, "open": 3, "pending": 1, "queued": 0, "surface": { "name", "url", "reach" } | null, "surfaces": 2 }
+
+**As built (M2), what the mod (M3, M4) relies on.**
+
+- **A start's identity.** The `start` event carries `start.nonce`: one per
+  actual start, unchanged on every retry of it (the same name as its
+  `start-<nonce>/` staging; not starting with `.` or `start-`, no `/`).
+  Before its replace a start writes `.staging/<session>/.start-receipt.json`,
+  `{nonce, empty, imported}`; a start whose nonce equals the receipt's is
+  a retry and answers the same `empty` and `imported`, so the fork, lost
+  and import lines of its context read the same. Everything else, `before`
+  and the context's list included, is recomputed every time. A start with
+  no nonce (a shell's) is always new. A start keeps its own staged asks
+  until the next start or the day's sweep; a staged ask an event names
+  that is missing is `bad-event`.
+- **`effects.start.before`** holds at most the first 200 keys, with
+  `beforeCount` beside it; it is the trigger of I9's search, not its
+  list (I9). It is what is pending ahead of the step's drain, so a
+  retry's also names what the first attempt's drain applied.
+- **The acknowledgement window.** What a replace makes the record forget
+  (an acknowledged call's staging; at a start every call's and an earlier
+  start's) is renamed to `.gone-<uuid>` before the replace and deleted
+  after it, or by the next step's sweep. A late step of such a call
+  answers `gone` on either side of a death. A call id may not begin with
+  `.` or `start-`. `gone`, like `busy`, `no-record` and `bad-event`,
+  changes nothing, the drain included.
+- **Inline events.** Only a staged call can be told `gone`; an inline
+  call (a shell, a test) ordered again after its acknowledgement applies
+  again. The mod never orders inline. A `call` or `settle` whose id is in
+  the same event's `acked` is `bad-event`; so is an event's `keys` over
+  200, and an inline call of more than 20 entries.
+- **Refusals.** A mod-refused entry's `call.json` holds `{"refused":
+  "<clause>"}` without its `entry <n>, ` prefix; the step adds it. The
+  step checks U14 itself too, with the same clauses, so an entry the mod
+  missed is refused alone; a lone surrogate reads `a string holds a lone
+  UTF-16 surrogate` (the door's words; `grammar/result.md`'s clause list
+  does not carry it, the first-line grammar is unaffected). Each clause's
+  free text is cut at its source: a path at 200, the engine's reason at
+  500, a mod-written clause at 500, a subagent's name at 200; the
+  withdrawals' clauses stop at 32,000 characters of the `Not done:` line
+  and end `And N more withdrawals not done.` `never asked` has no time:
+  `q9 is not open (never asked)`.
+- **The floor** raises `nextId` to `max(nextId, floor + 1)` whenever the
+  record has assigned no id (none open, none closed), at a `call` or a
+  `start`. `effects.start.empty` is `fork` when a fork's start made the
+  record, `lost` when a resume's start made it with a floor of at least
+  1, else `null`.
+- **The answer.** `step` exits 0 for every answer, `ok: false` included;
+  the mod reads the JSON. Everything the answer needs is composed before
+  the replace, so a composer's failure never follows a committed state.
+  The whole serialized answer is held under 3 MiB, cutting in order
+  `ready` (from the last recipient back), `closed` (oldest first), `open`
+  (newest first), `answered`; a call's result has a fixed maximum.
+- **Times.** A line's `at` that matches the pattern but is no calendar
+  date (the door takes it: its behaviour is frozen) is tolerated by every
+  composer: a time that does not parse is written as stored and its age
+  left out. An outcome's `at` is the line's, or the step's clock for a
+  line with none.
+- **Order.** "Closed last" and "answered last" are by closing order, ties
+  of one drain kept in the order the drain closed them. The view also
+  cuts an asker's name at 200, a closed entry's header at 60 and its
+  receipt at 200. `owedAcrossStop` counts dismissals too. A revise of an
+  imported question drops `importedFrom`. `effects.verdicts` answers the
+  event's `keys` whatever the event.
 
 ### I6 · A call: its input, its refusals, its result (X7)
 
@@ -1213,6 +1371,21 @@ Made at a process's first `session.start` and kept:
   `pid` is a running process (`S/sminos_sheet.py`, which `surfaces` and
   `probe` print and every step's view carries). Its reach suits a session
   unless `SSH_CONNECTION` is set there and its reach is `local`.
+- **Reading the registrations** (the composite's writer's ruling of
+  2026-11-24, from C4's plan, the registration's real writer). The writer
+  (`mawsd`) makes `sheet/` and `sheet/surfaces/` at mode 0700 when absent,
+  writes its file at 0600 by replacing it from a temporary file in the
+  same directory whose name does not end in `.json`, registers as `mawsd`
+  (or `mawsd-<12 hex>` for a daemon of another profile) and removes its
+  file at a clean stop. So the reader takes only names ending in `.json`,
+  never fails on a file that vanishes between the listing and the read,
+  and reads a half-written or unparsable file as not alive. When more
+  than one registration is alive and suits, the order is fixed: the name
+  `mawsd` first, then the others by name, never the directory's listing
+  order. The link is `<url>/s/<session>`: a surface registers `url` as an
+  origin with no trailing slash, and the reader strips one trailing slash
+  if present. Tests pin each of the three (M2: the reader and the view's
+  `surface`; M3 and M5: the choice and the line read the same).
 - The record and the surfaces are asked for with `probe` (I5), which
   answers a few hundred bytes whatever the record holds, and only where
   the table needs them: with no record and the setting off the choice
@@ -1259,7 +1432,12 @@ behind an envelope of old ones that starts no turn. An envelope is
   hands it over, so no two routes take it. It carries one envelope; when
   `more` is set, the view after its landing carries the next.
 - A notice goes as a context entry of its own beside the envelope, or
-  alone, on the result and prompt routes only: a notice starts no turn.
+  alone, on the result and prompt routes; a notice starts no turn. When
+  the idle route opens while a notice waits, the notice also goes in the
+  idle prompt's text, above the envelope: that turn starts for the
+  envelope anyway, and the engine raises no `prompt.submit` for a
+  plugin's own submit (M4's probe: "skipped: re-entry"), so the notice
+  would otherwise wait past it.
 - A dismissal and an outcome owed across a stop never make an envelope
   wake; they leave with whichever route opens first, a fresh answer's
   idle turn included (§5.2, U11).
@@ -1298,6 +1476,25 @@ Found, it orders `landed`; not found, the envelope is ready again. This
 is the exit for a context a hook outside this plugin dropped on the
 result route, which no return value reports.
 
+**Which turn a flight belongs to** (a critic's pointer, relayed by the
+composite's writer, 2026-11-24; M4 verifies it and records here what it
+found). An idle submit can wait behind another prompt already queued (a
+peer's message, a notice, another plugin's submit, the human typing):
+that prompt's turn starts and completes before the mod's prompt has
+entered. Taken as the flight's turn, its completion would find no block,
+ready the envelope again and submit it a second time, and the first
+submit would then land as well: the record right, the conversation
+holding the answers twice. So an idle flight is settled only by its own
+landing row, its submit's failure, or the completion of a turn that its
+own prompt opened (known by the prompt's row having entered, or the
+`turn.start` that follows it); a turn that completes while the flight's
+prompt has not entered settles nothing and readies nothing. The result
+and prompt routes are held to the same rule where a second turn can
+interleave: a flight is settled at the completion of the turn its
+context entered. Pinned by a test that queues a foreign prompt ahead of
+the idle submit and asserts one envelope in the conversation, and by a
+live case if a scripted one cannot show the ordering.
+
 **At a `start`** whose effects name outcomes pending before its drain
 (`start.before`), the mod searches the transcript for `<sheet-delivery>`
 (the one `perl` pass of `ask.tsx`'s `searchArgs`, given this form) and
@@ -1308,6 +1505,10 @@ there by what the stored row holds: an attachment of type
 that fails lands nothing, and the outcomes go again, owed across a stop.
 Where the stored row says less than the live event did, its form
 decides, which is U13's limit.
+
+The search hands `landed` every key it finds in a stored block of those
+kinds, not only the first 200 that `before` lists (`beforeCount` may be
+larger): `landed` of a key that is not pending does nothing.
 
 **To a subagent** (§6): the view's `ready` holds one envelope for each
 running subagent with outcomes `taken`. The mod sends it with
@@ -1334,6 +1535,73 @@ start's context names every open question and its asker):
 - a call whose outcome was not known when it was answered (I5): `[sheet
   v1] Your earlier call (<callId>) did change the sheet: <its result's
   first line>` or `… changed nothing; call again if you still need it.`
+
+**As built (M4).** What its live probe on 2.1.331 showed and the mod
+relies on, then the rules the task review settled.
+
+- *The engine's forms.* The idle submit's row reaches this plugin's own
+  `session.append` (door `prompt`, origin `{kind: 'plugin', name}`),
+  before `turn.start`; stored as a user row with `origin` and
+  `pluginPrompt`, its content the engine's frame (`The sminos plugin sent
+  a message:`), the text and a trailer. The engine raises no
+  `prompt.submit` for a plugin's own submit ("skipped: re-entry"). Two
+  submits in one hop make one turn. A prompt typed over a running turn
+  is absorbed into it, with no turn of its own. A submit made while a
+  foreign turn runs: that turn's `turn.complete` comes first, then our
+  row and our `turn.start`. In `$.session.messages({ as: 'api' })` the
+  idle prompt is a text block of its own opening with the frame; the
+  prompt route's context a reminder block of its own; the result
+  route's context is appended inside the tool result's text, after the
+  output, in a reminder wrapper. The main loop's Agent runs in the
+  background even when asked not to: the main turn ends, then
+  `SubagentStop`, then its completion enters as a prompt about 30 ms
+  later.
+- *Flights.* A flight is a reservation until the `$.clock.after(0)` hop
+  hands it to the engine; the hop rechecks the generation, a running
+  main turn and a stopped agent, and releases an invalid reservation
+  without sending (no failure, no toast); a prompt that enters first
+  takes an unhanded idle envelope. An idle flight's turn is the first
+  main turn started after its hand-over; a flight typed over a running
+  turn awaits the next turn, its boundary taken before any read.
+- *Evidence.* Landing reads only rows of the routes' kinds, from what the
+  model reads: at `session.append` the stored row; at a turn's end only
+  items carrying a route's framing (above), landing only the keys found
+  and making the rest ready again; at a start, a perl pass printing
+  `{"keys", "kind"}` per matching row, newest first, from the stored
+  message content only (never a row's submission metadata), filtered to
+  `before` when `before` is complete. A tool output that itself carries
+  the exact reminder framing and a block with pending keys would count:
+  U13's limit.
+- *The idle route's wake.* An envelope wakes when it, or the view's
+  pending past it, holds a fresh answer; a failed idle submit marks its
+  keys and the fresh keys that authorized it `noIdle` (or moves
+  `idleFailedAt` past `answeredCount` where the view is cut), so failed
+  work alone never reopens the route, while a newer answer does and the
+  later parts of a split Send go on their own after a landing.
+- *Sends.* While a send to an agent is in flight, until its receipt's
+  `landed` or `reroute` has answered, every step the mod orders passes
+  that agent in `agents.running`; on release a drain reroutes what is
+  left with a stopped agent. A stopped agent is never sent to; its own
+  `turn.start` makes it running again.
+- *Starts.* Search, then `landed` (every key found, chunks of 200), then
+  the start again under its nonce, and only then `started`.
+  `SheetKept.starting` keeps the transcript path, so a reload's retry
+  searches and routes its context. A compaction's SessionStart orders its
+  own drain step; an early start's context, and a context whose step gave
+  no answer, ride the next route (in a MAWS-run session the prompt route,
+  context only). The prompt route puts back each context and notice the
+  entered prompt lost, independently of the envelope.
+- *Notices.* An ended subagent's open questions are named at the stop
+  from the view held then, and again after the stop's drain, once per
+  question id; a waiting notice rides the idle prompt above the envelope
+  and is read by the floor as its own item.
+- *The record's paths.* The door, the step (`bad-record`, read by the mod
+  as no answer) and `answer --image` refuse a record directory or a
+  child (`inbox.jsonl`, `state.json`, `refs/`, `texts/`, `uploads/`)
+  that is a link or not of its kind, writing nothing through it (the
+  composite's writer's ruling from MAWS's review); `remove` refuses a
+  record directory that is a link, and removes a real one holding a
+  linked child without following it.
 
 **In a MAWS-run session** the mod opens none of the four routes (a turn
 the tool submits there is a turn MAWS did not send: C0's P1); it drains,
@@ -1376,6 +1644,20 @@ these, each one line:
   earlier are no longer open. New ids start at q12.`
 - an import (M5): `Moved onto the sheet from the earlier question tool:
   q1 "…" (call <id>, question 1), …`
+
+**As built (M2).** The step composes the whole context, the import line
+included (the step imports; M5 only stages the asks). Its first line reads
+`after a resume` for a resume's start, `after a compaction` for a drain
+with `context: compact`, and `after a start` for any other start. A
+subagent asker follows the revision: `, asked by the subagent <name>
+(<agentId>)`, the header after it as a JSON string. Only the main
+conversation's pending outcomes are listed; a pending dismissal reads
+`Dismissed, not yet told to you: q9 (revision 1) …`. The import line,
+each question cut at 200 with `…`, stands before `New ids continue from
+q<n>.`, which always ends the context, and has its own budget of 10,000
+UTF-16 units, stopping with a count and the `sminos sheet show` pointer.
+`and N more open` counts open and pending left out together; one left
+out reads `q41`.
 
 **The floor** of a record that has assigned no id, in a conversation that
 may already have used some (§3): the highest `q<n>` the mod finds in the
@@ -1424,9 +1706,12 @@ sheet. Yielded, `ask.tsx` registers no tool, describes nothing, withdraws
 nothing, holds and delivers nothing, and draws no band and no open ask;
 two things it still does: its row hooks draw a stored call of today's
 form (its input has `questions`; §2.1) as they draw any answered or
-declined one, and its SessionStart hook still reads a resumed
-transcript's asks, which it hands to the sheet in place of adopting them
-(M5). The switch is the module's own variable, so a reload starts
+declined one (and pass a stored call of the sheet's form on to `next`
+in every session), and its SessionStart hook, yielded, adopts nothing.
+The sheet's own start reads a resumed transcript's asks through
+`readTodayAsks`, which `H/ask.tsx` exports and the sheet calls with its
+own hook's `$` (M5's review: a hand-off from the ask's hook would make
+one hook wait on another's work, K4). The switch is the module's own variable, so a reload starts
 unyielded and the kept choice sets it again.
 
 `H/sheet.tsx` exports, for `H/bridge.tsx`'s `sheet` op, `sheetNudge(keys):
@@ -1485,6 +1770,100 @@ each question still open, `…, "text": "removed with its sheet",
 waits until the session has one or the record goes. `close_questions` in
 `S/sminos.py` passes over a `src` that starts `sheet:`: a sheet question
 outlives its process.
+
+**As built (M6).**
+
+- `append_host` adds no `from` or `to`: the projection sets them, a
+  question's `from` the session's alias, every later event of it the
+  question's logged `from`. The projection never joins a session to a
+  project; a question owed before the session is a member waits for its
+  first Stop. With no launch directory known, it falls back to
+  `last_project`. `sheet log` prints `{"session", "written", "owed"}`.
+- *One destination.* `log.projects[id]` is recorded under the lock, in a
+  replace of its own, before anything is appended; the first decision
+  stands, so a retry or an overlapping projection across a move sends a
+  question's every event to one project. Each of the projection's two
+  replaces raises `seq`. A destination recorded but not known here is a
+  debt, never "no project".
+- *Removal decides, then publishes.* Under the lock `remove_record`
+  rechecks liveness (and, for the daemon, the identity and mtime it
+  decided on, and the transcript's confirmed absence), detaches the
+  staging and the record, and only then projects the closings (`removed
+  with its sheet`, also for a `/clear`'s removal) from the detached copy;
+  a detached record whose log is not all written, or whose state cannot
+  be read, stays aside and the removal exits 1; `finish_removed`, run by
+  every removal and every sweep, completes and deletes such leftovers,
+  each on its own. A refused removal publishes nothing.
+- *Identity, else keep.* A record's identity is `(st_dev, st_ino)` of its
+  directory with the nonce in `.incarnation` (I1). The projection's
+  locked rereads, a `/clear` note's witness (`cleared/<pid>.sheet`, written
+  by `smns-cleared.sh` before the note) and the sweep's decision all
+  carry it, checked again under the lock. A comparison is three-way
+  (match, confirmed mismatch, not known); only a match acts, and a note
+  and its witness stay until a confirmed answer.
+- *The sweep* (`sweep_sheets`, run first in `override_duty`, under its
+  spacing) removes a record only when the transcript's own path, read
+  from the launch record, stats missing and every known config dir lists
+  cleanly, confirmed again under the lock; any doubt keeps the record.
+  `sweep_overrides` keeps a session's launch and config-dir records while
+  it has a sheet, so that evidence survives.
+- *The Stop hook.* `smns-record.sh`'s preflight lets through a session
+  that has a sheet; the Python Stop path projects at Stop only.
+- *The snapshot* is written when it changes (each view adopted, each main
+  turn's start and end), writes chained, deduplicated only on the host's
+  acknowledgement. Appeal's case in `tests/mods/` builds its snapshot
+  with sminos's own composer, so the `mods` gate stages
+  `sheet-model.tsx`.
+
+**As built (the branch review's fix wave, 2026-11-27).** The
+whole-branch review's triage (fix what has an ordinary cause; a file
+planted in the person's own sminos home ships as TECH-DEBT #51) changed
+these, none of them the published set:
+
+- *A /clear's removal* names the record witnessed at the clear: the mod
+  takes it once at `session.end` (`sheet witness`, a verb of the mod's,
+  hidden from people) and keeps it in `SheetKept.leftWitness` for every
+  retry; with no record at the clear nothing is removed (the sweep has
+  any record made after). `remove --cleared` needs `--witness` and
+  `--clearing <pid>`, and under the lock refuses while any other live
+  process runs the session (`running_elsewhere`, failing closed on any
+  unreadable listing or record). The mod removes nothing once it has
+  itself resumed the left session. The witness also binds the record's
+  count of starts (`started` in the staging's `.start-receipt.json`,
+  raised by every start applied, floored by the clock, kept past the
+  staging's expiry): a record started since the witness, by a resume
+  that has since stopped or by a replay of an older start, is kept.
+- *Identity* exists only when `.incarnation` holds the minted 32 hex
+  digits (read as at most 64 bytes); anything else is no identity. A
+  removal needs a confirmed match; a projection's write to a live record
+  needs a positive match, a detached record being its own case.
+- *Evidence of absence* is complete or none: the transcript lookup reads
+  the whole registry, and the sweep's clear-note branch rechecks fresh
+  evidence under the lock.
+- *An unclean stop.* Under the lock the step clamps its offset to the
+  inbox's size; the door pads an inbox cut below the committed offset up
+  to it, adding its newline after a fragment only past the offset; a new
+  `state.json` beside an inbox starts at the inbox's size (an orphan
+  inbox is never replayed); a body named by its digest is reused only
+  when its digest matches.
+- *Delivery.* A result route carries context only from the generation
+  it was dispatched in; a prompt route's flight is admitting until the
+  hooks beneath resolve, and no turn's end settles it meanwhile; a step
+  with no view held reads the agents first, and each settle reads them
+  again; a reload carries `starting`/`preparing` only for its own
+  session; a failed idle submit reconsiders delivery at once, spending
+  only its own wake's keys. A view that gives an outcome to a subagent
+  seen stopped, with no send in flight owning it, orders one corrective
+  drain with the current agents (`correctStopped`); the pair is spent only
+  by a step whose agent list left that agent out, so a failed lookup
+  keeps it owed for the next check.
+- *What a person reads.* The row, the band, the notification and the
+  plain prints of `show` and `surfaces` drop C0 and C1 controls (ESC
+  included) and draw a line break as a space, by one rule in both
+  languages; `show` keeps a question's own line breaks, each continuation
+  indented under its first line. JSON and stored strings are as written.
+  `answer` matches a label exactly before trimming, and takes back its
+  uploads only when the append is known not to have committed.
 
 ### I13 · The snapshot (§11)
 
@@ -1824,15 +2203,18 @@ I3's op.
   `/branch`; else at `session.start` after `next`, or at the first
   prompt) and sends it on `start` when it has it and on every `call`
   while the view's `nextId` is 1.
-- The description the tool is registered under until M7 (§2.4 as the
-  owner ruled it; C1's baseline compares this wording with "put every
-  question you have in one call", and M7 takes the one it reports):
-
-      Puts questions to the human on this session's question sheet and returns at once; nothing waits on them. The human answers any of them, in any order, when they get to it, and each answer reaches you later in a message that names its question by id.
-
-      Ask when a question comes up, not at the end of your turn, and put every question you have at that moment in the one call (`ask` takes up to 20 entries); then go on with work that does not depend on the answers. To change a question you already asked, send an entry with its `id`: it replaces the question in place. Do not ask a second question that overrides the first. To take a question back, name it in `withdraw`.
-
-      The human sees only the card. Put in `context` what they need to judge the question, name in `references` the files it is about (each is shown as it is now; a file outside your working directories cannot be shown, so quote what matters from it in `context`), and mark an option `recommended` when you have a recommendation. Options are optional: a question without them is answered in text, and every question has a text field.
+- The description the tool is registered under is
+  `tests/output-styles/question-sheet/description-v3.md` as it stands on
+  `main`, word for word: the owner's ruling on C1's baseline (§2.4 at the
+  composite's `5f53131c5`: "ask when a question comes up, then keep
+  working", the sentence on batching dropped). It is held as a constant in
+  `H/sheet-model.tsx`, and a test holds the constant equal to the file.
+  C1's two evals default to the same file; M7 ships it unless they fail
+  on it.
+  Each property's description is the one C1's stub registers for that
+  field (`FIELD_DESCRIPTIONS` in `tests/output-styles/question_sheet.py`;
+  `description-v3.md` sets none of its own), so the evals measure the
+  tool as it ships.
 
   The schema the tool is registered under is the published
   `tool-input.schema.json` with a description on each property; a test
@@ -1850,6 +2232,68 @@ I3's op.
   already keeps. Each runs `sminos sheet remove --session <left>
   --cleared`.
 - The timer of K4 starts at `session.start` and ends with the module.
+
+**As built (M3), what M4 to M6 build on.**
+
+- **The engine does not order the two starts.** At a terminal launch
+  (2.1.331) the classic SessionStart can settle before the plugin's
+  `session.start` has made the choice (which awaits `probe`), or after
+  it. An early SessionStart is kept (`sheet.early`) and ordered by
+  `session.start` once the choice is the sheet; dropped otherwise. Its
+  context then cannot ride the SessionStart's own result (M4's
+  compaction decision says where it goes).
+- **The ask waits for the choice.** The sheet declares at registration
+  that the ask's adoption of a resumed session's asks waits for the
+  choice (`deferAskToChoice`); the ask's SessionStart returns at once,
+  reads, and checks the yield again after its read. On 'today' and
+  'none' it adopts as before; on 'sheet' it adopts and publishes nothing
+  and keeps what it read, `asksReadWhileYielded()`, for M5's import.
+- **One start at a time.** `SheetKept.starting` (`{nonce, source,
+  floor?}`) is kept from the moment a start is owed until it answers, so
+  a reload orders the same start under the same nonce; a trigger during
+  an attempt joins it; a new attempt is made only after the last settled
+  with no answer.
+- **Generations.** Per-session work (the view, acks, unsettled calls,
+  notices, the floor, the drain queue, the start in flight) lives in a
+  generation, retired at every session change (`/clear`, `/branch`, a
+  fork). Every step, settle, drain, failure recovery and notification
+  belongs to the generation that ordered it and publishes only into it.
+  `/clear`'s removal of the left record runs in the background after the
+  old start in flight, one at a time, never ahead of the new session's
+  start, which is kept before anything is awaited. A failed overlapping
+  removal leaves the record to M6's sweep, the third chance.
+- **The floor's sources.** Only the tool's own results (paired with
+  their calls by id), what the engine marks as a plugin's context
+  (`hook_additional_context` attachments; text behind the engine's
+  `<event> hook additional context:` prefix, also inside another tool's
+  result blocks) and this plugin's prompt. Within those, a
+  `<sheet-delivery>` block, and a `[sheet v1]` text read by position: the
+  `New ids … q<n>.` footer as its last line, and the inline sentence only
+  in the fork and lost-record lines. Nothing the human, the model or
+  another tool wrote counts, whatever it quotes.
+- **A call before the start has answered**, or one whose staging write
+  failed, answers `Nothing done.` with the foreclosed clause, `the sheet
+  could not be written (the sheet is still starting); call again.` (or
+  the write's error), and orders no step. A refused capture refuses its
+  whole entry; captures are staged only once the entry has passed. The
+  running agents are read after staging, right before the step.
+- **The check (K4)** runs first in every hook that sees a tool call, the
+  tool's own and the built-in's refusal included. A compaction's drain is
+  queued on the single-flight queue with `context: "compact"` and is
+  owed on failure; M4 changes how its context reaches the model.
+- **Notices** of late settles wait in memory (`sheetNotices()`) for M4's
+  routes. The bridge's `sheet` op joins `OPS`, not the control ops; the
+  hello nudge is `sheetNudge([])`.
+- **The registered schema** is the published one less its `title`, with
+  C1's field descriptions (checked against `question_sheet.py`); a
+  reference's `path` and `lines` have none, as in C1's stub.
+- **The live check** (`live-sheet-check.py`) runs `many` first (later
+  cases act on its questions), each case in scratch homes with its own
+  tmux server; `--guard-plugin <dir>` loads the owner's secrets guard
+  for `secret`, found at run time. A today session's blocking call is
+  seen in the debug log (`$.tool.call (sminos): AskUserQuestion
+  (questions)`), since the engine stores it only once answered. The
+  door's verdict to a live session measured 0.50 to 0.56 s.
 
 **Does not touch.** The routes, landing, the contexts (M4): M3 orders
 `start` and drains and uses nothing of a view's `ready`. The band and the
@@ -1925,6 +2369,16 @@ tool changes); their tests; `T/mods/live-sheet-check.py`; `H/README.md`,
   `landed` when `start.before` names keys; the context of the step that
   answered last. All of it inside the classic SessionStart hook, which
   waits only on its own `$` calls.
+- The compaction's context (M3 left the seam: its drain is only queued,
+  so that hook never waits behind another hook's step). The classic
+  SessionStart of source `compact` orders its own step, a drain with
+  `context: "compact"`, as its own `$.process.run` (awaiting its own `$`
+  call is what K4 allows; the record's lock serializes it with any other
+  step) and returns `effects.context` as `additionalContext`, the path
+  C0's P5 showed reaches the model. Only when that step gives no answer,
+  or when a start's SessionStart had to return before the start choice
+  was made (M3's `sheet.early`), does the context go instead as a context
+  entry on the next result or prompt route, once.
 
 **Does not touch.** MAWS's steer and the context the tool adds to one
 (C5). The band's count of answers that will go with the next message
@@ -1968,8 +2422,10 @@ sheet once, and is told.
 **Touches.** `H/sheet.tsx` (`registerSheetBand`, the row hooks),
 `H/sheet-model.tsx` (the parser of a result's first line; the lines);
 `H/register.tsx` (the band's registration); `H/ask.tsx` (`readAsks`
-answers whether its read was definite; yielded, its SessionStart hook
-hands what it read to the sheet); their tests; `H/README.md`,
+answers whether its read was definite, exported as `readTodayAsks` for
+the sheet's start; its row hooks pass a stored sheet-form call on);
+`sminos/types/sminos.d.ts` (`SheetKept.starting.today`, `preparing`);
+their tests; `H/README.md`,
 `H/CLAUDE.md`.
 
 **Interfaces.** Exposes I11's M5 row and the result's parser. Consumes
@@ -1993,17 +2449,51 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   `$.fs.read`, and judges by age alone; a step's view is the full rule.
   The count of answers is the view's `owedAcrossStop`.
 - A row, from the stored call alone (I11): one line a question the call
-  added or revised, `q7 Auth method — <the question's first sentence>`;
-  then, where a view knows the question, the receipt in the line's
-  place: `q7 Auth method → OAuth`, `q7 Auth method · Dismissed`, `·
-  Withdrawn`, and `· Revised below` when the question's revision is past
-  the one this call set. A withdrawal the call made draws `q2 ·
-  Withdrawn`. A session with no record (a fork, a record removed), and a
-  question older than the 500 a view's `closed` holds, draw the lines
-  without receipts. A stored call whose first line is `Nothing done.`
-  draws that; one whose first line is `Outcome not known yet.` draws
-  `outcome not known` and no id, and is not matched to the notice that
-  followed.
+  added or revised, `q7 Auth method — <the question's first sentence
+  that ends in "?", else its first sentence>` (§8.1's rule, so a
+  question reads the same in the terminal and in the app); no head line
+  of the sheet's own: the engine's tool row has its head and its fold
+  (the composite's writer's ruling of 2026-11-24 on §8.3). Then the
+  receipt in the line's place: `q7 Auth method → OAuth`, `q7 Auth method
+  · Dismissed`, `· Withdrawn`, and `· Revised below` when the question's
+  revision is past the one this call set. A withdrawal the call made
+  draws `q2 · Withdrawn`. A stored call whose first line is `Nothing
+  done.` draws that; one whose first line is `Outcome not known yet.`
+  draws `outcome not known` and no id, and is not matched to the notice
+  that followed.
+- The question line's sentence, one definition for both surfaces (the
+  composite's writer's ruling of 2026-11-24; C3 holds the same). A
+  sentence ends (a) at a line break; (b) at a run of `.`, `?`, `!`, with
+  any closing quotes or brackets after it kept, only where whitespace or
+  the text's end follows (so `v1.2` and `file.txt` end none); (c) at a
+  run of the full-width marks `。？！`, closing quotes or brackets kept,
+  whatever follows. A sentence asks when its ending run holds `?` or
+  `？`. The line is the first sentence that asks, else the first
+  sentence; sentences are trimmed and empty ones dropped; an empty text
+  gives an empty line. As a pattern,
+  `/(?:[.?!]+["'”’)\]]*(?=\s|$)|[。？！]+["'”’)\]」』）]*)/g` over each
+  line of `text.split(/\r?\n/)`, a line's remainder after its last match
+  being a sentence that does not ask. The tests hold these, as written:
+  `"We ship Friday. Keep the earlier sailing?"` → `"Keep the earlier
+  sailing?"`; `"Use v1.2 or v2.0?"` → the whole text; `"Pick one"` →
+  `"Pick one"`; `"First line\nWhich one?"` → `"Which one?"`; `He said
+  "go?" Then left.` → `He said "go?"`; `"배포할까요？다음 주에 합니다。"` →
+  `"배포할까요？"`; `"Statement。Question？rest"` → `"Question？"`;
+  `"What?! Really."` → `"What?!"`; `"No marks here\nSecond line."` → `"No
+  marks here"`; `"e.g. this?"` → `"this?"`; `""` → `""`.
+- Where a receipt comes from (the same ruling). While the record lives,
+  from the view's `closed`. For a question the view does not hold (a
+  session with no record: a fork, a record removed; one older than the
+  500 `closed` keeps), from the `<sheet-delivery>` blocks this process's
+  conversation holds: those the landing hook saw, and those of one read
+  of `$.session.messages` at the start. A block's answered entry gives
+  `→` and the picked labels, read by place from the call's own input at
+  that revision, or `their text`; its dismissed ids give `· Dismissed`.
+  No scan beyond that. This path only draws: a read that fails or is
+  not available leaves the lines without receipts and touches nothing of
+  the record, the drain or delivery, and it adds nothing the model sees.
+  A question that neither the view nor those blocks know is drawn as its
+  line with no receipt.
 - A read is definite when the whole file was read, or the search ran and
   its output was not cut. Indefinite, the `start` event says so, nothing
   is imported or recorded, and the next start reads again. A fork's first
@@ -2011,10 +2501,57 @@ the view, I6's grammar and its published examples, I5's `start.today`.
   Each ask is staged as a file of its own.
 - An imported ask's own row stays as `ask.tsx` draws a stored call.
 
+**As built (M5).**
+
+- *The band.* Singular forms (`1 open question`); drawn for the terminal
+  runner once the session's start has answered (it redraws when that
+  flips); the answers' count is `owedAcrossStop`. Between steps the timer
+  re-reads the registrations every third tick, only while a line is
+  drawn, and such an age-only read never overwrites a newer step's view.
+  The unreachable form's `sminos sheet show <first 8>` works for any
+  session with a record: a `sheet` verb's `<who>` that matches no member
+  resolves a unique prefix (8 to 35 characters) of a record under
+  `sheet/`, two records sharing it exit 4.
+- *Rows.* The engine's own head with the sheet's lines under it; the
+  result row hidden; ctrl+o, running, errored and interrupted calls
+  drawn as the engine draws them. In a session whose choice is 'today',
+  `ask.tsx`'s row hooks pass a stored sheet-form call on to `next`. A
+  receipt read from a delivery block is its labels by place from the
+  call's own input, or the text's first 80 characters; blocks are read in
+  the conversation's order, a steer's (a user row opening with an
+  envelope head) included, for drawing only; a dismissal read from
+  blocks cannot tell revisions apart, so every row of a dismissed
+  question reads `Dismissed` (accepted by the composite's writer). The
+  one `$.session.messages` read happens when a row first needs it,
+  retried once after a turn starts.
+- *The import.* The sheet's start reads today's asks itself
+  (`readTodayAsks`, with its own hook's `$`), so `session.start` awaits
+  the start as in M4; `SheetKept.preparing` (nonce, source, transcript)
+  is kept before the first await, so a reload during the read or the
+  staging resumes the same start. An imported ask's `askedAt` is its call
+  row's timestamp, else the start's time. A start answered `bad-event`
+  while carrying asks is retried once without them. Fork, startup and
+  clear send no asks.
+- *The floor's search* (M3's sources, now in the perl pass as well): it
+  applies the floor's rules itself and prints one line, `{"floor": n}`,
+  however large the history (8.3 MB of matching rows give 14 bytes);
+  each row is decoded as the TypeScript reader decodes it (malformed
+  UTF-8 and a lone surrogate's escape as U+FFFD), and a parity test holds
+  the perl and TS readers equal on every test transcript. With the floor
+  unknown (the search failed or timed out) and the asks' read definite,
+  the start sends the asks with `today.floorUnknown: true`; the step
+  imports them only into a record whose `nextId` is past 1, else imports
+  and records nothing for the next start. No published event carries the
+  flag.
+
 **Does not touch.** Today's band and rows in a session whose choice is
 'today'.
 
-**Proves.** Acceptance 1's line, 16's row, the receipts of §8.3, and
+**Proves.** Acceptance 1's line, 16's row, the receipts of §8.3, a
+line's sentence (a question that opens with a statement shows its first
+sentence ending in "?"; one with none shows its first sentence), a row
+with no record drawing its receipts from the blocks the conversation
+holds and, where neither knows a question, its line bare, and
 G2's three import statements (once, also after two resumes; kept when
 the read was incomplete; a fork empty and staying empty). Tests pin the
 line's four forms, each receipt, the parser on every published stored
@@ -2079,8 +2616,8 @@ by the answers applied and not by a dismissal.
 ### M7 — The description, what is written beside the code, the acceptance
 
 **At its end.** The tool ships the description that passes C1's
-thresholds; if the owner ruled for automatic capture of context (§10),
-it is built and passes with it; the manuals say what the plugin now
+thresholds (automatic capture of context is out of scope: the owner's
+ruling on C1's baseline, §10); the manuals say what the plugin now
 does; G2 and G3 hold as the composite words them, run as written.
 
 **Touches.** `H/sheet-model.tsx` (the description and the properties'
@@ -2097,8 +2634,8 @@ looser `$`).
 
 **Decisions.**
 
-- The description is the wording C1's baseline reports of the two it
-  compares (§2.4), tested with C1's two evals as C1 merged them under
+- The description is `description-v3.md` (M3; the owner's ruling,
+  §2.4), tested with C1's two evals as C1 merged them under
   `tests/output-styles/`, the registered tool in the stub's place, by
   the one command each eval gives; the thresholds are the ones the owner
   set into the composite's Acceptance 14.
@@ -2195,20 +2732,21 @@ rests on it fails, and names the probe.
 | `both` | one `put` answers the main agent's question and a running subagent's: each conversation holds an envelope with its own key only | G2 |
 | `no-surface` | three starts: the setting off; on with no registration; on under `SSH_CONNECTION` with a `local` one: each has today's schema (`questions` in the tool's input) and the engine's dialog | Acceptance 9 |
 | `nested` | a `claude -p` started with `MAWS_QUESTION_SHEET` set to another session's id (what a tool's child inherits inside a MAWS-run session): its tools hold no sheet schema, and its debug log says the variable did not match | G2; a real MAWS launch is C5's to observe |
-| `secret` | references a `.env` the session's permissions deny, and one the owner's secrets guard (devcloud's) denies: the result's `Not done:` names each; nothing of either is in the staging or under `refs/` | Acceptance 15 |
+| `secret` | references a `.env` the session's permissions deny, a path outside the working directories, and a file holding a token with the owner's secrets guard loaded (`--guard-plugin <dir>`, found at run time; without it that part is SKIP, never ok): the first two are refused, the result's `Not done:` naming each; the guard scrubs the third's Read rather than refusing it (observed at M3), so its stored body holds the guard's handle (§2.3: the guards' scrubbing reaches the caller); the token and the denied file's contents are nowhere under the sheet's files | Acceptance 15 |
 | `withdraw` | the agent withdraws a question: `show` no longer lists it and the row reads `Withdrawn`; a subagent told to revise and to withdraw the main agent's question is refused both | Acceptance 16 |
 | `compaction` | compacts, then asks the agent to list its open questions and their options without calling a tool: it names them | Acceptance 17 |
 | `fork` | forks the session, by `/branch` and by `--fork-session`: `show` on each copy is empty, the copy's first context says so, and its next question's id is past every id the conversation holds | Acceptance 17 |
-| `agent-open` | a subagent ends with a question open: the main agent's next tool result carries the notice | Acceptance 18 |
+| `agent-open` | a subagent ends with a question open: the main conversation's next route (a tool result or a prompt; on 2.1.331 usually the subagent's completion prompt, since the main loop's Agent runs in the background) carries the notice, once | Acceptance 18 (as the composite's writer reworded it, 2026-11-24) |
 | `two-surfaces` | two `put`s answer one question: `applied`, then `closed`; then the stand-in is stopped, the agent asks again and its result ends with the no-surface sentence; the stand-in returns and `show` lists the question | Acceptance 19 |
 | `import` | a session with two open asks of today's tool is resumed under the sheet: both are on the sheet, and are there once after two more resumes; with the transcript's search made to fail, nothing is imported and the next resume imports; a fork of such a session is empty after its own resume | G2 |
 
-It ends `live-sheet-check: 19 passed` and exits 0; a failing case prints
+It ends `live-sheet-check: N passed`, N counting its checks (52 at M7,
+several a case), and exits 0; a failing case prints
 `FAIL <case>: <what was observed>`.
 
 **M7**, besides the live check:
 
-    ci-gate                                                         # every gate the change's paths plan
+    ci-gate                                                         # every gate the change's paths plan (ci-kit has no `--gates all` here)
 
 then C1's two evals, each by the command its header gives, against the
 shipped description; each must meet the threshold the composite's
@@ -2216,7 +2754,39 @@ Acceptance 14 then states.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+What the plan set out to do, it did: one record per session with one
+writer, the tool that asks on it, the three routes that deliver its
+answers, the terminal's drawing, the import of today's asks, the other
+readers (snapshot, project log) and the sheet's end of life, all behind
+the frozen contract M1 published, which nothing after M1 edited. The
+acceptance holds live (52 checks) and on the gates (24 of 24); C1's two
+evals pass on the shipped description. What is left is written as
+TECH-DEBT rows 37 to 50 and in the pull request's unresolved findings.
+
+Where the effort went. M2 to M4 built close to the plan; M5 and M6 took
+most of the review rounds, and almost every Critical was in a path that
+destroys or overtakes something: a late call reapplied after its ack, a
+removal racing a fresh start, a sweep deleting a record a live session
+still held, an import landing below a floor nobody could read. The rule
+that converged them is one sentence, worth carrying to any writer that
+deletes: without a proven identity (device, inode and the writer's own
+nonce in `.incarnation`), keep. The nonce came from the gates, not from
+the Mac: Linux reused an inode within one test, which no local run
+showed.
+
+What the engine taught. The plan's ordering assumptions were wrong twice
+in the same direction: the classic SessionStart can run before the
+plugin's `session.start`, and a first prompt can overtake the start
+itself. Both were caught live, not by the fixtures; the design absorbed
+them (`sheet.early`, the start nonce, `SheetKept.preparing`) without
+changing a published shape.
+
+What to watch. The 1 s door-verdict bound is load-sensitive (1.13 s at
+load average 62, 0.77 s unloaded); E2's `cap` matter passes 4 of 15 cards
+(reported, not gated): a card about the over-cap run rarely carries its
+facts alone, and whether capture or the description should carry them
+is the composite's call. The floor's rules live twice (TypeScript and
+the perl search) and must change together.
 
 ## For the composite's writer
 
@@ -2293,3 +2863,62 @@ exact shape, or names what a repair of this plan's own changed.
     fixtures, a write that did not finish, before and after its resend,
     and stored calls for a foreclosed call and for one whose outcome was
     not known.
+
+**From M2 to M7** (2026-11-27, against the composite at `5f53131c5`
+and its later revisions). What the composite's writer has already taken
+in is marked; the rest is proposed.
+
+12. (Taken.) Acceptance 18 and §6: an ended subagent's open questions
+    are told on the main conversation's next route (a tool result or a
+    prompt): on 2.1.331 the main loop's Agent runs in the background even
+    when asked not to, so its completion's prompt usually comes first.
+13. (Taken.) §8.3 and §8.1: the question line's one sentence rule; the
+    terminal row has no head line of its own; receipts from the record,
+    else from the delivery blocks the conversation holds, drawing only;
+    a dismissal read from blocks cannot tell revisions apart.
+14. (Taken.) I1/X1: the record holds the writer's own `.incarnation`; a
+    reader ignores any name in a record it does not know. X2: the door,
+    the step and `answer --image` refuse a record directory or child that
+    is a link; `show --json` projects a queued `sent` entry by kind.
+15. §5.5 and §7, "made at a process's first `session.start`": at a
+    terminal launch the engine raises the classic SessionStart without
+    waiting for the plugin's `session.start`, before or after the choice.
+    Proposed addition to §7: "The engine does not order the two: a
+    SessionStart that comes before the choice is held and its start
+    ordered once the choice is the sheet; its context then goes on the
+    session's first route."
+16. §2.3, "the call runs the guards again, their scrubbing of the result
+    included": observed live with the owner's secrets guard, which
+    scrubs a Read rather than refusing it; the stored body holds the
+    guard's redaction handle. Proposed addition: "A guard that scrubs
+    leaves its handle in the stored body; only a refusal refuses the
+    entry."
+17. §5.2, the idle route: an idle submit made while another turn runs
+    waits behind it, and that turn's completion comes before the submit
+    enters. Proposed: "An envelope sent by the idle route is settled only
+    by its own landing, its submit's failure, or the end of the turn its
+    own prompt opened." And: "the engine raises no prompt hook for a
+    plugin's own submit, so a notice waiting when the idle route opens
+    goes in that prompt's text."
+18. §5.4 and §6, for C5: a direct send to a subagent keeps its outcome
+    the plugin's until the send's receipt has been recorded (the agent is
+    treated as running for every step until then), so a reader of the
+    file never sees that outcome as the main conversation's mid-send.
+19. §3, a start: a start is known by a nonce fixed across its retries, so
+    a retried start tells the conversation the same thing (fork, lost,
+    import) and a fresh resume is never taken for a retry.
+20. §11: the projection records a question's project before it appends
+    anything (a retry across a move goes to one project); `append_host`
+    adds no `from`/`to`, the projection sets them; a removal closes a
+    question in the log only after it has detached the record under the
+    lock; and the daemon removes a record only on the transcript's own
+    path confirmed missing, under the lock, with the record's identity
+    unchanged ("no identity, no act"). Known residue: a record made again
+    for the same session with an unknown floor restarts at q1, and the
+    log's `(kind, src)` rule drops the new question's line.
+21. §9, the import: the floor's transcript search must not be cut by a
+    long history; it prints only the floor. With the floor unknown, an
+    import goes only into a record that has already assigned ids.
+22. X2's verbs: a `<who>` that is no member resolves a unique prefix (8 or
+    more characters) of a session with a record, so the band's
+    `sminos sheet show <first 8>` works for any session.

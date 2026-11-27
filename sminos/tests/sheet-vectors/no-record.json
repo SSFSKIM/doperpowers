@@ -1,0 +1,37 @@
+{
+ "after": {
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "code": "no-record",
+  "ok": false
+ },
+ "before": {
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "any event but start on a session with no record answers no-record and makes none",
+ "event": {
+  "acked": [],
+  "event": "drain",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "no-record",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000128",
+ "tz": "UTC"
+}

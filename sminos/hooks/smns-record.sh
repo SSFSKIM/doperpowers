@@ -28,7 +28,10 @@ IFS= read -r -d '' input
 # endpoint gave; a hub.json is no enrollment); it is only looked for, never
 # read, and which project is `record`'s to decide. So does the session's join
 # override (`sminos join`), which
-# puts a session launched in no repository into a project.
+# puts a session launched in no repository into a project. So does the
+# session's question sheet: what its record owes the project log goes at a
+# Stop to the project each question was written in, wherever the session is
+# now (`record`'s projection).
 home=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}
 enrolled=
 [[ -e $home/daemon/identity.json ]] && enrolled=1
@@ -50,7 +53,8 @@ if [[ -z $enrolled && $cwd != "$input" ]]; then
   sid=${sid#\"}
   sid=${sid%%\"*}
   in_project "$cwd" || { [[ -n ${CLAUDE_PROJECT_DIR:-} ]] && in_project "$CLAUDE_PROJECT_DIR"; } \
-    || { [[ $sid =~ ^[0-9a-fA-F-]+$ ]] && [[ -e $home/sessions/$sid.json ]]; } || exit 0
+    || { [[ $sid =~ ^[0-9a-fA-F-]+$ ]] && [[ -e $home/sessions/$sid.json || -e $home/sheet/$sid/state.json ]]; } \
+    || exit 0
 fi
 
 root=${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}

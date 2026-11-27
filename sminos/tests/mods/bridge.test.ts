@@ -6472,7 +6472,7 @@ describe('the desk: capabilities and read', () => {
       sminos: '1.7.0',
       protocol: 2,
       engine: '2.1.307',
-      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss'],
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask', 'dismiss', 'sheet'],
       reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
       controls: controlsOf('1.7.0'),
@@ -7101,6 +7101,8 @@ describe('lane B: the observer (O12 M3)', () => {
     expect(await h.command({ op: 'ping' })).toMatchObject({ ok: true, result: { pong: true } })
     expect(await h.command({ op: 'read', what: 'status' })).toMatchObject({ ok: true })
     expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'] })
+    // A door's nudge is no control: the observer passes it to the sheet, which has none in this session.
+    expect(await h.command({ op: 'sheet', keys: ['page-1'] })).toEqual(expect.objectContaining({ ok: false, code: 'no-sheet' }))
   })
 
   test('before any verdict the marker alone holds every control refused (the provisional window), and unresolved stays there', async () => {

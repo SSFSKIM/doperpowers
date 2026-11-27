@@ -1,0 +1,135 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000123/.start-receipt.json": {
+   "empty": "fork",
+   "imported": [],
+   "nonce": "0001",
+   "started": 1795514400000
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000123/start-0001/ask-1.json": {
+   "askedAt": "2026-11-24T09:00:00.000Z",
+   "callId": "toolu_f1",
+   "questions": [
+    {
+     "header": "Migration",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "Now.",
+       "label": "Yes"
+      },
+      {
+       "description": "Later.",
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000123/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000123/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": true
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 1,
+    "owed": [],
+    "projects": {}
+   },
+   "nextId": 12,
+   "pending": [],
+   "questions": [],
+   "seq": 1,
+   "session": "5eed0000-0000-4000-8000-000000000123",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "[sheet v1] This conversation is a copy: its question sheet starts empty. Questions asked before the copy belong to the conversation it was copied from, and their answers will not come here; ask again what you still need. New ids start at q12.",
+   "owed": 0,
+   "skipped": 0,
+   "start": {
+    "before": [],
+    "beforeCount": 0,
+    "empty": "fork",
+    "imported": []
+   },
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000123/start-0001/ask-1.json": {
+   "askedAt": "2026-11-24T09:00:00.000Z",
+   "callId": "toolu_f1",
+   "questions": [
+    {
+     "header": "Migration",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "Now.",
+       "label": "Yes"
+      },
+      {
+       "description": "Later.",
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a fork's first start: a new record taking the floor and import.never, so today's asks the event carries are not imported, now or later; the context says the sheet starts empty and where ids start; its own staged asks kept for its retry",
+ "event": {
+  "acked": [],
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "floor": 11,
+   "nonce": "0001",
+   "source": "fork",
+   "today": {
+    "asks": [
+     {
+      "file": "start-0001/ask-1.json"
+     }
+    ],
+    "definite": true
+   }
+  }
+ },
+ "name": "start-fork",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000123",
+ "tz": "UTC"
+}

@@ -1,0 +1,302 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/.start-receipt.json": {
+   "empty": null,
+   "imported": [
+    {
+     "callId": "toolu_B",
+     "ids": [
+      "q2",
+      "q3"
+     ]
+    }
+   ],
+   "nonce": "0002",
+   "started": 1795514400000
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-1.json": {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "callId": "toolu_A",
+   "questions": [
+    {
+     "header": "Gate",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-2.json": "{\"callId\": \"toolu_B\", \"askedAt\": \"2026-11-23T08:00:00.000Z\", \"questions\": [{\"question\": \"Which screens get the new layout?\", \"header\": \"Screens \\udc00\", \"options\": [{\"label\": \"Home\", \"description\": \"The landing screen.\", \"preview\": \"## Home\"}, {\"label\": \"Settings\"}], \"multiSelect\": true}, {\"question\": \"Anything to add?\", \"options\": []}]}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000125/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000125/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {
+     "toolu_A": [
+      "q1"
+     ],
+     "toolu_B": [
+      "q2",
+      "q3"
+     ]
+    },
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 4,
+    "owed": [
+     {
+      "choices": [
+       "Home",
+       "Settings"
+      ],
+      "kind": "question",
+      "n": 2,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000125:q2",
+      "text": [
+       "Which screens get the new layout?"
+      ]
+     },
+     {
+      "choices": [],
+      "kind": "question",
+      "n": 3,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000125:q3",
+      "text": [
+       "Anything to add?"
+      ]
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 4,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-22T18:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_A",
+     "header": "Gate",
+     "id": "q1",
+     "importedFrom": {
+      "callId": "toolu_A",
+      "index": 0
+     },
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T08:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_B",
+     "header": "Screens �",
+     "id": "q2",
+     "importedFrom": {
+      "callId": "toolu_B",
+      "index": 0
+     },
+     "multiSelect": true,
+     "options": [
+      {
+       "description": "The landing screen.",
+       "label": "Home",
+       "preview": "## Home"
+      },
+      {
+       "label": "Settings"
+      }
+     ],
+     "question": "Which screens get the new layout?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T08:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_B",
+     "id": "q3",
+     "importedFrom": {
+      "callId": "toolu_B",
+      "index": 1
+     },
+     "multiSelect": false,
+     "options": [],
+     "question": "Anything to add?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 4,
+   "session": "5eed0000-0000-4000-8000-000000000125",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "context": "[sheet v1] Your question sheet, after a resume.\nOpen: q1 (revision 1) \"Gate\" — \"Which rollout gate?\" Options: 1. Every gate; 2. No gate.\nOpen: q2 (revision 1) \"Screens �\" — \"Which screens get the new layout?\" Options: 1. Home; 2. Settings.\nOpen: q3 (revision 1) — \"Anything to add?\" No options: answered in text.\nMoved onto the sheet from the earlier question tool: q2 \"Which screens get the new layout?\" (call toolu_B, question 1), q3 \"Anything to add?\" (call toolu_B, question 2).\nNew ids continue from q4.",
+   "owed": 2,
+   "skipped": 0,
+   "start": {
+    "before": [],
+    "beforeCount": 0,
+    "empty": null,
+    "imported": [
+     {
+      "callId": "toolu_B",
+      "ids": [
+       "q2",
+       "q3"
+      ]
+     }
+    ]
+   },
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-1.json": {
+   "askedAt": "2026-11-22T18:00:00.000Z",
+   "callId": "toolu_A",
+   "questions": [
+    {
+     "header": "Gate",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000125/start-0002/ask-2.json": "{\"callId\": \"toolu_B\", \"askedAt\": \"2026-11-23T08:00:00.000Z\", \"questions\": [{\"question\": \"Which screens get the new layout?\", \"header\": \"Screens \\udc00\", \"options\": [{\"label\": \"Home\", \"description\": \"The landing screen.\", \"preview\": \"## Home\"}, {\"label\": \"Settings\"}], \"multiSelect\": true}, {\"question\": \"Anything to add?\", \"options\": []}]}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000125/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000125/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {
+     "toolu_A": [
+      "q1"
+     ]
+    },
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-22T18:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_A",
+     "header": "Gate",
+     "id": "q1",
+     "importedFrom": {
+      "callId": "toolu_A",
+      "index": 0
+     },
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Every gate"
+      },
+      {
+       "label": "No gate"
+      }
+     ],
+     "question": "Which rollout gate?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000125",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a start's import of today's asks, read definitely: an ask already imported is not imported again; a new one becomes one question for each of its questions, kept as asked (a preview on a multi-select question), a lone surrogate written as U+FFFD; the log owed a question for each; the context tells it",
+ "event": {
+  "acked": [],
+  "event": "start",
+  "remote": false,
+  "runner": "terminal",
+  "start": {
+   "nonce": "0002",
+   "source": "resume",
+   "today": {
+    "asks": [
+     {
+      "file": "start-0002/ask-1.json"
+     },
+     {
+      "file": "start-0002/ask-2.json"
+     }
+    ],
+    "definite": true
+   }
+  }
+ },
+ "name": "start-import",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000125",
+ "tz": "UTC"
+}

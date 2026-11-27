@@ -1,0 +1,188 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000112/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000112/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v12",
+     "result": "Added q2.\nNo surface can show these questions right now; they wait on the sheet and show when one returns."
+    }
+   ],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [
+     {
+      "choices": [
+       "Yes",
+       "No"
+      ],
+      "kind": "question",
+      "n": 2,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000112:q2",
+      "text": [
+       "Ship the migration today?"
+      ]
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v12",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000112",
+   "v": 1,
+   "verdicts": {}
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 1,
+   "result": "Added q2.\nNo surface can show these questions right now; they wait on the sheet and show when one returns.",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000112/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000112/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000112",
+   "v": 1,
+   "verdicts": {}
+  }
+ },
+ "covers": "a call where no surface is alive: the result ends with the sentence that says so (I6)",
+ "event": {
+  "acked": [],
+  "call": {
+   "asker": "main",
+   "callId": "toolu_v12",
+   "entries": [
+    {
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    }
+   ]
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-no-surface",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000112",
+ "tz": "UTC"
+}
