@@ -394,6 +394,59 @@ describe('a flight that fails (I9)', () => {
     await h.settle()
     expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
   })
+
+  test("an answer that comes while the idle submit waits: when that submit is dropped or rejects, the idle route opens again at once for the newer answer, the failed one along", async () => {
+    for (const refusal of [{ drop: 'a hook said no' }, new Error('host refused')]) {
+      let enter: (value: unknown) => void = () => {}
+      let refuse: (error: Error) => void = () => {}
+      const rec = record()
+      const h = await started(rec, { submit: () => new Promise((resolve, reject) => ((enter = resolve), (refuse = reject))) })
+      await answered(h, rec, out('kA', 'q1'))
+      await h.hop()
+      expect(h.submits).toHaveLength(1)
+      await answered(h, rec, out('kB', 'q2'))
+      await h.hop()
+      expect(h.submits).toHaveLength(1)
+      if (refusal instanceof Error) refuse(refusal)
+      else enter(refusal)
+      await h.settle()
+      await h.hop()
+      expect(h.submits).toHaveLength(2)
+      expect(h.submits[1]).toContain('"keys":["kA","kB"]')
+    }
+  })
+
+  test("the retry is judged by the wake that opened the failed submit: an answer the view hides that came while it waited still wakes the session", async () => {
+    let enter: (value: unknown) => void = () => {}
+    let answeredCount = 0
+    // The view lists one pending outcome and packs one an envelope: the later answer shows only in the record's count.
+    const rec = record([], { per: 1 })
+    const script: StepScript = async (event, n) => {
+      const answer = JSON.parse(await rec.script(event, n)) as { view: { answeredCount: number; pending: unknown[] } }
+      answer.view.answeredCount = answeredCount
+      answer.view.pending = answer.view.pending.slice(0, 1)
+      return JSON.stringify(answer)
+    }
+    const h = await started(rec, { step: script, submit: () => new Promise((resolve) => (enter = resolve)) })
+    answeredCount = 1
+    await answered(h, rec, out('kA', 'q1'))
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    answeredCount = 2
+    await answered(h, rec, out('kB', 'q2'))
+    await h.hop()
+    expect(h.submits).toHaveLength(1)
+    enter({ drop: 'a hook said no' })
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+    expect(h.submits[1]).toContain('"keys":["kA"]')
+    // That one dropped too: nothing new since, nothing opens.
+    enter({ drop: 'a hook said no' })
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toHaveLength(2)
+  })
 })
 
 describe('which turn a flight belongs to (I9)', () => {

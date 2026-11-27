@@ -232,8 +232,11 @@ type Flight = {
   wake?: Wake
 }
 
-/** What opens the idle route (I9): fresh keys, or none when it is an answer past what the view lists (the record's answered count). */
-type Wake = { keys: string[] }
+/**
+ * What opens the idle route (I9): fresh keys, or none when it is an answer past what the view lists (the record's
+ * answered count); and that count as the view that opened it gave it, which a failed submit spends up to.
+ */
+type Wake = { keys: string[]; answeredCount?: number }
 
 /** A start's answer, and the context it gives the conversation (I10): the start's own, or after the search's landing, the start's again. */
 type Started = { answer: Answer; context?: string }
@@ -756,9 +759,10 @@ function freshWake(gen: Gen, envelope: Envelope): Wake | undefined {
   const view = gen.held
   const fresh = (key: string) => !gen.noIdle.has(key) && isWaking(view, key)
   const keys = [...new Set([...envelope.keys.filter(fresh), ...(view?.pending ?? []).filter((o) => o.recipient === 'main' && fresh(o.key)).map((o) => o.key)])]
-  if (keys.length > 0) return { keys }
+  const answeredCount = view?.answeredCount
+  if (keys.length > 0) return { keys, ...(answeredCount !== undefined && { answeredCount }) }
   if (view !== undefined && view.pendingCount > view.pending.length && gen.idleFailedAt !== undefined && view.answeredCount > gen.idleFailedAt) {
-    return { keys: [] }
+    return { keys: [], answeredCount: view.answeredCount }
   }
   return undefined
 }
@@ -795,7 +799,7 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
     entered = await port.submit([...notices, flight.text].join('\n\n'))
   } catch (error) {
     gen.notices.unshift(...notices)
-    failFlight(port, gen, flight, message(error))
+    failIdle(port, gen, flight, message(error))
     return
   }
   const text = entered.drop === undefined ? (entered.text ?? '') : ''
@@ -805,12 +809,23 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
     return
   }
   if (entered.drop !== undefined) {
-    failFlight(port, gen, flight, entered.drop)
+    failIdle(port, gen, flight, entered.drop)
   } else if (entered.text !== undefined && !keysIn([text]).some((key) => flight.keys.includes(key))) {
-    failFlight(port, gen, flight, 'a hook took the envelope out of the prompt')
+    failIdle(port, gen, flight, 'a hook took the envelope out of the prompt')
   } else {
     turnOf(flight)
   }
+}
+
+/**
+ * An idle submit that did not enter: failed, then the view held is
+ * reconsidered at once, as an answer that came while the submit waited
+ * found its envelope in flight and opened nothing; what the failed attempt
+ * was opened for wakes nothing again (`missed`).
+ */
+function failIdle(port: Port, gen: Gen, flight: Flight, why: string) {
+  failFlight(port, gen, flight, why)
+  deliver(port, gen)
 }
 
 /** A flight that entered: its turn is the main turn that started since it was reserved, else the next to start. */
@@ -865,20 +880,21 @@ function failFlight(port: Port, gen: Gen, flight: Flight, why: string) {
   }
   gen.flights = gen.flights.filter((other) => other !== flight)
   // A failed idle submit spends what opened it too: the hidden fresh answers it was opened for wake nothing more.
-  missed(port, gen, flight.route, flight.keys, why, flight.wake?.keys)
+  missed(port, gen, flight.route, flight.keys, why, flight.wake)
 }
 
 /**
  * Keys a route did not bring to the model: ready again for the next route
  * (today's toast). After a failed idle submit, the idle route does not
- * retry them by itself, nor the answers that opened it (`woke`): no turn
- * started again and again for the same failure; a fresh answer still wakes
- * the session, and takes them along.
+ * retry them by itself, nor the answers that opened it (`woke`, up to the
+ * answered count the view that opened it gave): no turn started again and
+ * again for the same failure; a fresh answer, one that came while the
+ * submit waited included, still wakes the session, and takes them along.
  */
-function missed(port: Port, gen: Gen, route: Flight['route'], keys: readonly string[], why: string, woke: readonly string[] = []) {
+function missed(port: Port, gen: Gen, route: Flight['route'], keys: readonly string[], why: string, woke?: Wake) {
   if (route === 'idle') {
-    for (const key of [...keys, ...woke]) gen.noIdle.add(key)
-    gen.idleFailedAt = gen.held?.answeredCount
+    for (const key of [...keys, ...(woke?.keys ?? [])]) gen.noIdle.add(key)
+    gen.idleFailedAt = woke?.answeredCount ?? gen.held?.answeredCount
   }
   port.log(`sheet: an envelope's ${route} route failed (${why}); ${keys.length} answers wait for the next route`)
   if (gen === current()) {
