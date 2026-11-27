@@ -15,7 +15,10 @@ person's untagged post there goes to.
 The plugin carries the `sminos` CLI (on every session's PATH, from its `bin/`) and skill, the shell hooks that join a
 session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
-async question tool `mcp__sminos__AskUserQuestion`, the session's
+async question tool `mcp__sminos__AskUserQuestion` (or, with
+`SMINOS_QUESTION_SHEET` on and a surface to answer on, the session's
+question sheet: any number of questions in one call, revised and withdrawn,
+answered in any order and delivered together), the session's
 `Sminos-Session` address in commits and PRs, and the guard that keeps the
 shell from running a backtick in a message's text. It stands alone: nothing of
 doperpowers' is needed for it to run.
@@ -50,7 +53,7 @@ The mods load only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set.
   a machine's one-time work: a project and its mirror, its place at the desk
   hub, the daemon, the policy.
 - [`hooks/mods/README.md`](hooks/mods/README.md) — the bridge, the ask, the
-  address, the name and the backtick guard, and the contract other plugins read
+  question sheet, the address, the name and the backtick guard, and the contract other plugins read
   ([`types/sminos.d.ts`](types/sminos.d.ts)).
 - `tests/run-sminos-tests.sh` (the CLI and shell hooks) and
   `tests/mods/run.sh` (the mods).

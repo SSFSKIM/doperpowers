@@ -151,7 +151,8 @@ delivered: not-reachable]`.
 **Your human partner.** No tag reaches the human: what they should know
 goes in a call of `mcp__to-human__message` where you have it (`final:
 true` when it ends your turn), else in a `<message>` ending your reply; a
-question goes in an async `mcp__sminos__AskUserQuestion`; a hook records
+question goes in `mcp__sminos__AskUserQuestion` (async, or on your
+session's question sheet where the tool takes that form); a hook records
 each, and `sminos chat --host` shows what every session sent them.
 
 **SendMessage** is the harness's: it reaches your own subagents, by
@@ -271,7 +272,10 @@ latest, a pending question included. For a working seat prefer `say` to
 `resume`, which stops its live turn.
 
 A session's **question sheet**, where that session puts questions for
-its human, is read and answered from a shell too:
+its human, is read and answered from a shell too, also while the session
+is stopped (what is accepted then reaches it at its resume). `<member>`
+may also be the first eight or more characters of the session's id, as
+the terminal's line prints it:
 
     sminos sheet show <member> [--json]     # its open questions, each by its handle (q7, q7@2 after a revise)
     sminos sheet answer <member> q7@2 --pick 1 --text "only on mobile"   # the handle show printed
