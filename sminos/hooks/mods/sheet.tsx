@@ -196,8 +196,13 @@ type Gen = {
   named: Set<string>
   /** The keys a send handed to a subagent, and to whom: owned by that agent from the hand-over until the step their receipt orders (`landed` or `reroute`) has answered, retries included. */
   sentTo: Map<string, string>
-  /** Outcomes a view gave to a subagent that had stopped, each as `<agentId>\n<key>`: a corrective drain was ordered for them once. */
+  /**
+   * Outcomes a view gave to a subagent that had stopped, each as `<agentId>\n<key>`, that a step whose agent list
+   * left that agent out answered still given there: no drain moves them, and none is ordered for them again.
+   */
   corrected: Set<string>
+  /** A view gave an outcome to a stopped subagent and no step with that agent left out has answered since: the next check drains. */
+  isCorrectionOwed: boolean
   /** The record's answered count when the idle route last failed: a count past it is a fresh answer, wherever the view lists it. */
   idleFailedAt?: number
   /** What the deliveries' blocks this conversation holds say of each question: a row's receipts where the view holds none (M5). */
@@ -331,6 +336,7 @@ const newGen = (session: string): Gen => ({
   named: new Set(),
   sentTo: new Map(),
   corrected: new Set(),
+  isCorrectionOwed: false,
   delivered: new Map(),
   isLogAgain: false,
 })
@@ -426,7 +432,7 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
     gen.held = answer.view
     // A view adopted opens the routes it holds envelopes for (I9).
     deliver(port, gen)
-    correctStopped(port, gen)
+    correctStopped(port, gen, running)
     // And the band's line and the rows' receipts draw from it (M5): its surface is the full rule.
     if (gen === current()) {
       // A registrations' read under way when this view came is older than it: it sets nothing.
@@ -445,23 +451,29 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
  * A view that gives an outcome to a subagent this module saw stop, which owns
  * no send still in flight: a step that read the agents before that stop's
  * drain committed (a settle waiting for the lock) gave it one, and no send
- * reaches a stopped agent. One drain is ordered with the agents as they are
- * now, whose `agents` rule moves the outcome to the main conversation, which
- * names the asker. Once for each outcome and agent: a view that still gives it
- * to that agent orders no other.
+ * reaches a stopped agent. A drain with the agents as they are now moves it:
+ * the step's `agents` rule gives it to the main conversation, which names the
+ * asker. `running` is the agent list the adopted view's step carried: one that
+ * left the agent out has applied that rule, so what it still gives there no
+ * drain moves (`corrected`, never ordered again). Otherwise the correction is
+ * owed: drained at once after a step that listed the agent running, and at the
+ * next check after one that carried no list (its lookup failed), so a failing
+ * lookup is retried on the timer, never in a loop.
  */
-function correctStopped(port: Port, gen: Gen) {
+function correctStopped(port: Port, gen: Gen, running: readonly string[] | undefined) {
   const owners = new Set(gen.sentTo.values())
   const stale = (gen.held?.pending ?? []).flatMap((o) =>
-    o.recipient !== 'main' && sheet.stopped.has(o.recipient.agentId) && !owners.has(o.recipient.agentId) ? [`${o.recipient.agentId}\n${o.key}`] : [],
+    o.recipient !== 'main' && sheet.stopped.has(o.recipient.agentId) && !owners.has(o.recipient.agentId) ? [{ agentId: o.recipient.agentId, id: `${o.recipient.agentId}\n${o.key}` }] : [],
   )
-  const fresh = stale.filter((id) => !gen.corrected.has(id))
-  if (fresh.length === 0 || !isStarted(gen)) {
-    return
+  if (running !== undefined) {
+    stale.filter((pair) => !running.includes(pair.agentId)).forEach((pair) => gen.corrected.add(pair.id))
   }
-  fresh.forEach((id) => gen.corrected.add(id))
-  port.log(`sheet: the view gives ${fresh.length} ${fresh.length === 1 ? 'outcome' : 'outcomes'} to a subagent that stopped; a drain moves them to the main conversation`)
-  void drain(port, gen)
+  const owed = stale.filter((pair) => !gen.corrected.has(pair.id))
+  gen.isCorrectionOwed = owed.length > 0
+  if (owed.length > 0 && running !== undefined && isStarted(gen)) {
+    port.log(`sheet: the view gives ${owed.length} ${owed.length === 1 ? 'outcome' : 'outcomes'} to a subagent that stopped; a drain moves them to the main conversation`)
+    void drain(port, gen)
+  }
 }
 
 /**
@@ -675,6 +687,7 @@ async function check(port: Port) {
     if (gen.landOwed.size > 0) await orderKeys(port, gen, 'landed', [...gen.landOwed])
     if (gen.rerouteOwed.size > 0) await orderKeys(port, gen, 'reroute', [...gen.rerouteOwed])
     if (gen.isContextOwed) await drain(port, gen, [], 'compact')
+    if (gen.isCorrectionOwed) await drain(port, gen)
     const size = await port.size(inbox(gen.session)).catch(() => undefined)
     const view = gen.held
     if (view === undefined || gen.isDrainOwed || (size !== undefined && size > view.offset && size !== gen.drainedAt)) {

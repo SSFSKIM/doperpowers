@@ -1155,17 +1155,79 @@ describe('subagents (§6, I9)', () => {
     expect(h.submits).toHaveLength(1)
   })
 
-  test("a view that still gives the answer to the stopped agent after its corrective drain orders no other", async () => {
-    const stuck = [{ key: 'k1', id: 'q1', kind: 'answer', recipient: { agentId: 'a1' }, taken: true, acrossStop: false }]
+  test("a view that still gives the answer to the stopped agent after its corrective drain orders no other; nor does one from a step that already left that agent out", async () => {
+    let commit: () => void = () => {}
+    let settles = 0
+    let isStuck = false
     const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
-    const h = await started(record(), { agents: [A1], step: (event, n) => (event.event === 'drain' ? ok(n, {}, { open: open as never, pending: stuck as never, pendingCount: 1 }) : ok(n, {}, { open: open as never })) })
+    const stuck = [{ key: 'k1', id: 'q1', kind: 'answer', recipient: { agentId: 'a1' }, taken: true, acrossStop: false }]
+    // A step that ignores `agents`: once the answer is given to a1, every view gives it there. Its seq is the record's
+    // order of commits, so the settle that waited for the lock answers the newer view.
+    let seq = 0
+    const viewOf = () => ok(++seq, {}, { open: open as never, ...(isStuck && { pending: stuck as never, pendingCount: 1 }) })
+    const h = await started(record(), {
+      agents: [A1],
+      step: async (event) => {
+        if (event.event === 'call') return 'Traceback: the answer was lost'
+        if (event.event === 'settle' && ++settles === 1) {
+          await new Promise<void>((resolve) => (commit = resolve))
+          isStuck = true
+        }
+        return viewOf()
+      },
+    })
+    const asking = h.ask({ ask: [{ question: 'Ship it?' }] }, 'a1')
+    await h.settle()
     await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
     await h.settle()
-    // The stop's drain, then one corrective drain.
-    expect(steps(h, 'drain').map((s) => s.agents)).toEqual([{ running: [], direct: true }, { running: [], direct: true }])
+    const before = steps(h, 'drain').length
+    commit()
+    await asking
+    await h.settle()
+    // The settle listed a1: one corrective drain, with a1 left out.
+    expect(steps(h, 'drain').slice(before).map((s) => s.agents)).toEqual([{ running: [], direct: true }])
     await sheetNudge([])
     await h.tick()
     await h.tick()
-    expect(steps(h, 'drain')).toHaveLength(3)
+    // The nudge's drain, and nothing more: its view, from a step that left a1 out, orders none either.
+    expect(steps(h, 'drain')).toHaveLength(before + 2)
+  })
+
+  test("a corrective drain whose agent lookup failed stays owed: the next check orders it again with the agents read, and the answer goes to the main conversation, once", async () => {
+    let commit: () => void = () => {}
+    const rec = record()
+    let settles = 0
+    const h = await started(rec, {
+      agents: [A1],
+      step: async (event, n) => {
+        if (event.event === 'call') return 'Traceback: the answer was lost'
+        if (event.event === 'settle' && ++settles === 1) await new Promise<void>((resolve) => (commit = resolve))
+        return rec.script(event, n)
+      },
+    })
+    const asking = h.ask({ ask: [{ question: 'Ship it?' }] }, 'a1')
+    await h.settle()
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    rec.queued.push(out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    // The next lookup of the agents fails.
+    const engine = h.engine as unknown as { agent: { list: () => Promise<unknown> } }
+    const list = engine.agent.list
+    engine.agent.list = () => ((engine.agent.list = list), Promise.reject(new Error('the agents could not be listed')))
+    const before = steps(h, 'drain').length
+    commit()
+    await asking
+    await h.settle()
+    await h.hop()
+    // The corrective drain went without agents: nothing moved, and nothing is ordered straight after it.
+    expect(steps(h, 'drain').slice(before).map((s) => s.agents)).toEqual([undefined])
+    expect(h.submits).toEqual([])
+    await h.tick()
+    expect(steps(h, 'drain').slice(before).map((s) => s.agents)).toEqual([undefined, { running: [], direct: true }])
+    expect(h.submits).toHaveLength(1)
+    expect(h.submits[0]).toContain('"keys":["k1"]')
+    await h.tick()
+    await h.tick()
+    expect(h.submits).toHaveLength(1)
   })
 })
