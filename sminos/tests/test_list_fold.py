@@ -90,9 +90,9 @@ class ListFold(unittest.TestCase):
             rows = json.loads(self.cli("list", "--json", *flags))
             self.assertEqual({row["state"] for row in rows}, {"stopped", "retired", "gone", "vacant"})
 
-    def test_find_shares_fold_options(self):
-        self.assertNotIn("stopped-seat", self.cli("find", "stopped-seat"))
-        self.assertIn("stopped-seat", self.cli("find", "stopped-seat", "--stopped"))
+    def test_the_keyword_list_shares_fold_options(self):
+        self.assertNotIn("stopped-seat", self.cli("list", "--org", "stopped-seat"))
+        self.assertIn("stopped-seat", self.cli("list", "--org", "stopped-seat", "--stopped"))
 
     def test_visibility_options_do_not_widen_default_scope(self):
         for command in ("list", "chart"):

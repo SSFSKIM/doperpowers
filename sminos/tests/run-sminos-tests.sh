@@ -108,6 +108,7 @@ banner_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ [0-9a-f-]*\].
 # calls.log and assertion failures print that log, so a real credential in the
 # runner's shell must never reach it.
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
+unset ANTHROPIC_API_KEY ANTHROPIC_MODEL CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_OAUTH_TOKEN CLODEX_SETTINGS GATEWAY_ONLY_KEY
 unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME MAWS_LANE MAWS_LAUNCHED_BY
 # The harness exports CLAUDE_CODE_SESSION_ID to Bash tools; sminos derives the
 # sender identity from it. The suite is "a real terminal" unless a case sets it.
@@ -228,6 +229,25 @@ open(sys.argv[1], 'a').write(json.dumps(
     {"type": "assistant", "message": {"content": [{"type": "text", "text": sys.argv[2]}]}}) + "\n")
 PY
 }
+
+# `-p` with no `--resume` (find's model call, a fresh internal process): the
+# find-env line records whether it was marked internal and which transport and
+# login variables it was given (never a value: `set`, and for the OAuth token
+# whether it is the suite's own `first-party`), its standard input is kept in
+# find-prompt.txt, and STUB_FIND_RESULT is its answer; it fails
+# (STUB_FORK_FAIL=1), crashes (STUB_FORK_CRASH=1) or is slow (STUB_FORK_SLEEP)
+# on the switches the fork reads.
+if [ "${1:-}" = "-p" ] && [ -z "$resume_uuid" ]; then
+  echo "find-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) base=${ANTHROPIC_BASE_URL:+set} token=${ANTHROPIC_AUTH_TOKEN:+set} key=${ANTHROPIC_API_KEY:+set} model=${ANTHROPIC_MODEL:+set} bedrock=${CLAUDE_CODE_USE_BEDROCK:+set} gateway=${GATEWAY_ONLY_KEY:+set} clodex=${CLODEX_SETTINGS:+set} oauth=$([ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = first-party ] && echo first-party || echo "${CLAUDE_CODE_OAUTH_TOKEN:+other}") cwd=$PWD" >> "$STUB_STATE/log/calls.log"
+  cat > "$STUB_STATE/log/find-prompt.txt"
+  if [ "${STUB_FORK_CRASH:-0}" = "1" ]; then echo "stub: the engine crashed" >&2; exit 3; fi
+  [ -n "${STUB_FORK_SLEEP:-}" ] && sleep "$STUB_FORK_SLEEP"
+  is_error=false; [ "${STUB_FORK_FAIL:-0}" = "1" ] && is_error=true
+  python3 -c 'import json, sys; print(json.dumps({"type": "result", "is_error": sys.argv[2] == "true", "result": sys.argv[1], "session_id": sys.argv[3]}))' \
+    "${STUB_FIND_RESULT:-}" "$is_error" "$session_id"
+  [ "$is_error" = "true" ] && exit 1
+  exit 0
+fi
 
 # `-p --resume <id> --fork-session …` (derive's internal fork): a copy of the
 # parent's transcript as a new session, registered while it runs, the hook run
@@ -595,6 +615,10 @@ run_suites_c() {
   else fail "devcloud vm info asked for channel show: its bound, devcloud's own replies read, unavailable, failed, each reply not whole (test_vm_info.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_git_isolation.py"; then pass "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; else
     fail "a fixture's git under a caller's GIT_DIR and GIT_WORK_TREE leaves the caller's repository (test_git_isolation.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_summary.py"; then pass "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; else
+    fail "a session's summary: asked with its line at every derive and compaction, read from a marked answer, shown by who @<session> and who <commit>, never a withdrawn session's (test_summary.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_find.py"; then pass "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; else
+    fail "find as the org's search: one internal call on the first-party login, list --org's corpus capped, the shorts checked, the gate (test_find.py)"; fi
   # The question sheet's C2, M1 (docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md): the published set
   # (sminos/types/sheet/), the door and the reader.
   if python3 -B "$SCRIPT_DIR/test_sheet_contract.py"; then
@@ -4823,13 +4847,46 @@ assert_contains "$OUT" "quiet-seat" "--machine matches a machine by prefix"
 assert_contains "$OUT" "b-idler" "across every project"
 run "$SMINOS" list --machine elsewhere
 assert_not_contains "$OUT" "quiet-seat" "and a machine that is not this one lists none of its sessions"
-run "$SMINOS" find release gate
-assert_contains "$OUT" "ci-gate-keeper" "find matches the in-charge line"
+run "$SMINOS" list --org release gate
+assert_contains "$OUT" "ci-gate-keeper" "list --org <words> matches the in-charge line"
 assert_not_contains "$OUT" "b-idler" "every word"
-run "$SMINOS" find feature-x
-assert_contains "$OUT" "ci-gate-keeper" "find matches the branch"
+run "$SMINOS" list --org feature-x
+assert_contains "$OUT" "ci-gate-keeper" "list --org <words> matches the branch"
 assert_contains "$OUT" "b-idler" "for every session on it"
 assert_not_contains "$OUT" "quiet-seat" "and no other"
+
+# find "<question>" (the session-search design's §3): one internal model call
+# on the caller's first-party login, the corpus then the question on its
+# standard input; the shorts it names checked against the corpus.
+echo '{"env": {"GATEWAY_ONLY_KEY": "g", "ANTHROPIC_BASE_URL": "http://gateway.invalid"}}' > "$TEST_ROOT/gateway-settings.json"
+STUB_FIND_RESULT='{"matches": [{"short": "0d000003", "why": "tends the release gate"}, {"short": "0dffffff", "why": "x"}], "note": ""}' \
+  CLODEX_SETTINGS="$TEST_ROOT/gateway-settings.json" GATEWAY_ONLY_KEY=g ANTHROPIC_BASE_URL=http://gateway.invalid \
+  ANTHROPIC_AUTH_TOKEN=gwtok ANTHROPIC_API_KEY=apikey ANTHROPIC_MODEL=a-model CLAUDE_CODE_USE_BEDROCK=1 \
+  CLAUDE_CODE_OAUTH_TOKEN=first-party run "$SMINOS" find who tends the release gate
+assert_rc 0 "$RC" "find answers with a match"
+assert_contains "$OUT" "ci-gate-keeper [0d000003]" "find prints the session the model named, its list row"
+assert_contains "$OUT" "  why: tends the release gate" "with why it fits"
+assert_contains "$OUT" 'reach: sminos say "@0d000003 ..."' "and how to reach it"
+assert_contains "$OUT" "(the model named 1 session that is not in the directory; left out)" "a short the corpus does not hold is dropped and counted"
+FIND_CALL="$(grep -- '^-p --safe-mode' "$STUB_STATE/log/calls.log" | tail -1)"
+assert_contains "$FIND_CALL" "-p --safe-mode --no-session-persistence --session-id" "find's call: safe mode, persisting nothing"
+assert_contains "$FIND_CALL" "--model haiku --effort medium --tools  --output-format json" "haiku, no tools, a JSON result"
+assert_not_contains "$FIND_CALL" "--bare" "never bare (an API key's auth)"
+FIND_ENV="$(grep '^find-env:' "$STUB_STATE/log/calls.log" | tail -1)"
+assert_contains "$FIND_ENV" "internal=1 marker=yes" "an internal process, marked before it starts"
+assert_contains "$FIND_ENV" "base= token= key= model= bedrock= gateway= clodex= oauth=first-party" "no gateway, API key or provider switch reaches it; the first-party login does"
+assert_equals "$(tail -c 36 "$STUB_STATE/log/find-prompt.txt")" "Question: who tends the release gate" "the question last on its standard input"
+assert_contains "$(cat "$STUB_STATE/log/find-prompt.txt")" "[0d000003] ci-gate-keeper — odbeta on testhost" "after the corpus"
+STUB_FIND_RESULT='{"matches": [], "note": "nobody translates dictionaries"}' run "$SMINOS" find who is translating the Klingon dictionary
+assert_rc 4 "$RC" "find with no match exits 4"
+assert_contains "$OUT" "no session matches: nobody translates dictionaries" "and says so with the model's note"
+STUB_FORK_CRASH=1 run "$SMINOS" find anyone
+assert_rc 1 "$RC" "a crashed call exits 1"
+assert_contains "$OUT" "sminos: find: the model call failed (exit 3): stub: the engine crashed; list --org <words> lists the sessions some words match" "with its reason, and the keyword filter named"
+STUB_FIND_RESULT='I found nobody.' run "$SMINOS" find anyone
+assert_rc 1 "$RC" "an answer with no JSON object exits 1"
+run "$SMINOS" find
+assert_rc 2 "$RC" "find with no question is a usage error"
 run "$SMINOS" list --org
 assert_contains "$OUT" "quiet-seat" "--org lists every project"
 assert_contains "$OUT" "b-idler" "both of them"
@@ -4941,8 +4998,8 @@ S._append(p, "elsewhere/" + sid, [
     {"kind": "titled", "session": sid, "title": "unique-remote-title"},
     {"kind": "in-charge", "session": sid, "text": "an explicit line", "source": "set"}])
 PY
-run_in "$ODA" "$SMINOS" find unique-remote-title
-assert_contains "$OUT" "far-one [0d000006]" "find matches a remote session's published title under a set line"
+run_in "$ODA" "$SMINOS" list --org unique-remote-title
+assert_contains "$OUT" "far-one [0d000006]" "list --org <words> matches a remote session's published title under a set line"
 assert_contains "$OUT" "in charge: an explicit line" "while its row shows the line that wins"
 
 # A socket that answers the probe and is gone before the frame: the record
@@ -6015,6 +6072,18 @@ tx "$TC" custom-title ""
 assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기록" "an empty one clears it: the generated title again"
 
 # derive: a headless internal fork answers; nothing of it stays.
+# Every derive prompt asks the question, then the summary (SUMMARY_ASK, the
+# session-search design's §1a), and closes on the lines it asks for.
+DERIVE_QUESTION_NOW="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step?"
+SUMMARY_ASK_NOW="$(cat <<'SUMMARY_ASK'
+Then three lines that summarize this session's work now, for a session in another project that has never seen this conversation and is deciding whether to ask you about something:
+doing: the task in hand and how far it has got
+made: what you own or have produced, named so that session can find it: file and spec paths, PR and issue numbers with their repository, the decisions taken
+next: what you are waiting on, and what comes next
+Name everything by what it is, never by a label coined in this conversation (a milestone, finding or step number, a nickname for a piece of work) unless you say what it stands for. At most 200 characters a line. Write the three lines afresh each time, whether or not the line above changes.
+SUMMARY_ASK
+)"
+DERIVE_PROMPT_NOW="$DERIVE_QUESTION_NOW"$'\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these four lines only.'
 HD=5f000006-0000-4000-8000-00000000005f
 TD="$TXD/$HD.jsonl"
 hp_peer hd "$HD" derived interactive
@@ -6095,30 +6164,23 @@ assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls
 tx "$TD" asst f3000001 "one more turn"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"
-# A compaction derives again at once (smns-derive.sh runs derive --compacted):
-# the pacing rules are waived, nothing else is
-# (docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §2).
+# Every compaction derives again at once (smns-derive.sh runs derive --compacted):
+# the pacing rules are waived, nothing else is, and nothing is counted (the
+# session-search design's §2, replacing the every-third count of
+# docs/doperpowers/specs/2026-11-08-sminos-derive-on-compact-design.md §4).
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "a plain derive right after its line refuses"
-# Every third compaction since the member's last derived line derives it
-# (DERIVE_COMPACTIONS, §4); the others only count.
-STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "a first compaction only counts"
-STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 2 of 3 since its last line" "as does a second"
+HD_FORKS="$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)"
 STUB_FORK_RESULT="Owns the compacted stub." run "$SMINOS" derive hd --compacted
 assert_contains "$OUT" "hd: Owns the compacted stub." "derive --compacted derives a member whose line is minutes old"
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Owns the compacted stub.", "source": "derived"' "and records the new line"
+STUB_FORK_RESULT="Owns the compacted stub, again." run "$SMINOS" derive hd --compacted
+assert_contains "$OUT" "hd: Owns the compacted stub, again." "and so does the compaction right after it"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$((HD_FORKS + 2))" \
+  "two compactions in a row, two forks"
+assert_file_absent "$SMINOS_HOME/compactions" "and no compaction is counted"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — derived" "the compaction's line restarts the six-hour spacing"
-run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: not derived — compaction 1 of 3 since its last line" "and the count of compactions"
-# A count that cannot be kept derives, as every compaction did before.
-printf 'garbage' > "$SMINOS_HOME/compactions/$HD"
-STUB_FORK_RESULT="Owns the stub, uncounted." run "$SMINOS" derive hd --compacted
-assert_contains "$OUT" "hd: Owns the stub, uncounted." "a count that cannot be read derives"
-# The cases below are a compaction's derive itself, each at its due compaction.
-export SMINOS_DERIVE_COMPACTIONS=1
 # A set line (a spawn's brief, an operator's charge) is a placeholder: the
 # next derived line replaces it, whatever runs the derive
 # (2026-11-08-sminos-derive-on-compact-design.md §6).
@@ -6217,7 +6279,6 @@ printf '{"session_id":"%s","source":"compact"}' "$HD" | SMNS_INTERNAL=1 CLAUDE_P
 printf '{"session_id":"not-a-session","source":"compact"}' | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$DERIVE_HOOK"
 sleep 1
 assert_equals "$(hd_forks)" "$HD_FORKS" "in an internal fork, or with no session id, the hook starts nothing"
-unset SMINOS_DERIVE_COMPACTIONS
 # A user-named session with tool calls enough and no line set: its name is its
 # line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e
@@ -6227,8 +6288,7 @@ run "$SMINOS" list --json
 assert_equals "$(json_row hu charge)|$(json_row hu charge_source)" "hu|name" "an owner-named member with no derived line has its name as its line"
 STUB_FORK_RESULT=$'Owns the user-named fixture.\nname: user-fixture-owner' run "$SMINOS" derive hu
 assert_contains "$OUT" "hu: Owns the user-named fixture." "a user-named session is derived"
-assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only." \
-  "with today's question, verbatim"
+assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "$DERIVE_PROMPT_NOW" "with today's question, verbatim"
 assert_not_contains "$OUT" "hu: name" "and no name proposed"
 assert_not_contains "$OUT" "no name" "nor anything said of one"
 assert_not_contains "$(grep '"in-charge"' "$HPLOG/testhost.$HU.jsonl")" '"name"' "its derived line carries none"
@@ -6291,7 +6351,6 @@ standin() { # session config — the session's bridge, until standin_stop
 }
 standin_stop() { kill "$STANDIN_PID" 2>/dev/null || true; wait "$STANDIN_PID" 2>/dev/null || true; }
 forks() { grep -c -- '--fork-session' "$STUB_STATE/log/calls.log" || true; }
-DERIVE_PROMPT_NOW="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
 HV=7e000001-0000-4000-8000-00000000007e
 hp_peer dbtw "$HV" user interactive
 tx "$TXD/$HV.jsonl" tool v0000001 10
@@ -6500,7 +6559,7 @@ CTX="$HOME/.claude/projects/cn-proj"
 mkdir -p "$CTX"
 cd "$R4"
 FORK_PROMPT="$STUB_STATE/log/fork-prompt.txt"
-DERIVE_PROMPT_TODAY="In one line of at most 120 characters: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+DERIVE_PROMPT_TODAY="$DERIVE_PROMPT_NOW"
 cn_record() { printf '%s' "$HOME/.claude/sessions/cn-${1:0:8}.json"; }
 cn_peer() { # name session nameSource [cwd] — the session's running engine record, one file per session
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"interactive","status":"idle","cwd":"%s"}\n' \
@@ -6578,7 +6637,7 @@ assert_equals "$(mode_of "$SMINOS_HOME/names")|$(mode_of "$SMINOS_HOME/names/$CA
 assert_contains "$(cat "$FORK_PROMPT")" 'On a second line, name the session after that responsibility: `name: ` followed by 2 to 4 lowercase English words joined by hyphens' "the fork is asked for a name"
 assert_contains "$(cat "$FORK_PROMPT")" "Taken by other sessions: cnrepo-b2, elsewhere-session." "told the names the project's other members and this machine's other sessions hold"
 assert_not_contains "$(cat "$FORK_PROMPT")" "Its current name is" "with no name proposed yet, none to keep"
-assert_contains "$(cat "$FORK_PROMPT")" $'\nAnswer with the two lines only.' "and asked for two lines"
+assert_contains "$(cat "$FORK_PROMPT")" $'\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these five lines only.' "and asked for five lines: the line, the name, and the summary's three"
 
 # Acceptance 7, then 5: name-due, and the name applied, read as the engine
 # reads it (user), its line still the derived one.
@@ -6643,7 +6702,7 @@ assert_equals "$(json_row my-own-desk name_source)" "user" "the owner's name lis
 cn_age "$CA"
 STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-renamer' run "$SMINOS" derive my-own-desk
 assert_not_contains "$OUT" "not derived" "its next derive runs"
-assert_equals "$(cat "$FORK_PROMPT")" "${DERIVE_PROMPT_TODAY% Answer with the line only.}"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\nAnswer with the line only.' \
+assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_QUESTION_NOW"$'\nIts current line is: Owns the desk\'s uplink and its retries.\nOther sessions and your human partner follow this session by its line, so answer with it unchanged while it still holds. Write a new line only when it is wrong about the responsibility or the responsibility itself changed: work taken on or handed off, a goal reached, a move to other work.\n'"$SUMMARY_ASK_NOW"$'\nAnswer with these four lines only.' \
   "with today's question and its current line to keep, verbatim, and no name asked for"
 assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|<none>" "its line recorded with no name"
 assert_equals "$(pending "$CA" name)" "desk-uplink-keeper" "and no new name handed over"

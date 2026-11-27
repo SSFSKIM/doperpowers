@@ -234,7 +234,7 @@ class Kinds(Machine):
         p = self.project(PROJ, "app")
         self.remote_member(p)
         verbs = (("projects",), ("projects", "--all"), ("list", "--org"), ("list", "--org", "--json"),
-                 ("list", "--org", "--all"), ("machines",), ("list", "--org", "faraway"), ("find", "faraway"))
+                 ("list", "--org", "--all"), ("machines",), ("list", "--org", "faraway"))
         before = {v: self.cli(*v) for v in verbs}
         for v, (rc, out, _) in before.items():
             self.assertEqual(rc, 0, v)
