@@ -115,6 +115,14 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   E2 `PASS essential 44/47 (93%), reader no 0, pii and tz passing 30/32
   (93%), cap passing 4/15 (26%) (reported)`. Main merged in (`a904492ed`)
   and sminos bumped once for M2 to M7, to 1.59.0 (`f645070ac`).
+- [x] (2026-11-27) The branch review's fix wave: eighteen findings of
+  the composite's writer's triage (R1 to R7, M1 to M6, S1 to S5), and
+  three additions (a /clear's removal refuses while another process runs
+  the session; the notification and `show`'s plain print cleaned), in
+  `eddab4478..` the wave's head, two executors in parallel. Task review
+  then two re-reviews, converged. TECH-DEBT rows 51 to 55. The live
+  check whole: `live-sheet-check: 52 passed`. Mods 1,063 pass;
+  `test_sheet_step` 102, `test_sheet_log` 59, `test_sheet_contract` 40.
 - [ ] The merges (M1's alone and first: done, `2594002af`; M2 to M7 in
   one pull request, open, its gates GREEN; the merge is the composite's
   writer's).
@@ -1802,6 +1810,48 @@ outlives its process.
   acknowledgement. Appeal's case in `tests/mods/` builds its snapshot
   with sminos's own composer, so the `mods` gate stages
   `sheet-model.tsx`.
+
+**As built (the branch review's fix wave, 2026-11-27).** The
+whole-branch review's triage (fix what has an ordinary cause; a file
+planted in the person's own sminos home ships as TECH-DEBT #51) changed
+these, none of them the published set:
+
+- *A /clear's removal* names the record witnessed at the clear: the mod
+  takes it once at `session.end` (`sheet witness`, a verb of the mod's,
+  hidden from people) and keeps it in `SheetKept.leftWitness` for every
+  retry; with no record at the clear nothing is removed (the sweep has
+  any record made after). `remove --cleared` needs `--witness` and
+  `--clearing <pid>`, and under the lock refuses while any other live
+  process runs the session (`running_elsewhere`, failing closed on any
+  unreadable listing or record). The mod removes nothing once it has
+  itself resumed the left session.
+- *Identity* exists only when `.incarnation` holds the minted 32 hex
+  digits (read as at most 64 bytes); anything else is no identity. A
+  removal needs a confirmed match; a projection's write to a live record
+  needs a positive match, a detached record being its own case.
+- *Evidence of absence* is complete or none: the transcript lookup reads
+  the whole registry, and the sweep's clear-note branch rechecks fresh
+  evidence under the lock.
+- *An unclean stop.* Under the lock the step clamps its offset to the
+  inbox's size; the door pads an inbox cut below the committed offset up
+  to it, adding its newline after a fragment only past the offset; a new
+  `state.json` beside an inbox starts at the inbox's size (an orphan
+  inbox is never replayed); a body named by its digest is reused only
+  when its digest matches.
+- *Delivery.* A result route carries context only from the generation
+  it was dispatched in; a prompt route's flight is admitting until the
+  hooks beneath resolve, and no turn's end settles it meanwhile; a step
+  with no view held reads the agents first, and each settle reads them
+  again; a reload carries `starting`/`preparing` only for its own
+  session; a failed idle submit reconsiders delivery at once, spending
+  only its own wake's keys.
+- *What a person reads.* The row, the band, the notification and the
+  plain prints of `show` and `surfaces` drop C0 and C1 controls (ESC
+  included) and draw a line break as a space, by one rule in both
+  languages; `show` keeps a question's own line breaks, each continuation
+  indented under its first line. JSON and stored strings are as written.
+  `answer` matches a label exactly before trimming, and takes back its
+  uploads only when the append is known not to have committed.
 
 ### I13 · The snapshot (§11)
 

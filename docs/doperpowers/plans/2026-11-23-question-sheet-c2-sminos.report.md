@@ -317,3 +317,49 @@ plan's "For the composite's writer", entries 12 to 22.
 - `ci-gate --gates all` is refused in this repository (no such gate); plain `ci-gate` runs all 24.
 - One auto-mode block on a plan commit (classified as information leakage); appealed, granted, re-run.
 - The live check's timing bound failed once under heavy machine load; rerun unloaded.
+
+# The branch review's fix wave
+
+The dispatching session's high-rung review of the pull request raised 38 findings. It triaged them into 18 to fix
+(R1 to R7 the record, M1 to M6 the delivery, S1 to S5 what a person or another program touches), and the rest were
+shipped with or dismissed. The rule: a fault with an ordinary cause (a fork or reload mid-call, a resume during a
+retry, a power loss, a failed listing, text a model or a person wrote) is fixed; a fault that needs a file planted
+in the person's own sminos home ships as TECH-DEBT.
+
+## How it ran
+
+- Two executors in parallel, each fix written test first: the record and the command (R1 to R7, S3, S4, the plain
+  `surfaces` print, the TECH-DEBT rows), and the mod (M1 to M6, the row's and the band's S1, S2, S5). The mod's
+  commits were cherry-picked onto the branch.
+- A task review, then two re-reviews of the fix ranges. The first found five Important and four Minor items; the
+  second found one Important (an interrupted append could delete an accepted answer's image) and two Minor; the
+  third was clean.
+- Nothing under `sminos/types/sheet/` changed; the generator's digest is still `594200ae…`.
+
+## Beyond the triage
+
+- A `/clear`'s removal also refuses, under the lock, while another live process runs the session. Identity alone
+  let a delayed retry remove a record that a resume in another process was using.
+- The notification and `show`'s plain print are cleaned like the row. `show` keeps a question's own line breaks,
+  each continuation line indented under its first (the dispatching session's ruling).
+- Two findings only partly reproduced. In S2 an inherited name (`toString`) leaked but `__proto__` did not. The perl
+  half of S5 measured linear and has a timing guard only. The TypeScript trim took 21.9 s on 200,000 spaces before
+  the fix.
+
+## Accepted residue
+
+- A same-process `/resume` that lands in the milliseconds between the mod's check and the removal's lock is not
+  caught.
+- A record whose nonce is damaged is kept until removed by hand. Only a power loss during the mint makes one, and
+  the mint is now synced before its link.
+- TECH-DEBT rows 51 to 55: the same-user planted-file class (every instance), the floor's twin rules with the perl
+  prefilter, and the mod's three shipped items.
+
+## Evidence
+
+- Suites: mods 1,063 pass, 0 fail; `test_sheet_step` 102, `test_sheet_log` 59, `test_sheet_contract` 40 passed;
+  typecheck clean.
+- The whole live check, on the wave's code: `live-sheet-check: 52 passed`.
+- The gates, on the final head: in the pull request's Validation Evidence.
+- The executors' full accounts with each RED and GREEN run are in the SDE ledger's task-8a and task-8b reports
+  (gitignored, not committed).
