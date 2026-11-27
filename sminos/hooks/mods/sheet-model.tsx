@@ -1193,6 +1193,18 @@ export function isSheetCall(input: unknown): input is SheetInput {
 export type Surface = { name: string; url: string; reach: string }
 
 /**
+ * A text the terminal draws as one line of text (§8.3; the row and the band):
+ * a line break, and a tab, a space; every other control character, C0, DEL
+ * and C1 (ESC and the sequences it opens among them), gone, so neither a
+ * model's question nor a person's answer nor a registration's url breaks the
+ * line or reaches the terminal as a command. Only for drawing: what is stored
+ * and what any JSON carries stay as written.
+ */
+function terminalText(text: string): string {
+  return text.replace(/\r\n|[\t\n\v\f\r\u0085]/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+}
+
+/**
  * The line above the prompt (§8.3): how many questions are open and the
  * surface's link to this session's sheet, or how to read them when no
  * surface can show them; how many answers owed across a stop leave with the
@@ -1207,7 +1219,7 @@ export function bandLine(counts: { open: number; owed: number }, surface: Surfac
   if (counts.owed > 0) {
     parts.push(`${counts.owed} ${counts.owed === 1 ? 'answer goes' : 'answers go'} with your next message`)
   }
-  return parts.length === 0 ? undefined : parts.join(' · ')
+  return parts.length === 0 ? undefined : terminalText(parts.join(' · '))
 }
 
 /** A surface is alive this long after its heartbeat (I8). */
@@ -1372,5 +1384,5 @@ export function rowLines(input: SheetInput, parsed: Parsed, facts: RowFacts): st
     const labels = delivered.picks.map((place) => entry?.options?.[place - 1]?.label ?? `option ${place}`)
     return `${name} → ${labels.length > 0 ? receiptText(labels.join(', ')) : receiptText([...delivered.text].slice(0, 80).join(''))}`
   })
-  return [...lines, ...parsed.withdrew.map((id) => `${id} · Withdrawn`)]
+  return [...lines, ...parsed.withdrew.map((id) => `${id} · Withdrawn`)].map(terminalText)
 }

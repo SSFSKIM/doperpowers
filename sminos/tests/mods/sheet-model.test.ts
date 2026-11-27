@@ -589,6 +589,11 @@ describe("the terminal's drawing (M5, §8.3)", () => {
     expect(bandLine({ open: 0, owed: 0 }, SURFACE, S)).toBeUndefined()
   })
 
+  test("the band's line is one line of text: a registration's url with a control character or a line break draws neither", async () => {
+    const url = 'http://sheet.localhost:47590\u001b]8;;http://evil.example\u0007\r\nforged\u0085line\u009b2J'
+    expect(bandLine({ open: 1, owed: 0 }, { ...SURFACE, url }, S)).toBe(`1 open question · http://sheet.localhost:47590]8;;http://evil.example forged line2J/s/${S}`)
+  })
+
   test("the registrations read between steps (I8's three readings): names ending .json alone, an unreadable or unparsable file not alive, mawsd first then by name, one trailing slash off; alive by age alone", async () => {
     const now = Date.parse('2026-11-24T10:00:30.000Z')
     const reg = (name: string, over: Record<string, unknown> = {}) => JSON.stringify({ v: 1, name, pid: 4321, url: `http://${name}.localhost:1/`, reach: 'local', heartbeatAt: '2026-11-24T10:00:10.000Z', ...over })
@@ -704,6 +709,26 @@ describe("the terminal's drawing (M5, §8.3)", () => {
     test('`Nothing done.` draws that; `Outcome not known yet.` draws "outcome not known" and no id', async () => {
       expect(rowLines(input, { form: 'nothing' }, none)).toEqual(['Nothing done.'])
       expect(rowLines(input, { form: 'unknown' }, none)).toEqual(['outcome not known'])
+    })
+
+    test("what the terminal is given is one line of text: a control character (ESC, a CSI or OSC 8 sequence's, a C1) goes, a line break (CR, LF, U+0085) is a space; in a question, a header, a receipt, a label", async () => {
+      const ESC = '\u001b'
+      const odd = {
+        ask: [
+          {
+            question: `Deploy ${ESC}[31mnow${ESC}[0m?\rOr\u0085later?`,
+            header: `Auth${ESC}]8;;http://x.example${ESC}\\ method\nX`,
+            options: [{ label: `OAuth${ESC}[2J\u009b1m` }],
+          },
+        ],
+      }
+      const added = parseResult('Added q7.')!
+      const name = 'q7 Auth]8;;http://x.example\\ method X'
+      expect(rowLines(odd, added, none)).toEqual([`${name} — Deploy [31mnow[0m?`])
+      const view = { open: [], closed: { q7: { how: 'answered', revision: 1, receipt: `Yes${ESC}[1A\r\nno\u0085more\u0007` } } }
+      expect(rowLines(odd, added, { view, delivered: new Map() })).toEqual([`${name} → Yes[1A no more`])
+      expect(rowLines(odd, added, { delivered: new Map([['q7', { how: 'answered', revision: 1, picks: [1], text: '' }]]) as never })).toEqual([`${name} → OAuth[2J1m`])
+      expect(rowLines(odd, added, { delivered: new Map([['q7', { how: 'answered', revision: 1, picks: [], text: `two${ESC}]8;;http://y.example${ESC}\\\nlines` }]]) as never })).toEqual([`${name} → two]8;;http://y.example\\ lines`])
     })
   })
 })
