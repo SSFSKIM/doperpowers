@@ -1785,15 +1785,26 @@ class ADamagedRecord(unittest.TestCase):
                 self.assertEqual(offset, os.path.getsize(self.inbox))
                 with open(self.inbox, "r+b") as f:
                     f.truncate(offset - 9)           # the last line's end lost
+                cut = offset - 9
                 if order == "step first":
+                    # (b) A step before any put: the offset is held to the inbox's size, and committed.
                     out = step(ev("drain"))
                     self.assertEqual((out["effects"]["applied"], out["effects"]["skipped"]), ([], 0))
+                    self.assertEqual(state_of()["inbox"]["offset"], cut)
                 self.assertEqual(self.door(line("page-0000d002", "answer", id="q2", revision=1, picks=["No"])),
                                  ["queued"])
+                with open(self.inbox, "rb") as f:
+                    data = f.read()
+                if order == "put first":
+                    # (a) The door's padding: blank lines up to the offset, the call from it.
+                    self.assertEqual(data[cut:offset], b"\n" * (offset - cut))
+                    self.assertTrue(data[offset:].startswith(b'{"v":1,"key":"page-0000d002"'), data[offset:])
                 self.assertEqual([q["queued"]["key"] for q in sheet.model(SESSION)["open"] if q.get("queued")],
                                  ["page-0000d002"], "show lists what the step will read")
                 out = step(ev("drain"))
                 self.assertEqual(out["effects"]["applied"], ["page-0000d002"])
+                self.assertEqual(out["effects"]["skipped"], 0, "nothing below the offset, padding or fragment, read")
+                self.assertEqual(state_of()["inbox"]["offset"], os.path.getsize(self.inbox))
                 self.assertEqual(out["effects"]["verdicts"].get("page-0000d002", {}).get("verdict", "applied"),
                                  "applied")
                 self.assertEqual(step(ev("drain"))["effects"]["applied"], [], "once")

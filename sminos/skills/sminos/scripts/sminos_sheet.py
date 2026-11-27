@@ -565,8 +565,10 @@ def append(session, lines):
                     # disk, every one of them applied): the call goes at the offset, the bytes before it blank
                     # lines, so the step reads it, and only it.
                     data = b"\n" * (offset - size) + data
-                elif size and os.pread(fd, 1, size - 1) != b"\n":
-                    data = b"\n" + data       # what an unfinished write left becomes a line of its own
+                elif size > offset and os.pread(fd, 1, size - 1) != b"\n":
+                    # What an unfinished write left becomes a line of its own. One below the offset (an inbox the
+                    # step read from its cut end) is never read: the call goes at the offset as it is.
+                    data = b"\n" + data
                 # One write; should it come back short, the rest follows while the lock is still held, so no drain
                 # sees part of the call. Should the file refuse more, it is cut back to its length before the call:
                 # nothing of the call stays, and the caller is told so.
