@@ -94,7 +94,16 @@ in the composite (G1, G2, G3), mapped to milestones under Plan of Work.
   last fix verified by the controller. The question line's sentence
   follows the composite's writer's one definition. 1,038 mod tests; gates
   GREEN (run 45456729517); live band, rows, import and fork passing.
-- [ ] M6 — The other readers, and the sheet's end of life. Blocked by: M4.
+- [x] (2026-11-27) M6 — The other readers, and the sheet's end of life.
+  Commits `e11ecf907`, fix waves `87b3e5e93`, `35936fe3e`, `d34ebdde8`,
+  `5c0c26b7a`, `e11c4922c`. Task review: one Critical and six Important,
+  then two Critical and two Important, then one and one, then two
+  Important, the last fix verified by the controller; one finding ruled
+  residue by the composite's writer (a record made again for the same
+  session with an unknown floor restarts at q1, and the log's `(kind,
+  src)` dedup drops the new question's line). `test_sheet_log` 42
+  passed; ten gates GREEN (run 46041678823); live `stopped` with the
+  project log passing.
 - [ ] M7 — The description, what is written beside the code, the
   acceptance (G2, G3). Blocked by: M5, M6; C1.
 - [ ] The merges (M1's alone and first: done, `2594002af`; the rest as
@@ -1739,6 +1748,50 @@ each question still open, `…, "text": "removed with its sheet",
 waits until the session has one or the record goes. `close_questions` in
 `S/sminos.py` passes over a `src` that starts `sheet:`: a sheet question
 outlives its process.
+
+**As built (M6).**
+
+- `append_host` adds no `from` or `to`: the projection sets them, a
+  question's `from` the session's alias, every later event of it the
+  question's logged `from`. The projection never joins a session to a
+  project; a question owed before the session is a member waits for its
+  first Stop. With no launch directory known, it falls back to
+  `last_project`. `sheet log` prints `{"session", "written", "owed"}`.
+- *One destination.* `log.projects[id]` is recorded under the lock, in a
+  replace of its own, before anything is appended; the first decision
+  stands, so a retry or an overlapping projection across a move sends a
+  question's every event to one project. Each of the projection's two
+  replaces raises `seq`. A destination recorded but not known here is a
+  debt, never "no project".
+- *Removal decides, then publishes.* Under the lock `remove_record`
+  rechecks liveness (and, for the daemon, the identity and mtime it
+  decided on, and the transcript's confirmed absence), detaches the
+  staging and the record, and only then projects the closings (`removed
+  with its sheet`, also for a `/clear`'s removal) from the detached copy;
+  a detached record whose log is not all written, or whose state cannot
+  be read, stays aside and the removal exits 1; `finish_removed`, run by
+  every removal and every sweep, completes and deletes such leftovers,
+  each on its own. A refused removal publishes nothing.
+- *Identity, else keep.* A record's identity is `(st_dev, st_ino)` of its
+  directory with the nonce in `.incarnation` (I1). The projection's
+  locked rereads, a `/clear` note's witness (`cleared/<pid>.sheet`, written
+  by `smns-cleared.sh` before the note) and the sweep's decision all
+  carry it, checked again under the lock. A comparison is three-way
+  (match, confirmed mismatch, not known); only a match acts, and a note
+  and its witness stay until a confirmed answer.
+- *The sweep* (`sweep_sheets`, run first in `override_duty`, under its
+  spacing) removes a record only when the transcript's own path, read
+  from the launch record, stats missing and every known config dir lists
+  cleanly, confirmed again under the lock; any doubt keeps the record.
+  `sweep_overrides` keeps a session's launch and config-dir records while
+  it has a sheet, so that evidence survives.
+- *The Stop hook.* `smns-record.sh`'s preflight lets through a session
+  that has a sheet; the Python Stop path projects at Stop only.
+- *The snapshot* is written when it changes (each view adopted, each main
+  turn's start and end), writes chained, deduplicated only on the host's
+  acknowledgement. Appeal's case in `tests/mods/` builds its snapshot
+  with sminos's own composer, so the `mods` gate stages
+  `sheet-model.tsx`.
 
 ### I13 · The snapshot (§11)
 
