@@ -155,8 +155,9 @@ back by a fill.
                    picks by place or by label in any case; images copied into the sheet first
     sminos sheet    dismiss <member>|--session <id> <q>...   # dismissals, sent as one batch
     sminos sheet    retract <member>|--session <id> <key>    # takes back a line not yet applied
-    sminos sheet    remove <member>|--session <id> [--cleared --witness <identity>]   # a stopped session's sheet
-                   (refused while it runs); --cleared, the one a /clear left, as `sheet witness` named it then
+    sminos sheet    remove <member>|--session <id> [--cleared --witness <identity> --clearing <pid>]   # a
+                   stopped session's sheet (refused while it runs); --cleared, the one a /clear left, as
+                   `sheet witness` named it then, refused while a process other than the clearing one runs it
     sminos sheet    surfaces [--json]                     # the registered surfaces, and which are alive
     sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
@@ -14279,6 +14280,24 @@ def running_now(session_id):
     return session_running(session_id)
 
 
+def running_elsewhere(session_id, besides):
+    """running_now with the record of process `besides` left out (a
+    /clear's own process, which may still be on record as running the
+    session it left): the record of another process running the session,
+    or None. For a removal that must never take a record a resume holds,
+    so it raises OSError where that cannot be told: an engine session
+    record that could not be read, or a registry not read whole."""
+    global _PEERS
+    engine_dirs_whole()
+    _PEERS = None
+    recs = peer_records()
+    if _PEERS_UNREAD:
+        raise OSError("%d engine session record%s could not be read" % (len(_PEERS_UNREAD),
+                                                                       "" if len(_PEERS_UNREAD) == 1 else "s"))
+    return next((r for r in recs if session_id and r.get("sessionId") == session_id and r.get("pid") != besides
+                 and peer_running(r)), None)
+
+
 def quiet_inbox_refusal(ref):
     return ('seat %s runs, but its inbox does not answer — nothing was sent; try again, or sminos resume %s '
             '"<msg>" stops its turn and resumes it' % (ref, ref))
@@ -22047,6 +22066,7 @@ def build_parser():
         else:
             so.add_argument("--cleared", action="store_true")
             so.add_argument("--witness", default=None)    # with --cleared: the record's identity at the /clear
+            so.add_argument("--clearing", type=int, default=None)   # with --cleared: the pid that cleared
         so.set_defaults(fn=cmd_sheet)
     so = sqsub.add_parser("dismiss", add_help=False)    # its ids follow the member: words, split in sminos_sheet
     so.add_argument("words", nargs="*")

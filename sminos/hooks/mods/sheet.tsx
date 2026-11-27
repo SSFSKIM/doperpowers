@@ -94,6 +94,8 @@ export type Port = {
   run: (args: string[], stdin?: string) => Promise<{ exitCode: number; stdout: string; stderr: string; isStdoutTruncated?: boolean }>
   /** Any program (the floor's search). */
   exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated: boolean }>
+  /** The engine process's pid (`CLAUDE_PID`), or undefined when it is not known. */
+  enginePid: () => Promise<string | undefined>
   write: (path: string, text: string) => Promise<void>
   read: (path: string) => Promise<string>
   /** A file's size, or undefined when it is not there. */
@@ -1480,10 +1482,21 @@ async function witnessLeft(port: Port, left: string): Promise<string | null | un
   return undefined
 }
 
-/** The record a /clear left, removed (U10): `sminos sheet remove --cleared`, that record alone (`witnessed`). True once it is gone or was never there. */
+/**
+ * The record a /clear left, removed (U10): `sminos sheet remove --cleared`,
+ * that record alone (`witnessed`), and not while a process other than this
+ * one (`--clearing`, the engine's pid) runs the session: a resume during a
+ * retry keeps it, as does a pid not known. True once it is gone or was never
+ * there.
+ */
 async function removeLeft(port: Port, left: string, witnessed: string): Promise<boolean> {
   try {
-    const out = await port.run(['sheet', 'remove', '--session', left, '--cleared', '--witness', witnessed])
+    const clearing = await port.enginePid()
+    if (clearing === undefined) {
+      port.log(`sheet: the sheet ${left} a /clear left is kept: this process's pid is not known, so a resume of that session elsewhere could not be told`)
+      return false
+    }
+    const out = await port.run(['sheet', 'remove', '--session', left, '--cleared', '--witness', witnessed, '--clearing', clearing])
     if (out.exitCode === 0 || out.exitCode === 3) {
       return true
     }
@@ -1559,6 +1572,10 @@ function removeLeftLater(port: Port, left: string) {
     try {
       let witnessed = await witnessing
       await inFlight
+      if (sheet.gen?.session === left) {
+        // This process is back in the session it left (a /resume): the record is its own again.
+        return
+      }
       if (witnessed === null && inFlight !== undefined) {
         witnessed = await witnessLeft(port, left)
       }
@@ -1586,6 +1603,11 @@ function portOf($: EngineInterface): Port {
   return {
     run: (args, stdin) => $.process.run([command, ...args], { ...(stdin !== undefined && { stdin }), timeoutMs: STEP_TIMEOUT_MS }),
     exec: (argv) => $.process.run(argv, { timeoutMs: STEP_TIMEOUT_MS }),
+    enginePid: () =>
+      $.process.hookEnv().then(
+        (env) => (/^[1-9][0-9]*$/.test(env.CLAUDE_PID ?? '') ? env.CLAUDE_PID : undefined),
+        () => undefined,
+      ),
     write: (path, text) => $.fs.write(path, text),
     read: (path) => $.fs.read(path),
     size: (path) =>

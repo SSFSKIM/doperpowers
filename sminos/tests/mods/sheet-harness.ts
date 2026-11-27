@@ -26,6 +26,8 @@ export const S2 = '5eed0000-0000-4000-8000-0000000000c2'
 /** A record's identity as `sminos sheet witness` prints it, and another record's. */
 export const W1 = `16777220:4242:${'a'.repeat(32)}`
 export const W2 = `16777220:4242:${'b'.repeat(32)}`
+/** The pid of the engine process the harness stands for. */
+export const ENGINE_PID = '31337'
 export const ALIVE: Probe = { record: false, open: 0, pending: 0, queued: 0, surface: { name: 'standin', url: 'http://sheet.localhost:47590', reach: 'local' }, surfaces: 1 }
 
 export const view = (over: Partial<View> = {}): View => ({
@@ -81,6 +83,8 @@ export function harness(
     remove?: number
     /** What `sminos sheet witness` answers, the n-th time (a record's identity at a /clear); W1 otherwise. */
     witness?: (n: number) => { exitCode: number; stdout?: string }
+    /** The engine's pid as `$.process.hookEnv` gives it (`CLAUDE_PID`); ENGINE_PID otherwise, none when null. */
+    enginePid?: string | null
     /** What `$.prompt.submit` answers for a text (the idle route); `{ text }` otherwise. */
     submit?: (text: string) => unknown
     /** What `$.session.send` answers for a send to an agent; delivered otherwise. */
@@ -172,6 +176,7 @@ export function harness(
       },
     },
     process: {
+      hookEnv: async () => (options.enginePid === null ? {} : { CLAUDE_PID: options.enginePid ?? ENGINE_PID }),
       run: async (argv: readonly string[], init?: { stdin?: string }) => {
         calls.push({ op: 'process.run', args: argv })
         if (argv[0] !== COMMAND && options.exec !== undefined) return { stderr: '', isStdoutTruncated: false, isStderrTruncated: false, ...(await options.exec(argv)) }

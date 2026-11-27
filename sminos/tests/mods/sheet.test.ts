@@ -4,7 +4,7 @@ import { ASYNC_RESULT, asyncAsks, observeAsks } from '../../hooks/mods/ask'
 import type { AskNote } from '../../hooks/mods/ask'
 import { DESCRIPTION, INPUT_SCHEMA, NOT_KNOWN, SHEET_TOOL, WITHDRAWN } from '../../hooks/mods/sheet-model'
 import { TICK_MS, sheetNotices, sheetNudge, sheetView } from '../../hooks/mods/sheet'
-import { ALIVE, HOME, MODEL, S1, S2, SHEET_ON, W1, W2, defaultStep, gated, harness, linesOf, ok, sheetOn, view } from './sheet-harness'
+import { ALIVE, ENGINE_PID, HOME, MODEL, S1, S2, SHEET_ON, W1, W2, defaultStep, gated, harness, linesOf, ok, sheetOn, view } from './sheet-harness'
 import type { StepEvent, StepScript } from './sheet-harness'
 
 tier('user')
@@ -731,7 +731,7 @@ describe('a session change fences the work of the one before (I5)', () => {
     expect(h.steps.map((s) => s.event)).toEqual(['start'])
     g.waiting.shift()?.release()
     await h.settle()
-    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared --witness ${W1}`])
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`])
     expect(h.kept.get('sminos.sheet')).not.toHaveProperty('started')
   })
 })
@@ -774,7 +774,7 @@ describe('a /clear (E15)', () => {
     // The old start lands: only then is its record removed, once.
     g.waiting[0]?.release()
     await h.settle()
-    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared --witness ${W1}`])
+    expect(h.runs().filter((r) => r.startsWith('sheet remove'))).toEqual([`sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`])
     expect(h.kept.get('sminos.sheet')).not.toHaveProperty('started', S1)
   })
 
@@ -783,9 +783,9 @@ describe('a /clear (E15)', () => {
     await h.ready()
     await h.sessionEnd('clear')
     await h.settle()
-    expect(h.runs()).toContain(`sheet remove --session ${S1} --cleared --witness ${W1}`)
+    expect(h.runs()).toContain(`sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`)
     await h.classicStart('clear', S2)
-    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared --witness ${W1}`)).toHaveLength(1)
+    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`)).toHaveLength(1)
     expect(h.steps.at(-1)).toMatchObject({ event: 'start', start: { source: 'clear', floor: 0 } })
     expect(h.kept.get('sminos.sheet')).toEqual({ shape: 1, choice: 'sheet', runner: 'terminal', session: S2, started: S2 })
   })
@@ -803,7 +803,7 @@ describe('a /clear (E15)', () => {
     expect(h.kept.get('sminos.sheet')).toMatchObject({ left: S1 })
     fails = false
     await h.classicStart('clear', S2)
-    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared --witness ${W1}`)).toHaveLength(2)
+    expect(h.runs().filter((r) => r === `sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`)).toHaveLength(2)
     expect(h.kept.get('sminos.sheet')).not.toHaveProperty('left')
   })
 })
@@ -823,7 +823,31 @@ describe('a /clear removes the record it witnessed (R1)', () => {
     expect(removals(h)).toEqual([`sheet witness --session ${S1}`])
     g.waiting.shift()?.release()
     await h.settle()
-    expect(removals(h)).toEqual([`sheet witness --session ${S1}`, `sheet remove --session ${S1} --cleared --witness ${W1}`])
+    expect(removals(h)).toEqual([`sheet witness --session ${S1}`, `sheet remove --session ${S1} --cleared --witness ${W1} --clearing ${ENGINE_PID}`])
+  })
+
+  test('with the engine pid not known, whether another process holds the record cannot be told: it is kept', async () => {
+    const h = sheetOn({ enginePid: null })
+    await h.ready()
+    await h.sessionEnd('clear')
+    await h.settle()
+    expect(removals(h)).toEqual([`sheet witness --session ${S1}`])
+    expect(h.kept.get('sminos.sheet')).toMatchObject({ left: S1 })
+  })
+
+  test('the process back in the session it left before the removal runs keeps its record', async () => {
+    const g = gated(['start'])
+    const h = sheetOn({ step: g.script })
+    await h.start()
+    void h.classicStart('startup')
+    await h.settle()
+    await h.sessionEnd('clear')
+    await h.settle()
+    void h.classicStart('resume', S1)
+    await h.settle()
+    g.waiting.shift()?.release()
+    await h.settle()
+    expect(removals(h)).toEqual([`sheet witness --session ${S1}`])
   })
 
   test('a record with no identity at the clear is kept', async () => {
@@ -855,7 +879,7 @@ describe('a /clear removes the record it witnessed (R1)', () => {
     expect(removals(h)).toEqual([`sheet witness --session ${S1}`])
     g.waiting.shift()?.release()
     await h.settle()
-    expect(removals(h)).toEqual([`sheet witness --session ${S1}`, `sheet witness --session ${S1}`, `sheet remove --session ${S1} --cleared --witness ${W2}`])
+    expect(removals(h)).toEqual([`sheet witness --session ${S1}`, `sheet witness --session ${S1}`, `sheet remove --session ${S1} --cleared --witness ${W2} --clearing ${ENGINE_PID}`])
   })
 })
 

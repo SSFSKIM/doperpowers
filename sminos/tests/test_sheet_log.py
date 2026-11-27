@@ -598,21 +598,59 @@ class ClearsRemoval(Log):
         sheet.remove_record(sid, cleared=True)
         self.start(sid, source="resume")
         self.ask(sid, "toolu_2", [entry("Asked after the clear?")])
-        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", witnessed)
+        code, out = self.remove_cleared(sid, witnessed, os.getpid())
         self.assertEqual(code, 2, out)
         self.assertIn("not the record the removal was decided on", out)
         self.assertEqual([q["question"] for q in self.state(sid)["questions"]], ["Asked after the clear?"])
         # The record it witnessed is removed.
         _, again = self.witness(sid)
-        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", again)
+        code, out = self.remove_cleared(sid, again, os.getpid())
         self.assertEqual(code, 0, out)
         self.assertFalse(os.path.exists(sheet.record_dir(sid)))
+
+    def remove_cleared(self, sid, witnessed, clearing):
+        return self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", witnessed,
+                        "--clearing", str(clearing))
+
+    def test_a_clears_retry_keeps_a_record_a_resume_in_another_process_holds(self):
+        """The record a /clear left, witnessed; the clearing process still on record as running the session left,
+        and a resume of it in another process holding the same record: the delayed retry keeps it. The clearing
+        process alone does not keep it."""
+        sid, clearing = self.opened()
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Still open?")])
+        _, witnessed = self.witness(sid)
+        _, resumed = self.session(sid=sid)
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("runs in another process", out)
+        self.assertEqual([q["question"] for q in self.state(sid)["questions"]], ["Still open?"])
+        self.end(resumed)
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.exists(sheet.record_dir(sid)))
+
+    def test_a_clears_removal_whose_liveness_cannot_be_told_keeps_the_record(self):
+        sid, clearing = self.opened()
+        self.start(sid)
+        _, witnessed = self.witness(sid)
+        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", witnessed)
+        self.assertEqual(code, 2, out)
+        self.assertIn("--clearing", out)
+        # An engine session record that cannot be read may be a resume's.
+        _, other = self.session()
+        with open(self.peer_path(other.pid), "w") as f:
+            f.write("{not json")
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("could not be told", out)
+        self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
 
     def test_a_witness_that_is_no_identity_removes_nothing(self):
         sid = self.asked_and_stopped()
         for bad in ("", "1:2", "1:2:" + "0" * 31, "x:2:" + "0" * 32):
             with self.subTest(bad=bad):
-                code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", bad)
+                code, out = self.remove_cleared(sid, bad, os.getpid())
                 self.assertEqual(code, 2, out)
                 self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
 
