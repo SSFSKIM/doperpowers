@@ -1147,6 +1147,24 @@ class Sweep(Log):
         self.assertTrue(self.exists(sid), "its transcript was written after the note")
         self.assertEqual(self.answers(sid), [])
 
+    def test_a_clears_note_is_not_believed_over_a_listing_of_project_directories_that_failed(self):
+        """R2: the transcript reader lists project directories itself (listdir); one that fails is no answer.
+        The note is otherwise one that removes: old, its record and transcript quiet since."""
+        sid = self.asked_and_stopped()
+        self.cleared_quietly(sid)
+        real = os.listdir
+        projects = os.path.realpath(os.path.join(os.environ["HOME"], ".claude", "projects"))
+
+        def failing(p=".", *a, **k):
+            if os.path.realpath(str(p)) == projects:
+                raise OSError(errno.EIO, "input/output error")
+            return real(p, *a, **k)
+        with mock.patch.object(os, "listdir", side_effect=failing):
+            self.sweep()
+        self.assertTrue(self.exists(sid), "whether its transcript was written since cannot be told")
+        self.sweep()
+        self.assertFalse(self.exists(sid), "listed: the note is believed")
+
     def test_a_clears_note_is_looked_at_again_under_the_lock(self):
         """R2: a transcript written between the sweep's decision on a note and its removal's lock keeps the sheet."""
         sid = self.asked_and_stopped()
