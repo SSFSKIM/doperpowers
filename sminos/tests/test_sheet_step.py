@@ -516,6 +516,17 @@ class Verbs(unittest.TestCase):
         self.assertRegex(o["images"][0], r"^uploads/cli-[0-9a-f]{16}\.png$")
         self.assertTrue(os.path.isfile(os.path.join(self.home, "sheet", SESSION, o["images"][0])))
 
+    def test_a_mistyped_verb_is_told_the_peoples_verbs_only(self):
+        code, _, err = self.cli("bogus")
+        self.assertEqual(code, 2)
+        self.assertIn("invalid choice: 'bogus'", err)
+        self.assertIn("'show'", err)
+        for private in ("step", "probe", "log", "witness"):
+            self.assertNotRegex(err, r"\b%s\b" % private, err)
+        code, out, err = self.cli("witness", "--session", SESSION)
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out.strip(), r"^[0-9]+:[0-9]+:[0-9a-f]{32}$", "a private verb still runs")
+
     def test_dismiss_is_one_batch_and_retract_takes_a_queued_answer_back(self):
         code, out, err = self.cli("dismiss", "--session", SESSION, "q1", "q2")
         self.assertEqual(code, 0, err)

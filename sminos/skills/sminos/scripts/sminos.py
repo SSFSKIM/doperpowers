@@ -21859,6 +21859,18 @@ class Given(argparse.Action):
         namespace.given = getattr(namespace, "given", frozenset()) | {self.dest}
 
 
+class _PublicChoices(dict):
+    """A subcommand map whose private names are taken (membership, lookup) but never listed: argparse lists choices
+    by iterating them, in its usage and in an invalid choice's error."""
+
+    def __init__(self, private):
+        super().__init__()
+        self.private = frozenset(private)
+
+    def __iter__(self):
+        return (k for k in dict.__iter__(self) if k not in self.private)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="sminos", add_help=False)
     sub = p.add_subparsers(dest="cmd")
@@ -22061,6 +22073,8 @@ def build_parser():
     # session's own hooks and surfaces call it, and it reads no registry.
     sq = sub.add_parser("sheet", add_help=False)
     sqsub = sq.add_subparsers(dest="sheet_op")
+    # The tool's and the sheet mod's own verbs run, but a person who mistypes one is told the people's verbs only.
+    sqsub.choices = sqsub._name_parser_map = _PublicChoices(("step", "probe", "log", "witness"))
     for op in ("put", "show", "answer", "retract", "remove"):
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("member", nargs="?", default="")
