@@ -17,7 +17,7 @@ session to its project and record what it sent its human, and the function
 hooks (mods) that make a session reachable from outside it: the bridge, the
 async question tool `mcp__sminos__AskUserQuestion` (or, with
 `SMINOS_QUESTION_SHEET` on and a surface to answer on, the session's
-question sheet: any number of questions in one call, revised and withdrawn,
+question sheet: up to twenty questions a call, revised and withdrawn,
 answered in any order and delivered together), the session's
 `Sminos-Session` address in commits and PRs, and the guard that keeps the
 shell from running a backtick in a message's text. It stands alone: nothing of

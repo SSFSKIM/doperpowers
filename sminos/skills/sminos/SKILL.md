@@ -273,9 +273,10 @@ latest, a pending question included. For a working seat prefer `say` to
 
 A session's **question sheet**, where that session puts questions for
 its human, is read and answered from a shell too, also while the session
-is stopped (what is accepted then reaches it at its resume). `<member>`
-may also be the first eight or more characters of the session's id, as
-the terminal's line prints it:
+is stopped (what is accepted then reaches it at its resume). Where no
+member matches, `<member>` may also be the first eight or more characters
+of the session's id, as the terminal's line prints it, if exactly one
+sheet's session begins with them; otherwise name it `--session <id>`:
 
     sminos sheet show <member> [--json]     # its open questions, each by its handle (q7, q7@2 after a revise)
     sminos sheet answer <member> q7@2 --pick 1 --text "only on mobile"   # the handle show printed
@@ -285,7 +286,10 @@ the terminal's line prints it:
 Name a question by the handle `show` printed: an answer to a question
 revised since is refused, and `show` then prints the new wording.
 `--pick` takes an option's number or its label. Each prints every line's
-state: `queued` until the session applies it, then its verdict.
+state once: its verdict, or `queued` when the session gave none in time (it
+may be stopped, or the line already applied: the printed reply never
+changes). `sminos sheet show <member> --json` reads where a line stands
+now.
 
 `put` is the sheet's one door, which those three call: JSON lines on
 stdin, appended whole or not at all. A key names one act, not you: make

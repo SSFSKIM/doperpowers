@@ -248,10 +248,11 @@ resumed.
 ## sheet (`sheet.tsx`, `sheet-model.tsx`)
 
 The question sheet is the tool's second form. Under it,
-`mcp__sminos__AskUserQuestion` puts any number of questions on the
-session's sheet in one call and returns at once; the agent later revises or
-withdraws what it asked; the human answers any of them, in any order, on a
-surface, and the answers reach the agent as one message. Design: MAWS's
+`mcp__sminos__AskUserQuestion` puts up to twenty questions on the session's
+sheet in one call (the sheet holds up to 500 open) and returns at once; the
+agent later revises or withdraws what it asked; the human answers any of
+them, in any order, on a surface, and the answers reach the agent as one
+message. Design: MAWS's
 composite `docs/doperpowers/specs/2026-11-23-question-sheet-design.md`,
 child C2; plan `docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md`,
 whose I1 to I13 this section names. What another repository reads (the
@@ -262,14 +263,16 @@ is a ruling of the composite's writer and a new manifest `version`.
 **The setting and the start choice.** At its first `session.start` a
 process chooses how the session asks, and keeps the choice in `$.state`
 (`{plugin: 'sminos', key: 'sheet'}`, `SheetKept` in `types/sminos.d.ts`), so
-a reload and a `/clear` keep it. In order: a kept choice; a kept `ask`
+a reload and a `/clear` keep it: the choice is the process's, made once. In order: a kept choice; a kept `ask`
 snapshot and no kept choice (a module before this one served the ask) is
 today's tool; `SMNS_INTERNAL` is none; `MAWS_QUESTION_SHEET` equal to this
-session's id is the sheet with MAWS as runner (MAWS sets it on its
-launches; a value naming another session, as a `claude -p` started inside
-one inherits it, is ignored with a debug line); `MAWS_NATIVE_TO_HUMAN` is
+session's id is the sheet with MAWS as runner (the launch contract MAWS's
+C5 sets on the launches it gives the sheet; a value naming another session,
+as a `claude -p` started inside one inherits it, is ignored with a debug
+line); `MAWS_NATIVE_TO_HUMAN` is
 none; a session that is not interactive is none; a record that holds an
-open question, a pending answer or a queued line is the sheet; then
+open question, a pending outcome (an answer or a dismissal) or a queued
+line is the sheet; then
 `SMINOS_QUESTION_SHEET` (on for `1`, `true`, `on`, `yes`, off for `0`,
 `false`, `off`, `no`, in any case; unset is off, `SHEET_DEFAULT`) with a
 surface alive whose reach suits is the sheet; anything else is today's
@@ -286,13 +289,15 @@ field descriptions, and the built-in is withdrawn (`Withdrawn in this
 session: ask through mcp__sminos__AskUserQuestion, …`). Otherwise the
 sheet's hooks pass everything on and the ask is as above.
 
-**A call.** The input is `{ask, withdraw}`: up to twenty entries (a
+**A call.** The input is `{ask, withdraw}`, at least one of them
+non-empty and an id at most once across both: `ask` takes 1 to 20 entries (a
 question; a header; up to twelve options of a label, a description, a
 preview and `recommended`; `multiSelect`; `context`; up to eight
 `references` of a path and an optional `[first, last]` line range), an
 entry with `id` revising that open question, and the ids to withdraw. The
-mod validates the whole call (a refusal is the engine's error, as today's
-tool words one), then each entry alone (unique labels, a preview only on a
+mod validates the whole call (more than twenty entries, a broken bound, an
+empty call or a repeated id: the whole call is refused, as the engine's
+error in the words today's tool uses), then each entry alone (unique labels, a preview only on a
 single-select question, `multiSelect` only with options, lines in order: an
 entry that breaks one is refused alone and the rest apply). Each reference
 is read through the engine as the agent's own Read would be
@@ -303,8 +308,10 @@ the session's working directories is always refused. The call is staged
 under `$SMINOS_HOME/sheet/.staging/<session>/<call id>/` and ordered as one
 `sminos sheet step`, whose answer is the model's result. Its first line is
 `Added q1, q2.`, `Revised q2 (revision 2).`, `Withdrew q3.` (in that
-order, `(entry n)` beside each id when anything was refused), `Nothing
-done.`, or `Outcome not known yet.`; a `Not done:` line names each refusal,
+order; when anything in the call was refused, each added or revised id
+carries its entry, `q4 (entry 3)`, `q2 (entry 1, revision 2)`, and a
+withdrawn id stays bare: `grammar/result.md` in the set), `Nothing done.`,
+or `Outcome not known yet.`; a `Not done:` line names each refusal,
 and a last line says when no surface can show the questions now. A step
 that gives no answer is settled up to three times; if none answers, the
 model reads `Outcome not known yet.` and a notice later says what the call
@@ -320,13 +327,17 @@ mod holds no copy of the sheet: it orders steps and keeps the last view one
 answered, adopted in the record's order (`seq`). A surface appends lines to
 the inbox through the door (`sminos sheet put`), which tells the session's
 bridge (its `sheet` op); a drain applies them: at each start, at the
-bridge's nudge, at a subagent's stop, and when a check finds the inbox
+bridge's nudge, when the bridge's child says hello, at a subagent's stop,
+and when a check finds the inbox
 grown (one `$.fs.stat` at every tool call, prompt and turn's end the mod
 sees, and on a 5 s timer). The record outlives the process: a stopped
 session's sheet is read and answered, and what was accepted leaves at its
 resume. A `/clear` removes the record it leaves (at `session.end`, again at
-the new session's start, and by the daemon's sweep of the cleared notes);
-the daemon removes a stopped session's record once its transcript is gone.
+the new session's start, and by the daemon's sweep, which a `/clear`'s note
+permits but does not guarantee); the daemon's sweep removes a stopped
+session's record only once its `state.json` has been unchanged for an hour
+and the transcript's own path is confirmed missing, checked again under the
+record's lock: any doubt keeps the record.
 The command's side is in `skills/sminos/scripts/CLAUDE.md`.
 
 **Delivery** (I9). Each view holds the envelope ready for each recipient:
@@ -338,7 +349,8 @@ goes by the first route that opens: as this plugin's prompt when no main
 turn runs and it holds a fresh answer (handed to the engine from a
 `$.clock.after(0)` hop, never inside a dispatch; a prompt that enters first
 takes it instead); as context on the result of the model's next main-loop
-call; or as context on the next prompt that enters. A dismissal, and an
+call that returned (not a denied or aborted one, nor a plugin's own call);
+or as context on the next prompt that enters (not a slash command). A dismissal, and an
 answer given while the session was stopped (marked with its times), start
 no turn and leave with whatever route opens next. A large Send leaves in
 envelopes of at most 60,000 UTF-16 units and 200 keys, a long text carried
@@ -349,25 +361,33 @@ delivered, goes to the main conversation naming the asker. An envelope
 lands when the `session.append` hook finds its block in a row of the
 routes' kinds as stored (a `landed` step); one a turn ended without is
 looked for in the conversation at the end of the turn it belongs to, and
-what is not found is ready again. A start searches the transcript for the
-blocks that landed while it was stopped (`landedSearchArgs`), and returns
-the start's context as the SessionStart's `additionalContext`: after a
+what is not found is ready again. A start reconciles what an earlier
+process may have delivered without recording it: for the keys pending
+before the start's drain, it searches the transcript for blocks that landed
+(`landedSearchArgs`) and lands those it finds; the rest go again, owed
+across a stop. It returns the start's context as the SessionStart's
+`additionalContext`: after a
 resume or a compaction, the open questions with their options and what is
 not yet delivered; in a fork, that its sheet starts empty; then `New ids
-continue from q<n>.`. A fork's or a lost record's first id is past every id
-its conversation holds (the floor, read by `floorSearchArgs`'s perl pass
-over a transcript past 4 MiB). A subagent that stops with questions open is
+continue from q<n>.`. Where the SessionStart came before the choice was
+made, or the step (a start's or a compaction's) gave it no context in time,
+the context goes instead on the next result or prompt route, once. When the floor can be read (the highest
+id the conversation holds, read by `floorSearchArgs`'s perl pass over a
+transcript past 4 MiB), a fork's or a lost record's first id is past it. A subagent that stops with questions open is
 named to the main conversation once, on the next route. In a MAWS-run
 session no route of the main conversation opens and no row lands: MAWS
 delivers there and says so by a `delivered` line; a running subagent's
 answer still goes by a send.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
-registered outside the ask's band, draws one line above the to-human band
-while the session has open questions or answers owed across a stop: `3
+registered outside the ask's band, draws one line above the to-human band in
+a terminal session whose start has answered, while it has open questions or
+answers owed across a stop, and not while a survey holds the band: `3
 open questions · <surface url>/s/<session> · 2 answers go with your next
 message`, or `the page is unreachable: sminos sheet show <first 8>` when
-no surface suits. A call of the sheet's form draws, in every session, the
+no surface suits. Between steps it refreshes the link from the
+registrations' heartbeats alone (every third tick); a step's view is the
+full rule. A call of the sheet's form draws, in every session, the
 engine's head and one line a question it added or revised (`q7 Auth method
 — <the question's first sentence ending in "?", else its first sentence>`)
 and one a withdrawal; each line becomes its receipt once the question left
@@ -379,7 +399,9 @@ sheet once, at the first start under the sheet: the start reads them as the
 ask does (`readTodayAsks`) and the step imports each question as it was
 asked, marked `importedFrom`, and says so in its context. A read that was
 not definite (the search failed or was cut) imports nothing and the next
-start reads again; a copy's first start under the sheet records that it
+start reads again; so does a definite read when the floor is not known and
+the record has assigned no id (`nextId` 1), since its ids could repeat the
+conversation's; a copy's first start under the sheet records that it
 never imports.
 
 **The other readers** (§11). Under the sheet the mod writes the `ask` key
@@ -395,8 +417,9 @@ record` runs, and a removal runs, closing what was still open (`removed
 with its sheet`).
 
 **The command's verbs** (`sminos help`; a stopped session's sheet too,
-named by its member, `--session <id>`, or the first eight or more
-characters of its id):
+named by its member or `--session <id>`; where no member matches, also by
+the first eight or more characters of its id when exactly one record's
+session begins with them):
 
     sminos sheet show <who> [--json]           # the open questions, each by its handle (q7, q7@2 after a revise)
     sminos sheet answer <who> q7@2 --pick 1 --text "…" [--image F]   # a bare q7 only at revision 1
@@ -406,10 +429,21 @@ characters of its id):
     sminos sheet surfaces [--json]             # the registrations, and which are alive
     sminos sheet put <who>                     # the door: JSON lines on stdin
 
-Each act prints every line's state: `queued` until the session applies it,
-then its verdict (`applied`, `stale` with the current revision, `closed`,
-`retracted`, `too-late`). A session cannot answer, dismiss or retract on its
-own sheet. `step`, `probe` and `log` are the tool's own.
+`answer`, `dismiss`, `retract` and `put` append, then (unless `put
+--no-wait`) ask the running session for a verdict and print each line's
+state once: its verdict (`applied`, `stale` with the current revision,
+`closed`, `retracted`, `too-late`), or `queued` when this invocation got
+none (a stopped session, no answer in time). `queued` says nothing more:
+the line may be applied already, and the printed reply never changes;
+`show --json` (`--keys k,…` for some lines) reads its state now. They exit
+0 once appended, whatever the verdict; 2 for a line refused before anything
+was appended (an `answer` naming a revision no longer current is refused
+there, at once, where a line `put` at an old revision is appended and reads
+`stale`), 3 for no sheet, 75 for a sheet busy past 10 s (try again), 1 for
+a write the file refused. `show` exits 3 for no sheet and 75 when the
+record kept changing under its three reads (read again). The exits are
+stated in `skills/sminos/scripts/CLAUDE.md`. A session cannot answer, dismiss or
+retract on its own sheet. `step`, `probe` and `log` are the tool's own.
 
 Known limits (`docs/doperpowers/TECH-DEBT.md`, rows 37 to 50): a door
 killed inside its write can leave part of a batch, which the resend
