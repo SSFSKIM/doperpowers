@@ -679,10 +679,10 @@ export async function sheetNudge(keys: unknown): Promise<{ ok: true; result: Rec
   if (!answer.ok) {
     return { ok: false, code: answer.code, error: answer.error }
   }
-  const verdicts: Record<string, Verdict> = {}
+  // Any inbox key is a key here (`__proto__` included): a dictionary with no prototype, read by its own properties.
+  const verdicts: Record<string, Verdict> = Object.create(null)
   for (const key of asked) {
-    const verdict = answer.effects.verdicts[key]
-    if (verdict !== undefined) verdicts[key] = verdict
+    if (Object.hasOwn(answer.effects.verdicts, key)) verdicts[key] = answer.effects.verdicts[key] as Verdict
   }
   return { ok: true, result: { verdicts } }
 }

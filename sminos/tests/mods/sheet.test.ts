@@ -432,6 +432,19 @@ describe('views and drains', () => {
     expect(h.steps.at(-1)).toMatchObject({ event: 'drain', keys: ['page-1', 'page-2'] })
   })
 
+  test("the nudge's verdicts are the drain's own for each key: `__proto__` is a key like another, and a key with none (`toString`) has none", async () => {
+    const verdict = { verdict: 'applied', kind: 'answer', at: '2026-11-24T10:00:00.000Z', id: 'q2' }
+    const h = sheetOn({ step: (event, n) => (event.event === 'drain' ? ok(n, { verdicts: JSON.parse(`{"__proto__": ${JSON.stringify(verdict)}}`) }) : ok(n)) })
+    await h.ready()
+    const answered = await sheetNudge(['__proto__', 'toString'])
+    if (!answered.ok) throw new Error(answered.error)
+    const verdicts = answered.result.verdicts as Record<string, unknown>
+    expect(Object.keys(verdicts)).toEqual(['__proto__'])
+    expect(Object.getOwnPropertyDescriptor(verdicts, '__proto__')?.value).toEqual(verdict)
+    // As the bridge sends it.
+    expect(JSON.parse(JSON.stringify(answered))).toEqual(JSON.parse(`{"ok": true, "result": {"verdicts": {"__proto__": ${JSON.stringify(verdict)}}}}`))
+  })
+
   test('the check drains when the inbox is longer than the view says, once for a write that did not finish', async () => {
     const h = sheetOn({ files: { [`${HOME}/sheet/${S1}/inbox.jsonl`]: '' } })
     await h.ready()
