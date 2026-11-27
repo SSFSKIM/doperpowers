@@ -615,7 +615,12 @@ def nudge(session, keys):
 
 
 def put(session, data, wait=True):
-    lines = append(session, read_lines(data))
+    return told(session, append(session, read_lines(data)), wait)
+
+
+def told(session, lines, wait=True):
+    """What `put` prints for lines the door appended: each key's verdict from the session's bridge, `queued` for
+    one none came back for."""
     keys = list(dict.fromkeys(x["key"] for x in lines))
     verdicts = nudge(session, keys) if wait else {}
     results = []
@@ -1479,8 +1484,15 @@ def copy_upload(session, src):
     os.makedirs(uploads, mode=0o700, exist_ok=True)
     name = "uploads/cli-%s.%s" % (uuid.uuid4().hex[:16], ext)
     tmp = os.path.join(uploads, ".tmp-" + uuid.uuid4().hex)
-    shutil.copyfile(src, tmp)
-    os.replace(tmp, os.path.join(rec, name))
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, os.path.join(rec, name))
+    except BaseException:
+        try:
+            os.unlink(tmp)                # a copy cut short (a full disk) leaves nothing behind
+        except OSError:
+            pass
+        raise
     return name
 
 
@@ -1750,17 +1762,17 @@ def cmd_sheet(a):
             if images:
                 by = line.pop("by")
                 line.update(images=images, by=by)
-            _send(session, [line])
-        except SystemExit as e:
-            # A refusal, here or by the door, appends nothing: this call's uploads go with it. (After the door
-            # appended, nothing exits.)
-            if e.code not in (0, None):
-                for name in images:
-                    try:
-                        os.unlink(os.path.join(record_dir(session), name))
-                    except OSError:
-                        pass
+            appended = append(session, [line])
+        except BaseException:
+            # Anything that stops this call before the door appended (a refusal, a full disk, a copy that failed)
+            # takes its uploads back. Once appended, the line names them: what fails after keeps them.
+            for name in images:
+                try:
+                    os.unlink(os.path.join(record_dir(session), name))
+                except OSError:
+                    pass
             raise
+        print(json.dumps(told(session, appended), ensure_ascii=False))
         return
     if op == "dismiss":
         session, ids = _split_who(a, "dismiss")

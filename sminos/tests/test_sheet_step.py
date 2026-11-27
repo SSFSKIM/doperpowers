@@ -9,6 +9,7 @@ import base64
 import contextlib
 import copy
 import datetime
+import errno
 import io
 import json
 import os
@@ -1563,6 +1564,31 @@ class AnAnswersImagesGoWithItOrNotAtAll(unittest.TestCase):
             except SystemExit as e:
                 return e.code
         return 0
+
+    def test_a_copy_that_fails_midway_leaves_no_upload_and_no_temporary_file(self):
+        real, calls = shutil.copyfile, []
+
+        def full_disk(src, dst, *a, **k):
+            calls.append(dst)
+            if len(calls) == 2:
+                with open(dst, "wb") as f:
+                    f.write(b"\x89PN")          # part of it written, then the disk is full
+                raise OSError(errno.ENOSPC, "no space left on device")
+            return real(src, dst, *a, **k)
+        with mock.patch.object(shutil, "copyfile", side_effect=full_disk):
+            with self.assertRaises(OSError), contextlib.redirect_stdout(io.StringIO()):
+                sminos.main(["sheet", "answer", "--session", SESSION, "q1", "--text", "see", "--image", self.img,
+                             "--image", self.img])
+        self.assertEqual(self.uploaded(), [], "no upload, and no temporary file")
+        self.assertEqual(state_of()["inbox"]["offset"], os.path.getsize(os.path.join(self.home, "sheet", SESSION,
+                                                                                     "inbox.jsonl")))
+
+    def test_an_answer_the_door_appended_keeps_its_images_whatever_fails_after(self):
+        with mock.patch.object(sheet, "nudge", side_effect=OSError(errno.EPIPE, "broken pipe")):
+            with self.assertRaises(OSError), contextlib.redirect_stdout(io.StringIO()):
+                sminos.main(["sheet", "answer", "--session", SESSION, "q1", "--text", "see", "--image", self.img])
+        self.assertEqual(len(self.uploaded()), 1, "the line is in the inbox, naming it")
+        self.assertEqual(len(sheet.model(SESSION)["open"][0]["queued"]["images"]), 1)
 
     def test_a_line_the_door_refuses_takes_its_images_back(self):
         def refused(session, lines):
