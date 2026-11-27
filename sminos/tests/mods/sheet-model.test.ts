@@ -284,6 +284,13 @@ describe('the floor (I10)', () => {
     expect(floorOfSheetText('New ids continue from q41.')).toBe(0)
   })
 
+  test('a long run of whitespace inside a text is read in linear time: 200,000 spaces before other text, well under a second', async () => {
+    const at = performance.now()
+    expect(floorOfSheetText(`[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5.${' '.repeat(200_000)}x`)).toBe(5)
+    expect(floorOfSheetText(`[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5, q6.${' '.repeat(200_000)}\n`)).toBe(6)
+    expect(performance.now() - at).toBeLessThan(250)
+  })
+
   test("each item read by its place: a question's text or a label quoting a form names nothing", async () => {
     // A start's context as M2 writes it: the question JSON-quoted, its labels as they are, new lines and all.
     const context = [

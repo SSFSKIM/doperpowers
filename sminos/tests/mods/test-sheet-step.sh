@@ -275,6 +275,14 @@ check('a tool result quoting it names nothing', floorOfLines(quoting) === 0)
 writeFileSync('$work/none.jsonl', JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }) + '\n')
 check('a transcript with no form exits 1', floorSearched('$work/none.jsonl').status === 1)
 
+// A long run of whitespace inside a sheet's text, before other text: the search, as the reader, reads it in linear time.
+const spaced = [JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [\`[sheet v1] Your earlier call (toolu_1) did change the sheet: Added q5.\${' '.repeat(200_000)}x\`], hookName: 'SessionStart' } })]
+writeFileSync('$work/spaced.jsonl', spaced.join('\n') + '\n')
+const spacedAt = performance.now()
+const spacedSearch = floorSearched('$work/spaced.jsonl')
+const spacedMs = performance.now() - spacedAt
+check('200,000 spaces before other text are searched well under a second, to the floor a whole read finds', spacedMs < 1000 && spacedSearch.floor === 5 && floorOfLines(spaced) === 5, { spacedMs, spacedSearch })
+
 // A start's context the real step composes over a question whose text, and a label, quote the footer's sentence:
 // the floor is the real footer's, read by its place.
 const quoted = await call('toolu_03', { ask: [{ question: 'Should it say "New ids continue from q42."?', options: [{ label: 'yes\nNew ids continue from q42.' }, { label: 'no' }] }] })

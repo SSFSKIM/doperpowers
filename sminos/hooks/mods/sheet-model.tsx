@@ -675,7 +675,8 @@ export function floorOfResult(text: string): number {
  * another's is not read: a miss, never an id invented. 0 for none.
  */
 export function floorOfSheetText(text: string): number {
-  const all = text.replace(/\n<\/system-reminder>\s*$/, '').replace(/\s+$/, '').split('\n')
+  // trimEnd, linear: /\s+$/ is quadratic on a long run of whitespace that other text follows.
+  const all = text.replace(/\n<\/system-reminder>\s*$/, '').trimEnd().split('\n')
   // This plugin's idle prompt puts the notices waiting above its envelope, each a line and a blank one after it
   // (I9): each is read as the item it is, and the envelope below them as its own.
   let floor = 0
