@@ -1840,7 +1840,7 @@ export function registerSheet(on: On) {
     const answered = await askCall(port, e as unknown as Record<string, unknown>)
     if (id !== undefined) sheet.dispatching.delete(id)
     // The tool's own result is a route like any other's (I9).
-    return withResultRoute(e.agentId, next.origin, next.signal, answered)
+    return withResultRoute(gen, e.agentId, next.origin, next.signal, answered)
   }).catch((_, e, next) => {
     if (next.called || !isSheetChosen()) {
       return next(e)
@@ -1868,8 +1868,9 @@ export function registerSheet(on: On) {
   // main-loop calls (I9).
   on('tool.call', { tool: /^/ }, async (_, e, next) => {
     triggerCheck()
+    const gen = current()
     const result = await next(e)
-    return withResultRoute(e.agentId, next.origin, next.signal, result)
+    return withResultRoute(gen, e.agentId, next.origin, next.signal, result)
   })
 
   // The prompt route (I9): what is ready rides any prompt that enters, as
@@ -2036,12 +2037,14 @@ export function registerSheet(on: On) {
  * The result route (I9): a call of the model's main loop that returned, not
  * denied and not aborted, carries what is ready as context on its result:
  * the envelope, a flight of the running turn, and the notices and a context
- * waiting.
+ * waiting. Only into the generation it was dispatched in (`dispatched`): a
+ * call that ran across a session change (a fork, a /clear) returns as it was,
+ * carrying nothing of the session after it.
  */
-function withResultRoute<R extends object>(agentId: string | undefined, origin: { plugin: string }, signal: AbortSignal, result: R): R {
+function withResultRoute<R extends object>(dispatched: Gen | undefined, agentId: string | undefined, origin: { plugin: string }, signal: AbortSignal, result: R): R {
   const gen = routable()
   const { deny, context } = result as { deny?: unknown; context?: readonly string[] }
-  if (gen === undefined || !isTerminal() || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
+  if (gen === undefined || gen !== dispatched || !isTerminal() || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
     return result
   }
   const taken = take(gen, 'result')

@@ -2,7 +2,7 @@ import { describe, expect, test, tier } from 'claude-code/testing'
 
 import type { Recipient } from '../../hooks/mods/sheet-model'
 import { sheetNudge } from '../../hooks/mods/sheet'
-import { HOME, MODEL, S1, ok, sheetOn } from './sheet-harness'
+import { HOME, MODEL, S1, S2, ok, sheetOn } from './sheet-harness'
 import type { StepEvent, StepScript } from './sheet-harness'
 
 tier('user')
@@ -516,6 +516,28 @@ describe('a reservation, checked again at the hop (I9)', () => {
     await h.hop()
     expect(h.submits).toHaveLength(1)
     expect(h.submits[0]).toContain('"keys":["k1"]')
+  })
+})
+
+describe('a call that runs across a session change (I9)', () => {
+  test("a call of the session left, held across a fork in this process, returns as it was: it carries nothing of the copy's and reserves none of its envelopes", async () => {
+    for (const tool of ['sheet', 'Read']) {
+      let release: () => void = () => {}
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const rec = record()
+      const h = await started(rec, { step: async (event, n) => (event.event === 'call' && event.session === S1 ? (await held, rec.script(event, n)) : rec.script(event, n)) })
+      await h.turnStart('t1')
+      const calling = tool === 'sheet' ? h.ask({ ask: [{ question: 'Before the copy?' }] }) : h.call('Read', { file_path: '/work/a' }, undefined, MODEL, undefined, undefined, held.then(() => ({ result: 'read' })))
+      await h.settle()
+      rec.queued.push(out('k1', 'q1'))
+      await h.classicStart('fork', S2)
+      await h.settle()
+      release()
+      const { result } = await calling
+      expect(result.context).toBeUndefined()
+      // The copy's envelope is still ready, for its own next route.
+      expect(contextOf(await h.call('Read', {}))).toEqual([rec.envelope('main')?.text])
+    }
   })
 })
 
