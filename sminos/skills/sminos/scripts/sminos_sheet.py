@@ -440,10 +440,11 @@ def text(m):
             lines.append("  file: %s%s" % (terminal_safe(where), "  (changed since asked)" if r.get("changed") else ""))
         if q.get("queued"):
             x = q["queued"]
-            said = ", ".join(x["picks"])
+            said = ", ".join(terminal_safe(p) for p in x["picks"])
             if x["text"]:
-                said += (" · " if said else "") + json.dumps(x["text"], ensure_ascii=False)
-            lines.append("  queued (%s): %s" % (x["key"], terminal_safe(said)))
+                # Cleaned, then quoted: a line break is a space, never a literal \n.
+                said += (" · " if said else "") + json.dumps(terminal_safe(x["text"]), ensure_ascii=False)
+            lines.append("  queued (%s): %s" % (x["key"], said))
         lines.append("")
     if not m["open"]:
         lines += ["no open questions", ""]

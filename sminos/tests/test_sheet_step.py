@@ -1503,6 +1503,15 @@ class ShowsPlainPrint(unittest.TestCase):
         self.assertEqual(out.rstrip("\n").split("\n"),
                          ["q1", "  Which one?", "    q9  Forged header", "      1. Forged", "  1. Real"])
 
+    def test_a_queued_answers_text_is_cleaned_before_it_is_quoted(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_t", [{"question": "Say?"}]))
+        put_raw(SESSION, [line("page-0000t001", "answer", id="q1", revision=1, text='one\ntwo\rthree\u2028four "q"')])
+        code, out, err = run_cli(["sheet", "show", "--session", SESSION])
+        self.assertEqual(code, 0, err)
+        self.assertIn('  queued (page-0000t001): "one two three four \\"q\\""', out.split("\n"))
+
     def test_the_model_and_the_person_cannot_forge_a_line_or_drive_the_terminal(self):
         scratch()
         step(ev("start", start={"source": "startup"}))
