@@ -515,8 +515,10 @@ def record_problem(rec):
     return None
 
 
-def append(session, lines):
-    """Appends the lines under the lock, whole or not at all. Returns the lines as written."""
+def append(session, lines, progress=None):
+    """Appends the lines under the lock, whole or not at all. Returns the lines as written. `progress` (a dict), when
+    given, holds `writing` True from the first byte written until the call is cut back again: a caller interrupted
+    with it True cannot know whether the lines stay."""
     batch = uuid.uuid4().hex if len(lines) > 1 else None
     stamped = []
     for n, line in enumerate(lines, 1):
@@ -574,6 +576,8 @@ def append(session, lines):
                 # sees part of the call. Should the file refuse more, it is cut back to its length before the call:
                 # nothing of the call stays, and the caller is told so.
                 done = 0
+                if progress is not None:
+                    progress["writing"] = True
                 try:
                     while done < len(data):
                         n = os.write(fd, data[done:])
@@ -584,6 +588,8 @@ def append(session, lines):
                 except OSError as e:
                     os.ftruncate(fd, size)
                     os.fsync(fd)
+                    if progress is not None:
+                        progress["writing"] = False
                     S.die("sheet put: the inbox could not be written (%s); nothing appended" % e, 1)
             finally:
                 os.close(fd)
@@ -1756,17 +1762,21 @@ def cmd_sheet(a):
         line = cli_answer(session, a.handle, a.pick, a.text or "")     # refused before anything is copied
         for f in a.image:
             _upload_ext(f)
-        images = []
+        images, progress = [], {}
         try:
             for f in a.image:
                 images.append(copy_upload(session, f))
             if images:
                 by = line.pop("by")
                 line.update(images=images, by=by)
-            appended = append(session, [line])
+            appended = append(session, [line], progress)
         except BaseException:
-            # Anything that stops this call before the door appended (a refusal, a full disk, a copy that failed)
-            # takes its uploads back. Once appended, the line names them: what fails after keeps them.
+            # Anything that stops this call before the door wrote (a refusal, a full disk, a copy that failed), or
+            # after it cut its write back, takes its uploads back. Once the door began to write and was not cut
+            # back (an interrupt at or after the write), the line may name them: they stay. Once appended, the
+            # line names them: what fails after keeps them.
+            if progress.get("writing"):
+                raise
             for name in images:
                 try:
                     os.unlink(os.path.join(record_dir(session), name))

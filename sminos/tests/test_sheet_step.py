@@ -1593,6 +1593,26 @@ class AnAnswersImagesGoWithItOrNotAtAll(unittest.TestCase):
         self.assertEqual(state_of()["inbox"]["offset"], os.path.getsize(os.path.join(self.home, "sheet", SESSION,
                                                                                      "inbox.jsonl")))
 
+    def test_an_append_interrupted_after_its_write_keeps_the_images_its_line_may_name(self):
+        """The door wrote the line, then the call was interrupted before it was synced: whether the line stays is not
+        known, so the uploads stay (a stray upload is harmless; an answer naming a missing image is not)."""
+        def interrupted(fd):
+            raise KeyboardInterrupt
+        with mock.patch.object(os, "fsync", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+                sminos.main(["sheet", "answer", "--session", SESSION, "q1", "--text", "see", "--image", self.img])
+        queued = sheet.model(SESSION)["open"][0]["queued"]
+        self.assertEqual(len(queued["images"]), 1, "the line was written")
+        self.assertTrue(os.path.isfile(os.path.join(self.home, "sheet", SESSION, queued["images"][0])))
+
+    def test_an_append_the_door_cut_back_takes_its_images_back(self):
+        def full(fd, data):
+            raise OSError(errno.ENOSPC, "no space left on device")
+        with mock.patch.object(os, "write", side_effect=full):
+            self.assertEqual(self.answer_here(self.img), 1)
+        self.assertEqual(self.uploaded(), [])
+        self.assertIsNone(sheet.model(SESSION)["open"][0].get("queued"))
+
     def test_an_answer_the_door_appended_keeps_its_images_whatever_fails_after(self):
         with mock.patch.object(sheet, "nudge", side_effect=OSError(errno.EPIPE, "broken pipe")):
             with self.assertRaises(OSError), contextlib.redirect_stdout(io.StringIO()):
@@ -1601,12 +1621,12 @@ class AnAnswersImagesGoWithItOrNotAtAll(unittest.TestCase):
         self.assertEqual(len(sheet.model(SESSION)["open"][0]["queued"]["images"]), 1)
 
     def test_a_line_the_door_refuses_takes_its_images_back(self):
-        def refused(session, lines):
+        def refused(session, lines, progress=None):
             sminos.die("sheet put: line 1 refused: the question closed meanwhile; nothing appended", 2)
         with mock.patch.object(sheet, "append", side_effect=refused):
             self.assertEqual(self.answer_here(self.img, self.img), 2)
         self.assertEqual(self.uploaded(), [])
-        def busy(session, lines):
+        def busy(session, lines, progress=None):
             sminos.die("sheet put: busy; send again", sheet.EXIT_BUSY)
         with mock.patch.object(sheet, "append", side_effect=busy):
             self.assertEqual(self.answer_here(self.img), sheet.EXIT_BUSY)
