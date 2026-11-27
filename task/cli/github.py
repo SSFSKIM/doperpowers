@@ -13,6 +13,8 @@ import urllib.parse
 from common import failed
 
 TIMEOUT = 120
+# Every call names its host, so that GH_HOST or a client's default cannot send a read or a write elsewhere.
+HOST = "github.com"
 
 _ISSUE_FIELDS = """
   id number title url state stateReason createdAt body
@@ -63,7 +65,7 @@ class Client:
 
     # ── plumbing ──────────────────────────────────────────────────────────
     def _gh(self, args, data=None):
-        argv = ["gh", "api"] + args
+        argv = ["gh", "api", "--hostname", HOST] + args
         if data is not None:
             argv += ["--input", "-"]
         try:

@@ -1,5 +1,7 @@
 """`task lint` (Interfaces §6) over a board's open issues: the FAILs, and the
 WARNs that need no fold. It writes nothing."""
+import shlex
+
 import board as B
 
 
@@ -98,15 +100,19 @@ def lint(repo, nodes, login):
             _find(out, "WARN", n, "no category", "task set %d --category <C>" % n)
         if t.body_trusted and t.parsed.problems:
             _find(out, "FAIL", n, "a malformed record block (%s)" % "; ".join(t.parsed.problems),
-                  "task set %d --body-file <the whole body, its record block repaired>" % n)
+                  "task set %d --body-file <the prose>, which drops the unreadable block; then set its keys again "
+                  "with --due, --spec and --to" % n)
         if horizons == ["planned"] and not t.blockers:
             _find(out, "WARN", n, "planned with no blocker: its order is decided and nothing says after what",
                   "task edge %d --block <N>, or task set %d --horizon expected" % (n, n))
         for b in t.blockers:
-            if b["state"] == "not-planned":
-                ref = "#%d" % b["number"] if b["repo"].lower() == repo.lower() else "%s#%d" % (b["repo"], b["number"])
-                _find(out, "WARN", n, "a blocker closed as not planned (%s): stuck" % ref,
-                      "task edge %d --unblock %s, or task close %d --not-planned" % (n, ref, n))
+            if b["state"] in B.STUCK:
+                same = b["repo"].lower() == repo.lower()
+                shown = "#%d" % b["number"] if same else "%s#%d" % (b["repo"], b["number"])
+                arg = "%d" % b["number"] if same else shlex.quote("%s#%d" % (b["repo"], b["number"]))
+                how = "as not planned" if b["state"] == "not-planned" else "with no reason GitHub gives as completed"
+                _find(out, "WARN", n, "a blocker closed %s (%s): stuck" % (how, shown),
+                      "task edge %d --unblock %s, or task close %d --not-planned" % (n, arg, n))
     for part in _cycles(repo, nodes):
         a = part[0]
         nxt = next(b["number"] for node in nodes if node["number"] == a for b in node["blockedBy"]["nodes"]

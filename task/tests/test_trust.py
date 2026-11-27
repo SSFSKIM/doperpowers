@@ -88,6 +88,28 @@ class TrustTest(BoardCase):
         self.assertEqual(self.task("adopt", "9", "--digest", digest)[0], 3)
         self.assertEqual(self.writes(), [])
 
+    def test_adopt_checks_the_digest_before_anything_else(self):
+        self.ticket(10, body=BODY, editor=ME)
+        self.assertEqual(self.task("adopt", "10", "--digest", "sha256:" + "0" * 64)[0], 3)
+
+    def test_adopt_keeps_the_prose_byte_for_byte(self):
+        self.ticket(11, body="Text,\r\nexactly  \n", editor=OUTSIDER)
+        digest = self.json("show", "11")["body_digest"]
+        self.assertEqual(self.task("adopt", "11", "--digest", digest)[0], 0)
+        self.assertTrue(self.gh_issue(11)["body"].startswith("Text,\r\nexactly  \n\n\n```task-record\nadopted: "))
+
+    def test_adopt_refuses_a_misplaced_or_doubled_block(self):
+        for n, body in ((12, "```task-record\nspec: a\n```\n\nText after."),
+                        (13, "Text.\n\n```task-record\nspec: a\n```\n\n```task-record\nspec: b\n```")):
+            with self.subTest(n=n):
+                self.ticket(n, body=body, editor=OUTSIDER)
+                digest = self.json("show", str(n))["body_digest"]
+                self.clear_log()
+                code, _, err = self.task("adopt", str(n), "--digest", digest)
+                self.assertEqual(code, 3, err)
+                self.assertIn("doubled or not last", err)
+                self.assertEqual(self.writes(), [])
+
     def test_adopt_of_a_trusted_body_writes_nothing(self):
         self.ticket(10, body=BODY, editor=ME)
         digest = self.json("show", "10")["body_digest"]

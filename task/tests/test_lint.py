@@ -81,6 +81,19 @@ class LintTest(BoardCase):
             with self.subTest(case=i, words=words):
                 self.assert_finds("WARN", 60 + i, words, labels, **kw)
 
+    def test_a_stuck_repair_names_a_usable_blocker(self):
+        self.add_repo("acme/gears")
+        self.issue(7, repo="acme/gears", labels=GOOD, state="CLOSED", reason="NOT_PLANNED")
+        self.issue(90, labels=GOOD, state="CLOSED", reason="NOT_PLANNED")
+        self.issue(91, labels=GOOD, state="CLOSED", reason=None)
+        self.issue(1, labels=GOOD, blocked_by=[90, 91, ("acme/gears", 7)])
+        code, out = self.lint()
+        lines = [l for l in out.splitlines() if l.startswith("WARN #1 ")]
+        self.assertEqual(len(lines), 3, out)
+        self.assertIn("task edge 1 --unblock 90,", lines[0] + lines[1] + lines[2])
+        self.assertIn("task edge 1 --unblock 91,", "".join(lines))
+        self.assertIn("task edge 1 --unblock 'acme/gears#7',", "".join(lines))
+
     def test_json(self):
         self.issue(1, labels=GOOD + ["status:deferred"])
         self.issue(2, labels=["bug"])

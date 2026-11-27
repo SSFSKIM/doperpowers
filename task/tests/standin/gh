@@ -92,9 +92,9 @@ def actor(login):
 
 
 def state_reason(it):
-    if it["state"] == "OPEN":
-        return it.get("stateReason")
-    return it.get("stateReason") or "COMPLETED"
+    """As stored: a closed issue seeded with no reason keeps none, as GitHub
+    gives for closes made before it kept reasons."""
+    return it.get("stateReason")
 
 
 def ref_node(s, repo, n, extra=False):
@@ -340,7 +340,7 @@ def main(argv):
                     val = val == "true"
             fields[k] = val
             i += 2
-        elif a == "--input":
+        elif a in ("--input", "--hostname"):
             i += 2
         elif a == "--paginate":
             paginate = True

@@ -10,7 +10,8 @@ import sys
 sys.dont_write_bytecode = True
 
 import verbs  # noqa: E402
-from common import USAGE, Stop  # noqa: E402
+from common import FAILED, USAGE, Stop  # noqa: E402
+from github import GitHubError  # noqa: E402
 
 PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 
@@ -18,6 +19,17 @@ PLUGIN = pathlib.Path(__file__).resolve().parent.parent
 def version():
     data = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
     return "task %s (the task plugin of the doperpowers marketplace)" % data["version"]
+
+
+def issue_number(text):
+    """An issue's number: a positive integer."""
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if n < 1 or not text.strip().isdigit():
+        raise argparse.ArgumentTypeError("%r is no issue number (a positive integer)" % text)
+    return n
 
 
 class Parser(argparse.ArgumentParser):
@@ -53,7 +65,7 @@ def parser():
     v.add_argument("--body-file", required=True, metavar="FILE")
     v.add_argument("--horizon", default="expected", help="planned, expected (the default) or undecided")
     v.add_argument("--blocked-by", metavar="N,...", help="blockers: N or owner/name#N, comma-separated")
-    v.add_argument("--parent", type=int, metavar="N")
+    v.add_argument("--parent", type=issue_number, metavar="N")
     v.add_argument("--batch", metavar="NAME")
     v.add_argument("--due", metavar="YYYY-MM-DD")
     v.add_argument("--spec", metavar="PATH[@SHA]|URL")
@@ -61,7 +73,7 @@ def parser():
 
     v = verb("show", verbs.show, "a ticket: labels, record, edges, linked activity, body and comments, each "
              "marked trusted or not", (on_board, reading))
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
 
     v = verb("list", verbs.list_, "the board's tickets, by priority then number", (on_board, reading))
     v.add_argument("--takeable", action="store_true", help="only what a session may take on its own initiative")
@@ -79,7 +91,7 @@ def parser():
     v.add_argument("--bodies", action="store_true")
 
     v = verb("set", verbs.set_, "change a ticket's labels, record, title or text; no body it does not trust")
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
     v.add_argument("--readiness")
     v.add_argument("--horizon")
     v.add_argument("--priority")
@@ -93,23 +105,23 @@ def parser():
 
     v = verb("adopt", verbs.adopt, "make a body another account edited trusted, on the owner's word, after it "
              "was read whole")
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
     v.add_argument("--digest", required=True, help="the body_digest task show printed with the text read")
 
     v = verb("edge", verbs.edge, "write or cut one edge")
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
     g = v.add_mutually_exclusive_group(required=True)
     g.add_argument("--block", metavar="N", help="the ticket is blocked by N (or owner/name#N)")
     g.add_argument("--unblock", metavar="N")
-    g.add_argument("--parent", type=int, metavar="N")
+    g.add_argument("--parent", type=issue_number, metavar="N")
     g.add_argument("--orphan", action="store_true")
 
     v = verb("comment", verbs.comment, "comment on a ticket")
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
     v.add_argument("--body-file", required=True, metavar="FILE")
 
     v = verb("close", verbs.close, "close a ticket, completed unless --not-planned")
-    v.add_argument("number", type=int)
+    v.add_argument("number", type=issue_number)
     v.add_argument("--not-planned", action="store_true")
     v.add_argument("--body-file", metavar="FILE", help="a comment written before the close")
 
@@ -137,6 +149,9 @@ def main(argv):
         if stop.message:
             sys.stderr.write("error: %s\n" % stop.message)
         return stop.code
+    except GitHubError as e:
+        sys.stderr.write("error: GitHub: %s\n" % e.message)
+        return FAILED
     return 0
 
 

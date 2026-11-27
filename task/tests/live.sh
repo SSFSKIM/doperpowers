@@ -48,9 +48,21 @@ case "$case" in
       git -C "$work/clone" config --unset "remote.$remote.gh-resolved" || true
     done
     gh_names="$(cd "$work/clone" && gh repo view --json nameWithOwner -q .nameWithOwner)"
-    task_lists="$(cd "$work/clone" && "$task" list --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["repo"])')"
-    echo "gh names $gh_names; task lists $task_lists"
+    (cd "$work/clone" && "$task" list --json) > "$work/list.json"
+    (cd "$work/clone" && "$task" list --untracked --json) > "$work/untracked.json"
+    task_lists="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repo"])' "$work/list.json")"
+    # Every ticket returned is the scratch repository's own, by its URL (none open makes this check say so).
+    urls="$(python3 - "$TASK_LIVE_REPO" "$work/list.json" "$work/untracked.json" <<'PY'
+import json, sys
+home = "https://github.com/%s/issues/" % sys.argv[1].lower()
+tickets = [t for f in sys.argv[2:] for t in json.load(open(f))["tickets"]]
+other = [t["url"] for t in tickets if not t["url"].lower().startswith(home)]
+print("%d of %d" % (len(tickets) - len(other), len(tickets)) if not other else "OTHER " + " ".join(other))
+PY
+)"
+    echo "gh names $gh_names; task lists $task_lists; its open issues' URLs are the scratch repository's: $urls"
     status=0
+    case "$urls" in OTHER*) echo "fork: task returned another repository's issues" >&2; status=1 ;; esac
     if [ "$(lower "$gh_names")" != "$(lower "$upstream")" ]; then
       echo "fork: the client did not name the upstream project here, so the case shows nothing about it" >&2
       status=1

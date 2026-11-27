@@ -80,6 +80,16 @@ class SetTest(BoardCase):
         self.assertEqual(self.task("set", "5", "--no-due")[0], 0)
         self.assertEqual(self.gh_issue(5)["body"], "Plain.")
 
+    def test_a_record_change_keeps_every_byte_of_the_prose(self):
+        for prose in ("Para.\n", "Para.", "Para.\n\n", "  indented\r\n  lines  "):
+            with self.subTest(prose=prose):
+                self.ticket(5, body=prose)
+                self.assertEqual(self.task("set", "5", "--due", "2027-02-01")[0], 0)
+                self.assertEqual(self.gh_issue(5)["body"], prose + "\n\n```task-record\ndue: 2027-02-01\n```")
+                self.assertEqual(self.task("set", "5", "--spec", "docs/a.md")[0], 0)
+                self.assertEqual(self.task("set", "5", "--no-due", "--no-spec")[0], 0)
+                self.assertEqual(self.gh_issue(5)["body"], prose)
+
     def test_an_unchanged_block_writes_nothing(self):
         self.ticket(5, body="Plain.")
         self.clear_log()

@@ -73,7 +73,11 @@ class BoardCase(unittest.TestCase):
                                      "issues": {}}
 
     def issue(self, n, title="a ticket", body="Something to do.", labels=(), repo=REPO, author=ME, editor=None,
-              state="OPEN", reason=None, blocked_by=(), parent=None, comments=(), prs=(), branches=()):
+              state="OPEN", reason="default", blocked_by=(), parent=None, comments=(), prs=(), branches=()):
+        """An issue; a closed one is completed unless `reason` says otherwise (None: no reason, as GitHub gives for
+        an old close)."""
+        if reason == "default":
+            reason = "COMPLETED" if state == "CLOSED" else None
         blocked = [[b[0], b[1]] if isinstance(b, (list, tuple)) else [repo, b] for b in blocked_by]
         self.state["repos"][repo]["issues"][str(n)] = {
             "number": n, "title": title, "body": body, "state": state, "stateReason": reason, "author": author,
@@ -159,13 +163,18 @@ class BoardCase(unittest.TestCase):
         return [c for c in self.calls() if self.is_write(c)]
 
     @staticmethod
-    def rest(call):
+    def path_of(call):
+        """The path of a `gh api` call (`graphql` for a GraphQL one)."""
+        argv = call["argv"]
+        return next(a for i, a in enumerate(argv[1:], 1) if not a.startswith("-") and argv[i - 1] not in (
+            "-X", "-f", "-F", "--input", "-H", "--hostname"))
+
+    @classmethod
+    def rest(cls, call):
         """(method, path, data) of a REST call."""
         argv = call["argv"]
         method = argv[argv.index("-X") + 1] if "-X" in argv else ("POST" if call["stdin"] else "GET")
-        path = next(a for i, a in enumerate(argv[1:], 1) if not a.startswith("-") and argv[i - 1] not in (
-            "-X", "-f", "-F", "--input", "-H"))
-        return method, path, json.loads(call["stdin"]) if call["stdin"] else None
+        return method, cls.path_of(call), json.loads(call["stdin"]) if call["stdin"] else None
 
     def label_writes(self, n):
         out = []

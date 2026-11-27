@@ -97,6 +97,19 @@ class TakeableTest(BoardCase):
         self.ticket(18, horizon=None)
         self.ticket(19, body="Body.\n\n```task-record\nowner: someone\n```")
 
+    def test_a_blocker_closed_with_no_reason_is_not_completion(self):
+        self.ticket(93, state="CLOSED", reason=None)
+        self.ticket(20, blocked_by=[93])
+        self.assertEqual(self.gh_issue(93)["stateReason"], None)
+        t = self.json("show", "20")
+        self.assertEqual(t["blocked_by"], [{"repo": REPO, "number": 93, "state": "closed"}])
+        self.assertIn("stuck", t["not_takeable"])
+        self.assertIsNone(self.json("show", "93")["close_reason"])
+        self.assertNotIn(20, [x["number"] for x in self.json("list", "--takeable")["tickets"]])
+        code, out, _ = self.task("list")
+        self.assertIn("#91(stuck)", out)
+        self.assertIn("#93(stuck)", out)
+
     def test_takeable_holds_exactly_conditions_two_to_six(self):
         data = self.json("list", "--takeable")
         self.assertEqual(data["repo"], REPO)

@@ -118,7 +118,7 @@ class CreateTest(BoardCase):
         self.assertIn("for: %s\n" % REVIEWER_ADDRESS, self.gh_issue(n)["body"])
         says = [c for c in self.sminos_calls() if c[0] == "say"]
         self.assertEqual(len(says), 1)
-        self.assertTrue(says[0][1].startswith("@reviewer#22222222 "), says)
+        self.assertTrue(says[0][1].startswith("@%s " % REVIEWER["session"]), says)
         self.assertIn("%s#%d" % (REPO, n), says[0][1])
         self.assertIn("--thread=reviewer", [a for c in self.sminos_calls() for a in c])
 
@@ -129,7 +129,7 @@ class CreateTest(BoardCase):
         self.assertEqual(code, 0, err)
         n = int(out.splitlines()[0].split()[0])
         self.assertIn("for: %s" % REVIEWER_ADDRESS, self.gh_issue(n)["body"])
-        self.assertIn('sminos say "@reviewer#22222222 ', out + err)
+        self.assertIn("sminos say '@%s " % REVIEWER["session"], out)
 
     def test_to_an_unknown_name_creates_nothing(self):
         for name, answer in (("nobody", None), ("broken", {"exit": 1, "said": "boom"}),
@@ -148,7 +148,7 @@ class CreateTest(BoardCase):
         code, out, err = self.create("--to", "plain")
         self.assertEqual(code, 0, err)
         self.assertIn("for: 22222222 (widgets on laptop)\n", self.gh_issue(int(out.split()[0]))["body"])
-        self.assertTrue([c for c in self.sminos_calls() if c[0] == "say"][0][1].startswith("@22222222 "))
+        self.assertTrue([c for c in self.sminos_calls() if c[0] == "say"][0][1].startswith("@%s " % REVIEWER["session"]))
 
 
 if __name__ == "__main__":

@@ -100,12 +100,14 @@ def from_clone(cwd):
     if repo is None:
         raise failed("remote %s's URL %s is no GitHub repository: no board for task" % (remote, url))
     ref = "refs/remotes/%s/HEAD" % remote
-    code, _, _ = _git(cwd, "rev-parse", "--verify", "--quiet", ref)
-    if code != 0:
+    # That exact ref, never a revision lookup that a branch or tag spelled the same could answer.
+    code, out, _ = _git(cwd, "show-ref", "--verify", "--hash", ref)
+    commit = out.strip()
+    if code != 0 or not commit:
         raise failed("this clone has no %s, so remote %s's default branch is not known here: run `git remote "
                      "set-head %s --auto` (task makes no fetch of its own)" % (ref, remote, remote))
     source = "%s:%s" % (ref, FILE)
-    code, out, _ = _git(cwd, "show", source)
+    code, out, _ = _git(cwd, "show", "%s:%s" % (commit, FILE))
     if code != 0:
         raise failed("%s holds no %s: the default branch of %s, as this clone last fetched it, gives task no "
                      "board" % (ref, FILE, repo))

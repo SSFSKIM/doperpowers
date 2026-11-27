@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 
 import board as B
 import config
@@ -30,7 +31,7 @@ class Context:
     @property
     def board(self):
         if self._board is None:
-            if getattr(self.args, "repo", None):
+            if getattr(self.args, "repo", None) is not None:
                 self._board = config.from_github(self.args.repo, self.client)
             else:
                 self._board = config.from_clone(os.getcwd())
@@ -57,6 +58,9 @@ class Context:
 
 
 def read_body_file(path):
+    """A body file's text: prose, which opens no task-record or task-claim
+    fence (a record's keys are written by their own flags and verbs, a
+    claim record by the claim verbs)."""
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read()
@@ -64,12 +68,16 @@ def read_body_file(path):
         raise usage("--body-file %s cannot be read: %s" % (path, e.strerror))
     if not text.strip():
         raise usage("--body-file %s is empty: a ticket's body is what a reader weeks away acts on" % path)
+    found = record.fences(text)
+    if found:
+        raise usage("--body-file %s opens a fence of the board's own (%s): a body file is prose, and a record's keys "
+                    "are set with --due, --spec and --to" % (path, found[0]))
     return text
 
 
 def parse_ref(text, repo):
     """(repo, number) from `N` or `owner/name#N`."""
-    m = _REF.fullmatch(text.strip())
+    m = _REF.fullmatch((text or "").strip())
     if not m or (m.group("repo") and not config.valid_repo(m.group("repo"))):
         raise usage("%r is no issue: give N or owner/name#N" % text)
     other = m.group("repo") or repo
@@ -104,6 +112,8 @@ def check_record_values(args):
 def resolve_to(name):
     """The address of the thread `--to` names, as sminos resolves it; exit 1
     when it does not."""
+    if not name.strip():
+        raise usage("--to takes the name of a thread")
     answer, why = sminos.thread(name)
     if answer is None:
         raise failed("sminos names no thread for --to %s (%s): nothing was written" % (name, why))
@@ -136,41 +146,47 @@ def create(ctx):
         raise usage("a ticket needs a title")
     text = read_body_file(a.body_file)
     repo = ctx.repo
-    blockers = [parse_ref(x, repo) for x in (a.blocked_by.split(",") if a.blocked_by else []) if x.strip()]
+    blockers = [parse_ref(x, repo) for x in a.blocked_by.split(",")] if a.blocked_by is not None else []
     for_answer = for_address = None
-    if a.to:
+    if a.to is not None:
         for_answer, for_address = resolve_to(a.to)
     nodes = []
-    for r, n in blockers + ([(repo, a.parent)] if a.parent else []):
+    for r, n in blockers + ([(repo, a.parent)] if a.parent is not None else []):
         node = ctx.client.issue_node(r, n)
         if node is None:
             raise failed("%s has no issue #%d: nothing was created" % (r, n))
         nodes.append(node)
     keys = {"registered-by": ctx.address(), "for": for_address, "due": a.due, "spec": a.spec}
-    body = record.with_keys(text, {k: v for k, v in keys.items() if v})
+    body = record.compose(text, keys)
     labels = [a.horizon, B.PRIORITY_PREFIX + a.priority, a.category] + ([B.BATCH_PREFIX + a.batch] if a.batch else [])
     ensure(ctx, labels + [a.readiness])
     made = ctx.client.create_issue(repo, a.title, body, labels)
     number, url, node_id = made["number"], made["html_url"], made["node_id"]
+    step = "an edge"
     try:
         for node in nodes[:len(blockers)]:
             ctx.client.add_blocked_by(node_id, node["id"])
-        if a.parent:
+        if a.parent is not None:
             ctx.client.set_parent(nodes[-1]["id"], node_id)
-    except GitHubError as e:
+        step = "its readiness label"
+        ctx.client.add_label(repo, number, a.readiness)
+    except Exception as e:  # the issue exists: whatever stopped the rest, say what is left and how to finish
         print("%d %s" % (number, url))
-        raise failed("an edge of #%d could not be written (%s): the issue was left untracked, with no readiness "
-                     "label, so that it is never seen as ready without its blocker; write the edge with task edge, "
-                     "then task set %d --readiness %s" % (number, e.message, number, a.readiness))
-    ctx.client.add_label(repo, number, a.readiness)
+        said = getattr(e, "message", None) or str(e) or type(e).__name__
+        raise failed("#%d was opened, and %s could not be written (%s): it is left untracked, with no readiness "
+                     "label, so that it is never seen as ready unfinished. Finish it: write any edge it lacks with "
+                     "task edge, then task set %d --readiness %s%s"
+                     % (number, step, said, number, a.readiness,
+                        "; no message was sent to the thread --to named" if for_answer is not None else ""))
     print("%d %s" % (number, url))
     if for_answer is not None:
-        tag = sminos.thread_who(for_answer)
+        # The tag `say` resolves to that one thread: its current session's whole id (sminos's tag grammar reads a
+        # bare id as an id across the org), never the display address, whose alias may not be a tag at all.
         message = ("@%s a ticket is registered for you: %s#%d %s (%s). Read it with: task show %d --repo %s"
-                   % (tag, repo, number, a.title, url, number, repo))
+                   % (for_answer["session"], repo, number, a.title, url, number, repo))
         if not sminos.say(message):
-            print("sminos did not take the message to %s; send it yourself:" % tag)
-            print('sminos say "%s"' % message.replace("\\", "\\\\").replace('"', '\\"'))
+            print("sminos did not take the message to %s; send it yourself:" % for_address)
+            print("sminos say %s" % shlex.quote(message))
 
 
 # ── reading ───────────────────────────────────────────────────────────────
@@ -226,10 +242,11 @@ def _priority_rank(v):
 
 def _list_line(v):
     home = v["repo"]
-    blockers = ",".join(ref_text(b["repo"], b["number"], home) for b in v["blocked_by"] if b["state"] == "open")
+    waits = [ref_text(b["repo"], b["number"], home) for b in v["blocked_by"] if b["state"] == "open"]
+    waits += ["%s(stuck)" % ref_text(b["repo"], b["number"], home) for b in v["blocked_by"] if b["state"] in B.STUCK]
     rec = v["record"] or {}
     return "#%-5d %-13s %-9s %-2s holder:%s blocked-by:%s for:%s due:%s  %s" % (
-        v["number"], v["readiness"] or "-", v["horizon"] or "-", v["priority"] or "-", "-", blockers or "-",
+        v["number"], v["readiness"] or "-", v["horizon"] or "-", v["priority"] or "-", "-", ",".join(waits) or "-",
         rec.get("for") or "-", rec.get("due") or "-", v["title"])
 
 
@@ -237,7 +254,10 @@ def list_(ctx):
     a = ctx.args
     check_choice(a.readiness, B.READINESS, "--readiness")
     check_choice(a.horizon, B.HORIZONS, "--horizon")
-    if a.untracked and (a.takeable or a.readiness or a.horizon or a.claimed or a.unclaimed or a.batch):
+    if a.batch is not None and not _BATCH.fullmatch(a.batch):
+        raise usage("--batch takes a batch's name, not %r" % a.batch)
+    if a.untracked and (a.takeable or a.readiness is not None or a.horizon is not None or a.claimed or a.unclaimed
+                        or a.batch is not None):
         raise usage("--untracked lists the open issues that are not on the board, and takes no other filter")
     try:
         nodes = ctx.client.open_issues(ctx.repo)
@@ -274,6 +294,8 @@ def list_(ctx):
 
 def search(ctx):
     a = ctx.args
+    if not a.query.strip():
+        raise usage("task search takes a query")
     try:
         hits = ctx.client.search(ctx.repo, a.query, a.state)
     except GitHubError as e:
@@ -331,27 +353,34 @@ def set_(ctx):
     check_choice(a.category, B.CATEGORIES, "--category")
     check_record_values(a)
     updates = {}
-    if a.due or a.no_due:
+    if a.due is not None or a.no_due:
         updates["due"] = a.due
-    if a.spec or a.no_spec:
+    if a.spec is not None or a.no_spec:
         updates["spec"] = a.spec
-    if a.to or a.no_to:
+    if a.to is not None and not a.to.strip():
+        raise usage("--to takes the name of a thread")
+    if a.to is not None or a.no_to:
         updates["for"] = None
-    label_flags = (a.readiness, a.horizon, a.priority, a.category, a.batch, a.no_batch)
-    if not (updates or a.body_file or a.title or any(label_flags)):
+    label_flags = (a.readiness, a.horizon, a.priority, a.category, a.batch)
+    if not (updates or a.body_file is not None or a.title is not None or a.no_batch
+            or any(f is not None for f in label_flags)):
         raise usage("task set changes nothing without an option (task set --help)")
-    text = read_body_file(a.body_file) if a.body_file else None
+    text = read_body_file(a.body_file) if a.body_file is not None else None
     t = ctx.ticket(a.number)
-    if a.to:
+    if a.to is not None:
         updates["for"] = resolve_to(a.to)[1]
     if (updates or text is not None) and not t.body_trusted:
         raise _untrusted(t)
-    if updates and t.parsed.problems:
-        raise refused("#%d's record block cannot be read (%s): rewrite the body whole with task set %d --body-file "
-                      "<file>, its record block repaired" % (a.number, "; ".join(t.parsed.problems), a.number))
-    body = t.body
+    if updates and text is None and t.parsed.problems:
+        raise refused("#%d's record block cannot be read (%s): give the body's prose with task set %d --body-file "
+                      "<file>, which drops the unreadable block, and set its keys again with their flags"
+                      % (a.number, "; ".join(t.parsed.problems), a.number))
+    body, dropped = t.body, None
     if text is not None:
-        body = text if t.parsed.problems else record.with_text(body, text)
+        if t.parsed.problems:
+            body, dropped = text, "; ".join(t.parsed.problems)
+        else:
+            body = record.with_text(body, text)
     if updates:
         body = record.with_keys(body, updates)
     adds, removes = [], []
@@ -364,7 +393,7 @@ def set_(ctx):
             removes += minus
     if a.readiness:
         removes += B.statuses_of(t.labels)
-    if a.batch or a.no_batch:
+    if a.batch is not None or a.no_batch:
         plus, minus = _axis_changes(t.labels, a.batch and B.BATCH_PREFIX + a.batch,
                                     lambda l: l.startswith(B.BATCH_PREFIX))
         adds += plus
@@ -372,7 +401,7 @@ def set_(ctx):
     fields = {}
     if body != t.body:
         fields["body"] = body
-    if a.title and a.title != t.node["title"]:
+    if a.title is not None and a.title != t.node["title"]:
         fields["title"] = a.title
     if adds:
         ensure(ctx, adds)
@@ -388,22 +417,31 @@ def set_(ctx):
         raise failed("#%d was set in part: %s" % (a.number, e.message))
     said = ["+" + l for l in adds] + ["-" + l for l in removes] + sorted(fields)
     print("#%d: %s" % (a.number, ", ".join(said) if said else "nothing to change"))
+    if dropped:
+        print("#%d: its unreadable record block (%s) was dropped with the old prose; set its keys again with --due, "
+              "--spec and --to" % (a.number, dropped))
 
 
 def adopt(ctx):
     a = ctx.args
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", a.digest):
+        raise usage("--digest takes the body_digest task show printed (sha256: and 64 hex digits)")
     t = ctx.ticket(a.number)
     author = (t.node.get("author") or {}).get("login")
     if author != t.login:
         raise refused("#%d was opened by %s, not the trusted account: an issue another account opened is not "
                       "adopted; register a ticket of your own that refers to it" % (a.number, author or "unknown"))
-    if t.body_trusted:
-        print("#%d's body is already trusted: nothing to adopt" % a.number)
-        return
     now = record.digest(t.body)
     if now != a.digest:
         raise refused("#%d's body has changed since it was read (its digest is now %s): read it whole again with "
                       "task show %d" % (a.number, now, a.number))
+    if t.body_trusted:
+        print("#%d's body is already trusted: nothing to adopt" % a.number)
+        return
+    if t.parsed.misplaced:
+        raise refused("#%d's body holds a record block that is doubled or not last (%s): adopting it would add a "
+                      "second; have its text put right on the issue's page by the trusted account (an edit of its "
+                      "own makes the body trusted), then read it again" % (a.number, "; ".join(t.parsed.problems)))
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     address = ctx.address()
     body = record.with_keys(t.body, {"adopted": stamp + (" by " + address if address else "")})
@@ -447,15 +485,15 @@ def edge(ctx):
     repo, n = ctx.repo, a.number
     me = (repo, n)
     try:
-        if a.block or a.unblock:
-            other = parse_ref(a.block or a.unblock, repo)
+        if a.block is not None or a.unblock is not None:
+            other = parse_ref(a.block if a.block is not None else a.unblock, repo)
             if other[0].lower() == repo.lower() and other[1] == n:
                 raise refused("#%d cannot be blocked by itself" % n)
             node = _node(ctx, repo, n)
             has = any(b["repository"]["nameWithOwner"].lower() == other[0].lower() and b["number"] == other[1]
                       for b in node["blockedBy"]["nodes"])
             label = ref_text(other[0], other[1], repo)
-            if a.unblock:
+            if a.unblock is not None:
                 if not has:
                     print("#%d is not blocked by %s: nothing to cut" % (n, label))
                     return
@@ -471,13 +509,13 @@ def edge(ctx):
                               % (n, label, label, n))
             ctx.client.add_blocked_by(node["id"], blocker["id"])
             print("#%d is blocked by %s" % (n, label))
-        elif a.parent:
+        elif a.parent is not None:
             if a.parent == n:
                 raise refused("#%d cannot be its own parent" % n)
             child, parent = _node(ctx, repo, n), _node(ctx, repo, a.parent)
             ctx.client.set_parent(parent["id"], child["id"])
             print("#%d is a sub-issue of #%d" % (n, a.parent))
-        else:
+        elif a.orphan:
             t = ctx.issue(n)
             if not t.get("parent"):
                 print("#%d has no parent: nothing to cut" % n)
@@ -503,7 +541,7 @@ def comment(ctx):
 
 def close(ctx):
     a = ctx.args
-    text = read_body_file(a.body_file) if a.body_file else None
+    text = read_body_file(a.body_file) if a.body_file is not None else None
     reason = "not_planned" if a.not_planned else "completed"
     try:
         if text is not None:

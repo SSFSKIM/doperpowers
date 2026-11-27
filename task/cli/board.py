@@ -79,18 +79,28 @@ def _repo_of(node):
 
 def issue_state(node):
     """(state, close_reason) of §5: open with null, or closed with
-    `completed` or `not-planned` (a duplicate is not planned; a close
-    GitHub gave no reason, as it did before reasons, is completed)."""
+    `completed`, `not-planned` (a duplicate is not planned) or null, for a
+    close whose reason GitHub gives as none or as one this does not know.
+    Only a close GitHub calls completed is a completion."""
     if node["state"] == "OPEN":
         return "open", None
-    if node.get("stateReason") in ("NOT_PLANNED", "DUPLICATE"):
+    reason = node.get("stateReason")
+    if reason == "COMPLETED":
+        return "closed", "completed"
+    if reason in ("NOT_PLANNED", "DUPLICATE"):
         return "closed", "not-planned"
-    return "closed", "completed"
+    return "closed", None
 
 
 def ref_state(node):
+    """A blocker's or a child's §5 state: `open`, `completed`,
+    `not-planned`, or `closed` when its close reason is unknown."""
     state, reason = issue_state(node)
     return reason or state
+
+
+# A blocker in one of these states will never be completed as it stands: the ticket is stuck.
+STUCK = ("not-planned", "closed")
 
 
 def trusted(node, login):
@@ -144,7 +154,7 @@ class Ticket:
             reasons.append("horizon")
         if any(b["state"] == "open" for b in self.blockers):
             reasons.append("blocked")
-        if any(b["state"] == "not-planned" for b in self.blockers):
+        if any(b["state"] in STUCK for b in self.blockers):
             reasons.append("stuck")
         if horizons == ["planned"] and not self.blockers:
             reasons.append("planned-without-blocker")

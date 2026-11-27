@@ -21,22 +21,23 @@ class ConfigurationTest(BoardCase):
         self.assertTrue(calls, "no call was logged")
         for c in calls:
             argv = c["argv"]
-            self.assertEqual(argv[0], "api", argv)
+            self.assertEqual(argv[:3], ["api", "--hostname", "github.com"], argv)
             joined = " ".join(argv)
             self.assertNotIn("{owner}", joined)
             self.assertNotIn("{repo}", joined)
-            if argv[1] == "user":
+            path = self.path_of(c)
+            if path == "user":
                 continue
-            if argv[1] == "graphql":
+            if path == "graphql":
                 fields = dict(a.split("=", 1) for a in argv if "=" in a and not a.startswith("query="))
                 if "owner" in fields:
                     self.assertEqual("%s/%s" % (fields["owner"], fields["name"]), repo, argv)
                 else:
                     self.assertTrue(all(repo in v for k, v in fields.items() if k != "replace"), argv)
-            elif argv[1].startswith("search/"):
+            elif path.startswith("search/"):
                 self.assertIn("repo:%s" % repo, joined)
             else:
-                self.assertTrue(argv[1].startswith("repos/%s/" % repo), argv)
+                self.assertTrue(path.startswith("repos/%s/" % repo), argv)
 
     def run_board_verbs(self, cwd):
         self.assertEqual(self.task("list", cwd=cwd, repo=False)[0], 0)
@@ -126,8 +127,8 @@ class ConfigurationTest(BoardCase):
                 self.assertEqual(self.task("list", cwd=cwd, repo=B)[0], 0)
                 self.assertEqual(self.task("show", "1", cwd=cwd, repo=B)[0], 0)
                 self.assert_names_only(B)
-                contents = [c for c in self.calls() if "contents/.doperpowers/board.json" in c["argv"][1]]
-                self.assertEqual([c["argv"][1] for c in contents][:1],
+                contents = [c for c in self.calls() if "contents/.doperpowers/board.json" in self.path_of(c)]
+                self.assertEqual([self.path_of(c) for c in contents][:1],
                                  ["repos/%s/contents/.doperpowers/board.json" % B])
 
     def test_repo_flag_reads_that_repository_binding(self):

@@ -38,12 +38,14 @@ def _strip_eol(line):
 class Parsed:
     """`text`: the body above the block (the whole body when it has none).
     `block`: the block's raw text from its opening line to the body's end,
-    or None. `fields`: the keys read, empty unless `readable`. `problems`:
+    or None. `misplaced`: a second block, or one that is not last. `fields`: the keys read, empty unless `readable`. `problems`:
     why the record cannot be read (§3: an unknown key, a second block, one
     that is not last, a line that is no `key: value`)."""
 
-    def __init__(self, text, block, fields, problems):
+    def __init__(self, text, block, fields, problems, misplaced=False):
         self.text, self.block, self.fields, self.problems = text, block, fields, problems
+        # A block that is doubled or not last: no write can set a key in it without making a second one.
+        self.misplaced = misplaced
 
     @property
     def readable(self):
@@ -67,7 +69,7 @@ def parse(body):
     close = next((j for j in range(k + 1, len(lines)) if _strip_eol(lines[j]).rstrip() == CLOSE), None)
     if close is None or any(line.strip() for line in lines[close + 1:]):
         problems.append("a task-record block that is not the last thing in the body")
-        return Parsed(body, None, {}, problems)
+        return Parsed(body, None, {}, problems, misplaced=True)
     offset = sum(len(line) for line in lines[:k])
     fields = {}
     for line in lines[k + 1:close]:
@@ -84,20 +86,38 @@ def parse(body):
             problems.append("a due that is no YYYY-MM-DD date: %s" % value)
         else:
             fields[key] = value
-    return Parsed(body[:offset], body[offset:], fields if not problems else {}, problems)
+    return Parsed(body[:offset], body[offset:], fields if not problems else {}, problems,
+                  misplaced=len(opens) > 1)
 
 
-def _join(text, block):
-    text = text.rstrip()
-    return block if not text else text + "\n\n" + block
+# Between the prose and the block the CLI writes exactly this, and takes exactly this away with the block's last
+# key, so that a change of the record alone leaves every byte of the prose as it was.
+SEPARATOR = "\n\n"
+_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*task-(record|claim)\b", re.MULTILINE)
+
+
+def fences(text):
+    """The task-record or task-claim fences a text opens, as written."""
+    return [m.group(0).strip() for m in _FENCE_RE.finditer(text or "")]
+
+
+def _append(prose, block):
+    return prose + SEPARATOR + block if prose else block
+
+
+def compose(prose, keys):
+    """A new body: the prose, then a block of `keys` (in order; None
+    skipped) when there is one."""
+    lines = "".join("%s: %s\n" % (k, v) for k, v in keys.items() if v is not None)
+    return _append(prose.rstrip(), OPEN + "\n" + lines + CLOSE) if lines else prose
 
 
 def with_text(body, new_text):
-    """The body with its text replaced and its block, if any, unchanged."""
+    """The body with its prose replaced and its block, if any, unchanged."""
     p = parse(body)
     if p.block is None:
         return new_text
-    return _join(new_text, p.block)
+    return _append(new_text.rstrip(), p.block)
 
 
 def with_keys(body, updates):
@@ -105,11 +125,13 @@ def with_keys(body, updates):
     block; every other line of the block and the text above it unchanged. A
     block left with no line is dropped; a body without one gains one."""
     p = parse(body)
+    if p.misplaced:
+        raise ValueError("a record block that is doubled or not last takes no key")
     if p.block is None:
         added = [(k, v) for k, v in updates.items() if v is not None]
         if not added:
             return body
-        return _join(p.text, OPEN + "\n" + "".join("%s: %s\n" % kv for kv in added) + CLOSE)
+        return _append(body, OPEN + "\n" + "".join("%s: %s\n" % kv for kv in added) + CLOSE)
     lines = p.block.splitlines(keepends=True)
     close = next(j for j in range(1, len(lines)) if _strip_eol(lines[j]).rstrip() == CLOSE)
     inner, done = [], set()
@@ -129,5 +151,5 @@ def with_keys(body, updates):
                 inner[-1] += "\n"
             inner.append("%s: %s\n" % (key, value))
     if not inner:
-        return p.text.rstrip()
+        return p.text[:-len(SEPARATOR)] if p.text.endswith(SEPARATOR) else p.text
     return p.text + lines[0] + "".join(inner) + "".join(lines[close:])
