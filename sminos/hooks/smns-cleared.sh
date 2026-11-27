@@ -45,7 +45,7 @@ if [[ $sid =~ ^[0-9a-fA-F-]+$ && -d $rec && ! -L $rec ]]; then
       && ln "$mint" "$rec/.incarnation" 2>/dev/null
     rm -f "$mint" 2>/dev/null
   fi
-  nonce=$(cat "$rec/.incarnation" 2>/dev/null)
+  nonce=$(head -c 64 "$rec/.incarnation" 2>/dev/null)   # a minted one is 33 bytes
   id=$(stat -c '%d:%i' "$rec" 2>/dev/null || stat -f '%d:%i' "$rec" 2>/dev/null) \
     && [[ $id =~ ^[0-9]+:[0-9]+$ && $nonce =~ ^[0-9a-f]{32}$ ]] \
     && (umask 077 && printf '%s:%s\n' "$id" "$nonce" >"$tmp") 2>/dev/null && mv -f "$tmp" "$dir/$pid.sheet" 2>/dev/null

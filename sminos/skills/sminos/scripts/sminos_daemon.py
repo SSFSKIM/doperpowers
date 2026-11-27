@@ -2301,12 +2301,13 @@ def _witnessed(note):
     found, from `<pid>.sheet` beside the note; None when there is none (the hook found no record); WITNESS_UNKNOWN
     when one is there and could not be read, or reads as no identity: no removal rests on it, and nothing is
     cleaned up on it either."""
+    sheet = sminos.sibling_module("sminos_sheet")
     try:
-        with open(os.path.splitext(note)[0] + ".sheet", encoding="utf-8") as f:
-            dev, ino, nonce = f.read().strip().split(":")
-        if not nonce:
+        with open(os.path.splitext(note)[0] + ".sheet", "rb") as f:
+            dev, ino, nonce = f.read(256).strip().split(b":")   # <dev>:<ino>:<nonce>, under 100 bytes
+        if not sheet.NONCE_RE.fullmatch(nonce):
             return WITNESS_UNKNOWN
-        return int(dev), int(ino), nonce
+        return int(dev), int(ino), nonce.decode("ascii")
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
@@ -2324,8 +2325,9 @@ def _cleared_sheet(sid, note_at, witnessed):
     sheet = sminos.sibling_module("sminos_sheet")
     rec = sheet.record_dir(sid)
     try:
-        if sheet.record_identity(rec) != witnessed:
-            return False
+        same = sheet.same_record(sheet.record_identity(rec), witnessed)
+        if same is not True:
+            return same
         touched = os.stat(os.path.join(rec, "state.json")).st_mtime
     except FileNotFoundError:
         return False
@@ -2386,11 +2388,12 @@ def sweep_sheets():
                 touched_ns = os.stat(os.path.join(rec, "state.json")).st_mtime_ns
         except (sheet.Busy, OSError):
             continue
-        if identity is None:
-            continue
+        if identity is None or not identity[2]:
+            continue   # no record, or one whose nonce cannot be read: no identity, no removal
         touched = touched_ns / 1e9
         confirm = None
-        if sid in notes and notes[sid][1] == identity and _cleared_sheet(sid, *notes[sid]) is True:
+        if sid in notes and sheet.same_record(identity, notes[sid][1]) is True \
+                and _cleared_sheet(sid, *notes[sid]) is True:
             why = "a /clear left it"
         elif now - touched < SHEET_QUIET_S or sminos.transcript_path(sid) or not sminos.transcript_confirmed_gone(sid):
             continue

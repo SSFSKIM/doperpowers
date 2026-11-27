@@ -820,6 +820,49 @@ class Sweep(Log):
         self.daemon.sweep_cleared()
         self.assertFalse(os.path.exists(note) or os.path.exists(witness))
 
+    def nonce_holds(self, sid, data):
+        """The record's `.incarnation` as an unclean stop can leave it (a link made, its bytes not written)."""
+        with open(os.path.join(sheet.record_dir(sid), sheet.INCARNATION), "wb") as f:
+            f.write(data)
+
+    def test_a_record_whose_nonce_is_not_one_is_never_removed_on_its_inode_alone(self):
+        """R5: an identity is the directory with the minted 32 hex digits; an empty, cut, overlong or undecodable
+        `.incarnation` is no identity, and the sweep keeps the record (and does not fail on it)."""
+        for data in (b"", b"0123456789abcdef", b"0" * 32 + b"\n" + b"x" * 64, b"\xff" * 32):
+            with self.subTest(data=data[:20]):
+                sid = self.asked_and_stopped()
+                self.transcript_gone(sid)
+                self.aged(sid, 3700)
+                sheet.record_identity(sheet.record_dir(sid), mint=True)
+                self.nonce_holds(sid, data)
+                self.assertIsNone(sheet.record_identity(sheet.record_dir(sid))[2])
+                self.sweep()
+                self.assertTrue(self.exists(sid), "no identity: kept")
+                self.assertEqual(self.answers(sid), [])
+
+    def test_an_identity_is_compared_three_ways(self):
+        n, m = "a" * 32, "b" * 32
+        same = sheet.same_record
+        self.assertIs(same((1, 2, n), (1, 2, n)), True)
+        self.assertIs(same((1, 2, m), (1, 2, n)), False, "another nonce")
+        self.assertIs(same((1, 3, n), (1, 2, n)), False, "another directory")
+        self.assertIs(same(None, (1, 2, n)), False, "no record there")
+        self.assertIs(same((1, 2, ""), (1, 2, n)), False, "a record's nonce is never taken away: one without is another")
+        self.assertIsNone(same((1, 2, None), (1, 2, n)), "its nonce not read")
+        self.assertIsNone(same((1, 2, n), (1, 2, None)), "the witness holds none")
+        self.assertIsNone(same((1, 2, ""), (1, 2, "")), "neither minted: the inode alone tells nothing")
+
+    def test_a_removal_witnessed_on_a_record_whose_nonce_cannot_be_read_now_keeps_it(self):
+        sid = self.asked_and_stopped()
+        rec = sheet.record_dir(sid)
+        identity = sheet.record_identity(rec, mint=True)
+        self.nonce_holds(sid, b"")
+        with self.assertRaises(sheet.Refused) as e:
+            sheet.remove_record(sid, witnessed=identity)
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("could not be told", str(e.exception))
+        self.assertTrue(self.exists(sid))
+
     def in_config_dir(self, sid):
         """The session's transcript under a config dir of its own, recorded for it (config-dirs/), as its
         launch record names it."""

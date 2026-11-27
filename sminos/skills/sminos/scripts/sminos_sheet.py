@@ -1146,15 +1146,19 @@ def _read_state(rec):
 
 
 INCARNATION = ".incarnation"
+NONCE_RE = re.compile(rb"[0-9a-f]{32}\n?")   # what a minter writes: 32 hex digits and a newline
+NONCE_READ = 64                               # bytes of `.incarnation` read: a minted one is 33
 
 
 def record_identity(rec, mint=False):
-    """Which record a path names, so a projection, or a /clear's note, acts on the record it began from and never on
-    one made at the same path since: (st_dev, st_ino, nonce) of the record directory, or None for none there. A
-    filesystem may give a new directory the inode of one just removed, so the nonce, `.incarnation` in the record
-    (not in state.json, and no part of what a step writes), tells them apart: minted once, by the first reader that
-    binds to the record (`mint`, and smns-cleared.sh), with a no-clobber link, so concurrent minters read one; ""
-    while none is."""
+    """Which record a path names, so a projection, a removal or a /clear's note acts on the record it began from and
+    never on one made at the same path since: (st_dev, st_ino, nonce) of the record directory, or None for none
+    there. A filesystem may give a new directory the inode of one just removed, so the nonce, `.incarnation` in the
+    record (not in state.json, and no part of what a step writes), tells them apart: minted once, by the first
+    reader that binds to the record (`mint`, and smns-cleared.sh), with a no-clobber link, so concurrent minters
+    read one. The nonce is "" while none is minted, and None when `.incarnation` holds anything but the minted 32
+    hex digits or cannot be read (an unclean stop can leave it empty): not known, never an identity (same_record).
+    At most NONCE_READ bytes are read, as bytes."""
     try:
         st = os.lstat(rec)
     except FileNotFoundError:
@@ -1164,6 +1168,8 @@ def record_identity(rec, mint=False):
         tmp = os.path.join(rec, ".tmp-" + uuid.uuid4().hex)
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(uuid.uuid4().hex + "\n")
+            f.flush()
+            os.fsync(f.fileno())
         try:
             os.link(tmp, path)
         except FileExistsError:
@@ -1171,11 +1177,33 @@ def record_identity(rec, mint=False):
         finally:
             os.unlink(tmp)
     try:
-        with open(path, encoding="utf-8") as f:
-            nonce = f.read().strip()
+        with open(path, "rb") as f:
+            raw = f.read(NONCE_READ)
+        nonce = raw[:32].decode("ascii") if NONCE_RE.fullmatch(raw) else None
     except FileNotFoundError:
         nonce = ""
+    except OSError:
+        nonce = None
     return st.st_dev, st.st_ino, nonce
+
+
+def same_record(identity, witnessed):
+    """Whether the record whose identity is `identity` (record_identity, now) is the one `witnessed` was: True only
+    when both hold a minted nonce and agree; False when it is known not to be (no record there, another directory,
+    another nonce, or no nonce where the witnessed record had one: a nonce is never taken away); None when it
+    cannot be told (a nonce not read, or neither minted: the inode alone tells nothing). Only True acts."""
+    if identity is None:
+        return False
+    if not isinstance(witnessed, tuple) or len(witnessed) != 3:
+        return None
+    if tuple(identity[:2]) != tuple(witnessed[:2]):
+        return False
+    now, then = identity[2], witnessed[2]
+    if now and then:
+        return now == then
+    if now == "" and then:
+        return False
+    return None
 
 
 def project_log(session, here=None, closing=False, rec=None):
@@ -1190,8 +1218,9 @@ def project_log(session, here=None, closing=False, rec=None):
     not known here any more is then a debt (LogFailed), where otherwise it waits. The lock is held to read and to
     replace, never while the log is written. Returns {written, owed}, None for no record; raises LogFailed when the
     log refused a project's events (the others are taken, after the replace) or the session's place could not be
-    read. Each reread under the lock is of the record the projection began from (its directory's identity): one
-    removed meanwhile, and one made at its path since, are changed in nothing."""
+    read. Each reread under the lock is of the record the projection began from (its directory's identity, unless
+    it is known to be another: same_record not False, since a projection deletes nothing): one removed meanwhile,
+    and one made at its path since, are changed in nothing."""
     here_of = here or (lambda s: S.held_member(s))
     rec = rec or record_dir(session)
     with Lock(session):
@@ -1224,7 +1253,7 @@ def project_log(session, here=None, closing=False, rec=None):
     unplaced = [id_of(e) for e in owed if e["kind"] == "question" and id_of(e) not in projects]
     if unplaced and now() is not None:
         with Lock(session):
-            state = _read_state(rec) if record_identity(rec) == began else None
+            state = _read_state(rec) if same_record(record_identity(rec), began) is not False else None
             if state is None:
                 return None
             kept = state["log"]["projects"]
@@ -1268,7 +1297,7 @@ def project_log(session, here=None, closing=False, rec=None):
     left = len([e for e in owed if "n" in e])
     if written:
         with Lock(session):
-            state = _read_state(rec) if record_identity(rec) == began else None
+            state = _read_state(rec) if same_record(record_identity(rec), began) is not False else None
             if state is not None:
                 log = state["log"]
                 log["owed"] = [e for e in log["owed"] if e["n"] not in written]
@@ -1471,8 +1500,8 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
     before it publishes nothing. A record whose log could not all be written stays detached (Refused, 1) and the next
     removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
     said. `witnessed` and `touched` (the daemon's sweep): the record's identity (record_identity) and its
-    state.json's st_mtime_ns the removal was decided on, looked at again under the lock; another record there, or
-    one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's transcript confirmed
+    state.json's st_mtime_ns the removal was decided on, looked at again under the lock; another record there, one
+    that cannot be told from another (same_record), or one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's transcript confirmed
     gone), is run again there, and anything but True, or a failure, refuses (2). The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
@@ -1495,10 +1524,16 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
                 raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
-            if witnessed is not None and (record_identity(rec) != tuple(witnessed) or touched is not None
-                                          and os.stat(os.path.join(rec, "state.json")).st_mtime_ns != touched):
-                raise Refused("sheet remove: %s's sheet is not the record the sweep decided on, or changed since; "
-                              "it stays" % session, 2)
+            if witnessed is not None:
+                same = same_record(record_identity(rec), tuple(witnessed))
+                if same is None:
+                    raise Refused("sheet remove: whether %s's sheet is the record the removal was decided on could "
+                                  "not be told (its .incarnation holds no nonce that can be read); it stays"
+                                  % session, 2)
+                if not same or touched is not None \
+                        and os.stat(os.path.join(rec, "state.json")).st_mtime_ns != touched:
+                    raise Refused("sheet remove: %s's sheet is not the record the removal was decided on, or changed "
+                                  "since; it stays" % session, 2)
             if confirm is not None:
                 try:
                     confirmed = confirm() is True
