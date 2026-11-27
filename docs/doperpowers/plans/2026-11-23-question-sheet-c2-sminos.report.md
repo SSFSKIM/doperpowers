@@ -228,7 +228,7 @@ Generator line:
 
     sheet-contract: 21 cases, 6 examples, digest 594200ae4e539c0688c67b511968861d8ebf03c87d1c45b512903a538326e277
 
-Tests: `--check` passes; `test_sheet_contract: 39 passed`; pyflakes is clean. The diff contains no `/Users/new`.
+Tests: `--check` passes; `test_sheet_contract: 39 passed`; pyflakes is clean. The diff contains no path under the owner's home.
 
 Gates: `ci-gate --gates sminos,sminos-suites-c,version-bump,shell-lint` was GREEN on `bd3cf9d55`, run
 https://github.com/SSFSKIM/doperpowers/actions/runs/45355494591. Timings: version-bump 0m07s, shell-lint 0m24s,
