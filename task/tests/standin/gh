@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""A stand-in `gh` for the task plugin's suite: `gh api` only, over a JSON
+state file, every call logged.
+
+State ($TASK_GH_STATE):
+  login         the account the client is authenticated as
+  clock         seconds since 2026-11-01T00:00:00Z, advanced by each write
+  next_id       the next comment id
+  page_size     issues per page of the board query (default 50)
+  cross_repo_edges  false to refuse a blocked-by edge between repositories
+  fail          [{match, times, status, message}]: a call whose argv (joined)
+                or GraphQL operation name contains `match` fails
+  repos         {"owner/name": {default_branch, files: {path: text},
+                 labels: {name: {color, description}}, next,
+                 issues: {"<n>": issue}}}
+An issue: number, title, body, state (OPEN|CLOSED), stateReason, author,
+editor (null), createdAt, labels [names], blocked_by [[repo, n]], parent
+[repo, n] | null, comments [{id, author, editor, createdAt, body}],
+prs [{number, state, updatedAt, url}], branches [{name, committedDate}].
+
+Each call is appended to $TASK_GH_LOG as {"argv": [...], "stdin": ...}.
+"""
+import base64
+import json
+import os
+import re
+import sys
+import urllib.parse
+
+STATE = os.environ["TASK_GH_STATE"]
+LOG = os.environ.get("TASK_GH_LOG")
+EPOCH_DAY = "2026-11-01"
+
+
+def load():
+    with open(STATE) as f:
+        return json.load(f)
+
+
+def save(s):
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1)
+    os.replace(tmp, STATE)
+
+
+def stamp(s):
+    s["clock"] = int(s.get("clock", 0)) + 1
+    t = s["clock"]
+    return "%sT%02d:%02d:%02dZ" % (EPOCH_DAY, (t // 3600) % 24, (t // 60) % 60, t % 60)
+
+
+class HTTPError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def fail(status, message):
+    raise HTTPError(status, message)
+
+
+def repo_of(s, name):
+    for key, r in s["repos"].items():
+        if key.lower() == name.lower():
+            return key, r
+    fail(404, "Not Found")
+
+
+def issue_of(r, n):
+    it = r["issues"].get(str(n))
+    if it is None:
+        fail(404, "Not Found")
+    return it
+
+
+def node_id(repo, n):
+    return "I_%s#%d" % (repo, int(n))
+
+
+def parse_node(s, nid):
+    m = re.fullmatch(r"I_(.+)#(\d+)", nid or "")
+    if not m:
+        fail(422, "Could not resolve to a node with the global id of '%s'" % nid)
+    key, r = repo_of(s, m.group(1))
+    return key, r, issue_of(r, m.group(2))
+
+
+def actor(login):
+    return {"login": login} if login else None
+
+
+def state_reason(it):
+    if it["state"] == "OPEN":
+        return it.get("stateReason")
+    return it.get("stateReason") or "COMPLETED"
+
+
+def ref_node(s, repo, n, extra=False):
+    _, r = repo_of(s, repo)
+    it = issue_of(r, n)
+    out = {"number": it["number"], "state": it["state"], "stateReason": state_reason(it),
+           "repository": {"nameWithOwner": repo}}
+    return out
+
+
+def children_of(s, repo, n):
+    out = []
+    for key, r in s["repos"].items():
+        for it in r["issues"].values():
+            p = it.get("parent")
+            if p and p[0].lower() == repo.lower() and int(p[1]) == int(n):
+                out.append(ref_node(s, key, it["number"]))
+    return sorted(out, key=lambda x: (x["repository"]["nameWithOwner"], x["number"]))
+
+
+def comment_node(c):
+    return {"fullDatabaseId": str(c["id"]), "author": actor(c.get("author")),
+            "editor": actor(c.get("editor")), "createdAt": c["createdAt"], "body": c["body"]}
+
+
+def issue_node(s, repo, it):
+    return {
+        "id": node_id(repo, it["number"]), "number": it["number"], "title": it["title"],
+        "url": "https://github.com/%s/issues/%d" % (repo, it["number"]),
+        "state": it["state"], "stateReason": state_reason(it), "createdAt": it["createdAt"],
+        "body": it["body"], "author": actor(it.get("author")), "editor": actor(it.get("editor")),
+        "labels": {"nodes": [{"name": l} for l in it["labels"]]},
+        "blockedBy": {"nodes": [ref_node(s, b[0], b[1]) for b in it.get("blocked_by", [])]},
+        "parent": ({"number": int(it["parent"][1]), "repository": {"nameWithOwner": it["parent"][0]}}
+                   if it.get("parent") else None),
+        "subIssues": {"nodes": children_of(s, repo, it["number"])},
+        "closedByPullRequestsReferences": {"nodes": it.get("prs", [])},
+        "linkedBranches": {"nodes": [{"ref": {"name": b["name"], "target": {"committedDate": b["committedDate"]}}}
+                                     for b in it.get("branches", [])]},
+    }
+
+
+def comments_page(it, cursor):
+    start = int(cursor) if cursor else 0
+    page = it["comments"][start:start + 100]
+    more = start + 100 < len(it["comments"])
+    return {"pageInfo": {"hasNextPage": more, "endCursor": str(start + 100) if more else None},
+            "nodes": [comment_node(c) for c in page]}
+
+
+# ── GraphQL, by operation name ─────────────────────────────────────────────
+def graphql(s, op, v):
+    if op in ("TaskIssue", "TaskComments", "TaskIssueNode"):
+        key, r = repo_of(s, "%s/%s" % (v["owner"], v["name"]))
+        it = r["issues"].get(str(v["number"]))
+        if it is None:
+            return {"data": {"repository": {"issue": None}},
+                    "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to an Issue with the number "
+                                "of %s." % v["number"]}]}
+        if op == "TaskIssueNode":
+            node = {"id": node_id(key, it["number"]), "number": it["number"], "state": it["state"],
+                    "stateReason": state_reason(it),
+                    "blockedBy": {"nodes": [{"number": int(b[1]), "repository": {"nameWithOwner": b[0]}}
+                                            for b in it.get("blocked_by", [])]}}
+        elif op == "TaskComments":
+            node = {"comments": comments_page(it, v.get("cursor"))}
+        else:
+            node = issue_node(s, key, it)
+            node["comments"] = comments_page(it, None)
+        return {"data": {"repository": {"issue": node}}}
+    if op == "TaskBoard":
+        key, r = repo_of(s, "%s/%s" % (v["owner"], v["name"]))
+        open_ = sorted((it for it in r["issues"].values() if it["state"] == "OPEN"), key=lambda i: i["number"])
+        size = int(s.get("page_size", 50))
+        start = int(v["cursor"]) if v.get("cursor") else 0
+        page = open_[start:start + size]
+        more = start + size < len(open_)
+        return {"data": {"repository": {"issues": {
+            "pageInfo": {"hasNextPage": more, "endCursor": str(start + size) if more else None},
+            "nodes": [issue_node(s, key, it) for it in page]}}}}
+    if op in ("TaskAddBlockedBy", "TaskRemoveBlockedBy"):
+        key, _, it = parse_node(s, v["issue"])
+        bkey, _, blocker = parse_node(s, v["blocker"])
+        edge = [bkey, blocker["number"]]
+        if op == "TaskAddBlockedBy":
+            if bkey.lower() != key.lower() and s.get("cross_repo_edges") is False:
+                fail(422, "Blocking issue must be in the same repository")
+            if edge not in it.setdefault("blocked_by", []):
+                it["blocked_by"].append(edge)
+        else:
+            it["blocked_by"] = [b for b in it.get("blocked_by", []) if b != edge]
+        stamp(s)
+        save(s)
+        return {"data": {"x": {"issue": {"number": it["number"]}}}}
+    if op in ("TaskAddSubIssue", "TaskRemoveSubIssue"):
+        pkey, _, parent = parse_node(s, v["parent"])
+        ckey, _, child = parse_node(s, v["child"])
+        if op == "TaskAddSubIssue":
+            if child.get("parent") and not v.get("replace"):
+                fail(422, "Issue may not contain duplicate sub-issues")
+            child["parent"] = [pkey, parent["number"]]
+        else:
+            child["parent"] = None
+        stamp(s)
+        save(s)
+        return {"data": {"x": {"issue": {"number": parent["number"]}}}}
+    fail(400, "stand-in: unknown GraphQL operation %r" % op)
+
+
+# ── REST ───────────────────────────────────────────────────────────────────
+def search(s, q):
+    repos, words, state = [], [], None
+    for tok in q.split():
+        if tok.startswith("repo:"):
+            repos.append(tok[5:])
+        elif tok in ("is:issue",):
+            continue
+        elif tok in ("is:open", "is:closed"):
+            state = tok[3:].upper()
+        else:
+            words.append(tok.lower())
+    items = []
+    for key, r in s["repos"].items():
+        if repos and key.lower() not in [x.lower() for x in repos]:
+            continue
+        for it in sorted(r["issues"].values(), key=lambda i: i["number"]):
+            if state and it["state"] != state:
+                continue
+            text = (it["title"] + " " + (it["body"] or "")).lower()
+            if all(w in text for w in words):
+                items.append({"number": it["number"], "title": it["title"], "state": it["state"].lower(),
+                              "html_url": "https://github.com/%s/issues/%d" % (key, it["number"]),
+                              "repository_url": "https://api.github.com/repos/%s" % key, "body": it["body"]})
+    return {"total_count": len(items), "items": items}
+
+
+def rest(s, method, path, params, data):
+    path = path.lstrip("/")
+    if path.split("?")[0] == "user":
+        return {"login": s["login"]}
+    if path.startswith("search/issues"):
+        return search(s, params.get("q", ""))
+    m = re.fullmatch(r"repos/([^/]+/[^/]+)/(.*)", path)
+    if not m:
+        fail(404, "Not Found")
+    key, r = repo_of(s, m.group(1))
+    rest_ = m.group(2)
+    if rest_.startswith("contents/"):
+        text = r.get("files", {}).get(urllib.parse.unquote(rest_[len("contents/"):]))
+        if text is None:
+            fail(404, "Not Found")
+        return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+    if rest_ == "labels" and method == "GET":
+        return [{"name": n, "color": l.get("color", ""), "description": l.get("description", "")}
+                for n, l in r.get("labels", {}).items()]
+    if rest_ == "labels" and method == "POST":
+        r.setdefault("labels", {})[data["name"]] = {"color": data.get("color", ""),
+                                                     "description": data.get("description", "")}
+        save(s)
+        return {"name": data["name"]}
+    if rest_ == "issues" and method == "POST":
+        n = int(r.get("next", 1))
+        while str(n) in r["issues"]:
+            n += 1
+        r["next"] = n + 1
+        for l in data.get("labels", []):
+            r.setdefault("labels", {}).setdefault(l, {"color": "ededed", "description": ""})
+        r["issues"][str(n)] = {"number": n, "title": data["title"], "body": data.get("body", ""),
+                               "state": "OPEN", "stateReason": None, "author": s["login"], "editor": None,
+                               "createdAt": stamp(s), "labels": list(data.get("labels", [])), "blocked_by": [],
+                               "parent": None, "comments": []}
+        save(s)
+        return {"number": n, "node_id": node_id(key, n),
+                "html_url": "https://github.com/%s/issues/%d" % (key, n)}
+    m = re.fullmatch(r"issues/(\d+)(/.*)?", rest_)
+    if not m:
+        fail(404, "Not Found")
+    it = issue_of(r, m.group(1))
+    sub = m.group(2) or ""
+    if sub == "" and method == "PATCH":
+        if "title" in data:
+            it["title"] = data["title"]
+        if "body" in data:
+            it["body"] = data["body"]
+            it["editor"] = s["login"]
+        if data.get("state") == "closed":
+            it["state"] = "CLOSED"
+            it["stateReason"] = {"completed": "COMPLETED", "not_planned": "NOT_PLANNED"}[
+                data.get("state_reason", "completed")]
+        stamp(s)
+        save(s)
+        return {"number": it["number"]}
+    if sub == "/labels" and method == "POST":
+        for l in data["labels"]:
+            r.setdefault("labels", {}).setdefault(l, {"color": "ededed", "description": ""})
+            if l not in it["labels"]:
+                it["labels"].append(l)
+        stamp(s)
+        save(s)
+        return [{"name": l} for l in it["labels"]]
+    lm = re.fullmatch(r"/labels/(.+)", sub)
+    if lm and method == "DELETE":
+        name = urllib.parse.unquote(lm.group(1))
+        if name not in it["labels"]:
+            fail(404, "Label does not exist")
+        it["labels"].remove(name)
+        stamp(s)
+        save(s)
+        return [{"name": l} for l in it["labels"]]
+    if sub == "/comments" and method == "POST":
+        cid = int(s.get("next_id", 5000))
+        s["next_id"] = cid + 1
+        it["comments"].append({"id": cid, "author": s["login"], "editor": None, "createdAt": stamp(s),
+                               "body": data["body"]})
+        save(s)
+        return {"id": cid, "html_url": "https://github.com/%s/issues/%d#issuecomment-%d" % (key, it["number"], cid)}
+    fail(404, "Not Found")
+
+
+def main(argv):
+    stdin = None
+    if "--input" in argv:
+        stdin = sys.stdin.read()
+    if LOG:
+        with open(LOG, "a") as f:
+            f.write(json.dumps({"argv": argv, "stdin": stdin}) + "\n")
+    if not argv or argv[0] != "api":
+        sys.stderr.write("stand-in gh: only `gh api` is served, not %r\n" % (argv[:1],))
+        return 1
+    method, path, fields, paginate, slurp = None, None, {}, False, False
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-X", "--method"):
+            method = argv[i + 1]
+            i += 2
+        elif a in ("-f", "-F", "--raw-field", "--field"):
+            k, _, val = argv[i + 1].partition("=")
+            if a in ("-F", "--field"):
+                if re.fullmatch(r"-?\d+", val):
+                    val = int(val)
+                elif val in ("true", "false"):
+                    val = val == "true"
+            fields[k] = val
+            i += 2
+        elif a == "--input":
+            i += 2
+        elif a == "--paginate":
+            paginate = True
+            i += 1
+        elif a == "--slurp":
+            slurp = True
+            i += 1
+        elif a.startswith("-"):
+            sys.stderr.write("stand-in gh: unknown flag %s\n" % a)
+            return 1
+        else:
+            if path is not None:
+                sys.stderr.write("stand-in gh: two paths\n")
+                return 1
+            path = a
+            i += 1
+    if path is None or "{owner}" in path or "{repo}" in path:
+        sys.stderr.write("stand-in gh: a path that asks the client to resolve a repository: %r\n" % path)
+        return 1
+    s = load()
+    op = None
+    if path == "graphql":
+        q = fields.pop("query", "")
+        mm = re.search(r"\b(query|mutation)\s+(\w+)", q)
+        op = mm.group(2) if mm else None
+    joined = " ".join(argv) + " " + (op or "")
+    for rule in s.get("fail", []):
+        if rule.get("times", 1) > 0 and rule["match"] in joined:
+            rule["times"] = rule.get("times", 1) - 1
+            save(s)
+            sys.stderr.write("gh: %s (HTTP %d)\n" % (rule.get("message", "stand-in failure"), rule.get("status", 500)))
+            return 1
+    try:
+        if path == "graphql":
+            out = graphql(s, op, fields)
+        else:
+            data = json.loads(stdin) if stdin else {}
+            m = method or ("POST" if (stdin or (fields and path != "search/issues")) else "GET")
+            out = rest(s, m, path, fields, data)
+            if paginate and slurp:
+                out = [out]
+    except HTTPError as e:
+        print(json.dumps({"message": e.message}))
+        sys.stderr.write("gh: %s (HTTP %d)\n" % (e.message, e.status))
+        return 1
+    print(json.dumps(out))
+    if isinstance(out, dict) and out.get("errors"):
+        sys.stderr.write("gh: %s\n" % out["errors"][0]["message"])
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
