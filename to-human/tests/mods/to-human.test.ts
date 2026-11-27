@@ -1574,6 +1574,29 @@ describe('failures', () => {
     expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test('a fork keeps an agent failure in the report when its spawn is offscreen', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    on('process.run', listing(['"uuid":"m1"', '"uuid":"m2"', '"type":"tool_use","id":"toolu_agent"', '"uuid":"n1"'].join('\n')))
+    on('classic.SessionStart', () => ({}))
+    await message($, 'm1', '<message>Dispatching.</message>')
+    const spawn = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'toolu_agent',
+      props: { tool_use_id: 'toolu_agent', tool: 'Agent', input: {}, isInterrupted: false },
+    } as never)
+    await spawn.unmount()
+    await $.classic.SessionStart({ source: 'fork', transcript_path: '/t.jsonl' })
+
+    const text = 'Agent "Review" failed: Agent terminated early due to an API error: terminated'
+    const failure = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', requestId: 'n1',
+      props: { text, origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'a1', toolUseId: 'toolu_agent', status: 'failed' } },
+    })
+
+    expect(await failure.find({ type: 'Text', text })).toBeDefined()
+  })
+
   test('a spawned agent\'s failure notification stays in the report, a failed command\'s does not', async ($, on) => {
     mock.env(on, {})
     mock.store(on)

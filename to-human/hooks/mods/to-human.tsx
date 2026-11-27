@@ -1792,13 +1792,14 @@ export function registerToHuman(on: On) {
       membersOf.clear()
       lastOf.clear()
       expanded.clear()
-      spawns.clear()
       before.clear()
-      unsent.clear()
       pills.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
       if (e.source === 'clear') {
+        // Resume and fork retain tool-use IDs that results and notifications can refer to before the call redraws.
+        spawns.clear()
+        unsent.clear()
         $.ui.invalidate('ui.render')
       }
     }
