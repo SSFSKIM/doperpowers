@@ -196,6 +196,8 @@ type Gen = {
   named: Set<string>
   /** The keys a send handed to a subagent, and to whom: owned by that agent from the hand-over until the step their receipt orders (`landed` or `reroute`) has answered, retries included. */
   sentTo: Map<string, string>
+  /** Outcomes a view gave to a subagent that had stopped, each as `<agentId>\n<key>`: a corrective drain was ordered for them once. */
+  corrected: Set<string>
   /** The record's answered count when the idle route last failed: a count past it is a fresh answer, wherever the view lists it. */
   idleFailedAt?: number
   /** What the deliveries' blocks this conversation holds say of each question: a row's receipts where the view holds none (M5). */
@@ -328,6 +330,7 @@ const newGen = (session: string): Gen => ({
   isStartRouted: false,
   named: new Set(),
   sentTo: new Map(),
+  corrected: new Set(),
   delivered: new Map(),
   isLogAgain: false,
 })
@@ -423,6 +426,7 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
     gen.held = answer.view
     // A view adopted opens the routes it holds envelopes for (I9).
     deliver(port, gen)
+    correctStopped(port, gen)
     // And the band's line and the rows' receipts draw from it (M5): its surface is the full rule.
     if (gen === current()) {
       // A registrations' read under way when this view came is older than it: it sets nothing.
@@ -435,6 +439,29 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
     }
   }
   return answer
+}
+
+/**
+ * A view that gives an outcome to a subagent this module saw stop, which owns
+ * no send still in flight: a step that read the agents before that stop's
+ * drain committed (a settle waiting for the lock) gave it one, and no send
+ * reaches a stopped agent. One drain is ordered with the agents as they are
+ * now, whose `agents` rule moves the outcome to the main conversation, which
+ * names the asker. Once for each outcome and agent: a view that still gives it
+ * to that agent orders no other.
+ */
+function correctStopped(port: Port, gen: Gen) {
+  const owners = new Set(gen.sentTo.values())
+  const stale = (gen.held?.pending ?? []).flatMap((o) =>
+    o.recipient !== 'main' && sheet.stopped.has(o.recipient.agentId) && !owners.has(o.recipient.agentId) ? [`${o.recipient.agentId}\n${o.key}`] : [],
+  )
+  const fresh = stale.filter((id) => !gen.corrected.has(id))
+  if (fresh.length === 0 || !isStarted(gen)) {
+    return
+  }
+  fresh.forEach((id) => gen.corrected.add(id))
+  port.log(`sheet: the view gives ${fresh.length} ${fresh.length === 1 ? 'outcome' : 'outcomes'} to a subagent that stopped; a drain moves them to the main conversation`)
+  void drain(port, gen)
 }
 
 /**

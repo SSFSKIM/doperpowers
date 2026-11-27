@@ -1122,4 +1122,50 @@ describe('subagents (§6, I9)', () => {
     await asking
     expect(steps(h, 'settle').map((s) => s.agents)).toEqual([{ running: ['a1'], direct: true }, { running: [], direct: true }])
   })
+  test("a settle that listed an agent running before its stop's drain committed gives a fresh answer to that agent: the view adopted orders one drain with the agents as they are now, and the answer goes to the main conversation, once", async () => {
+    let commit: () => void = () => {}
+    const rec = record()
+    let settles = 0
+    const h = await started(rec, {
+      agents: [A1],
+      step: async (event, n) => {
+        // The call commits and its answer is lost; the first settle samples the agents, then waits for the lock.
+        if (event.event === 'call') return 'Traceback: the answer was lost'
+        if (event.event === 'settle' && ++settles === 1) await new Promise<void>((resolve) => (commit = resolve))
+        return rec.script(event, n)
+      },
+    })
+    const asking = h.ask({ ask: [{ question: 'Ship it?' }] }, 'a1')
+    await h.settle()
+    expect(steps(h, 'settle').map((s) => s.agents)).toEqual([{ running: ['a1'], direct: true }])
+    // The agent stops; its drain commits before the settle takes the lock.
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    // A put: the settle, holding a1 as running, gives the answer to it.
+    rec.queued.push(out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    commit()
+    await asking
+    await h.settle()
+    await h.hop()
+    expect(steps(h, 'drain').at(-1)?.agents).toEqual({ running: [], direct: true })
+    expect(h.sends).toEqual([])
+    expect(h.submits).toHaveLength(1)
+    expect(h.submits[0]).toContain('"keys":["k1"]')
+    await h.tick()
+    expect(h.submits).toHaveLength(1)
+  })
+
+  test("a view that still gives the answer to the stopped agent after its corrective drain orders no other", async () => {
+    const stuck = [{ key: 'k1', id: 'q1', kind: 'answer', recipient: { agentId: 'a1' }, taken: true, acrossStop: false }]
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const h = await started(record(), { agents: [A1], step: (event, n) => (event.event === 'drain' ? ok(n, {}, { open: open as never, pending: stuck as never, pendingCount: 1 }) : ok(n, {}, { open: open as never })) })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    // The stop's drain, then one corrective drain.
+    expect(steps(h, 'drain').map((s) => s.agents)).toEqual([{ running: [], direct: true }, { running: [], direct: true }])
+    await sheetNudge([])
+    await h.tick()
+    await h.tick()
+    expect(steps(h, 'drain')).toHaveLength(3)
+  })
 })

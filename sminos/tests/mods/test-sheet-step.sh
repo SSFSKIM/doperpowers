@@ -535,6 +535,53 @@ await new Promise((resolve) => setTimeout(resolve, 50))
 const sr = JSON.parse(readFileSync(\`\${HOME}/sheet/\${SR}/state.json\`, 'utf8'))
 check('each step that owed the log ordered its projection; in no project it wrote nothing, and all four are owed', logRuns() >= 2 && sr.log.owed.map((e: { kind: string }) => e.kind).join() === 'question,question,answered,answered', { runs: logRuns(), owed: sr.log.owed })
 
+// A settle that read the agents before a subagent's stop drain committed, against the real step: the settle lists
+// a1 running; a1 stops and its drain commits; a put; the settle commits and gives the answer to a1. The view it
+// answers orders one drain with the agents as they are now, and the answer goes to the main conversation, its
+// asker named, once.
+const SA = '5eed0000-0000-4000-8000-00000000c3d0'
+let lockHeld: () => void = () => {}
+const lock = new Promise<void>((resolve) => (lockHeld = resolve))
+let isCallLost = true
+let isSettleHeld = true
+const portA: Port = {
+  ...port,
+  agents: async () => [{ id: 'a1', description: 'reviewer', type: 'general', status: 'running' }],
+  run: async (args, stdin) => {
+    const event = args[1] === 'step' ? (JSON.parse(stdin ?? '{}') as { event?: string }).event : undefined
+    if (event === 'settle' && isSettleHeld) {
+      isSettleHeld = false
+      await lock
+    }
+    const out = await port.run(args, stdin)
+    if (event === 'call' && isCallLost) {
+      isCallLost = false
+      return { ...out, stdout: 'Traceback: the answer was lost' }
+    }
+    return out
+  },
+}
+await sheetForTests.sessionStarted(portA, 'startup', SA, '$work/none.jsonl')
+hops.splice(0)
+submitted.splice(0)
+const asking = askCall(portA, { tool: 'mcp__sminos__AskUserQuestion', tool_use_id: 'toolu_a1', agentId: 'a1', ask: [{ question: 'Ship it?', options: [{ label: 'Yes' }, { label: 'No' }] }] })
+while (isSettleHeld) await new Promise((resolve) => setTimeout(resolve, 5))
+const genA = sheetForTests.sheet().gen!
+sheetForTests.sheet().stopped.add('a1')
+await sheetForTests.drain(portA, genA)
+sminos(['sheet', 'put', '--session', SA, '--no-wait'], JSON.stringify({ v: 1, by: 'cli', key: 'ka000001', kind: 'answer', id: 'q1', revision: 1, picks: ['Yes'] }) + '\n')
+lockHeld()
+await asking
+for (let i = 0; i < 50 && (genA.draining !== undefined || hops.length > 0); i++) {
+  await genA.draining
+  hops.splice(0).forEach((fn) => fn())
+  await new Promise((resolve) => setTimeout(resolve, 5))
+}
+const sa = JSON.parse(readFileSync(\`\${HOME}/sheet/\${SA}/state.json\`, 'utf8'))
+check('a settle that listed a stopped agent: the answer goes to the main conversation, its asker named, once',
+  submitted.length === 1 && submitted[0]!.includes('"keys":["ka000001"]') && submitted[0]!.includes('(from the subagent reviewer, a1, which has ended)') && sa.pending.every((o: { recipient: unknown }) => o.recipient === 'main'),
+  { submitted, pending: sa.pending })
+
 process.exit(failed === 0 ? 0 : 1)
 TS
 
