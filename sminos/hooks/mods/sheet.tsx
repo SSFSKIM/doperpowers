@@ -1557,7 +1557,7 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   // prerequisite of this session's start.
   const left = source === 'clear' ? sheet.kept?.left : undefined
   if (left !== undefined) {
-    removeLeftLater(port, left)
+    removeLeftLater(port, left, false)
   }
   if (isNew) {
     gen.floor = 0
@@ -1575,32 +1575,37 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
  * Removes the record a /clear left, in the background, once the start of
  * that session still in flight (if any) has landed, so no late start makes
  * it again; one removal at a time for a session. The record is witnessed
- * first, at the clear, and only that record goes: a removal delayed behind
- * the start never takes one a resume of the left session made since. With
- * no record at the clear, the one the start in flight makes is the clear's
- * too, witnessed once it lands.
+ * once, at the clear (`isAtClear`, the session's end), and that identity is
+ * kept (`leftWitness`) for every retry, so a retry never takes a record made
+ * since (a resume, after an attempt that detached the original and failed
+ * later). A retry with no witness kept removes nothing; nor does one when
+ * there was no record at the clear: what a start in flight makes after it
+ * is not proven the clear's, and the daemon's sweep has it.
  */
-function removeLeftLater(port: Port, left: string) {
+function removeLeftLater(port: Port, left: string, isAtClear: boolean) {
   if (sheet.removing.has(left)) {
     return
   }
   sheet.removing.add(left)
   const inFlight = sheet.retiring
-  const witnessing = witnessLeft(port, left)
+  const witnessing = isAtClear ? witnessLeft(port, left) : Promise.resolve(sheet.kept?.left === left ? sheet.kept.leftWitness : undefined)
   void (async () => {
     try {
-      let witnessed = await witnessing
+      const witnessed = await witnessing
+      if (isAtClear && typeof witnessed === 'string' && sheet.kept?.left === left) {
+        keep({ leftWitness: witnessed })
+      }
       await inFlight
       if (sheet.gen?.session === left) {
         // This process is back in the session it left (a /resume): the record is its own again.
         return
       }
-      if (witnessed === null && inFlight !== undefined) {
-        witnessed = await witnessLeft(port, left)
+      if (witnessed === undefined && !isAtClear) {
+        port.log(`sheet: the sheet ${left} a /clear left is kept: no witness of it was kept from the clear`)
       }
       const isGone = witnessed === null || (witnessed !== undefined && (await removeLeft(port, left, witnessed)))
       if (isGone && sheet.kept?.left === left) {
-        keep({ left: undefined })
+        keep({ left: undefined, leftWitness: undefined })
       }
     } finally {
       sheet.removing.delete(left)
@@ -1732,6 +1737,7 @@ export function registerSheet(on: On) {
       ...(owed.starting !== undefined && { starting: owed.starting }),
       ...(owed.preparing !== undefined && { preparing: owed.preparing }),
       ...(kept?.left !== undefined && { left: kept.left }),
+      ...(kept?.left !== undefined && typeof kept.leftWitness === 'string' && { leftWitness: kept.leftWitness }),
     }
     sheet.port = port
     if (sheet.gen?.session !== session) {
@@ -1831,8 +1837,8 @@ export function registerSheet(on: On) {
       // The session's work retired, its start forgotten, so no trigger orders
       // it again; a start already in flight lands before the removal.
       retire()
-      keep({ left: e.sessionId, started: undefined, starting: undefined, preparing: undefined })
-      removeLeftLater(port, e.sessionId)
+      keep({ left: e.sessionId, leftWitness: undefined, started: undefined, starting: undefined, preparing: undefined })
+      removeLeftLater(port, e.sessionId, true)
     }
     return next(e)
   })

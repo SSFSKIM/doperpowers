@@ -68,7 +68,9 @@ export type AskSnapshot = {
  * `preparing` a resume's or a copy's start still being made ready (its
  * nonce, source and transcript, kept before its floor is read and its asks
  * staged), so that a reload makes it ready again under the same nonce;
- * `left` the session a /clear left, whose record is removed. Only sminos
+ * `left` the session a /clear left, whose record is removed, and
+ * `leftWitness` that record's identity as witnessed at the clear
+ * (`sminos sheet witness`), which every retry of the removal names. Only sminos
  * writes or reads it.
  */
 export type SheetKept = {
@@ -80,6 +82,7 @@ export type SheetKept = {
   starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[]; floorUnknown?: boolean } }
   preparing?: { nonce: string; source: 'resume' | 'fork'; transcript: string }
   left?: string
+  leftWitness?: string
 }
 
 /**
