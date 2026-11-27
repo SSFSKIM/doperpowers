@@ -1475,8 +1475,9 @@ class APickIsMatchedExactlyFirst(unittest.TestCase):
                 code, out, err = run_cli(["sheet", "answer", "--session", SESSION, handle, "--pick", pick])
                 self.assertEqual(code, 0, err)
                 key = json.loads(out)["results"][0]["key"]
-                lines = [json.loads(x) for x in open(os.path.join(os.environ["SMINOS_HOME"], "sheet", SESSION,
-                                                                  "inbox.jsonl"), encoding="utf-8") if x.strip()]
+                with open(os.path.join(os.environ["SMINOS_HOME"], "sheet", SESSION, "inbox.jsonl"),
+                          encoding="utf-8") as f:
+                    lines = [json.loads(x) for x in f if x.strip()]
                 self.assertEqual(next(x for x in lines if x["key"] == key)["picks"], want)
         code, _, err = run_cli(["sheet", "answer", "--session", SESSION, "q1", "--pick", "  Yes"])
         self.assertEqual(code, 2, "two labels forgive to it: neither is chosen")
