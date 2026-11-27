@@ -14990,47 +14990,85 @@ def transcripts_now():
             index.refresh(base)
 
 
+def _own_transcript(session_id):
+    """The transcript's own path as the session's launch cache names it
+    (`<config dir>/projects/<dir>/<session>.jsonl`), or None where none of
+    that shape is named; OSError or ValueError when the cache is there and
+    cannot be read."""
+    try:
+        own = json_at(launch_cache_path(session_id)).get("transcript")
+    except FileNotFoundError:
+        return None
+    except AttributeError:
+        raise ValueError("the launch cache is no object")
+    if not isinstance(own, str) or not os.path.isabs(own) or os.path.basename(own) != session_id + ".jsonl" \
+            or os.path.basename(os.path.dirname(os.path.dirname(own))) != "projects":
+        return None
+    return own
+
+
+def _transcripts_listed(session_id, own=None):
+    """{path: st_mtime} of every `<session>.jsonl` in a project directory of
+    the config dir `own` names, the session's own, the default and every one
+    the registry names (read whole, engine_dirs_whole), each listed now and
+    never through the index (whose listing that fails reads as empty).
+    Raises OSError where a listing, a read or a stat fails for any reason but
+    absence."""
+    name = session_id + ".jsonl"
+    cfgs = [os.path.dirname(os.path.dirname(os.path.dirname(own)))] if own else []
+    found = {}
+    for cfg in dict.fromkeys([*cfgs, session_config_dir(session_id), config_dir({}), *engine_dirs_whole()]):
+        base = os.path.join(cfg, "projects")
+        try:
+            subs = os.listdir(base)
+        except FileNotFoundError:
+            continue
+        for sub in subs:
+            path = os.path.join(base, sub, name)
+            try:
+                found[path] = os.stat(path).st_mtime
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+    return found
+
+
 def transcript_confirmed_gone(session_id):
     """Whether a session's transcript is known to be gone from this machine,
     for a removal that rests on its absence (the question sheet's sweep),
-    never through the index (whose listing that fails reads as empty): the
-    transcript's own path, as its launch cache names it
-    (`<config dir>/projects/<dir>/<session>.jsonl`), is stat'd missing now,
-    and no project directory of its config dir, nor of any other config dir
-    sminos knows (the registry read whole, engine_dirs_whole), holds
-    `<session>.jsonl` (the engine moved it), each listed now. Where that
-    path is not known (no launch cache, or one naming no transcript of that
-    shape), or a read, a listing or a stat fails for any reason but absence,
-    absence is not established: False."""
-    def missing(path):
-        try:
-            os.stat(path)
-        except (FileNotFoundError, NotADirectoryError):
-            return True
-        return False
-    name = session_id + ".jsonl"
+    never through the index: the transcript's own path, as its launch cache
+    names it (_own_transcript), is stat'd missing now, and no project
+    directory of its config dir, nor of any other config dir sminos knows
+    (the registry read whole), holds `<session>.jsonl` (the engine moved it;
+    _transcripts_listed). Where that path is not known (no launch cache, or
+    one naming no transcript of that shape), or a read, a listing or a stat
+    fails for any reason but absence, absence is not established: False."""
     try:
-        own = json_at(launch_cache_path(session_id)).get("transcript")
-    except (OSError, ValueError, AttributeError):
-        return False
-    if not isinstance(own, str) or not os.path.isabs(own) or os.path.basename(own) != name \
-            or os.path.basename(os.path.dirname(os.path.dirname(own))) != "projects":
-        return False
-    try:
-        if not missing(own):
+        own = _own_transcript(session_id)
+        if own is None:
             return False
-        own_cfg = os.path.dirname(os.path.dirname(os.path.dirname(own)))
-        for cfg in dict.fromkeys([own_cfg, session_config_dir(session_id), config_dir({}), *engine_dirs_whole()]):
-            base = os.path.join(cfg, "projects")
-            try:
-                subs = os.listdir(base)
-            except FileNotFoundError:
-                continue
-            if any(not missing(os.path.join(base, sub, name)) for sub in subs):
-                return False
-    except OSError:
+        try:
+            os.stat(own)
+            return False
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        return not _transcripts_listed(session_id, own)
+    except (OSError, ValueError):
         return False
-    return True
+
+
+def transcript_written_at(session_id):
+    """When any transcript of a session on this machine was last written
+    (the latest st_mtime among _transcripts_listed, its launch cache's dir
+    included where one names it), or None when there is none: for a
+    removal that rests on nothing having been written since (a /clear's
+    note, the question sheet's sweep). Raises OSError when that cannot be
+    established: a launch cache, a listing or a stat that fails for any
+    reason but absence, or a registry not read whole."""
+    try:
+        own = _own_transcript(session_id)
+    except ValueError as e:
+        raise OSError("the launch cache of %s could not be read: %s" % (session_id, e))
+    return max(_transcripts_listed(session_id, own).values(), default=None)
 
 
 def transcript_path(session_id, fresh=False):

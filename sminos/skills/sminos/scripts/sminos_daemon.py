@@ -2332,11 +2332,8 @@ def _cleared_sheet(sid, note_at, witnessed):
         return None
     if touched > note_at + CLEARED_TIE_S:
         return False
-    path = sminos.transcript_path(sid)
     try:
-        said = os.stat(path).st_mtime if path else None
-    except FileNotFoundError:
-        said = None
+        said = sminos.transcript_written_at(sid)   # past the index: a listing that fails is no answer, not none
     except OSError:
         return None
     return said is None or said <= note_at + CLEARED_TIE_S
@@ -2352,8 +2349,9 @@ def sweep_sheets():
     sminos.transcript_confirmed_gone, so a listing that failed for a moment,
     or a path not known, removes nothing) and its state.json has not been
     touched for SHEET_QUIET_S, and at once when a /clear's note witnessed
-    this record and describes it still (_cleared_sheet; the identity looked
-    at again under the lock). Every removal checks the session runs nowhere
+    this record and describes it still (_cleared_sheet, its transcript read
+    past the index; all of it looked at again under the lock). Every
+    removal checks the session runs nowhere
     again under the record's lock (never `--cleared`); it writes
     the project log what the record owes and closes its open questions once
     it is detached (sminos_sheet.remove_record). One it refuses, or leaves
@@ -2391,7 +2389,9 @@ def sweep_sheets():
         confirm = None
         if sid in notes and sheet.same_record(identity, notes[sid][1]) is True \
                 and _cleared_sheet(sid, *notes[sid]) is True:
-            why = "a /clear left it"
+            # What the note describes is looked at again under the lock, as the record is detached: a resume of the
+            # session left that wrote its transcript, or its sheet, meanwhile keeps the sheet.
+            why, confirm = "a /clear left it", (lambda s=sid, n=notes[sid]: _cleared_sheet(s, *n) is True)
         elif now - touched < SHEET_QUIET_S or sminos.transcript_path(sid) or not sminos.transcript_confirmed_gone(sid):
             continue
         else:

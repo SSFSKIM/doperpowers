@@ -1024,6 +1024,60 @@ class Sweep(Log):
         self.sweep()
         self.assertTrue(self.exists(sid), "resumed and touched since: its transcript's rule holds")
 
+    def cleared_quietly(self, sid, note_age=600):
+        """A /clear `note_age` seconds ago, of a sheet and a transcript last written before it."""
+        note, proc = self.note(sid, age=note_age)
+        self.aged(sid, note_age + 300)
+        t = time.time() - note_age - 300
+        os.utime(sminos.transcript_path(sid), (t, t))
+        return note, proc
+
+    def test_a_clears_note_is_not_believed_over_a_listing_of_transcripts_that_failed(self):
+        """R2: whether the transcript was written since the note is read past the index, whose listing that fails
+        reads as no transcript: a resume of the session left, which wrote it, keeps the sheet."""
+        sid = self.asked_and_stopped()
+        path = sminos.transcript_path(sid)
+        self.cleared_quietly(sid)
+        os.utime(path)   # written since the note: the session left was resumed, and stopped
+        real = os.scandir
+        projects = os.path.realpath(os.path.join(os.environ["HOME"], ".claude", "projects"))
+
+        def failing(p=".", *a, **k):
+            if os.path.realpath(str(p)) == projects:
+                raise OSError(errno.EIO, "input/output error")
+            return real(p, *a, **k)
+        with mock.patch.object(os, "scandir", side_effect=failing):
+            self.sweep()
+        self.assertTrue(self.exists(sid), "its transcript was written after the note")
+        self.assertEqual(self.answers(sid), [])
+
+    def test_a_clears_note_is_looked_at_again_under_the_lock(self):
+        """R2: a transcript written between the sweep's decision on a note and its removal's lock keeps the sheet."""
+        sid = self.asked_and_stopped()
+        path = sminos.transcript_path(sid)
+        self.cleared_quietly(sid)
+        real, calls = self.daemon._cleared_sheet, []
+
+        def resumed_meanwhile(*a):
+            got = real(*a)
+            if not calls:
+                os.utime(path)   # decided; before the removal takes the lock, a resume writes the transcript
+            calls.append(got)
+            return got
+        with mock.patch.object(self.daemon, "_cleared_sheet", side_effect=resumed_meanwhile):
+            self.sweep()
+        self.assertEqual(calls, [True, False], "looked at again under the lock")
+        self.assertTrue(self.exists(sid))
+        self.sweep()
+        self.assertTrue(self.exists(sid), "and the note describes it no more")
+
+    def test_a_clears_note_still_removes_the_quiet_sheet_it_names(self):
+        sid = self.asked_and_stopped()
+        self.cleared_quietly(sid)
+        self.sweep()
+        self.assertFalse(self.exists(sid))
+        self.assertEqual(self.answers(sid), [(self.src(sid, "q1"), sheet.LOG_REMOVED, "removed")])
+
     def test_a_sheet_a_quick_resume_made_again_within_a_minute_of_the_note_is_not_the_notes(self):
         sid = self.asked_and_stopped()
         self.note(sid, age=30)   # the record was made again 30 s after the /clear, by a resume of the session left
