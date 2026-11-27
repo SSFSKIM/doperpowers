@@ -334,7 +334,12 @@ sees, and on a 5 s timer). The record outlives the process: a stopped
 session's sheet is read and answered, and what was accepted leaves at its
 resume. A `/clear` removes the record it leaves (at `session.end`, again at
 the new session's start, and by the daemon's sweep, which a `/clear`'s note
-permits but does not guarantee); the daemon's sweep removes a stopped
+permits but does not guarantee). The mod's removals name the record as it
+was witnessed at the clear (`sminos sheet witness`, its identity kept for
+every retry) and this process (`--clearing`, its engine's pid): under the
+record's lock the command removes that record only, and not while a process
+other than this one runs the session (a resume elsewhere); with neither
+known, or either check not answered, the record stays. The daemon's sweep removes a stopped
 session's record only once its `state.json` has been unchanged for an hour
 and the transcript's own path is confirmed missing, checked again under the
 record's lock: any doubt keeps the record.
