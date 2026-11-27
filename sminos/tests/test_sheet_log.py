@@ -753,6 +753,52 @@ class Sweep(Log):
         self.assertTrue(self.exists(sid), "touched since the decision: no longer an hour quiet")
         self.assertEqual(len(self.state(sid)["questions"]), 2)
 
+    def test_a_transcript_restored_between_the_sweeps_decision_and_its_lock_keeps_the_sheet(self):
+        sid = self.asked_and_stopped()
+        path = sminos.transcript_path(sid)
+        with open(path) as f:
+            kept = f.read()
+        self.transcript_gone(sid)
+        self.aged(sid, 3700)
+        real, calls = sminos.transcript_confirmed_gone, []
+
+        def restored_meanwhile(session):
+            gone = real(session)
+            if not calls:
+                # Decided gone; before the removal takes the lock, the transcript is back (a resume that wrote no
+                # state, so the record's mtime is the one the sweep read).
+                with open(path, "w") as f:
+                    f.write(kept)
+            calls.append(gone)
+            return gone
+        with mock.patch.object(sminos, "transcript_confirmed_gone", side_effect=restored_meanwhile):
+            self.sweep()
+        self.assertEqual(calls, [True, False], "looked at again under the lock")
+        self.assertTrue(self.exists(sid), "its transcript is back: the sheet stays")
+        self.assertEqual(self.answers(sid), [])
+
+    def test_a_clears_note_whose_record_cannot_be_compared_is_kept_with_its_witness(self):
+        sid = self.asked_and_stopped()
+        note, proc = self.note(sid)
+        self.end(proc)
+        witness = os.path.splitext(note)[0] + ".sheet"
+        nonce = os.path.join(sheet.record_dir(sid), sheet.INCARNATION)
+        real = open
+
+        def eio(path, *a, **k):
+            if str(path) == nonce:
+                raise OSError(errno.EIO, "input/output error")
+            return real(path, *a, **k)
+        with mock.patch("builtins.open", side_effect=eio):
+            self.sweep()
+            self.daemon.sweep_cleared()
+        self.assertTrue(self.exists(sid), "its identity not read: no removal")
+        self.assertTrue(os.path.exists(note) and os.path.exists(witness), "not known to differ: both kept")
+        self.sweep()
+        self.assertFalse(self.exists(sid), "read on the next pass: the /clear is finished")
+        self.daemon.sweep_cleared()
+        self.assertFalse(os.path.exists(note) or os.path.exists(witness))
+
     def test_a_clears_witness_that_cannot_be_read_keeps_the_note_for_a_later_pass(self):
         sid = self.asked_and_stopped()
         note, proc = self.note(sid)

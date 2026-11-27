@@ -1462,7 +1462,7 @@ def remove(session, cleared=False):
         S.die(str(e), e.code)
 
 
-def remove_record(session, cleared=False, witnessed=None, touched=None):
+def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=None):
     """A stopped session's record and its staging (I1, M2), and its log (I12, M6). Liveness is checked before the lock
     and again under it (a session resumed while this waited; not with `cleared`, the session a /clear left); under
     the lock the staging, then the record, are detached, each by one rename inside sheet/, so no reader or step sees
@@ -1472,7 +1472,8 @@ def remove_record(session, cleared=False, witnessed=None, touched=None):
     removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
     said. `witnessed` and `touched` (the daemon's sweep): the record's identity (record_identity) and its
     state.json's st_mtime_ns the removal was decided on, looked at again under the lock; another record there, or
-    one changed since, is refused (2). The lock file stays."""
+    one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's transcript confirmed
+    gone), is run again there, and anything but True, or a failure, refuses (2). The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
                       % session, 2)
@@ -1498,6 +1499,14 @@ def remove_record(session, cleared=False, witnessed=None, touched=None):
                                           and os.stat(os.path.join(rec, "state.json")).st_mtime_ns != touched):
                 raise Refused("sheet remove: %s's sheet is not the record the sweep decided on, or changed since; "
                               "it stays" % session, 2)
+            if confirm is not None:
+                try:
+                    confirmed = confirm() is True
+                except Exception as e:  # noqa: BLE001 — what it rests on not known: the sheet stays
+                    raise Refused("sheet remove: what %s's removal rests on could not be looked at again (%s); it "
+                                  "stays" % (session, e), 2)
+                if not confirmed:
+                    raise Refused("sheet remove: what %s's removal rests on holds no more; it stays" % session, 2)
             for d in (staging_dir(session), rec):
                 if os.path.exists(d):
                     to = os.path.join(sheet_root(), "%s%d-%s" % (REMOVED, int(time.time()), uuid.uuid4().hex))

@@ -2314,20 +2314,32 @@ def _witnessed(note):
 
 
 def _cleared_sheet(sid, note_at, witnessed):
-    """Whether the question sheet of `sid` is the one a `/clear` note written at `note_at` describes: the record
-    directory it `witnessed` ((st_dev, st_ino); None: none), and neither its record nor its transcript touched since
-    (CLEARED_TIE_S), so not one a resume of the session left made or changed since. A record or a transcript that
-    cannot be stat'd is no answer: False."""
+    """Whether the question sheet of `sid` is the one a `/clear` note written at `note_at` describes: the record it
+    `witnessed` (sminos_sheet.record_identity), and neither its record nor its transcript touched since
+    (CLEARED_TIE_S), so not one a resume of the session left made or changed since. True; False, confirmed not (no
+    witness, another record or none, one touched since); None, not known: a look that failed for another reason than
+    absence, which neither removes the sheet nor lets the note go."""
+    if not isinstance(witnessed, tuple):
+        return False
     sheet = sminos.sibling_module("sminos_sheet")
+    rec = sheet.record_dir(sid)
     try:
-        if not isinstance(witnessed, tuple) or sheet.record_identity(sheet.record_dir(sid)) != witnessed:
+        if sheet.record_identity(rec) != witnessed:
             return False
+        touched = os.stat(os.path.join(rec, "state.json")).st_mtime
+    except FileNotFoundError:
+        return False
     except OSError:
+        return None
+    if touched > note_at + CLEARED_TIE_S:
         return False
-    touched = mtime(os.path.join(sheet.record_dir(sid), "state.json"))
-    if touched is None or touched > note_at + CLEARED_TIE_S:
-        return False
-    said = mtime(sminos.transcript_path(sid))
+    path = sminos.transcript_path(sid)
+    try:
+        said = os.stat(path).st_mtime if path else None
+    except FileNotFoundError:
+        said = None
+    except OSError:
+        return None
     return said is None or said <= note_at + CLEARED_TIE_S
 
 
@@ -2377,14 +2389,17 @@ def sweep_sheets():
         if identity is None:
             continue
         touched = touched_ns / 1e9
-        if sid in notes and notes[sid][1] == identity and _cleared_sheet(sid, *notes[sid]):
+        confirm = None
+        if sid in notes and notes[sid][1] == identity and _cleared_sheet(sid, *notes[sid]) is True:
             why = "a /clear left it"
         elif now - touched < SHEET_QUIET_S or sminos.transcript_path(sid) or not sminos.transcript_confirmed_gone(sid):
             continue
         else:
-            why = "its transcript is gone"
+            # Its transcript's absence is looked at again under the lock, as the record is detached: one restored
+            # meanwhile keeps the sheet.
+            why, confirm = "its transcript is gone", (lambda s=sid: sminos.transcript_confirmed_gone(s))
         try:
-            sheet.remove_record(sid, witnessed=identity, touched=touched_ns)
+            sheet.remove_record(sid, witnessed=identity, touched=touched_ns, confirm=confirm)
         except sheet.Refused as e:
             if e.code != sheet.EXIT_NO_SHEET:
                 sminos.daemon_log("the question sheet of %s was not removed: %s" % (sid[:8], e))
@@ -2443,8 +2458,8 @@ def sweep_cleared():
             witnessed = _witnessed(path) if sminos.UUID_RE.fullmatch(sid) else None
             if witnessed == WITNESS_UNKNOWN and sheet.has_record(sid):
                 continue   # its witness not read: whether it names this sheet is not known; both kept for a later pass
-            if isinstance(witnessed, tuple) and _cleared_sheet(sid, at, witnessed):
-                continue   # the question sheet it witnessed is still to be removed (sweep_sheets): kept for that
+            if isinstance(witnessed, tuple) and _cleared_sheet(sid, at, witnessed) is not False:
+                continue   # the sheet it witnessed is still to be removed (sweep_sheets), or not known not to be: kept
             gone = [os.path.join(d, pid + ".sheet"), path]
         else:
             continue
