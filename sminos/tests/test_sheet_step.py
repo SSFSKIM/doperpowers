@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -673,6 +674,26 @@ class Surfaces(unittest.TestCase):
                                                   "reach": "local"})
         self.assertEqual(out["view"]["surface"]["url"] + "/s/" + SESSION,
                          "http://sheet.localhost:47590/s/" + SESSION, "the link")
+
+    def test_the_plain_listing_prints_no_control_character_a_registration_holds(self):
+        """S1: a registration's URL is printed to a terminal: C0 and C1 controls (ESC among them) are taken out and
+        a line break is a space, so a registration can neither forge a line nor drive the terminal. JSON is as
+        written."""
+        h = scratch()
+        url = "http://127.0.0.1:1/\x1b[31mred\x1b[0m\x1b]8;;http://x\x07link\x1b]8;;\x07\rback\nnext\u0085nel\x9bcsi"
+        self.register(h, "standin", os.getpid())
+        p = os.path.join(h, "sheet", "surfaces", "standin.json")
+        reg = load(p)
+        reg["url"] = url
+        with open(p, "w") as f:
+            json.dump(reg, f)
+        code, out, err = run_cli(["sheet", "surfaces"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.count("\n"), 1, out)
+        self.assertFalse(any(ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f for c in out.rstrip("\n")), repr(out))
+        self.assertIn("http://127.0.0.1:1/[31mred[0m]8;;http://xlink]8;; back next nelcsi", out)
+        code, out, _ = run_cli(["sheet", "surfaces", "--json"])
+        self.assertEqual(json.loads(out)["surfaces"][0]["url"], url)
 
     def test_the_stand_in_surface(self):
         h = scratch()
@@ -1434,6 +1455,82 @@ class PicksAreAsciiDigits(unittest.TestCase):
         self.assertEqual(code, 0, err)
         step(ev("drain"))
         self.assertEqual(state_of()["pending"][0]["picks"], ["²"])
+
+
+class APickIsMatchedExactlyFirst(unittest.TestCase):
+    """S3: a label is matched as written before any whitespace is forgiven."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_labels_that_differ_only_by_surrounding_whitespace(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        self.assertTrue(step(inline_call("toolu_w", [{"question": "Which?", "options": opts("Yes", " Yes ")},
+                                                     {"question": "Lone?", "options": opts(" Lone ", "Other")}]))["ok"])
+        for handle, pick, want in (("q1", " Yes ", [" Yes "]), ("q1", "Yes", ["Yes"]), ("q2", " Lone ", [" Lone "]),
+                                   ("q2", "lone", [" Lone "]), ("q2", "  other", ["Other"])):
+            with self.subTest(pick=pick):
+                code, out, err = run_cli(["sheet", "answer", "--session", SESSION, handle, "--pick", pick])
+                self.assertEqual(code, 0, err)
+                key = json.loads(out)["results"][0]["key"]
+                lines = [json.loads(x) for x in open(os.path.join(os.environ["SMINOS_HOME"], "sheet", SESSION,
+                                                                  "inbox.jsonl"), encoding="utf-8") if x.strip()]
+                self.assertEqual(next(x for x in lines if x["key"] == key)["picks"], want)
+        code, _, err = run_cli(["sheet", "answer", "--session", SESSION, "q1", "--pick", "  Yes"])
+        self.assertEqual(code, 2, "two labels forgive to it: neither is chosen")
+        self.assertIn("has no option", err)
+
+
+class AnAnswersImagesGoWithItOrNotAtAll(unittest.TestCase):
+    """S4: an answer's images are copied only once the whole request is checked, and taken back when the door
+    appends nothing."""
+
+    def setUp(self):
+        self.home = scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_i", [{"question": "Sketch?"}]))
+        self.uploads = os.path.join(self.home, "sheet", SESSION, "uploads")
+        self.img = os.path.join(BASE, "shot-s4.png")
+        with open(self.img, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def uploaded(self):
+        return sorted(os.listdir(self.uploads)) if os.path.isdir(self.uploads) else []
+
+    def test_a_later_image_that_is_not_there_copies_none(self):
+        code, _, err = run_cli(["sheet", "answer", "--session", SESSION, "q1", "--text", "see", "--image", self.img,
+                                "--image", os.path.join(BASE, "missing.png")])
+        self.assertEqual(code, 2, err)
+        self.assertEqual(self.uploaded(), [])
+
+    def answer_here(self, *images):
+        argv = ["sheet", "answer", "--session", SESSION, "q1", "--text", "see"]
+        for img in images:
+            argv += ["--image", img]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                sminos.main(argv)
+            except SystemExit as e:
+                return e.code
+        return 0
+
+    def test_a_line_the_door_refuses_takes_its_images_back(self):
+        def refused(session, lines):
+            sminos.die("sheet put: line 1 refused: the question closed meanwhile; nothing appended", 2)
+        with mock.patch.object(sheet, "append", side_effect=refused):
+            self.assertEqual(self.answer_here(self.img, self.img), 2)
+        self.assertEqual(self.uploaded(), [])
+        def busy(session, lines):
+            sminos.die("sheet put: busy; send again", sheet.EXIT_BUSY)
+        with mock.patch.object(sheet, "append", side_effect=busy):
+            self.assertEqual(self.answer_here(self.img), sheet.EXIT_BUSY)
+        self.assertEqual(self.uploaded(), [])
+        self.assertEqual(self.answer_here(self.img), 0)
+        self.assertEqual(len(self.uploaded()), 1, "an answer the door took keeps its image")
 
 
 class QueuedEntriesByKind(unittest.TestCase):

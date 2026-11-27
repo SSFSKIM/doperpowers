@@ -402,6 +402,17 @@ def printable(v):
     return v
 
 
+LINE_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f]")
+
+
+def terminal_safe(v):
+    """A string written by someone else as a terminal may print it: each line break a space, every other C0 and C1
+    control character (ESC among them, so no escape sequence) taken out. For a human-facing print only; what is
+    stored, and every JSON output, keep the string as written."""
+    return CONTROLS.sub("", "".join(" " if c in LINE_BREAKS else c for c in v))
+
+
 def text(m):
     """`show` without --json: a question a block, then what is hidden and what waits for delivery."""
     lines = []
@@ -1376,15 +1387,19 @@ def _model_or_die(session, verb):
 
 
 def _resolve_pick(q, word):
-    """A pick as `answer` takes one: a place among the options (from 1), or a label in any case."""
+    """A pick as `answer` takes one: a place among the options (from 1), or a label: as written first, then the one
+    label it names with surrounding whitespace forgiven, then in any case. Two labels a forgiving match names are
+    neither."""
     labels = [o["label"] for o in q.get("options") or []]
     w = word.strip()
     if re.fullmatch(r"[0-9]+", w) and 1 <= int(w) <= len(labels):
         return labels[int(w) - 1]
-    exact = [x for x in labels if x == w]
-    folded = [x for x in labels if x.lower() == w.lower()]
-    if exact or len(folded) == 1:
-        return (exact or folded)[0]
+    if word in labels:
+        return word
+    for same in (lambda x: x.strip() == w, lambda x: x.strip().lower() == w.lower()):
+        found = [x for x in labels if same(x)]
+        if found:
+            return found[0] if len(found) == 1 else None
     return None
 
 
@@ -1423,13 +1438,19 @@ def cli_answer(session, handle, picks, text):
     return line
 
 
-def copy_upload(session, src):
-    """An image copied into the record's uploads/ under a name of its own, for an answer to name."""
+def _upload_ext(src):
+    """An image `answer` may copy: its extension, or the refusal."""
     ext = os.path.splitext(src)[1][1:].lower()
     if ext not in IMAGE_EXTS:
         S.die("sheet answer: --image takes a %s file" % ", ".join(IMAGE_EXTS), 2)
     if not os.path.isfile(src):
         S.die("sheet answer: %s is not a file" % src, 2)
+    return ext
+
+
+def copy_upload(session, src):
+    """An image copied into the record's uploads/ under a name of its own, for an answer to name."""
+    ext = _upload_ext(src)
     rec = record_dir(session)
     why = record_problem(rec)
     if why:
@@ -1692,11 +1713,26 @@ def cmd_sheet(a):
         if len(a.image) > 8:
             S.die("sheet answer: at most 8 images", 2)
         line = cli_answer(session, a.handle, a.pick, a.text or "")     # refused before anything is copied
-        images = [copy_upload(session, f) for f in a.image]
-        if images:
-            by = line.pop("by")
-            line.update(images=images, by=by)
-        _send(session, [line])
+        for f in a.image:
+            _upload_ext(f)
+        images = []
+        try:
+            for f in a.image:
+                images.append(copy_upload(session, f))
+            if images:
+                by = line.pop("by")
+                line.update(images=images, by=by)
+            _send(session, [line])
+        except SystemExit as e:
+            # A refusal, here or by the door, appends nothing: this call's uploads go with it. (After the door
+            # appended, nothing exits.)
+            if e.code not in (0, None):
+                for name in images:
+                    try:
+                        os.unlink(os.path.join(record_dir(session), name))
+                    except OSError:
+                        pass
+            raise
         return
     if op == "dismiss":
         session, ids = _split_who(a, "dismiss")
@@ -1742,7 +1778,8 @@ def cmd_sheet(a):
         if a.json:
             print(json.dumps({"surfaces": regs}, ensure_ascii=False))
         else:
-            print("\n".join("%s  %s  %s  %s" % (r["name"], r["url"], r["reach"], "alive" if r["alive"] else "stale")
+            print("\n".join("%s  %s  %s  %s" % (r["name"], terminal_safe(r["url"]), r["reach"],
+                                                 "alive" if r["alive"] else "stale")
                             for r in regs) or "no surface registered")
         return
     if op in ("step", "probe", "log", "witness"):
