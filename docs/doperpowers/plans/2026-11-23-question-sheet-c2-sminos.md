@@ -552,6 +552,15 @@ Paths are from the repository's root. `S/` is
       .staging/<session>/     what the mod hands a step: <callId>/call.json, entry-<n>.json, ref-<n>-<m>; start-<nonce>/ask-<n>.json
       surfaces/<name>.json    a surface's registration (X4)
 
+`.incarnation` (M6) holds the record's own nonce, minted once by a
+no-clobber link and never written by a step: with the directory's
+`(st_dev, st_ino)` it tells a record from a replacement made at the same
+path, which a removal, the daemon's sweep and the log's projection check
+before they act (no identity, no act). It is the writer's own file: a
+reader does not read it and ignores any name in a record it does not
+know (the composite's writer's ruling of 2026-11-27; the published set
+takes the sentence at its next version).
+
 `texts/<sha256>.txt` holds a human's answer text longer than 2,000
 characters, named by the hash of its UTF-8 bytes, written by the step that
 accepts the answer and kept for the record's life (I7).
