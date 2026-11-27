@@ -1514,6 +1514,14 @@ class ShowsPlainPrint(unittest.TestCase):
         self.assertEqual(out.rstrip("\n").split("\n"),
                          ["q1", "  Which one?", "    q9  Forged header", "      1. Forged", "  1. Real"])
 
+    def test_the_one_line_cleaner_is_the_mods(self):
+        """terminal_safe reads a line as sheet-model.tsx's terminalText does: CRLF one break, a tab and every line
+        break (LF, VT, FF, CR, NEL, U+2028, U+2029) a space, every other C0, DEL and C1 character gone."""
+        for raw, want in (("A\tB\r\nC", "A B C"), ("a\rb\nc\x0bd\x0ce\x85f\u2028g\u2029h", "a b c d e f g h"),
+                          ("x\x1cy\x1dz\x1e!", "xyz!"), ("\x1b[31mred\x7f\x9b", "[31mred"), ("\r\n\r\n", "  ")):
+            with self.subTest(raw=raw):
+                self.assertEqual(sheet.terminal_safe(raw), want)
+
     def test_a_queued_answers_text_is_cleaned_before_it_is_quoted(self):
         scratch()
         step(ev("start", start={"source": "startup"}))

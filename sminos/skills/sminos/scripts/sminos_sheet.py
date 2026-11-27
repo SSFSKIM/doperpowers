@@ -402,15 +402,16 @@ def printable(v):
     return v
 
 
-LINE_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+SPACED = re.compile("\r\n|[\t\n\x0b\x0c\r\x85\u2028\u2029]")   # sheet-model.tsx's terminalText, as written there
 CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f]")
 
 
 def terminal_safe(v):
-    """A string written by someone else as a terminal may print it: each line break a space, every other C0 and C1
-    control character (ESC among them, so no escape sequence) taken out. For a human-facing print only; what is
-    stored, and every JSON output, keep the string as written."""
-    return CONTROLS.sub("", "".join(" " if c in LINE_BREAKS else c for c in v))
+    """A string written by someone else as a terminal may print it, as the mod draws one (sheet-model.tsx's
+    terminalText): CRLF one break, each line break and a tab a space, every other C0, DEL and C1 character (ESC
+    among them, so no escape sequence) taken out. For a human-facing print only; what is stored, and every JSON
+    output, keep the string as written."""
+    return CONTROLS.sub("", SPACED.sub(" ", v))
 
 
 def text(m):
