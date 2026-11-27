@@ -221,6 +221,14 @@ describe('results the mod writes', () => {
     expect(announcement(input, 'Revised q1 (revision 2).')).toBeUndefined()
     expect(announcement({ withdraw: ['q1'] }, 'Withdrew q1.')).toBeUndefined()
   })
+
+  test("what the person is told is one line of text, as the terminal draws it: a control character (ESC, a CSI or OSC 8 sequence's, a C1) goes, a line break (CR, LF, U+0085) is a space", async () => {
+    const ESC = '\u001b'
+    const input = { ask: [Q(`Deploy ${ESC}[31mnow${ESC}[0m?\r\nOr ${ESC}]8;;http://x.example${ESC}\\later${ESC}]8;;\u0007\u0085\u009b2J?`), Q('Second?')] }
+    expect(announcement(input, 'Added q1, q2.')).toBe('Deploy [31mnow[0m? Or ]8;;http://x.example\\later]8;; 2J? (+1 more)')
+    // A question of controls alone tells nothing.
+    expect(announcement({ ask: [Q(`${ESC}\u0007`)] }, 'Added q1.')).toBeUndefined()
+  })
 })
 
 const view = (over: Partial<View> = {}): View => ({

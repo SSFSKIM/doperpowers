@@ -438,7 +438,8 @@ export function announcement(input: SheetInput, result: string): string | undefi
   const place = /\(entry (\d+)\)/.exec(items[0] ?? '')
   const entries = input.ask ?? []
   const first = place !== null ? entries[Number(place[1]) - 1] : entries.find((entry) => entry.id === undefined)
-  const question = first?.question.trim()
+  // Drawn as the terminal's row is (`terminalText`): the stored question stays as it was asked.
+  const question = first === undefined ? undefined : terminalText(first.question).trim()
   if (question === undefined || question === '') {
     return undefined
   }
@@ -1194,7 +1195,8 @@ export function isSheetCall(input: unknown): input is SheetInput {
 export type Surface = { name: string; url: string; reach: string }
 
 /**
- * A text the terminal draws as one line of text (§8.3; the row and the band):
+ * A text the terminal draws as one line of text (§8.3; the row, the band and
+ * the notification of a call's first question):
  * a line break, and a tab, a space; every other control character, C0, DEL
  * and C1 (ESC and the sequences it opens among them), gone, so neither a
  * model's question nor a person's answer nor a registration's url breaks the
