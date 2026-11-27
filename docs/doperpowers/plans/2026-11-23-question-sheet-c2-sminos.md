@@ -1603,14 +1603,25 @@ relies on, then the rules the task review settled.
   record directory that is a link, and removes a real one holding a
   linked child without following it.
 
-**In a MAWS-run session** the mod opens none of the four routes (a turn
-the tool submits there is a turn MAWS did not send: C0's P1); it drains,
-sends to running subagents, and takes `delivered` lines; the step
-composes no envelope for the main conversation there. The context §5.4
-has the tool add to a steer that carries an ended subagent's answer is
-C5's to build; C0's P1 showed the hook sees the steer and can add to it,
-and `show --json --keys` (I4) gives it each outcome's question and
-labels, bounded.
+**In a MAWS-run session** the mod opens no idle route and carries no
+envelope of the main conversation (a turn the tool submits there is a
+turn MAWS did not send: C0's P1; MAWS delivers, §5.4); it drains, sends to
+running subagents, and takes `delivered` lines; the step composes no
+envelope for the main conversation there. The result and prompt routes
+carry the notices and a context as in a terminal session (MAWS's C5, F8,
+which replaces M4's "the prompt route, context only" above): an ended
+subagent's open questions and a call's late outcome reach the main
+conversation there too. A prompt that carries a block (MAWS's steer, or
+one appended to the person's message) also carries, as a context of that
+prompt alone, the words of each subagent's question it answers (C5's F9):
+the mod reads the block's keys from the record with `show --json --keys`
+(I4), fifty keys a call, the calls side by side under the step's timeout,
+and for each answered outcome still pending whose asker is a subagent adds
+one line in I10's form under `[sheet v1] This message answers questions a
+subagent put on your sheet. What each asked:` (`steerContext`, with the
+envelope's budget and I10's cuts, then `and N more.`). The main
+conversation's own questions get no line: §5.5's context gave them back at
+any start. A `show` that fails or runs out of time adds nothing, logged.
 
 ### I10 · What the tool supplies at a start (§5.5)
 

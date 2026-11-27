@@ -381,9 +381,14 @@ the context goes instead on the next result or prompt route, once. When the floo
 id the conversation holds, read by `floorSearchArgs`'s perl pass over a
 transcript past 4 MiB), a fork's or a lost record's first id is past it. A subagent that stops with questions open is
 named to the main conversation once, on the next route. In a MAWS-run
-session no route of the main conversation opens and no row lands: MAWS
-delivers there and says so by a `delivered` line; a running subagent's
-answer still goes by a send.
+session no envelope of the main conversation goes by a route, no idle route
+opens and no row lands: MAWS delivers there and says so by a `delivered`
+line; a running subagent's answer still goes by a send. The result and
+prompt routes there carry the notices and a context as in a terminal
+session, and a prompt that carries a block (MAWS's steer) also carries the
+words and labels of each subagent's question it answers, read from the
+record by `sminos sheet show --json --keys` (`steerContext`): MAWS's steer
+names a pick by its place and quotes no question.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
 registered outside the ask's band, draws one line above the to-human band in

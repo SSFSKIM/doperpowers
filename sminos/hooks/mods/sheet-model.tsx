@@ -1111,6 +1111,83 @@ export function endedNotice(agent: { agentId: string; name: string }, questions:
   return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
 }
 
+/**
+ * A pending outcome as `sminos sheet show --json --keys` prints it (I4), in
+ * the fields a steer's context reads: the question is the snapshot the answer
+ * was given to, its strings already cut by the reader.
+ */
+export type ShownOutcome = {
+  key: string
+  kind: 'answer' | 'dismiss'
+  id: string
+  revision: number
+  question: { asker: Asker; header?: string; question: string; options: string[] }
+}
+
+/** The pending outcomes a `show --json --keys` printed; undefined for what is not its output. An outcome of another shape is passed over. */
+export function shownOutcomes(stdout: string): ShownOutcome[] | undefined {
+  let model: unknown
+  try {
+    model = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  if (!isRecord(model) || model.v !== 1 || !Array.isArray(model.pending)) return undefined
+  const out: ShownOutcome[] = []
+  for (const o of model.pending) {
+    if (!isRecord(o) || typeof o.key !== 'string' || (o.kind !== 'answer' && o.kind !== 'dismiss') || typeof o.id !== 'string' || typeof o.revision !== 'number') continue
+    const q = o.question
+    if (!isRecord(q) || typeof q.question !== 'string' || !Array.isArray(q.options) || !q.options.every((label) => typeof label === 'string')) continue
+    const asker = q.asker === 'main' ? 'main' : isRecord(q.asker) && typeof q.asker.agentId === 'string' && typeof q.asker.name === 'string' ? { agentId: q.asker.agentId, name: q.asker.name } : undefined
+    if (asker === undefined) continue
+    out.push({ key: o.key, kind: o.kind, id: o.id, revision: o.revision, question: { asker, ...(typeof q.header === 'string' && { header: q.header }), question: q.question, options: q.options as string[] } })
+  }
+  return out
+}
+
+/** A steer's context has the envelope's budget (I7), in UTF-16 code units; past it, each question is cut at 300 characters and each label at 80 (I10's cuts). */
+const STEER_CONTEXT_BUDGET = 60_000
+const STEER_CONTEXT_QUESTION = 300
+const STEER_CONTEXT_LABEL = 80
+
+/**
+ * What a message that answers a subagent's question carries in a MAWS-run
+ * session, as the tool's context (MAWS's C5, F9): MAWS's steer names a pick by
+ * its place and never quotes a question, and the main conversation never held
+ * a subagent's question. One line an answered outcome whose asker is a
+ * subagent, by the id's number, in I10's line form; undefined when there is
+ * none. Within the budget: whole, else cut, else as many cut lines as fit and
+ * how many more.
+ */
+export function steerContext(pending: readonly ShownOutcome[]): string | undefined {
+  const asked = pending.filter((o) => o.kind === 'answer' && o.question.asker !== 'main').sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))
+  if (asked.length === 0) return undefined
+  const head = '[sheet v1] This message answers questions a subagent put on your sheet. What each asked:'
+  const line = (o: ShownOutcome, qcut?: number, lcut?: number) => {
+    const { asker, header, question, options } = o.question
+    const subagent = asker as { agentId: string; name: string }
+    return [
+      `${o.id} (revision ${o.revision}), asked by the subagent ${cut(subagent.name, 200)} (${subagent.agentId})`,
+      header === undefined ? '' : ` ${JSON.stringify(header)}`,
+      ` — ${JSON.stringify(qcut === undefined ? question : cut(question, qcut))}`,
+      options.length === 0 ? ' No options: answered in text.' : ` Options: ${options.map((label, i) => `${i + 1}. ${lcut === undefined ? label : cut(label, lcut)}`).join('; ')}.`,
+    ].join('')
+  }
+  const whole = [head, ...asked.map((o) => line(o))].join('\n')
+  if (whole.length <= STEER_CONTEXT_BUDGET) return whole
+  const lines = asked.map((o) => line(o, STEER_CONTEXT_QUESTION, STEER_CONTEXT_LABEL))
+  const cutWhole = [head, ...lines].join('\n')
+  if (cutWhole.length <= STEER_CONTEXT_BUDGET) return cutWhole
+  // The whole did not fit, so something is always left out: as many lines as fit beside the count of the rest.
+  let k = 0
+  let used = head.length
+  while (k < lines.length - 1 && used + 1 + (lines[k] as string).length + 1 + `and ${lines.length - k - 1} more.`.length <= STEER_CONTEXT_BUDGET) {
+    used += 1 + (lines[k] as string).length
+    k += 1
+  }
+  return [head, ...lines.slice(0, k), `and ${lines.length - k} more.`].join('\n')
+}
+
 // ------------------------------------------------------------------ the terminal's drawing (M5; §8.3, §8.1)
 
 /** A stored call's first line read (I6's grammar, `grammar/result.md`), as `result.examples.json` holds it parsed. */

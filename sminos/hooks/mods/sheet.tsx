@@ -38,7 +38,9 @@ import {
   resultTextOf,
   rowLines,
   searchedKeys,
+  shownOutcomes,
   snapshotOf,
+  steerContext,
   surfaceOf,
   unreadClause,
   validateCall,
@@ -747,7 +749,7 @@ function readyFor(gen: Gen, recipient: Recipient): Envelope | undefined {
   return envelope !== undefined && !envelope.keys.some((key) => isInFlight(gen, key)) ? envelope : undefined
 }
 
-/** The main conversation's routes are the tool's to open in a terminal session; in a MAWS-run one, MAWS delivers (§5.4). */
+/** The main conversation's envelopes are the tool's to send in a terminal session; in a MAWS-run one, MAWS delivers (§5.4), and the routes carry only notices and contexts. */
 const isTerminal = () => sheet.runner === 'terminal'
 
 /**
@@ -1004,18 +1006,19 @@ function routeContext(gen: Gen, context: string | undefined) {
  * step: the ready envelope as a flight of its own (an idle reservation not
  * yet handed over yields it to the route that opened first), the notices
  * waiting, and a context owed; each an entry of its own. In a MAWS-run
- * session only the context (I10): no answer goes by a route there (§5.4).
+ * session the notices and the context, and never an envelope (MAWS's C5,
+ * F8): no answer goes by a route there (§5.4).
  */
 function take(gen: Gen, route: 'result' | 'prompt'): { entries: string[]; flight?: Flight; notices: string[]; context?: string } {
   const context = gen.context
   gen.context = undefined
-  if (!isTerminal()) {
-    return { entries: context === undefined ? [] : [context], notices: [], ...(context !== undefined && { context }) }
+  let flight: Flight | undefined
+  if (isTerminal()) {
+    gen.flights = gen.flights.filter((other) => other.route !== 'idle' || other.handed === true)
+    const envelope = readyFor(gen, 'main')
+    flight = envelope === undefined ? undefined : { route, keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
+    if (flight !== undefined) gen.flights.push(flight)
   }
-  gen.flights = gen.flights.filter((other) => other.route !== 'idle' || other.handed === true)
-  const envelope = readyFor(gen, 'main')
-  const flight: Flight | undefined = envelope === undefined ? undefined : { route, keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
-  if (flight !== undefined) gen.flights.push(flight)
   const notices = gen.notices.splice(0)
   return { entries: [...(flight === undefined ? [] : [flight.text]), ...notices, ...(context === undefined ? [] : [context])], ...(flight !== undefined && { flight }), notices, ...(context !== undefined && { context }) }
 }
@@ -1026,7 +1029,7 @@ function putBack(gen: Gen, taken: ReturnType<typeof take>, entered: readonly str
   if (taken.context !== undefined && !entered.includes(taken.context)) gen.context ??= taken.context
 }
 
-/** The generation a route of the main conversation may open in: the current one, started; a result route only in a terminal session. */
+/** The generation a route of the main conversation may open in: the current one, started. */
 function routable(): Gen | undefined {
   const gen = current()
   return sheet.port !== undefined && isStarted(gen) ? gen : undefined
@@ -1949,7 +1952,10 @@ export function registerSheet(on: On) {
   // The prompt route (I9): what is ready rides any prompt that enters, as
   // context of its own; what a prompt dropped beneath, or one that entered
   // without it, did not carry is put back, each entry on its own. In a
-  // MAWS-run session only a start's or a compaction's context rides it.
+  // MAWS-run session the notices and a context ride it, never an envelope,
+  // and a prompt that carries a block (MAWS's steer, or a rider on the
+  // person's message) also carries the words of a subagent's question it
+  // answers, a context of that prompt alone (MAWS's C5, F9).
   on('prompt.submit', { text: /^/ }, async (_, e, next) => {
     triggerCheck()
     const gen = routable()
@@ -1958,8 +1964,14 @@ export function registerSheet(on: On) {
       return next(e)
     }
     const port = sheet.port as Port
+    const asked = isTerminal() ? undefined : await askedBy(port, gen, e.text)
+    // A session change while the record was read: the prompt is the next session's, and the context the last one's.
+    if (routable() !== gen) {
+      return next(e)
+    }
     const taken = take(gen, 'prompt')
-    if (taken.entries.length === 0) {
+    const own = asked === undefined ? [] : [asked]
+    if (taken.entries.length === 0 && own.length === 0) {
       return next(e)
     }
     const flight = taken.flight
@@ -1967,7 +1979,7 @@ export function registerSheet(on: On) {
     if (flight !== undefined) flight.isAdmitting = true
     let result: Awaited<ReturnType<typeof next>>
     try {
-      result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
+      result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries, ...own] })
     } catch (error) {
       putBack(gen, taken, [])
       if (flight !== undefined) failFlight(port, gen, flight, message(error))
@@ -2113,18 +2125,54 @@ export function registerSheet(on: On) {
   })
 }
 
+/** The keys `sminos sheet show --keys` takes in one call (I4). */
+const SHOW_KEYS = 50
+/** A key of the form the command takes (`KEY_RE` in sminos_sheet.py): another it refuses, with the rest of its call. */
+const KEY = /^[A-Za-z0-9._:-]{8,128}$/
+
+/**
+ * What a prompt that carries a block in a MAWS-run session is given beside it
+ * (MAWS's C5, F9): for each answered outcome still pending among the block's
+ * keys whose asker is a subagent, that question's words and labels, read from
+ * the record by `show --json --keys`, fifty keys a call, the calls side by
+ * side so the prompt waits at most one call's bound. A call that fails or runs
+ * out of time adds nothing of its keys, logged.
+ */
+async function askedBy(port: Port, gen: Gen, text: string): Promise<string | undefined> {
+  const keys = keysIn([text]).filter((key) => KEY.test(key))
+  if (keys.length === 0) {
+    return undefined
+  }
+  const chunks = Array.from({ length: Math.ceil(keys.length / SHOW_KEYS) }, (_, i) => keys.slice(i * SHOW_KEYS, (i + 1) * SHOW_KEYS))
+  const read = await Promise.all(
+    chunks.map(async (chunk) => {
+      try {
+        const out = await port.run(['sheet', 'show', '--session', gen.session, '--json', '--keys', chunk.join(',')])
+        const pending = out.exitCode === 0 && out.isStdoutTruncated !== true ? shownOutcomes(out.stdout) : undefined
+        if (pending === undefined) throw new Error(out.exitCode === 0 ? 'its output is not the model' : `exit ${out.exitCode}${out.stderr === '' ? '' : `: ${out.stderr.trim().slice(0, 200)}`}`)
+        return pending
+      } catch (error) {
+        port.log(`sheet: a prompt's keys could not be read from the record (${message(error)}); it enters without the questions they answer`)
+        return []
+      }
+    }),
+  )
+  return steerContext(read.flat())
+}
+
 /**
  * The result route (I9): a call of the model's main loop that returned, not
  * denied and not aborted, carries what is ready as context on its result:
  * the envelope, a flight of the running turn, and the notices and a context
- * waiting. Only into the generation it was dispatched in (`dispatched`): a
+ * waiting; in a MAWS-run session the notices and the context alone (MAWS's
+ * C5, F8). Only into the generation it was dispatched in (`dispatched`): a
  * call that ran across a session change (a fork, a /clear) returns as it was,
  * carrying nothing of the session after it.
  */
 function withResultRoute<R extends object>(dispatched: Gen | undefined, agentId: string | undefined, origin: { plugin: string }, signal: AbortSignal, result: R): R {
   const gen = routable()
   const { deny, context } = result as { deny?: unknown; context?: readonly string[] }
-  if (gen === undefined || gen !== dispatched || !isTerminal() || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
+  if (gen === undefined || gen !== dispatched || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
     return result
   }
   const taken = take(gen, 'result')
