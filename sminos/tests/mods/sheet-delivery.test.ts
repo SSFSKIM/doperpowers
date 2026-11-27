@@ -564,6 +564,48 @@ describe('which turn a flight belongs to (I9)', () => {
       }
     }
   })
+
+  test("a queued turn that starts and ends while the hooks beneath still hold a prompt typed over the turn before: nothing of its envelope is released or retried while the prompt can still enter; the turn the prompt opens settles it", async () => {
+    for (const isHeld of [false, true]) {
+      const rec = record()
+      const h = await started(rec)
+      const toasts = () => h.calls.filter((c) => c.op === 'ui.toast')
+      await h.turnStart('A')
+      await answered(h, rec, out('k1', 'q1'))
+      let enter: () => void = () => {}
+      const typed = h.prompt('also this', { turnId: 'A' }, (e) => new Promise((resolve) => (enter = () => resolve({ text: e.text, context: e.context, origin: e.origin }))))
+      await h.settle()
+      h.converse({ rows: [], api: [] })
+      await h.turnComplete('A', 'answer')
+      await h.settle()
+      // A foreign prompt queued before it runs its turn while the prompt is still held.
+      await h.turnStart('B')
+      await h.turnComplete('B', 'answer')
+      await h.settle()
+      await h.hop()
+      expect(toasts()).toEqual([])
+      expect(h.submits).toEqual([])
+      expect(contextOf(await h.call('Read', {}))).toEqual([])
+      enter()
+      const entered = (await typed) as { context?: string[] }
+      expect(entered.context).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+      // The prompt that entered opens its own turn.
+      await h.turnStart('C')
+      if (isHeld) h.converse({ rows: [], api: [{ role: 'user', content: `<system-reminder>\nprompt.submit hook additional context: ${entered.context?.[0]}\n</system-reminder>` }] })
+      await h.turnComplete('C', 'answer')
+      await h.settle()
+      await h.hop()
+      if (isHeld) {
+        expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
+        expect(toasts()).toEqual([])
+        expect(h.submits).toEqual([])
+      } else {
+        expect(toasts()).toHaveLength(1)
+        expect(h.submits).toHaveLength(1)
+        expect(h.submits[0]).toContain('"keys":["k1"]')
+      }
+    }
+  })
 })
 
 describe('a reservation, checked again at the hop (I9)', () => {

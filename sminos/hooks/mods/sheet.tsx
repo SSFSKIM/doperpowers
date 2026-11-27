@@ -224,6 +224,11 @@ type Flight = {
   tentative?: string
   /** Its turn is the next main turn to start. */
   awaitsTurn?: boolean
+  /**
+   * A prompt route's flight while the hooks beneath still hold its prompt: the prompt may yet enter, so no
+   * turn's end settles it (a queued turn can start and end meanwhile); it is bound once the prompt resolves.
+   */
+  isAdmitting?: boolean
   /** How many main turns had started when it was reserved: a turn that started before is not its own. */
   turnsAt: number
   /** An idle prompt or a send given to the engine; until then it is a reservation, which the hop checks again and a route that opens first takes over. */
@@ -999,7 +1004,7 @@ function routable(): Gen | undefined {
  * answer opens the idle route for what wakes.
  */
 async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
-  const due = gen.flights.filter((flight) => flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId)
+  const due = gen.flights.filter((flight) => flight.isAdmitting !== true && (flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId))
   const typedOver = new Set(due.filter((flight) => flight.turnId === undefined && flight.tentative === turnId))
   typedOver.forEach((flight) => {
     flight.tentative = undefined
@@ -1918,11 +1923,8 @@ export function registerSheet(on: On) {
       return next(e)
     }
     const flight = taken.flight
-    if (flight !== undefined && e.turnId !== undefined) {
-      // Typed over a running turn: it enters that turn, or the next. Marked before the hooks beneath run, so a
-      // turn that ends meanwhile hands it to the next turn rather than leaving it to none.
-      flight.tentative = e.turnId
-    }
+    // Until the hooks beneath resolve, the prompt can still enter with the envelope: no turn's end releases it.
+    if (flight !== undefined) flight.isAdmitting = true
     let result: Awaited<ReturnType<typeof next>>
     try {
       result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
@@ -1940,9 +1942,19 @@ export function registerSheet(on: On) {
       failFlight(port, gen, flight, result.drop)
     } else if (!keysIn(entered).some((key) => flight.keys.includes(key))) {
       failFlight(port, gen, flight, 'a hook took it out of the prompt')
-    } else if (gen.flights.includes(flight) && e.turnId === undefined) {
-      // Its prompt opened a turn, started by now.
-      turnOf(flight)
+    } else if (gen.flights.includes(flight)) {
+      flight.isAdmitting = false
+      if (e.turnId === undefined) {
+        // Its prompt opened a turn, started by now.
+        turnOf(flight)
+      } else if (sheet.mainTurn !== undefined) {
+        // Typed over a running turn: it enters the turn running as it is admitted (the one it was typed over, or
+        // one that started while it was held), or the next.
+        flight.tentative = sheet.mainTurn
+      } else {
+        // The turn it was typed over ended while it was held: it enters the next turn, which it opens.
+        flight.awaitsTurn = true
+      }
     }
     return result
   }).catch((_, e, next) => next(e))
