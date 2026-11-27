@@ -14283,16 +14283,32 @@ def running_elsewhere(session_id, besides):
     /clear's own process, which may still be on record as running the
     session it left): the record of another process running the session,
     or None. For a removal that must never take a record a resume holds,
-    so it raises OSError where that cannot be told: an engine session
-    record that could not be read, or a registry not read whole."""
-    global _PEERS
-    engine_dirs_whole()
-    _PEERS = None
-    recs = peer_records()
-    if _PEERS_UNREAD:
-        raise OSError("%d engine session record%s could not be read" % (len(_PEERS_UNREAD),
-                                                                       "" if len(_PEERS_UNREAD) == 1 else "s"))
-    return next((r for r in recs if session_id and r.get("sessionId") == session_id and r.get("pid") != besides
+    so the scan is its own and fails closed: every config dir of the
+    registry read whole, each one's `sessions/` listed now (absent: none
+    there), every record read; OSError where a listing, a registration or
+    a record fails for any reason but absence."""
+    found = []
+    for d, owners in _read_registry(os.path.join(root(), CONFIG_DIRS), whole=True)[1]:
+        base = os.path.join(d, "sessions")
+        try:
+            names = os.listdir(base)
+        except FileNotFoundError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(base, name)) as f:
+                    rec = json.load(f)
+            except FileNotFoundError:
+                continue   # its session ended while the directory was read
+            except (OSError, ValueError) as e:
+                raise OSError("the engine session record %s could not be read: %s" % (name, e))
+            if not isinstance(rec, dict):
+                raise OSError("the engine session record %s is no object" % name)
+            if speaks_for(owners, rec) and not engine_spare(rec):
+                found.append(rec)
+    return next((r for r in found if session_id and r.get("sessionId") == session_id and r.get("pid") != besides
                  and peer_running(r)), None)
 
 

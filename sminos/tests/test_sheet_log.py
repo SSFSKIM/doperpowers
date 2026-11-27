@@ -665,6 +665,29 @@ class ClearsRemoval(Log):
         self.assertEqual(code, 0, out)
         self.assertFalse(os.path.exists(sheet.record_dir(sid)))
 
+    def test_a_clears_retry_keeps_the_record_when_the_engine_records_cannot_be_listed(self):
+        """A listing of the engine's session records that fails (not one that finds none) cannot tell that no
+        resume holds the session: the record stays."""
+        sid, clearing = self.opened()
+        self.start(sid)
+        _, witnessed = self.witness(sid)
+        _, resumed = self.session(sid=sid)
+        sessions = os.path.realpath(os.path.dirname(self.peer_path(resumed.pid)))
+        real_listdir, real_scandir = os.listdir, os.scandir
+
+        def failing(fn):
+            def call(path=".", *a, **k):
+                if os.path.realpath(str(path)) == sessions:
+                    raise OSError(errno.EIO, "input/output error")
+                return fn(path, *a, **k)
+            return call
+        with mock.patch.object(os, "listdir", side_effect=failing(real_listdir)), \
+                mock.patch.object(os, "scandir", side_effect=failing(real_scandir)):
+            code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("could not be told", out)
+        self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
+
     def test_a_clears_removal_whose_liveness_cannot_be_told_keeps_the_record(self):
         sid, clearing = self.opened()
         self.start(sid)
