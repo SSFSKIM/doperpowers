@@ -1578,8 +1578,7 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
     runs (a resume of the session left) is refused (2), and so is one whose liveness cannot be told. The lock file
     stays."""
     if not cleared and S.session_running(session):
-        raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
-                      % session, 2)
+        raise Refused("sheet remove: %s runs; its sheet goes when it stops" % session, 2)
     finish_removed()
     detached = []
     try:
@@ -1809,7 +1808,8 @@ def cmd_sheet(a):
         return
     if op in ("step", "probe", "log", "witness"):
         if not a.session or not S.UUID_RE.fullmatch(a.session):
-            S.die("sheet %s: --session takes an engine session id" % op)
+            S.die("sheet %s: the question sheet's own verb, not for people; --session takes an engine session id"
+                  % op)
         if op == "witness":
             # The record's identity now, its nonce minted if none is (as smns-cleared.sh does): what the mod takes
             # at a /clear and hands each removal of the record left (`remove --cleared --witness`).

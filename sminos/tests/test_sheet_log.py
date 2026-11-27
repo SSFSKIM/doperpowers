@@ -583,6 +583,16 @@ class ClearsRemoval(Log):
         sheet.remove_record(sid, cleared=True)
         self.assertEqual(self.witness(sid)[0], sheet.EXIT_NO_SHEET)
 
+    def test_the_witness_verb_and_the_clears_flags_are_the_mods_and_in_no_usage_text(self):
+        usage = sminos.__doc__ or ""
+        self.assertIn("sminos sheet    remove", usage)
+        self.assertNotIn("sheet witness", usage)
+        self.assertNotIn("--cleared", usage)
+        self.assertNotIn("--clearing", usage)
+        code, out = self.cli("sheet", "witness")
+        self.assertEqual(code, 2, out)
+        self.assertIn("not for people", out)
+
     def test_a_clears_removal_without_a_witness_removes_nothing(self):
         sid = self.asked_and_stopped()
         code, out = self.cli("sheet", "remove", "--session", sid, "--cleared")

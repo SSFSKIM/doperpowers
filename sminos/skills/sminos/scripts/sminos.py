@@ -155,9 +155,7 @@ back by a fill.
                    picks by place or by label in any case; images copied into the sheet first
     sminos sheet    dismiss <member>|--session <id> <q>...   # dismissals, sent as one batch
     sminos sheet    retract <member>|--session <id> <key>    # takes back a line not yet applied
-    sminos sheet    remove <member>|--session <id> [--cleared --witness <identity> --clearing <pid>]   # a
-                   stopped session's sheet (refused while it runs); --cleared, the one a /clear left, as
-                   `sheet witness` named it then, refused while a process other than the clearing one runs it
+    sminos sheet    remove <member>|--session <id>       # a stopped session's sheet (refused while it runs)
     sminos sheet    surfaces [--json]                     # the registered surfaces, and which are alive
     sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
@@ -22064,6 +22062,7 @@ def build_parser():
         elif op == "retract":
             so.add_argument("target")
         else:
+            # The sheet mod's own, after a /clear (sminos_sheet.cmd_sheet), in no usage text.
             so.add_argument("--cleared", action="store_true")
             so.add_argument("--witness", default=None)    # with --cleared: the record's identity at the /clear
             so.add_argument("--clearing", type=int, default=None)   # with --cleared: the pid that cleared
@@ -22075,7 +22074,7 @@ def build_parser():
     so = sqsub.add_parser("surfaces", add_help=False)
     so.add_argument("--json", action="store_true")
     so.set_defaults(fn=cmd_sheet, session="")
-    for op in ("step", "probe", "log", "witness"):      # the tool's own, in no usage text
+    for op in ("step", "probe", "log", "witness"):      # the tool's and the sheet mod's own, in no usage text
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("--session", default="")
         if op == "probe":
