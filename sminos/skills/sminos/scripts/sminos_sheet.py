@@ -414,29 +414,32 @@ def terminal_safe(v):
 
 
 def text(m):
-    """`show` without --json: a question a block, then what is hidden and what waits for delivery."""
+    """`show` without --json: a question a block, then what is hidden and what waits for delivery. What a model or a
+    person wrote is printed terminal_safe, one line each."""
     lines = []
     for q in m["open"]:
         head = q["handle"]
         if isinstance(q.get("asker"), dict):
-            head += "  asked by the subagent %s (%s)" % (q["asker"].get("name") or "?", q["asker"].get("agentId"))
+            head += "  asked by the subagent %s (%s)" % (terminal_safe(q["asker"].get("name") or "?"),
+                                                         terminal_safe(str(q["asker"].get("agentId"))))
         if q.get("header"):
-            head += "  " + q["header"]
+            head += "  " + terminal_safe(q["header"])
         lines.append(head)
-        lines += ["  " + x for x in q["question"].splitlines() or [""]]
+        lines.append("  " + terminal_safe(q["question"]))
         for i, o in enumerate(q.get("options") or [], 1):
-            lines.append("  %d. %s%s" % (i, o["label"], "  (recommended)" if o.get("recommended") else ""))
+            lines.append("  %d. %s%s" % (i, terminal_safe(o["label"]),
+                                         "  (recommended)" if o.get("recommended") else ""))
         if q.get("multiSelect"):
             lines.append("  (pick any number)")
         for r in q["references"]:
             where = r["path"] + (":%d-%d" % tuple(r["lines"]) if r.get("lines") else "")
-            lines.append("  file: %s%s" % (where, "  (changed since asked)" if r.get("changed") else ""))
+            lines.append("  file: %s%s" % (terminal_safe(where), "  (changed since asked)" if r.get("changed") else ""))
         if q.get("queued"):
             x = q["queued"]
             said = ", ".join(x["picks"])
             if x["text"]:
                 said += (" · " if said else "") + json.dumps(x["text"], ensure_ascii=False)
-            lines.append("  queued (%s): %s" % (x["key"], said))
+            lines.append("  queued (%s): %s" % (x["key"], terminal_safe(said)))
         lines.append("")
     if not m["open"]:
         lines += ["no open questions", ""]

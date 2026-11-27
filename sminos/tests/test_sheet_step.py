@@ -1482,6 +1482,41 @@ class APickIsMatchedExactlyFirst(unittest.TestCase):
         self.assertIn("has no option", err)
 
 
+class ShowsPlainPrint(unittest.TestCase):
+    """show without --json prints what a model and a person wrote to a terminal: C0 and C1 controls (ESC among
+    them) taken out, a line break a space, as the surfaces listing does (S1); --json and the record as written."""
+
+    EVIL = "a\x1b[31mred\x1b[0m \x1b]8;;http://x\x07link\x1b]8;;\x07\rback\nnext\u0085nel\u2028sep\x9bcsi"
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_the_model_and_the_person_cannot_forge_a_line_or_drive_the_terminal(self):
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        e = self.EVIL
+        self.assertTrue(step(inline_call("toolu_p", [{"question": "Q " + e, "header": "H\x1b[2J" + "\n", "options":
+                                                      opts("L " + e, "Plain")}],
+                                         asker={"agentId": "ag\x1b[1m1", "name": "N " + e}))["ok"])
+        put_raw(SESSION, [line("page-0000p001", "answer", id="q1", revision=1, picks=["L " + e], text="T " + e)])
+        code, out, err = run_cli(["sheet", "show", "--session", SESSION])
+        self.assertEqual(code, 0, err)
+        lines = out.rstrip("\n").split("\n")
+        self.assertFalse([c for c in out.rstrip("\n") if c != "\n" and (ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f
+                                                                       or c in "\u2028\u2029")], repr(out))
+        clean = "a[31mred[0m ]8;;http://xlink]8;; back next nel sepcsi"
+        self.assertEqual(lines[0], "q1  asked by the subagent N %s (ag[1m1)  H[2J " % clean)
+        self.assertEqual(lines[1], "  Q " + clean)
+        self.assertEqual(lines[2], "  1. L " + clean)
+        self.assertEqual(lines[3], "  2. Plain")
+        self.assertTrue(lines[4].startswith("  queued (page-0000p001): L " + clean), lines[4])
+        self.assertEqual(len(lines), 5, out)
+        code, out, _ = run_cli(["sheet", "show", "--session", SESSION, "--json"])
+        q = json.loads(out)["open"][0]
+        self.assertEqual((q["question"], q["options"][0]["label"], q["asker"]["name"]), ("Q " + e, "L " + e, "N " + e))
+        self.assertEqual(state_of()["questions"][0]["question"], "Q " + e)
+
+
 class AnAnswersImagesGoWithItOrNotAtAll(unittest.TestCase):
     """S4: an answer's images are copied only once the whole request is checked, and taken back when the door
     appends nothing."""
