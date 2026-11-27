@@ -13923,7 +13923,8 @@ def engine_dirs(fresh=False):
 
 
 def engine_dirs_whole():
-    """engine_dirs read now, past every cache, and whole: raises OSError
+    """engine_dirs read now (not the generation's registry, nor a kept
+    listing of it), and whole: raises OSError
     when the registry's listing, or any registration in it, cannot be read,
     so a removal resting on a transcript being in none of them
     (transcript_confirmed_gone) is never answered without one."""

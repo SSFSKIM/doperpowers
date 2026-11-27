@@ -1560,10 +1560,12 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
     the detached record's log projected: what it still owes, then a closing for each question still open; a refusal
     before it publishes nothing. A record whose log could not all be written stays detached (Refused, 1) and the next
     removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
-    said. `witnessed` and `touched` (the daemon's sweep): the record's identity (record_identity) and its
-    state.json's st_mtime_ns the removal was decided on, looked at again under the lock; another record there, one
-    that cannot be told from another (same_record), or one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's transcript confirmed
-    gone), is run again there, and anything but True, or a failure, refuses (2). The lock file stays."""
+    said. `witnessed` (the daemon's sweep, and a /clear's removal, which checks no liveness) and `touched` (the
+    sweep): the record's identity (record_identity) and its state.json's st_mtime_ns the removal was decided on,
+    looked at again under the lock; another record there, one that cannot be told from another (same_record), or
+    one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's: the transcript gone,
+    or what a /clear's note describes), is run again there, and anything but True, or a failure, refuses (2). The
+    lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
                       % session, 2)

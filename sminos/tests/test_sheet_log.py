@@ -909,7 +909,7 @@ class Sweep(Log):
         self.assertIs(same((1, 2, m), (1, 2, n)), False, "another nonce")
         self.assertIs(same((1, 3, n), (1, 2, n)), False, "another directory")
         self.assertIs(same(None, (1, 2, n)), False, "no record there")
-        self.assertIs(same((1, 2, ""), (1, 2, n)), False, "a record's nonce is never taken away: one without is another")
+        self.assertIs(same((1, 2, ""), (1, 2, n)), False, "a nonce is never taken away: a record without is another")
         self.assertIsNone(same((1, 2, None), (1, 2, n)), "its nonce not read")
         self.assertIsNone(same((1, 2, n), (1, 2, None)), "the witness holds none")
         self.assertIsNone(same((1, 2, ""), (1, 2, "")), "neither minted: the inode alone tells nothing")
