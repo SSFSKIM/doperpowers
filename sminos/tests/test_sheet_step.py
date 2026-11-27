@@ -520,7 +520,7 @@ class Verbs(unittest.TestCase):
         code, _, err = self.cli("bogus")
         self.assertEqual(code, 2)
         self.assertIn("invalid choice: 'bogus'", err)
-        self.assertIn("'show'", err)
+        self.assertRegex(err, r"\bshow\b")  # argparse quotes the choices on some Pythons, not others
         for private in ("step", "probe", "log", "witness"):
             self.assertNotRegex(err, r"\b%s\b" % private, err)
         code, out, err = self.cli("witness", "--session", SESSION)
