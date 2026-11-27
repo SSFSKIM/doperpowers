@@ -451,7 +451,7 @@ record kept changing under its three reads (read again). The exits are
 stated in `skills/sminos/scripts/CLAUDE.md`. A session cannot answer, dismiss or
 retract on its own sheet. `step`, `probe` and `log` are the tool's own.
 
-Known limits (`docs/doperpowers/TECH-DEBT.md`, rows 37 to 50): a door
+Known limits (`docs/doperpowers/TECH-DEBT.md`, rows 37 to 58): a door
 killed inside its write can leave part of a batch, which the resend
 completes, and the parts may reach the agent in two envelopes; a session
 resumed in two terminals delivers what is pending in both; a row is taken
