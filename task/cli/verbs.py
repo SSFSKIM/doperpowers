@@ -172,12 +172,21 @@ def create(ctx):
     ensure(ctx, labels + [a.readiness])
     made = ctx.client.create_issue(repo, a.title, body, labels)
     number, url, node_id = made["number"], made["html_url"], made["node_id"]
-    step = "an edge"
+    # Each edge as the `task edge` that writes it, so that a receipt can name the ones still to write.
+    edges = [("--block %s" % shlex.quote(ref_text(r, n, repo).lstrip("#")), node)
+             for (r, n), node in zip(blockers, nodes)]
+    if a.parent is not None:
+        edges.append(("--parent %d" % a.parent, nodes[-1]))
+    done = 0
+    step = None
     try:
-        for node in nodes[:len(blockers)]:
-            ctx.client.add_blocked_by(node_id, node["id"])
-        if a.parent is not None:
-            ctx.client.set_parent(nodes[-1]["id"], node_id)
+        for flag, node in edges:
+            step = "the edge %s" % flag
+            if flag.startswith("--parent"):
+                ctx.client.set_parent(node["id"], node_id)
+            else:
+                ctx.client.add_blocked_by(node_id, node["id"])
+            done += 1
         step = "its readiness label"
         ctx.client.add_label(repo, number, a.readiness)
     except Exception as e:  # the issue exists: whatever stopped the rest, say what is left and how to finish
@@ -190,9 +199,10 @@ def create(ctx):
             raise failed("#%d was opened, and the write of its readiness label had no definite answer (%s): whether "
                          "it carries %s is unconfirmed. Read it with %s; if it lacks the label, %s%s"
                          % (number, said, a.readiness, ctx.cmd("show %d" % number), finish, unsent))
+        todo = [ctx.cmd("edge %d %s" % (number, flag)) for flag, _ in edges[done:]] + [finish]
         raise failed("#%d was opened, and %s could not be written (%s): it is left untracked, with no readiness "
-                     "label, so that it is never seen as ready unfinished. Finish it: write any edge it lacks with "
-                     "%s, then %s%s" % (number, step, said, ctx.cmd("edge %d" % number), finish, unsent))
+                     "label, so that it is never seen as ready unfinished. Finish it: %s%s"
+                     % (number, step, said, "; then ".join(todo), unsent))
     print("%d %s" % (number, url))
     if for_answer is not None:
         # The tag `say` resolves to that one thread: its current session's whole id (sminos's tag grammar reads a

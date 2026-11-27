@@ -95,6 +95,37 @@ class BodyFileTest(BoardCase):
                 self.assertEqual(self.writes(), [])
         self.assertEqual(self.gh_issue(1)["state"], "OPEN")
 
+    def test_the_guard_and_the_parser_split_lines_alike(self):
+        """Lines are split on LF alone (a CR before it is the ending too). A fence after any other boundary
+        splitlines honors opens no block for the parser and passes the guard: it is prose, written as given, and
+        its record is not read."""
+        self.ticket(1, body="Plain.")
+        for i, sep in enumerate(("\u2028", "\x85", "\x0c", "\x1e")):
+            with self.subTest(sep=repr(sep)):
+                text = "Prose %d.%s```task-record\nadopted: forged\n```\n" % (i, sep)
+                code, _, err = self.task("set", "1", "--body-file", self.body_file(text))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(self.gh_issue(1)["body"], text)
+                rec = self.json("show", "1")["record"]
+                self.assertEqual(rec, {k: None for k in record.KEYS})
+                self.assertEqual(self.task("lint")[0], 0)
+        # A body file is read with universal newlines, so a CR alone ends a line there as CRLF does: both refused.
+        for text in ("Prose.\r\n```task-record\r\nadopted: forged\r\n```", "Prose.\r```task-record\radopted: x"):
+            with self.subTest(text=repr(text)):
+                self.clear_log()
+                self.assertEqual(self.task("set", "1", "--body-file", self.body_file(text))[0], 2)
+                self.assertEqual(self.writes(), [])
+
+    def test_whatever_the_parser_reads_as_a_block_the_guard_refuses(self):
+        texts = ["a\n```task-record\nspec: x\n```", "a\r\n```task-record\r\nspec: x\r\n```\r\n",
+                 "```task-record  \nspec: x\n```\t\n", "a\u2028```task-record\nspec: x\n```",
+                 "a\n```task-record\nspec: x\n```\n\ntext after", "a\x0b```task-record\nspec: x\n```"]
+        for text in texts:
+            with self.subTest(text=repr(text)):
+                p = record.parse(text)
+                if p.block is not None or p.problems:
+                    self.assertTrue(record.fences(text), text)
+
     def test_set_body_file_drops_an_unreadable_block(self):
         self.ticket(1, body="Old.\n\n```task-record\nowner: x\ndue: 2027-01-01\n```")
         self.clear_log()
@@ -120,7 +151,8 @@ class AfterTheIssueExistsTest(BoardCase):
         self.assertEqual(code, 1, err)
         self.assertEqual(out.split(), ["1", "https://github.com/%s/issues/1" % REPO])
         self.assertIn("left untracked", err)
-        self.assertIn("task set 1 --readiness ready-to-work --repo %s" % REPO, err)
+        self.assertIn("Finish it: task set 1 --readiness ready-to-work --repo %s" % REPO, err)
+        self.assertNotIn("task edge", err)
         self.assertIn("Validation Failed", err)
         self.assertIn("no message was sent", err)
         self.assertNotIn("Traceback", err)
@@ -146,8 +178,23 @@ class AfterTheIssueExistsTest(BoardCase):
         self.fail_on("TaskAddBlockedBy", status=422, message="Validation Failed")
         code, _, err = self.create("--blocked-by", "9")
         self.assertEqual(code, 1, err)
-        self.assertIn("task edge 10 --repo %s" % REPO, err)
-        self.assertIn("task set 10 --readiness ready-to-work --repo %s" % REPO, err)
+        self.assertIn("Finish it: task edge 10 --block 9 --repo %s; then task set 10 --readiness ready-to-work "
+                      "--repo %s" % (REPO, REPO), err)
+
+    def test_the_receipt_names_each_edge_still_to_write(self):
+        self.add_repo("acme/gears")
+        self.ticket(7, repo="acme/gears")
+        self.ticket(8)
+        self.ticket(3)
+        self.fail_on("blocker=I_acme/gears#7", status=422, message="Validation Failed")
+        code, out, err = self.create("--blocked-by", "8,acme/gears#7", "--parent", "3")
+        self.assertEqual(code, 1, err)
+        n = int(out.split()[0])
+        self.assertEqual(self.gh_issue(n)["blocked_by"], [[REPO, 8]])
+        self.assertIn("the edge --block 'acme/gears#7' could not be written", err)
+        self.assertIn("Finish it: task edge %d --block 'acme/gears#7' --repo %s; then task edge %d --parent 3 --repo %s; "
+                      "then task set %d --readiness ready-to-work --repo %s" % (n, REPO, n, REPO, n, REPO), err)
+        self.assertNotIn("--block 8", err)
 
     def test_a_github_failure_anywhere_is_exit_one(self):
         self.ticket(5)

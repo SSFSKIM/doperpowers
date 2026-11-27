@@ -49,6 +49,20 @@ def valid_date(text):
     return True
 
 
+def lines_of(text):
+    """The text's lines, each with its ending: split on LF alone, as GitHub
+    renders a fence (a CR before the LF is the line's ending too). The
+    parser and the prose guard both read lines this way, so no text opens a
+    block for one and not the other."""
+    parts = (text or "").split("\n")
+    return [p + "\n" for p in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def _bare(line):
+    """A line without its ending and its trailing blanks, for matching a fence."""
+    return line.rstrip("\n").rstrip("\r").rstrip(" \t")
+
+
 def _strip_eol(line):
     return line.rstrip("\r\n")
 
@@ -76,22 +90,22 @@ class Parsed:
 
 def parse(body):
     body = body or ""
-    lines = body.splitlines(keepends=True)
-    opens = [i for i, line in enumerate(lines) if _strip_eol(line).rstrip() == OPEN]
+    lines = lines_of(body)
+    opens = [i for i, line in enumerate(lines) if _bare(line) == OPEN]
     if not opens:
         return Parsed(body, None, {}, [])
     problems = []
     if len(opens) > 1:
         problems.append("more than one task-record block")
     k = opens[-1]
-    close = next((j for j in range(k + 1, len(lines)) if _strip_eol(lines[j]).rstrip() == CLOSE), None)
+    close = next((j for j in range(k + 1, len(lines)) if _bare(lines[j]) == CLOSE), None)
     if close is None or any(line.strip() for line in lines[close + 1:]):
         problems.append("a task-record block that is not the last thing in the body")
         return Parsed(body, None, {}, problems, misplaced=True)
     offset = sum(len(line) for line in lines[:k])
     fields = {}
     for line in lines[k + 1:close]:
-        m = _LINE.fullmatch(_strip_eol(line).rstrip())
+        m = _LINE.fullmatch(_bare(line))
         if not m:
             problems.append("a line that is not `key: value`: %r" % _strip_eol(line))
             continue
@@ -111,12 +125,15 @@ def parse(body):
 # Between the prose and the block the CLI writes exactly this, and takes exactly this away with the block's last
 # key, so that a change of the record alone leaves every byte of the prose as it was.
 SEPARATOR = "\n\n"
-_FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*task-(record|claim)\b", re.MULTILINE)
+_FENCE_RE = re.compile(r"[ \t]*(`{3,}|~{3,})[ \t]*task-(record|claim)\b")
 
 
 def fences(text):
-    """The task-record or task-claim fences a text opens, as written."""
-    return [m.group(0).strip() for m in _FENCE_RE.finditer(text or "")]
+    """The task-record or task-claim fences a text opens, as written: on any
+    of its lines as `lines_of` splits them (more forms than the parser
+    reads as a block, never fewer)."""
+    found = (_FENCE_RE.match(line) for line in lines_of(text))
+    return [m.group(0).strip() for m in found if m]
 
 
 def _append(prose, block):
@@ -152,11 +169,11 @@ def with_keys(body, updates):
         if not added:
             return body
         return _append(body, OPEN + "\n" + "".join("%s: %s\n" % kv for kv in added) + CLOSE)
-    lines = p.block.splitlines(keepends=True)
-    close = next(j for j in range(1, len(lines)) if _strip_eol(lines[j]).rstrip() == CLOSE)
+    lines = lines_of(p.block)
+    close = next(j for j in range(1, len(lines)) if _bare(lines[j]) == CLOSE)
     inner, done = [], set()
     for line in lines[1:close]:
-        m = _LINE.fullmatch(_strip_eol(line).rstrip())
+        m = _LINE.fullmatch(_bare(line))
         key = m.group(1) if m else None
         if key in updates:
             done.add(key)
