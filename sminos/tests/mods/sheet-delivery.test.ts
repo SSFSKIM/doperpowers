@@ -479,6 +479,38 @@ describe('which turn a flight belongs to (I9)', () => {
     await h.settle()
     expect(h.calls.filter((c) => c.op === 'ui.toast')).toHaveLength(1)
   })
+
+  test("a prompt typed over a turn that ends while the hooks beneath still hold the prompt: once that turn and the next have ended, its envelope is landed or ready again", async () => {
+    for (const isHeld of [false, true]) {
+      const rec = record()
+      const h = await started(rec)
+      await h.turnStart('A')
+      await answered(h, rec, out('k1', 'q1'))
+      let enter: () => void = () => {}
+      const typed = h.prompt('also this', { turnId: 'A' }, (e) => new Promise((resolve) => (enter = () => resolve({ text: e.text, context: e.context, origin: e.origin }))))
+      await h.settle()
+      h.converse({ rows: [], api: [] })
+      await h.turnComplete('A', 'answer')
+      await h.settle()
+      enter()
+      const entered = (await typed) as { context?: string[] }
+      expect(entered.context).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+      await h.turnStart('B')
+      if (isHeld) h.converse({ rows: [], api: [{ role: 'user', content: `<system-reminder>\nprompt.submit hook additional context: ${entered.context?.[0]}\n</system-reminder>` }] })
+      await h.turnComplete('B', 'answer')
+      await h.settle()
+      await h.hop()
+      if (isHeld) {
+        expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
+        expect(h.submits).toEqual([])
+      } else {
+        // Ready again: the toast, and B's end opens the idle route for it.
+        expect(h.calls.filter((c) => c.op === 'ui.toast')).toHaveLength(1)
+        expect(h.submits).toHaveLength(1)
+        expect(h.submits[0]).toContain('"keys":["k1"]')
+      }
+    }
+  })
 })
 
 describe('a reservation, checked again at the hop (I9)', () => {

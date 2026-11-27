@@ -1890,6 +1890,11 @@ export function registerSheet(on: On) {
       return next(e)
     }
     const flight = taken.flight
+    if (flight !== undefined && e.turnId !== undefined) {
+      // Typed over a running turn: it enters that turn, or the next. Marked before the hooks beneath run, so a
+      // turn that ends meanwhile hands it to the next turn rather than leaving it to none.
+      flight.tentative = e.turnId
+    }
     let result: Awaited<ReturnType<typeof next>>
     try {
       result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
@@ -1907,14 +1912,9 @@ export function registerSheet(on: On) {
       failFlight(port, gen, flight, result.drop)
     } else if (!keysIn(entered).some((key) => flight.keys.includes(key))) {
       failFlight(port, gen, flight, 'a hook took it out of the prompt')
-    } else if (gen.flights.includes(flight)) {
-      if (e.turnId === undefined) {
-        // Its prompt opened a turn, started by now.
-        turnOf(flight)
-      } else {
-        // Typed over a running turn: it enters that turn, or the next.
-        flight.tentative = e.turnId
-      }
+    } else if (gen.flights.includes(flight) && e.turnId === undefined) {
+      // Its prompt opened a turn, started by now.
+      turnOf(flight)
     }
     return result
   }).catch((_, e, next) => next(e))
