@@ -1838,12 +1838,12 @@ describe('the message tool', () => {
       type: 'Text',
       children: [String((e.props as { text?: string }).text ?? (e.component === 'ToolResult' ? 'sent' : e.component))],
     }))
-  type Call = { input: unknown; isRunning?: boolean; isErrored?: boolean; isInterrupted?: boolean; output?: unknown }
-  const callRow = ($: Engine, id: string, { input, isRunning = false, isErrored = false, isInterrupted = false, output }: Call) =>
+  type Call = { input: unknown; isRunning?: boolean; isErrored?: boolean; isInterrupted?: boolean; isExpanded?: boolean; output?: unknown }
+  const callRow = ($: Engine, id: string, { input, isRunning = false, isErrored = false, isInterrupted = false, isExpanded, output }: Call) =>
     $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
-      props: { tool_use_id: id, tool: MESSAGE_TOOL, input, isRunning, isErrored, isInterrupted, output },
-    } as never)
+      props: { tool_use_id: id, tool: MESSAGE_TOOL, input, isRunning, isErrored, isInterrupted, isExpanded, output },
+    })
   const resultRow = ($: Engine, id: string, output: unknown, isErrored = false) =>
     $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'ToolResult', requestId: id,
@@ -1859,6 +1859,10 @@ describe('the message tool', () => {
 
   const groupedMessage = {
     tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: { text: 'Done.' }, output: 'sent',
+    isRunning: false, isErrored: false, isInterrupted: false,
+  }
+  const groupedBash = {
+    tool_use_id: 'toolu_b1', tool: 'Bash', input: { command: 'ls' }, output: 'ok',
     isRunning: false, isErrored: false, isInterrupted: false,
   }
   const expandedGroup = ($: Engine, calls: readonly ToolGroupCall[]) =>
@@ -1914,10 +1918,7 @@ describe('the message tool', () => {
     mock.store(on)
     engineDrawing(on)
     await message($, 'm0', '<message>Starting.</message>')
-    const group = await expandedGroup($, [
-      { tool_use_id: 'toolu_b1', tool: 'Bash', input: { command: 'ls' }, output: 'ok', isRunning: false, isErrored: false, isInterrupted: false },
-      groupedMessage,
-    ])
+    const group = await expandedGroup($, [groupedBash, groupedMessage])
     const first = await bash($, 'toolu_b1')
     const last = await callRow($, groupedMessage.tool_use_id, groupedMessage)
 
@@ -1953,6 +1954,69 @@ describe('the message tool', () => {
     expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
     await band.press({ key: 'to-human-mode' })
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('shrinking an expanded group redraws a message that already drew as a grouped call', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const band = await viewBand($)
+    await band.press({ key: 'to-human-mode' })
+    const group = await expandedGroup($, [groupedBash, groupedMessage])
+
+    // The standalone call draws before its old group shrinks, so it still looks grouped.
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await group.redraw({ calls: [groupedBash], isExpanded: true, isActive: false })
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Markdown', text: 'Done.' })).toBeDefined()
+  })
+
+  test('an errored desktop message and its nested result keep their group unfolded', async ($, on) => {
+    mock.env(on, { MAWS_NATIVE_TO_HUMAN: '9' })
+    mock.store(on)
+    on('ui.render', { component: 'ToolResult' }, (_, e) => ({ type: 'Text', children: [String(e.props.output)] }))
+    engineDrawing(on)
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'm0',
+      props: { text: '<message>Starting.</message>', isFirstOfReply: true },
+    })
+    const failed = { ...groupedMessage, isErrored: true, output: 'Message was refused.' }
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolGroup', requestId: 'run-of-one',
+      props: { calls: [failed], isExpanded: false, isActive: false },
+    })
+    await group.press({ key: 'to-human-toggle' })
+    const result = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolResult', requestId: failed.tool_use_id,
+      props: { tool_use_id: failed.tool_use_id, tool: MESSAGE_TOOL, output: failed.output, isErrored: true },
+    })
+
+    expect(await group.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await result.find({ type: 'Text', text: 'Message was refused.' })).toBeDefined()
+  })
+
+  test('a child drawn after a downstream hook expands its group keeps the run unfolded', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', { component: 'ToolGroup' }, (_, e, next) => next({ ...e, props: { ...e.props, isExpanded: true } }))
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'expanded-downstream',
+      props: { calls: [groupedMessage], isExpanded: false, isActive: false },
+    })
+    await group.press({ key: 'to-human-toggle' })
+    // The engine draws the child with the rewritten expansion state, not the group's incoming props.
+    const child = await callRow($, groupedMessage.tool_use_id, { ...groupedMessage, isExpanded: true })
+
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await child.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await child.find({ type: 'Markdown', text: 'Done.' })).toBeUndefined()
   })
 
   test('a call a group held and let go of draws as a message', async ($, on) => {

@@ -2040,10 +2040,10 @@ export function registerToHuman(on: On) {
       unsent.add(e.props.tool_use_id)
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
-    // A collapsed group never draws ToolUse: the group released this call
-    // (on resume it may unmount without redrawing). An expanded group draws
-    // its children through ToolUse, so only ToolResult proves one stands alone.
-    if (held !== undefined && isRead(e.props.tool) && !expanded.has(held)) {
+    // A collapsed group never draws ToolUse, so a call it still holds is
+    // standalone (on resume the group can unmount without redrawing) unless
+    // a hook beneath us expanded the group before the engine drew its children.
+    if (held !== undefined && isRead(e.props.tool) && !expanded.has(held) && !e.props.isExpanded) {
       if (leaveGroup(e.requestId) && isFolding()) {
         $.ui.invalidate('ui.render')
       }
@@ -2117,9 +2117,11 @@ export function registerToHuman(on: On) {
     // now held by a group under a new first call leaves its old group behind.
     const calls = e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : []))
     const held = new Set(calls)
+    let isReleased = false
     for (const call of membersOf.get(id) ?? []) {
       if (!held.has(call) && groupOf.get(call) === id) {
         groupOf.delete(call)
+        isReleased = true
         // A call the group took up (`joinGroup`) is its own row again: its controls act on it.
         if (view.heldBy.get(call) === id) {
           view.heldBy.delete(call)
@@ -2145,7 +2147,8 @@ export function registerToHuman(on: On) {
         }
       }
     }
-    if ((isJoined || isDropped) && isFolding()) {
+    // A released call may have already drawn as grouped, even in the full transcript.
+    if (isReleased || ((isJoined || isDropped) && isFolding())) {
       $.ui.invalidate('ui.render')
     }
     if (last !== undefined && lastOf.get(id) !== last) {
@@ -2195,9 +2198,10 @@ export function registerToHuman(on: On) {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
-    // Expanded groups draw results inline. A separate result confirms the
-    // call is standalone; redraw its ToolUse even in the full transcript.
-    if (groupOf.get(e.requestId) !== undefined && isRead(e.props.tool)) {
+    // On the terminal, expanded groups draw results inline. A separate result
+    // confirms the call is standalone; redraw its ToolUse even in the full
+    // transcript. MAWS can draw a result inside a group of one.
+    if (e.surface === 'terminal' && groupOf.get(e.requestId) !== undefined && isRead(e.props.tool)) {
       leaveGroup(e.requestId, true)
       $.ui.invalidate('ui.render')
     }
