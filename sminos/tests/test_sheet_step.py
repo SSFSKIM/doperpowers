@@ -1610,6 +1610,86 @@ class TheResultIsBoundedAtItsSource(unittest.TestCase):
         self.assertLessEqual(len(sheet._dumps(sheet._bounded(out)).encode()), sheet.ANSWER_MAX)
 
 
+class ADamagedRecord(unittest.TestCase):
+    """What an unclean stop can leave in a record, read so that nothing is applied twice or lost (R4, R6, R7)."""
+
+    def setUp(self):
+        self.home = scratch()
+        self.rec = os.path.join(self.home, "sheet", SESSION)
+        self.inbox = os.path.join(self.rec, "inbox.jsonl")
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def door(self, *lines):
+        data = "".join(json.dumps(x) + "\n" for x in lines).encode()
+        return [r["state"] for r in sheet.put(SESSION, data, wait=False)["results"]]
+
+    def test_an_inbox_cut_below_the_committed_offset_takes_its_next_answer_once(self):
+        """R4: state.json synced, the inbox's last appends lost (a power loss): everything below the offset was
+        applied, so the offset is held to the inbox's size, by the step and by the door alike."""
+        for order in ("put first", "step first"):
+            with self.subTest(order=order):
+                self.home = scratch()
+                self.rec = os.path.join(self.home, "sheet", SESSION)
+                self.inbox = os.path.join(self.rec, "inbox.jsonl")
+                step(ev("start", start={"source": "startup"}))
+                step(inline_call("toolu_d1", [{"question": "One?", "options": opts("Yes", "No")},
+                                              {"question": "Two?", "options": opts("Yes", "No")}]))
+                self.door(line("page-0000d001", "answer", id="q1", revision=1, picks=["Yes"]))
+                step(ev("drain"))
+                offset = state_of()["inbox"]["offset"]
+                self.assertEqual(offset, os.path.getsize(self.inbox))
+                with open(self.inbox, "r+b") as f:
+                    f.truncate(offset - 9)           # the last line's end lost
+                if order == "step first":
+                    out = step(ev("drain"))
+                    self.assertEqual((out["effects"]["applied"], out["effects"]["skipped"]), ([], 0))
+                self.assertEqual(self.door(line("page-0000d002", "answer", id="q2", revision=1, picks=["No"])),
+                                 ["queued"])
+                self.assertEqual([q["queued"]["key"] for q in sheet.model(SESSION)["open"] if q.get("queued")],
+                                 ["page-0000d002"], "show lists what the step will read")
+                out = step(ev("drain"))
+                self.assertEqual(out["effects"]["applied"], ["page-0000d002"])
+                self.assertEqual(out["effects"]["verdicts"].get("page-0000d002", {}).get("verdict", "applied"),
+                                 "applied")
+                self.assertEqual(step(ev("drain"))["effects"]["applied"], [], "once")
+                self.assertEqual(sorted(o["id"] for o in state_of()["pending"]), ["q1", "q2"])
+
+    def test_a_new_record_beside_an_inbox_a_record_left_starts_at_its_end(self):
+        """R7: the door never appends without a state, so an inbox with no state.json beside it is what a record
+        left; a start that makes a state there replays none of it into the new record."""
+        os.makedirs(self.rec)
+        with open(self.inbox, "wb") as f:
+            f.write((json.dumps(line("page-0000d003", "answer", id="q1", revision=1, text="the old answer"))
+                     + "\n").encode())
+        size = os.path.getsize(self.inbox)
+        out = step(a_start("s1", source="startup", floor=0, asks=[stage_ask("s1", 1, an_ask("toolu_A", "Gate?"))]))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(state_of()["inbox"]["offset"], size)
+        self.assertEqual([q["id"] for q in state_of()["questions"]], ["q1"])
+        out = step(ev("drain"))
+        self.assertEqual((out["effects"]["applied"], out["effects"]["skipped"]), ([], 0))
+        self.assertEqual([q["id"] for q in state_of()["questions"]], ["q1"], "the new q1 stays open")
+
+    def test_a_body_whose_file_an_unclean_stop_damaged_is_written_again(self):
+        """R6: a reused text or reference file is the bytes its name states, not merely as long."""
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_d2", [{"question": "First?"}, {"question": "Second?"}]))
+        text = "x" * 2500
+        self.door(line("page-0000d004", "answer", id="q1", revision=1, text=text))
+        step(ev("drain"))
+        rel = state_of()["pending"][0]["textFile"]
+        path = os.path.join(self.rec, rel)
+        with open(path, "wb") as f:
+            f.write(b"\0" * len(text))               # as long, and not the text
+        self.door(line("page-0000d005", "answer", id="q2", revision=1, text=text))
+        step(ev("drain"))
+        self.assertEqual(state_of()["pending"][1]["textFile"], rel)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), text.encode())
+
+
 class RemoveDetachesTheStagingFirst(unittest.TestCase):
     """Fix wave 2: a rename that fails leaves the sheet whole; what a removal left is deleted by the next one."""
 

@@ -541,8 +541,13 @@ def append(session, lines):
                 st = os.fstat(fd)
                 if not stat.S_ISREG(st.st_mode):
                     S.die("sheet put: the record's inbox.jsonl is not a file; nothing appended", 1)
-                size = st.st_size
-                if size and os.pread(fd, 1, size - 1) != b"\n":
+                size, offset = st.st_size, state["inbox"]["offset"]
+                if size < offset:
+                    # Shorter than the offset the step committed (an unclean stop kept its last appends from the
+                    # disk, every one of them applied): the call goes at the offset, the bytes before it blank
+                    # lines, so the step reads it, and only it.
+                    data = b"\n" * (offset - size) + data
+                elif size and os.pread(fd, 1, size - 1) != b"\n":
                     data = b"\n" + data       # what an unfinished write left becomes a line of its own
                 # One write; should it come back short, the rest follows while the lock is still held, so no drain
                 # sees part of the call. Should the file refuse more, it is cut back to its length before the call:
@@ -716,6 +721,19 @@ def _write_file(rec, rel, data):
     finally:
         os.close(fd)
     os.replace(tmp, path)
+
+
+def _holds(path, body):
+    """Whether the file at `path` holds `body`, read whole (a body is a few MiB at most): a `refs/` or `texts/`
+    file named by its digest is reused only when it is those bytes, since an unclean stop can leave one damaged
+    at its full length."""
+    try:
+        if os.path.getsize(path) != len(body):
+            return False
+        with open(path, "rb") as f:
+            return f.read() == body
+    except OSError:
+        return False
 
 
 def _sweep(rec, stage):
@@ -1017,19 +1035,28 @@ def _step_locked(session, event, now, tz):
         again = _receipt(stage, event)
         if again is not None:
             norm["start"]["again"] = again
-    data = b""
-    if state is not None:
-        try:
-            with open(os.path.join(rec, "inbox.jsonl"), "rb") as f:
+    data, read, size = b"", state, 0
+    try:
+        with open(os.path.join(rec, "inbox.jsonl"), "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            if state is not None:
+                if state["inbox"]["offset"] > size:
+                    # Everything below a committed offset was applied: an inbox shorter than it lost appends an
+                    # unclean stop kept from the disk, and is read from its end (the door appends from the offset).
+                    state = dict(state, inbox=dict(state["inbox"], offset=size))
                 f.seek(state["inbox"]["offset"])
                 data = f.read()
-        except FileNotFoundError:
-            pass
+    except FileNotFoundError:
+        pass
     regs = surfaces(now)
     surface, alive = suiting(regs, event.get("remote", False))
     new, fx, writes = STEP_.apply(state, data, norm, now, session, surface, tz)
-    unchanged = state is not None and dict(new, seq=state["seq"]) == state
-    new["seq"] = state["seq"] if unchanged else (state["seq"] if state is not None else 0) + 1
+    if state is None:
+        # The door never appends without a state: an inbox already there is what an earlier record left, applied
+        # or not, and none of it is this record's.
+        new["inbox"]["offset"] = size
+    unchanged = read is not None and dict(new, seq=read["seq"]) == read
+    new["seq"] = read["seq"] if unchanged else (read["seq"] if read is not None else 0) + 1
 
     # The whole answer is composed before anything is written: no composer's failure follows a committed state.
     running = (event.get("agents") or {}).get("running") or []
@@ -1074,8 +1101,7 @@ def _step_locked(session, event, now, tz):
         if not os.path.exists(os.path.join(rec, "inbox.jsonl")):
             _write_file(rec, "inbox.jsonl", b"")
     for rel, body in writes.items():
-        p = os.path.join(rec, rel)
-        if not (os.path.isfile(p) and os.path.getsize(p) == len(body)):
+        if not _holds(os.path.join(rec, rel), body):
             _write_file(rec, rel, body)
     if not unchanged:
         _write_file(rec, "state.json", _dumps(new).encode())
