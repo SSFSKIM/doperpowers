@@ -2668,12 +2668,13 @@ rests on it fails, and names the probe.
 | `two-surfaces` | two `put`s answer one question: `applied`, then `closed`; then the stand-in is stopped, the agent asks again and its result ends with the no-surface sentence; the stand-in returns and `show` lists the question | Acceptance 19 |
 | `import` | a session with two open asks of today's tool is resumed under the sheet: both are on the sheet, and are there once after two more resumes; with the transcript's search made to fail, nothing is imported and the next resume imports; a fork of such a session is empty after its own resume | G2 |
 
-It ends `live-sheet-check: 19 passed` and exits 0; a failing case prints
+It ends `live-sheet-check: N passed`, N counting its checks (52 at M7,
+several a case), and exits 0; a failing case prints
 `FAIL <case>: <what was observed>`.
 
 **M7**, besides the live check:
 
-    ci-gate                                                         # every gate the change's paths plan
+    ci-gate                                                         # every gate the change's paths plan (ci-kit has no `--gates all` here)
 
 then C1's two evals, each by the command its header gives, against the
 shipped description; each must meet the threshold the composite's
@@ -2758,3 +2759,62 @@ exact shape, or names what a repair of this plan's own changed.
     fixtures, a write that did not finish, before and after its resend,
     and stored calls for a foreclosed call and for one whose outcome was
     not known.
+
+**From M2 to M7** (2026-11-27, against the composite at `5f53131c5`
+and its later revisions). What the composite's writer has already taken
+in is marked; the rest is proposed.
+
+12. (Taken.) Acceptance 18 and §6: an ended subagent's open questions
+    are told on the main conversation's next route (a tool result or a
+    prompt): on 2.1.331 the main loop's Agent runs in the background even
+    when asked not to, so its completion's prompt usually comes first.
+13. (Taken.) §8.3 and §8.1: the question line's one sentence rule; the
+    terminal row has no head line of its own; receipts from the record,
+    else from the delivery blocks the conversation holds, drawing only;
+    a dismissal read from blocks cannot tell revisions apart.
+14. (Taken.) I1/X1: the record holds the writer's own `.incarnation`; a
+    reader ignores any name in a record it does not know. X2: the door,
+    the step and `answer --image` refuse a record directory or child that
+    is a link; `show --json` projects a queued `sent` entry by kind.
+15. §5.5 and §7, "made at a process's first `session.start`": at a
+    terminal launch the engine raises the classic SessionStart without
+    waiting for the plugin's `session.start`, before or after the choice.
+    Proposed addition to §7: "The engine does not order the two: a
+    SessionStart that comes before the choice is held and its start
+    ordered once the choice is the sheet; its context then goes on the
+    session's first route."
+16. §2.3, "the call runs the guards again, their scrubbing of the result
+    included": observed live with the owner's secrets guard, which
+    scrubs a Read rather than refusing it; the stored body holds the
+    guard's redaction handle. Proposed addition: "A guard that scrubs
+    leaves its handle in the stored body; only a refusal refuses the
+    entry."
+17. §5.2, the idle route: an idle submit made while another turn runs
+    waits behind it, and that turn's completion comes before the submit
+    enters. Proposed: "An envelope sent by the idle route is settled only
+    by its own landing, its submit's failure, or the end of the turn its
+    own prompt opened." And: "the engine raises no prompt hook for a
+    plugin's own submit, so a notice waiting when the idle route opens
+    goes in that prompt's text."
+18. §5.4 and §6, for C5: a direct send to a subagent keeps its outcome
+    the plugin's until the send's receipt has been recorded (the agent is
+    treated as running for every step until then), so a reader of the
+    file never sees that outcome as the main conversation's mid-send.
+19. §3, a start: a start is known by a nonce fixed across its retries, so
+    a retried start tells the conversation the same thing (fork, lost,
+    import) and a fresh resume is never taken for a retry.
+20. §11: the projection records a question's project before it appends
+    anything (a retry across a move goes to one project); `append_host`
+    adds no `from`/`to`, the projection sets them; a removal closes a
+    question in the log only after it has detached the record under the
+    lock; and the daemon removes a record only on the transcript's own
+    path confirmed missing, under the lock, with the record's identity
+    unchanged ("no identity, no act"). Known residue: a record made again
+    for the same session with an unknown floor restarts at q1, and the
+    log's `(kind, src)` rule drops the new question's line.
+21. §9, the import: the floor's transcript search must not be cut by a
+    long history; it prints only the floor. With the floor unknown, an
+    import goes only into a record that has already assigned ids.
+22. X2's verbs: a `<who>` that is no member resolves a unique prefix (8 or
+    more characters) of a session with a record, so the band's
+    `sminos sheet show <first 8>` works for any session.
