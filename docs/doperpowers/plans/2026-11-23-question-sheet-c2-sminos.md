@@ -2720,9 +2720,10 @@ them (`sheet.early`, the start nonce, `SheetKept.preparing`) without
 changing a published shape.
 
 What to watch. The 1 s door-verdict bound is load-sensitive (1.13 s at
-load average 62, 0.77 s unloaded); the evals' `cap` scenario passes 4 of
-15 and is reported, not gated, so the description's cap guidance is the
-weakest part of what ships. The floor's rules live twice (TypeScript and
+load average 62, 0.77 s unloaded); E2's `cap` matter passes 4 of 15 cards
+(reported, not gated): a card about the over-cap run rarely carries its
+facts alone, and whether capture or the description should carry them
+is the composite's call. The floor's rules live twice (TypeScript and
 the perl search) and must change together.
 
 ## For the composite's writer
