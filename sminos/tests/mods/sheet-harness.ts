@@ -23,6 +23,9 @@ export const HOME = '/home/sm'
 export const COMMAND = '/plug/skills/sminos/scripts/sminos'
 export const S1 = '5eed0000-0000-4000-8000-0000000000c1'
 export const S2 = '5eed0000-0000-4000-8000-0000000000c2'
+/** A record's identity as `sminos sheet witness` prints it, and another record's. */
+export const W1 = `16777220:4242:${'a'.repeat(32)}`
+export const W2 = `16777220:4242:${'b'.repeat(32)}`
 export const ALIVE: Probe = { record: false, open: 0, pending: 0, queued: 0, surface: { name: 'standin', url: 'http://sheet.localhost:47590', reach: 'local' }, surfaces: 1 }
 
 export const view = (over: Partial<View> = {}): View => ({
@@ -76,6 +79,8 @@ export function harness(
     apiRead?: () => Promise<void>
     files?: Record<string, string>
     remove?: number
+    /** What `sminos sheet witness` answers, the n-th time (a record's identity at a /clear); W1 otherwise. */
+    witness?: (n: number) => { exitCode: number; stdout?: string }
     /** What `$.prompt.submit` answers for a text (the idle route); `{ text }` otherwise. */
     submit?: (text: string) => unknown
     /** What `$.session.send` answers for a send to an agent; delivered otherwise. */
@@ -110,6 +115,7 @@ export function harness(
   const sends: { agentId: string; text: string }[] = []
   let session = options.session ?? S1
   let projections = 0
+  let witnesses = 0
   const sets = new Map<string, number>()
   const env: Record<string, string> = { SMINOS_HOME: HOME, ...options.env }
   const $ = {
@@ -177,6 +183,11 @@ export function harness(
         if (verb === 'sheet' && op === 'log') {
           projections += 1
           const out = options.log === undefined ? { exitCode: 0 } : await options.log(projections)
+          return { stdout: '', stderr: '', ...out, isStdoutTruncated: false, isStderrTruncated: false }
+        }
+        if (verb === 'sheet' && op === 'witness') {
+          witnesses += 1
+          const out = options.witness === undefined ? { exitCode: 0, stdout: `${W1}\n` } : options.witness(witnesses)
           return { stdout: '', stderr: '', ...out, isStdoutTruncated: false, isStderrTruncated: false }
         }
         if (verb === 'sheet' && op === 'remove') {

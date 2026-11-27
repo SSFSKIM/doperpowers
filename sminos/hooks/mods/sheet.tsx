@@ -1455,10 +1455,35 @@ async function stageToday(port: Port, session: string, nonce: string, transcript
 /** I2's time (K6): what a staged ask's `askedAt` must be. */
 const TIME = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/
 
-/** The record a /clear left, removed (U10): `sminos sheet remove --cleared`. True once it is gone or was never there. */
-async function removeLeft(port: Port, left: string): Promise<boolean> {
+/** A record's identity as `sminos sheet witness` prints it: its directory's device and inode, and its nonce. */
+const IDENTITY = /^[0-9]+:[0-9]+:[0-9a-f]{32}$/
+
+/**
+ * The record a /clear left, as it is now (`sminos sheet witness`, its nonce
+ * minted if none is): its identity; null when there is no record; undefined
+ * when it has none that can be told, so it is kept.
+ */
+async function witnessLeft(port: Port, left: string): Promise<string | null | undefined> {
   try {
-    const out = await port.run(['sheet', 'remove', '--session', left, '--cleared'])
+    const out = await port.run(['sheet', 'witness', '--session', left])
+    const identity = out.stdout.trim()
+    if (out.exitCode === 0 && IDENTITY.test(identity)) {
+      return identity
+    }
+    if (out.exitCode === 3) {
+      return null
+    }
+    port.log(`sheet: the sheet ${left} a /clear left has no identity to remove it by (exit ${out.exitCode}: ${out.stderr.trim().slice(0, 300)}); it stays`)
+  } catch (error) {
+    port.log(`sheet: the sheet ${left} a /clear left could not be witnessed (${message(error)}); it stays`)
+  }
+  return undefined
+}
+
+/** The record a /clear left, removed (U10): `sminos sheet remove --cleared`, that record alone (`witnessed`). True once it is gone or was never there. */
+async function removeLeft(port: Port, left: string, witnessed: string): Promise<boolean> {
+  try {
+    const out = await port.run(['sheet', 'remove', '--session', left, '--cleared', '--witness', witnessed])
     if (out.exitCode === 0 || out.exitCode === 3) {
       return true
     }
@@ -1517,7 +1542,11 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
 /**
  * Removes the record a /clear left, in the background, once the start of
  * that session still in flight (if any) has landed, so no late start makes
- * it again; one removal at a time for a session.
+ * it again; one removal at a time for a session. The record is witnessed
+ * first, at the clear, and only that record goes: a removal delayed behind
+ * the start never takes one a resume of the left session made since. With
+ * no record at the clear, the one the start in flight makes is the clear's
+ * too, witnessed once it lands.
  */
 function removeLeftLater(port: Port, left: string) {
   if (sheet.removing.has(left)) {
@@ -1525,10 +1554,16 @@ function removeLeftLater(port: Port, left: string) {
   }
   sheet.removing.add(left)
   const inFlight = sheet.retiring
+  const witnessing = witnessLeft(port, left)
   void (async () => {
     try {
+      let witnessed = await witnessing
       await inFlight
-      if ((await removeLeft(port, left)) && sheet.kept?.left === left) {
+      if (witnessed === null && inFlight !== undefined) {
+        witnessed = await witnessLeft(port, left)
+      }
+      const isGone = witnessed === null || (witnessed !== undefined && (await removeLeft(port, left, witnessed)))
+      if (isGone && sheet.kept?.left === left) {
         keep({ left: undefined })
       }
     } finally {

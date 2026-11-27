@@ -1187,6 +1187,20 @@ def record_identity(rec, mint=False):
     return st.st_dev, st.st_ino, nonce
 
 
+IDENTITY_RE = re.compile(r"([0-9]+):([0-9]+):([0-9a-f]{32})")
+
+
+def identity_text(identity):
+    """An identity as a witness writes it (`sheet witness`, smns-cleared.sh): `<st_dev>:<st_ino>:<nonce>`."""
+    return "%d:%d:%s" % identity
+
+
+def parse_identity(text):
+    """A witness's identity, or None when the text is no identity (no minted nonce in it)."""
+    m = IDENTITY_RE.fullmatch(text or "")
+    return (int(m.group(1)), int(m.group(2)), m.group(3)) if m else None
+
+
 def same_record(identity, witnessed):
     """Whether the record whose identity is `identity` (record_identity, now) is the one `witnessed` was: True only
     when both hold a minted nonce and agree; False when it is known not to be (no record there, another directory,
@@ -1483,10 +1497,10 @@ class Refused(Exception):
         self.code = code
 
 
-def remove(session, cleared=False):
+def remove(session, cleared=False, witnessed=None):
     """remove_record for the command: a refusal is its exit."""
     try:
-        remove_record(session, cleared)
+        remove_record(session, cleared, witnessed=witnessed)
     except Refused as e:
         S.die(str(e), e.code)
 
@@ -1684,7 +1698,17 @@ def cmd_sheet(a):
         return
     if op == "remove":
         session = resolve(a, "remove")
-        remove(session, cleared=a.cleared)
+        witnessed = None
+        if a.cleared:
+            # What a /clear left goes with no liveness check (the clearing process may still be on record as running
+            # it), so only the record witnessed at the clear may go: never one a resume of that session made since.
+            witnessed = parse_identity(a.witness)
+            if witnessed is None:
+                S.die("sheet remove: --cleared takes --witness <dev>:<ino>:<nonce>, the record the /clear left as "
+                      "`sminos sheet witness` printed it then; nothing removed", 2)
+        elif a.witness is not None:
+            S.die("sheet remove: --witness goes with --cleared", 2)
+        remove(session, cleared=a.cleared, witnessed=witnessed)
         print("removed %s's question sheet" % session)
         return
     if op == "surfaces":
@@ -1695,10 +1719,23 @@ def cmd_sheet(a):
             print("\n".join("%s  %s  %s  %s" % (r["name"], r["url"], r["reach"], "alive" if r["alive"] else "stale")
                             for r in regs) or "no surface registered")
         return
-    if op in ("step", "probe", "log"):
+    if op in ("step", "probe", "log", "witness"):
         if not a.session or not S.UUID_RE.fullmatch(a.session):
             S.die("sheet %s: --session takes an engine session id" % op)
-        if op == "step":
+        if op == "witness":
+            # The record's identity now, its nonce minted if none is (as smns-cleared.sh does): what the mod takes
+            # at a /clear and hands each removal of the record left (`remove --cleared --witness`).
+            rec = record_dir(a.session)
+            try:
+                identity = record_identity(rec, mint=True) if has_record(a.session) else None
+            except OSError as e:
+                S.die("sheet witness: %s's sheet could not be looked at: %s" % (a.session, e), 1)
+            if identity is None:
+                S.die("no sheet: %s has no question sheet on this machine" % a.session, EXIT_NO_SHEET)
+            if not identity[2]:
+                S.die("sheet witness: %s's sheet holds no nonce that can be read; it has no identity" % a.session, 1)
+            print(identity_text(identity))
+        elif op == "step":
             print(_dumps(run_step(a.session, sys.stdin.buffer.read())))
         elif op == "log":
             try:

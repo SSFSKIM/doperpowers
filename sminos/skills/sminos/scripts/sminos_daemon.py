@@ -2301,13 +2301,10 @@ def _witnessed(note):
     found, from `<pid>.sheet` beside the note; None when there is none (the hook found no record); WITNESS_UNKNOWN
     when one is there and could not be read, or reads as no identity: no removal rests on it, and nothing is
     cleaned up on it either."""
-    sheet = sminos.sibling_module("sminos_sheet")
     try:
         with open(os.path.splitext(note)[0] + ".sheet", "rb") as f:
-            dev, ino, nonce = f.read(256).strip().split(b":")   # <dev>:<ino>:<nonce>, under 100 bytes
-        if not sheet.NONCE_RE.fullmatch(nonce):
-            return WITNESS_UNKNOWN
-        return int(dev), int(ino), nonce.decode("ascii")
+            raw = f.read(256)   # <dev>:<ino>:<nonce>, under 100 bytes
+        return sminos.sibling_module("sminos_sheet").parse_identity(raw.strip().decode("ascii")) or WITNESS_UNKNOWN
     except FileNotFoundError:
         return None
     except (OSError, ValueError):

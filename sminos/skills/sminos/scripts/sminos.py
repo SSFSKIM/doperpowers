@@ -155,7 +155,8 @@ back by a fill.
                    picks by place or by label in any case; images copied into the sheet first
     sminos sheet    dismiss <member>|--session <id> <q>...   # dismissals, sent as one batch
     sminos sheet    retract <member>|--session <id> <key>    # takes back a line not yet applied
-    sminos sheet    remove <member>|--session <id> [--cleared]   # a stopped session's sheet (refused while it runs)
+    sminos sheet    remove <member>|--session <id> [--cleared --witness <identity>]   # a stopped session's sheet
+                   (refused while it runs); --cleared, the one a /clear left, as `sheet witness` named it then
     sminos sheet    surfaces [--json]                     # the registered surfaces, and which are alive
     sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
@@ -21984,6 +21985,7 @@ def build_parser():
             so.add_argument("target")
         else:
             so.add_argument("--cleared", action="store_true")
+            so.add_argument("--witness", default=None)    # with --cleared: the record's identity at the /clear
         so.set_defaults(fn=cmd_sheet)
     so = sqsub.add_parser("dismiss", add_help=False)    # its ids follow the member: words, split in sminos_sheet
     so.add_argument("words", nargs="*")
@@ -21992,7 +21994,7 @@ def build_parser():
     so = sqsub.add_parser("surfaces", add_help=False)
     so.add_argument("--json", action="store_true")
     so.set_defaults(fn=cmd_sheet, session="")
-    for op in ("step", "probe", "log"):                 # the tool's own, in no usage text
+    for op in ("step", "probe", "log", "witness"):      # the tool's own, in no usage text
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("--session", default="")
         if op == "probe":

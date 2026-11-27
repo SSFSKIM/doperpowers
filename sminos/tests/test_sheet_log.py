@@ -555,6 +555,68 @@ class Removal(Log):
         self.assertEqual(self.logged(sid, "question"), [])
 
 
+class ClearsRemoval(Log):
+    """R1: the record a /clear left is removed by the mod (`sheet remove --cleared`, at the session's end, again at
+    the next start), on the identity it witnessed at the clear (`sheet witness`), so a retry delayed behind a start
+    in flight never removes a record a resume of the left session made since."""
+
+    def asked_and_stopped(self):
+        sid, proc = self.opened()
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Still open?")])
+        self.end(proc)
+        return sid
+
+    def witness(self, sid):
+        code, out = self.cli("sheet", "witness", "--session", sid)
+        return code, out.strip()
+
+    def test_the_witness_is_the_records_identity_minted_if_none_is(self):
+        sid = self.asked_and_stopped()
+        rec = sheet.record_dir(sid)
+        self.assertEqual(sheet.record_identity(rec)[2], "", "no reader has bound to it yet")
+        code, out = self.witness(sid)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(out, "%d:%d:%s" % sheet.record_identity(rec))
+        self.assertRegex(out, r"^[0-9]+:[0-9]+:[0-9a-f]{32}$")
+        self.assertEqual(self.witness(sid), (0, out), "minted once")
+        sheet.remove_record(sid, cleared=True)
+        self.assertEqual(self.witness(sid)[0], sheet.EXIT_NO_SHEET)
+
+    def test_a_clears_removal_without_a_witness_removes_nothing(self):
+        sid = self.asked_and_stopped()
+        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared")
+        self.assertEqual(code, 2, out)
+        self.assertIn("--witness", out)
+        self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
+
+    def test_a_clears_removal_removes_the_record_it_witnessed_and_no_later_one(self):
+        sid = self.asked_and_stopped()
+        _, witnessed = self.witness(sid)
+        # The removal waits behind a start in flight; meanwhile the left session's sheet goes (the daemon's sweep of
+        # the clear's note) and a resume of it elsewhere makes another, which asks.
+        sheet.remove_record(sid, cleared=True)
+        self.start(sid, source="resume")
+        self.ask(sid, "toolu_2", [entry("Asked after the clear?")])
+        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", witnessed)
+        self.assertEqual(code, 2, out)
+        self.assertIn("not the record the removal was decided on", out)
+        self.assertEqual([q["question"] for q in self.state(sid)["questions"]], ["Asked after the clear?"])
+        # The record it witnessed is removed.
+        _, again = self.witness(sid)
+        code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", again)
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.exists(sheet.record_dir(sid)))
+
+    def test_a_witness_that_is_no_identity_removes_nothing(self):
+        sid = self.asked_and_stopped()
+        for bad in ("", "1:2", "1:2:" + "0" * 31, "x:2:" + "0" * 32):
+            with self.subTest(bad=bad):
+                code, out = self.cli("sheet", "remove", "--session", sid, "--cleared", "--witness", bad)
+                self.assertEqual(code, 2, out)
+                self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
+
+
 class Sweep(Log):
     def aged(self, sid, seconds):
         t = time.time() - seconds
