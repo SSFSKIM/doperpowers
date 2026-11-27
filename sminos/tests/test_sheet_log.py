@@ -286,6 +286,31 @@ class Projection(Log):
         self.assertEqual(self.state(sid)["seq"], made["seq"])
         self.assertEqual([e["text"] for e in made["log"]["owed"]], [["New one?"], ["New two?"]])
 
+    def test_a_projection_whose_record_cannot_be_told_at_its_reread_changes_nothing(self):
+        """R5: a live record is written only on a positive match; a nonce that cannot be read at the reread (a
+        transient error, or a replacement on the same inode) leaves what it owes in place, for the next projection."""
+        sid = self.opened()[0]
+        self.start(sid)
+        self.ask(sid, "toolu_1", [entry("Owed?")])
+        nonce = os.path.join(sheet.record_dir(sid), sheet.INCARNATION)
+        real_append, real_open = sminos.append_host, open
+        failing = []
+
+        def eio(path, *a, **k):
+            if failing and str(path) == nonce:
+                raise OSError(errno.EIO, "input/output error")
+            return real_open(path, *a, **k)
+
+        def append(project, session, events):
+            failing.append(1)       # from here on, the record's nonce cannot be read
+            return real_append(project, session, events)
+        with mock.patch.object(sminos, "append_host", side_effect=append), mock.patch("builtins.open", side_effect=eio):
+            self.project(sid)
+        self.assertEqual(len(self.state(sid)["log"]["owed"]), 1, "not taken off: the record was not told")
+        self.project(sid)
+        self.assertEqual(self.state(sid)["log"]["owed"], [])
+        self.assertEqual([q[0] for q in self.questions(sid)], [self.src(sid, "q1")], "and written once")
+
     def test_a_record_made_again_on_the_inode_of_the_one_removed_is_another_to_a_projection(self):
         """A filesystem that gives the new directory the inode of the one removed (as ext4 does at once): the nonce
         tells them apart."""

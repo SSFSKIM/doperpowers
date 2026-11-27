@@ -1278,11 +1278,18 @@ def project_log(session, here=None, closing=False, rec=None):
     not known here any more is then a debt (LogFailed), where otherwise it waits. The lock is held to read and to
     replace, never while the log is written. Returns {written, owed}, None for no record; raises LogFailed when the
     log refused a project's events (the others are taken, after the replace) or the session's place could not be
-    read. Each reread under the lock is of the record the projection began from (its directory's identity, unless
-    it is known to be another: same_record not False, since a projection deletes nothing): one removed meanwhile,
-    and one made at its path since, are changed in nothing."""
+    read. Each reread under the lock is of the record the projection began from (its directory's identity, a
+    positive match; a detached record, whose path is never made again, also when it cannot be told): one removed
+    meanwhile, one made at its path since, and one that cannot be told from such, are changed in nothing."""
     here_of = here or (lambda s: S.held_member(s))
     rec = rec or record_dir(session)
+    detached = rec != record_dir(session)
+
+    def still(identity):
+        # The record it began from: a positive match. A detached record's path is its own (`.removed-<epoch>-<uuid>`,
+        # never made again), so there one whose nonce was never minted, or cannot be read, is still it.
+        same = same_record(identity, began)
+        return same is True or detached and same is None
     with Lock(session):
         why = _log_problem(rec)
         if why:
@@ -1313,7 +1320,7 @@ def project_log(session, here=None, closing=False, rec=None):
     unplaced = [id_of(e) for e in owed if e["kind"] == "question" and id_of(e) not in projects]
     if unplaced and now() is not None:
         with Lock(session):
-            state = _read_state(rec) if same_record(record_identity(rec), began) is not False else None
+            state = _read_state(rec) if still(record_identity(rec)) else None
             if state is None:
                 return None
             kept = state["log"]["projects"]
@@ -1357,7 +1364,7 @@ def project_log(session, here=None, closing=False, rec=None):
     left = len([e for e in owed if "n" in e])
     if written:
         with Lock(session):
-            state = _read_state(rec) if same_record(record_identity(rec), began) is not False else None
+            state = _read_state(rec) if still(record_identity(rec)) else None
             if state is not None:
                 log = state["log"]
                 log["owed"] = [e for e in log["owed"] if e["n"] not in written]
