@@ -1,4 +1,4 @@
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, ToolGroupCall } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
@@ -1857,6 +1857,21 @@ describe('the message tool', () => {
       props: { tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'ok' },
     } as never)
 
+  const groupedMessage = {
+    tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: { text: 'Done.' }, output: 'sent',
+    isRunning: false, isErrored: false, isInterrupted: false,
+  }
+  const expandedGroup = ($: Engine, calls: readonly ToolGroupCall[]) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'expanded-1',
+      props: { calls, isExpanded: true, isActive: false },
+    })
+  const viewBand = ($: Engine) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
+
   test('its call draws as a message, between runs of working record it breaks, and turns the view on', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -1874,6 +1889,69 @@ describe('the message tool', () => {
     // The record before it folds once the view is on, and the call closes its run: the call after opens one of its own.
     expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeUndefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('an expanded group holding only a message stays unfolded as its call draws', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [groupedMessage])
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await group.press({ key: 'to-human-toggle' })
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await call.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    await call.press({ key: 'to-human-toggle' })
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('an expanded group ending in a message keeps its fold under that call across redraws', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [
+      { tool_use_id: 'toolu_b1', tool: 'Bash', input: { command: 'ls' }, output: 'ok', isRunning: false, isErrored: false, isInterrupted: false },
+      groupedMessage,
+    ])
+    const first = await bash($, 'toolu_b1')
+    const last = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+
+    await group.press({ key: 'to-human-toggle' })
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await last.find(fold)).toBeDefined()
+    await group.redraw()
+    await first.redraw()
+    await last.redraw()
+    expect(await first.find(fold)).toBeUndefined()
+    expect(await group.find(fold)).toBeUndefined()
+    expect(await last.find(fold)).toBeDefined()
+  })
+
+  test('a standalone result releases a message whose expanded group unmounted', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const band = await viewBand($)
+    await band.press({ key: 'to-human-mode' })
+    const group = await expandedGroup($, [groupedMessage])
+    const child = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    await child.unmount()
+    await group.unmount()
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    // ToolUse alone cannot distinguish a group child from a standalone call.
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+    // The result asks for a redraw even in the full transcript.
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    await band.press({ key: 'to-human-mode' })
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
@@ -2011,10 +2089,7 @@ describe('the message tool', () => {
     mock.store(on)
     engineDrawing(on)
     const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
-    const band = await $.ui.mount({
-      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
-    })
+    const band = await viewBand($)
     await band.press({ key: 'to-human-mode' })
     expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
     const result = await resultRow($, 'toolu_m1', 'sent')

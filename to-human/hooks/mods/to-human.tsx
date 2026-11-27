@@ -1708,11 +1708,11 @@ export function registerToHuman(on: On) {
 
   /**
    * Takes `call` out of whichever group held it; when that empties the group
-   * (or leaves a collapsed group without its first call, under which the group
-   * was known), drops the group's row from the view's order so it cannot stay
-   * as an unmounted head of a run. Whether a group row was dropped.
+   * (or its first call leaves a collapsed group or is confirmed standalone),
+   * drops the group's row from the view's order so it cannot stay as an
+   * unmounted head of a run. Whether a group row was dropped.
    */
-  function leaveGroup(call: string): boolean {
+  function leaveGroup(call: string, isStandalone = false): boolean {
     const old = groupOf.get(call)
     if (old === undefined) {
       return false
@@ -1726,7 +1726,7 @@ export function registerToHuman(on: On) {
       return false
     }
     members.delete(call)
-    if (members.size === 0 || (!expanded.has(old) && old === GROUP + call)) {
+    if (members.size === 0 || ((isStandalone || !expanded.has(old)) && old === GROUP + call)) {
       for (const member of members) {
         if (groupOf.get(member) === old) {
           groupOf.delete(member)
@@ -2017,9 +2017,9 @@ export function registerToHuman(on: On) {
   })
 
   // A tool call is working record too, and stands in the run it falls in,
-  // except one the person reads: the question dialog's, whose row is the
-  // answer they gave, an agent spawn, and a message sent through the tool;
-  // each breaks the run as a marked message does. A standalone call's
+  // except a standalone call the person reads: the question dialog's, whose
+  // row is the answer they gave, an agent spawn, and a message sent through
+  // the tool. Each breaks the run as a marked message does. A standalone call's
   // result is a row of its own beneath it once the call resolves, so until
   // then (no output, and no abort, which leaves one) the call's row is the
   // last of the two. A row of a group the engine expanded draws its output
@@ -2040,11 +2040,10 @@ export function registerToHuman(on: On) {
       unsent.add(e.props.tool_use_id)
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
-    // A read call drawn as a ToolUse of its own (or an unsent message whose
-    // collapsed group unmounted) stands in no group: a resume's first frame
-    // puts a lone message or question in a collapsed ToolGroup before its MCP
-    // server connects, then unmounts that group without redrawing it.
-    if (held !== undefined && (read || (isRead(e.props.tool) && !expanded.has(held)))) {
+    // A collapsed group never draws ToolUse: the group released this call
+    // (on resume it may unmount without redrawing). An expanded group draws
+    // its children through ToolUse, so only ToolResult proves one stands alone.
+    if (held !== undefined && isRead(e.props.tool) && !expanded.has(held)) {
       if (leaveGroup(e.requestId) && isFolding()) {
         $.ui.invalidate('ui.render')
       }
@@ -2077,7 +2076,7 @@ export function registerToHuman(on: On) {
       note(view, e.requestId, e.props)
       see($, view, e.requestId, read ? 'marked' : 'record')
     }
-    if (!isFolding() || read) {
+    if (!isFolding() || (read && group === undefined)) {
       return next(e)
     }
     if (group !== undefined) {
@@ -2196,6 +2195,12 @@ export function registerToHuman(on: On) {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'ToolResult', e.props.tool)) return next(e)
+    // Expanded groups draw results inline. A separate result confirms the
+    // call is standalone; redraw its ToolUse even in the full transcript.
+    if (groupOf.get(e.requestId) !== undefined && isRead(e.props.tool)) {
+      leaveGroup(e.requestId, true)
+      $.ui.invalidate('ui.render')
+    }
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
     }
