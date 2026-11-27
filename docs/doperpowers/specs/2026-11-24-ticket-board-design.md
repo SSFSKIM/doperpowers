@@ -7,7 +7,7 @@ The owner supervises many long-running Claude Code sessions across repositories 
 
 After this change a ticket shows three things and nothing else until GitHub's close: what it needs before work can start (**readiness**), how far off it is (**horizon**), and whether a thread has it (**claimed**). A claim belongs to the thread that made it and is released by a write when that thread ends, so a claim does not outlive its holder unseen. Agents work the board through one command, `task`, shipped in a plugin of its own; the `issue-tracker` scripts, their states and the dormant dispatch machinery leave the plugin for `archive/`.
 
-To see it working, in a session of this repository: `task list --takeable` prints the tickets a session may take on its own initiative. `task claim 548` puts `claimed` on #548 with a visible record naming the claiming session; the same command from a second session exits 3 and names the holder. Retire the first session's thread (`sminos retire`), or leave it stopped for three days: once its machine next settles its claims (at the retire, in the daemon's hourly pass, or when a session there next lists that board) #548 is unclaimed again, with a record that says why, and it is back in `task list --takeable`. On the issue's page the owner reads `ready-to-work`, `expected`, `priority:P3`, `bug`, the record of who registered it, and the claim. In a checkout that carries an `upstream` remote, `task list` lists this repository's tickets and not the upstream project's.
+To see it working, in a session of this repository: `task list --takeable` prints the tickets a session may take on its own initiative. `task claim 548` puts `claimed` on #548 with a visible record naming the claiming session; the same command from a second session exits 3 and names the holder. Retire the first session's thread (`sminos retire`), or leave it stopped for three days: once its machine next settles its claims (when a session there next lists that board, and at the retire or in the daemon's hourly pass once sminos calls the plugin) #548 is unclaimed again, with a record that says why, and it is back in `task list --takeable`. On the issue's page the owner reads `ready-to-work`, `expected`, `priority:P3`, `bug`, the record of who registered it, and the claim. In a checkout that carries an `upstream` remote, `task list` lists this repository's tickets and not the upstream project's.
 
 This unit gives the whole picture its data (who holds what, and one ticket per initiative pointing at its spec); the view that draws it is a later unit (Out of scope).
 
@@ -15,15 +15,15 @@ This unit gives the whole picture its data (who holds what, and one ticket per i
 
 - [x] (2026-11-20 to 11-24) The design discussed with the owner; the unit confirmed on 2026-11-24 (R8).
 - [x] (2026-11-24) Spec review, `doperpowers:adversarial-reviewer`, one round: the design and its interfaces (seventeen findings), and the execution section's buildability (eleven). Folded in one closing pass; what was weighed and not taken is answered where the decision stands (D3 "What is accepted", D5, D6).
-- [x] (2026-11-24) A second review, of that repair: fifteen findings, nine in the board's own rules (which repository a write reaches, the relabel plan, trust, the fold's interval, the label, the race check, the old scripts in a stale checkout, what each milestone proves) and six in the part that learns a thread's end. Folded: that part stands on one rule (D3, "An end is asked for, never stated"), M3 releases an ended thread's claims with no call from sminos, and O1 puts three answers to the owner.
+- [x] (2026-11-24) A second review, of that repair: fifteen findings, nine in the board's own rules (which repository a write reaches, the relabel plan, trust, the fold's interval, the label, the race check, the old scripts in a stale checkout, what each milestone proves) and six in the part that learns a thread's end. Folded: that part stands on one rule (D3, "An end is asked for, never stated"), M3 releases an ended thread's claims with no call from sminos, and how much a claim carries, and in what order it is built, is put to the owner with three answers.
 - [x] (2026-11-24) A third review, of the second round's repair (`ac9de9b5b`), the last on this document: eleven findings. Seven are folded in the design (where a clone reads its board's configuration, the old scripts' check on where they write, a record that took effect, the states a relabel row resumes from, which rows a reading verb settles, a forced release bound to its claim, who releases without force) and four are one line each in the milestone that settles them. What a reviewer finds from here on goes to that milestone's code review.
-- [ ] The owner reads this document. Nothing is built, no issue is relabelled and no skill is edited before that read; "For the owner's read" lists what waits on them.
+- [x] (2026-11-27) The owner approved this document, whose head was `143552115`. To "티켓 보드 스펙(마일스톤 7개)을 승인하는가?" (is the ticket board spec, seven milestones, approved?): "승인한다, 구현 시작" (approved; start the implementation). With the approval came two rulings, R11 and R12, and no objection to O2, O3 and O4, which stand as recommended ("What the owner ruled"). Implementation starts at M1; "For the owner's read" lists what still needs their hand.
 - [ ] M1 — the `task` plugin and the ticket verbs.
 - [ ] M2 — the relabel tool.
 - [ ] M3 — claims.
-- [ ] M4 — sminos calls the board at a thread's start, `/clear` and end.
-- [ ] M5 — the skill, the calling skills, and this repository's cutover.
-- [ ] M6 — the sibling repositories' cutover.
+- [ ] M4 — the skill, the calling skills, and this repository's cutover.
+- [ ] M5 — the sibling repositories' cutover.
+- [ ] M6 — sminos calls the board at a thread's start, `/clear` and end.
 - [ ] M7 — the old scripts retire; the final verification.
 
 ## Terms
@@ -40,7 +40,7 @@ This unit gives the whole picture its data (who holds what, and one ticket per i
 
 ## What the owner ruled
 
-These bind the design. Each is quoted as written, with its time (UTC) and an English reading. Everything in Design that cites no ruling is the design's: settled in the design discussion and reported to the owner, or decided while writing this document, which "For the owner's read" lists.
+These bind the design. Each is quoted as written, with its time (UTC; the date where no time was kept) and an English reading. Everything in Design that cites no ruling is the design's: settled in the design discussion and reported to the owner, or decided while writing and reviewing this document, which the owner approved whole on 2026-11-27 (Progress).
 
 | Id | Ruling | The owner's words |
 |---|---|---|
@@ -54,8 +54,16 @@ These bind the design. Each is quoted as written, with its time (UTC) and an Eng
 | R8 | This unit is confirmed: the board work, the relabel (readiness, horizon, claimed, priority) and the CLI. Events and subscriptions are not in it. | 2026-11-24 12:12: "전체적인 보드작업과 재라벨링 (준비상태, 지평, claimed, 우선순위 등) seems good, so is task CLI."; on events, the same message: "이건 이번 스코프에 include할지 모르겠다", and 12:17, to whether they are in this scope: "이번에는 뺀다 (Recommended)". |
 | R9 | The CLI is `task`, the agents' one command for tracked work, with two destinations: tickets on the GitHub board (this unit) and the human's Task Board (a separate unit, built later on a store in sminos). | 2026-11-24 12:25: "'task assignhuman' 과 같은 형태로 human task board에 쓰게하는건 어떨지? … Task board는 따로있는게 나을것같다"; reported settled by the session that holds the design discussion. |
 | R10 | Work the owner gives to a named thread may be kept as a tracked item: the thread is given it as a prompt, and the item stays on the board. Who does it is always the owner's choice. | 2026-11-20 07:14, to whether work the owner gives an agent should stay as a tracked item: "대상을 정해 남긴다 (Recommended)". |
+| R11 | A claim is released by a machine's write when the thread that made it ends, and that is built in two stages: the plugin alone first, on which the boards move; sminos's calls to the plugin after the cutover. | 2026-11-27, to who releases a claim when the session that made it has ended for good ("티켓을 claim한 세션이 영영 끝났을 때 그 claim을 누가 푸는가?"): "자동 해제, 두 단계로 (Recommended)". The option chosen was described as the plugin releasing alone first, then the cutover, then sminos's calls, so that the cutover waits on no sminos release; the two not chosen were the same release with sminos's calls built before the cutover, and a claim released only by its holder or by force. |
+| R12 | `task create --to` sends the thread it names one message. | 2026-11-27, to whether `task create --to` sends the thread one message: "보낸다 (Recommended)". |
 
-The ruling of 2026-10-18 stands: nothing starts a session from the board. One act in this design touches it, and it is put to the owner as O5.
+The ruling of 2026-10-18 stands: nothing starts a session from the board. One act in this design touches it, the message of `task create --to`, and the owner ruled on it (R12; D1 says why it stands).
+
+**Settled as recommended, without a ruling.** Three decisions were put to the owner with a recommendation each. The session that presented this document told the owner it would take each recommendation unless they objected, and the owner approved the document on 2026-11-27 without objecting. They stand by that approval and not by words of the owner's; the owner may still overturn one.
+
+- **O2. Who settles the relabel's decision rows.** The relabel cannot decide 23 of this repository's 53 open tickets from their labels: 19 `deferred`, one in design, three with no status. The session running the cutover reads each ticket and proposes its readiness and horizon with a one-line reason, and the owner reads that table once per repository before it is applied, because `undecided` against `expected` is the owner's knowledge and every reader trusts the labels afterwards. It costs one read of about twenty rows here (more for `cua` and `MAWS`, which have 24 and 28 `deferred`). *Not taken: applying the session's proposals unread and correcting by exception.* A wrong `expected` would let a session build something the owner had not decided to do.
+- **O3. `ida-solution` is left out of this unit**, recorded by a ticket here. It cannot be read from the owner's account today, belongs to an organization, and its checkout holds a workflow that writes `status:*` labels and one that publishes a board page. Its `CLAUDE.md` already tells a session not to write the board when the scripts are missing, so after M7 its board is read-only to agents until someone with access moves it by M5's steps and retires that workflow. *Not taken: M7 waiting until it has moved*, which would keep the old skill shipped for a repository that has had no dispatch since August.
+- **O4. Claims by sessions the MAWS app launched are accepted as they are for the cutover.** Such a session is not a thread, so nothing releases its claims when it is gone for good (D3). The claim shows its age and its linked activity, and any session can take it over with a stated reason; MAWS telling the board when it archives a session is registered as a ticket for MAWS at M4. *Not taken: this repository's flip waiting until MAWS does that and it has been seen to work.*
 
 ## What it must not become
 
@@ -114,7 +122,7 @@ Any other ticket is taken on the owner's word. An `undecided` ticket is never ta
 
 **An initiative** is at most one ticket whose record points at its spec. The children of a composite spec stay in the spec; they are not tickets, since the same fact written twice drifts (R3). Two skills tell sessions otherwise today and change with the cutover (D7).
 
-**A ticket registered for a thread** (R10). When the owner gives work to a named thread and wants it tracked, the ticket's record names the thread (`for:`, D2), and `task create --to <thread>` sends that thread one message naming the ticket (O5). The thread claims it when it takes it. It is not born claimed: a claim is written from its holder's own machine (D3), the only machine that can release it. A ticket registered for one thread is claimed by another only after the record is changed (`task set <n> --to …` or `--no-to`), which is a visible act on the owner's word.
+**A ticket registered for a thread** (R10). When the owner gives work to a named thread and wants it tracked, the ticket's record names the thread (`for:`, D2), and `task create --to <thread>` sends that thread one message naming the ticket (R12). The thread claims it when it takes it. It is not born claimed: a claim is written from its holder's own machine (D3), the only machine that can release it. A ticket registered for one thread is claimed by another only after the record is changed (`task set <n> --to …` or `--no-to`), which is a visible act on the owner's word. The message is the one place where filing a ticket can start a process: sminos wakes a stopped thread for any message addressed to it, and the ruling of 2026-10-18 says nothing starts a session from the board. It stands because it is the owner handing work to a thread they named, the same act as sending that thread a message, with the ticket as its record; nothing is sent on a trigger, and without it the ticket waits unseen. *Weighed: `--to` recording `for:` and sending nothing*, the registering session telling the thread itself, or not. The owner ruled for the message (R12).
 
 **Categories** keep their four names. `env-issue` loses its inverted birth rule (born `needs-human` unless a state was given): readiness is stated at every creation, so there is no default to invert.
 
@@ -135,7 +143,7 @@ spec: docs/doperpowers/specs/2026-11-24-ticket-board-design.md
 
 The claim's holder is not in this block (D3 says why). Lineage that the old block carried (`spawned-by`, `relates-to`) is prose in the body: a mention of `#n` already cross-links both issues on GitHub.
 
-Every body write by the CLI reads the body afresh, replaces the text above the block and keeps the block byte for byte; it writes only a body it trusts (D8). Two limits are accepted. A raw `gh issue edit --body` drops the block, and nothing can tell afterwards that it was there, so the skill sends every body edit through `task set` (M5); the old scripts' body writer drops it the same way, which D7 fences. And the body is one string with no conditional write: two edits of one ticket's body within the same moment (its text and its `for`, say) leave the later one standing. These fields change at creation and at a hand-over, a few times in a ticket's life, which is why they may live in the body and the claim may not.
+Every body write by the CLI reads the body afresh, replaces the text above the block and keeps the block byte for byte; it writes only a body it trusts (D8). Two limits are accepted. A raw `gh issue edit --body` drops the block, and nothing can tell afterwards that it was there, so the skill sends every body edit through `task set` (M4); the old scripts' body writer drops it the same way, which D7 fences. And the body is one string with no conditional write: two edits of one ticket's body within the same moment (its text and its `for`, say) leave the later one standing. These fields change at creation and at a hand-over, a few times in a ticket's life, which is why they may live in the body and the claim may not.
 
 ### D3. Claims
 
@@ -215,13 +223,13 @@ A record that took effect is never deleted, by its writer or by settle. Later re
 - **A session the MAWS app launched** is not a thread: no machine learns that it ended for good (O4).
 - **A thread whose record is deleted keeps its claims.** `sminos retire --purge` and `sminos remove` delete a thread's record in the same transition that ends it, and afterwards sminos answers for that thread id as for one it never had: exit 4, `no seat or member matching`. That is also what it answers for a thread it cannot see from where it runs (another state directory, a project whose registration it cannot read), so the answer does not say "deleted", and a release on it would take a live thread's claims whenever sminos misread its own store. Settle therefore reports such a row as unknown and writes nothing. The retire that purged prints the tickets that thread still holds and, for each, a release bound to that very claim (D5); a session that removes its own seat is stopped before it prints anything. *Weighed: sminos keeping the ids of the threads it purged, so that it could answer "ended" for one.* Not taken in this unit: it changes what a purge leaves behind and what `who --thread` answers, which is a decision about sminos, and what it would buy here is the release of a claim that meanwhile shows its age.
 - **A thread that returns between settle's question and its release.** sminos answered "ended", the thread's human reopened it in the same seconds, and the release is written over a live thread. The thread learns of it at its next start or its next `task list`, and another session may claim the ticket meanwhile. The window is two calls of one settle; closing it would take a lock held across both plugins, for a reopening timed to those seconds.
-- **A board nothing settles on a machine**: no session there runs `task list` or `task claim` on that board again and, before M4 or with no daemon running, nothing else starts a settle. After M4 a retire still starts one there.
+- **A board nothing settles on a machine**: no session there runs `task list` or `task claim` on that board again and, before M6 or with no daemon running, nothing else starts a settle. After M6 a retire still starts one there.
 - **A holder's machine that is retired, or an index that is lost.**
 - **A `/clear` whose grant was not recorded** (the plugin slower than the guide's bound, or the note of what was left older than sminos believes it): the new session takes over with `--force` and a reason.
 - **`task close` checks the holder when it runs**; a takeover in the same moment is not arbitrated against it.
 - **A label left wrong by a killed writer** stays wrong until the next verb that folds its ticket (above).
 
-**What the parts cost and buy** (O1). The fold is a table, one extra read per claim, and the comments of every ticket a list prints; it buys one winner between two sessions. Everything else here (the index, settle, sminos's calls) buys one thing: a claim does not outlive its thread, which is the fault this work opened with. The plugin's half alone releases when a session on the holder's machine next lists or claims on that board; sminos's calls make the release prompt and reach a machine where nothing runs `task`. Contention between two sessions is rare; a session that takes a ticket and is then closed for good is not.
+**What the parts cost and buy** (R11). The fold is a table, one extra read per claim, and the comments of every ticket a list prints; it buys one winner between two sessions. Everything else here (the index, settle, sminos's calls) is most of this unit's machinery and buys one thing: a claim does not outlive its thread, which is the fault this work opened with. Contention between two sessions is rare; a session that takes a ticket and is then closed for good is not. It comes in two stages. The plugin's half alone releases when a session on the holder's machine next lists or claims on that board, and the boards move on that. sminos's calls, built after the cutover, make the release prompt and reach a machine where nothing runs `task` (D5). *Weighed: the claim record and the fold alone*, a claim released by its holder or by `--force` and a stale one found by reading (`task list --claimed` shows each holder, the claim's age and the activity linked to the ticket). It would have removed the index, settle, sminos's calls and most of "What is accepted", at the price of claims that stay until someone looks: a `claimed` tied to nothing is `in-design` under a new name. The owner ruled for the release (R11).
 
 ### D4. The `task` CLI and its plugin
 
@@ -271,11 +279,11 @@ Two plugins, one narrow contract in each direction, in the manner of sminos and 
 | `sminos who --thread=<the session's own id>` | at a claim or a takeover, before anything is written: the session's thread, kept in the row. Only an answer whose `session` is that id and whose `local` is true is taken; its `thread` is a thread id, or empty when sminos says the session is no thread | `claim` and `takeover` exit 1 and write nothing |
 | `sminos who --thread=<a row's thread id>` | at settle: whether that thread has ended. Only an answer whose `thread` is that very id, with `local` and `ended` true, releases | the row is reported unknown. Exit 4 is no answer: sminos gives it for a deleted record and for one it cannot see alike (D3, "What is accepted") |
 | `sminos who --thread=<name>` | the thread `--to` names | `create --to` and `set --to` exit 1 |
-| `sminos say "@<thread> <text>"` | the one message of `create --to` (O5) | the ticket exists, and the output prints the line to send |
+| `sminos say "@<thread> <text>"` | the one message of `create --to` (R12) | the ticket exists, and the output prints the line to send |
 
 Threads are always asked about by a full id, never by the short id in a public address: a short id can answer for another session, and an ended thread answers to its full id only. A session's id is asked about only while that session is claiming, when it is running and the answer can be checked against it; every later question about a row uses the thread id the row recorded then (D3).
 
-**sminos calls `task`** (M4 adds these calls and nothing else):
+**sminos calls `task`** (M6 adds these calls and nothing else). They are the second stage (R11): until M6 none of them is made, the boards move without them, and M4 says what a session meets meanwhile.
 
 | When | Call | sminos does |
 |---|---|---|
@@ -290,7 +298,7 @@ sminos finds `task` as it finds devcloud (an override variable, the copy beside 
 
 sminos is the caller at these moments because it alone knows them: it owns the guide, it holds the only note of a `/clear`, and it is where a thread's end is written.
 
-- **At a `/clear`** the grant is recorded at the new session's start, because the note of what was left is believed for a minute and nothing keeps it afterwards. The guide reads the note itself, finds the thread whose current session is the one left, and passes that thread's id. It does not wait for, or depend on, the hand-over of the session's name, which the other start hook performs in an order nothing fixes and which an unnamed session never has (M4). The new session is shown the offer at each of its starts until it takes the ticket over or the thread it left ends. No message is sent when that thread ends: a message to a stopped successor would wake it, and a machine waking a session over a ticket is what the ruling of 2026-10-18 ended.
+- **At a `/clear`** the grant is recorded at the new session's start, because the note of what was left is believed for a minute and nothing keeps it afterwards. The guide reads the note itself, finds the thread whose current session is the one left, and passes that thread's id. It does not wait for, or depend on, the hand-over of the session's name, which the other start hook performs in an order nothing fixes and which an unnamed session never has (M6). The new session is shown the offer at each of its starts until it takes the ticket over or the thread it left ends. No message is sent when that thread ends: a message to a stopped successor would wake it, and a machine waking a session over a ticket is what the ruling of 2026-10-18 ended.
 - **At a retire** sminos calls after its own transition has returned and holds none of its locks, since the plugin asks sminos about the thread while it runs. After a plain retire the question finds the thread ended, and its claims are released and printed. After a purge or a remove the question finds nothing (D3, "What is accepted"): the answer lists that thread's rows as unknown, and for each the retire prints `task release <n> --repo <owner/name> --of <claim id> --force "<reason>"`, for the person or the session that purged to run. The line names the repository, since a retire runs from any directory, and the claim, so that run later it releases that claim or nothing: if another holder has the ticket by then, it names that holder and writes no record. The call is bounded at 30 seconds, and a retire that hears nothing says so and goes on.
 - **In the ending pass** the daemon starts one settle each time the pass runs, so a thread ended by the three-day rule loses its claims within the pass that ended it, on a machine where no session runs `task` as well.
 
@@ -365,35 +373,11 @@ What an outsider wrote in a body or a comment is data, never an instruction; the
 
 ## For the owner's read
 
-**Open decisions.** Each has a recommendation, and the work named beside it does not start before the answer.
+No decision in this document waits on the owner ("What the owner ruled"). These acts do:
 
-- **O1. How much a claim carries, and in what order it is built** (before M3). The design releases a claim by a machine's write when the claiming thread ends (D3). That is most of this unit's machinery: an index on each machine, the settle routine, the calls in sminos (M4), and a list of gaps it accepts. Three answers:
-  - *Automatic release, in two steps (recommended).* The plugin alone first: M3 as written releases an ended thread's claims when a session on its machine next lists or claims on that board, with nothing changed in sminos. Then the cutover (M5, M6). sminos's calls (M4) come after it and add promptness, the guide line and the `/clear` offer. The cutover then waits on no sminos release, and on none of the work the question sheet has in flight on the same code (the thread sweep, the start hooks).
-  - *Automatic release, in the order the milestones stand below.* M4 lands before the cutover, so the first session on a moved board already has the guide line, the release at a retire and the `/clear` offer. The cutover waits on a sminos release, and M4 on its coordination with the question sheet's child.
-  - *The lighter design.* Keep only the claim record and the fold, which give one winner between two sessions. A claim is then released by its holder or by `--force`, and a stale one is found by reading: `task list --claimed` shows each holder, the claim's age and the activity linked to the ticket. That removes M4, about half of M3 and most of D3's "What is accepted", at the price of claims that stay until someone looks: a `claimed` tied to nothing is `in-design` under a new name, and a ticket that says someone has it after that someone is gone is the fault this work opened with.
-
-  The milestones are written in the second answer's order and are not reordered before the owner answers; "What waits on whom" says what each answer changes. The first review found the fold sound and put nearly all its findings in the lifecycle part. The second put six of its fifteen there, most of them from two things D3 does not do: take a caller's word for a thread's end, and learn a thread's identity after the claim. Neither was asked to rule on the proportion.
-- **O2. Who settles the relabel's decision rows** (before M5's flip, and each repository's in M6). The relabel cannot decide 23 of this repository's 53 open tickets from their labels: 19 `deferred`, one in design, three with no status. *Recommended:* the session running the cutover reads each ticket and proposes its readiness and horizon with a one-line reason, and the owner reads that table once per repository before it is applied, because `undecided` against `expected` is the owner's knowledge and every reader trusts the labels afterwards. It costs one read of about twenty rows here (more for `cua` and `MAWS`, which have 24 and 28 `deferred`). *The cheaper path:* apply the session's proposals unread and correct by exception; a wrong `expected` would then let a session build something the owner had not decided to do.
-- **O3. `ida-solution`** (before M7). It cannot be read from the owner's account today, belongs to an organization, and its checkout holds a workflow that writes `status:*` labels and one that publishes a board page. *Recommended:* leave it out of this unit, recorded by a ticket here. Its `CLAUDE.md` already tells a session not to write the board when the scripts are missing, so after M7 its board is read-only to agents until someone with access moves it by M6's steps and retires that workflow. *The alternative:* M7 waits until it has moved, which keeps the old skill shipped for a repository that has had no dispatch since August.
-- **O4. Claims by sessions the MAWS app launched** (before M5's flip; moot under O1's lighter design). Such a session is not a thread, so nothing releases its claims when it is gone for good (D3). *Recommended:* accept it for the first cutover. The claim shows its age and its linked activity, and any session can take it over with a stated reason; MAWS telling the board when it archives a session is registered as a ticket for MAWS at M5. *The alternative:* this repository's flip waits until MAWS does that and it has been seen to work.
-- **O5. The message of `task create --to`** (before M1 ships the flag). Registering a ticket for a named thread sends that thread one message, and sminos wakes a stopped thread for any message addressed to it. This is the one place where filing a ticket can start a process, and the ruling of 2026-10-18 says nothing starts a session from the board. *Recommended:* keep the message. It is the owner handing work to a thread they named (R10), the same act as sending that thread a message, with the ticket as its record; nothing is sent on a trigger, and without it the ticket waits unseen. *The alternative:* `--to` records `for:` and sends nothing; the session that registers the ticket tells the thread itself, or does not.
-
-**What needs the owner's hand.** After the plugin's first release (M1 to M3 merged), `task@doperpowers` is enabled on each machine that runs sessions (`/plugin install task@doperpowers`, or the owner's word that a session may edit the settings that list enabled plugins). M4's live checks and M5 wait on it. If M1 finds another program named `task` ahead of the plugin's on some kind of machine (Delegated unknowns), M5 waits on the owner's ruling for that kind.
-
-**Where this document goes beyond the design as discussed.** These were decided while writing or in its review, each with its reason in the section named:
-
-- The claim's holder is kept in appended claim records, not as a fourth field of the record block; the block keeps three of the four fields and gains `for` (D2, D3).
-- Each machine keeps an index of the claims it wrote, and the release at a thread's end is a routine of the plugin, `task settle`, which asks sminos whether each thread has ended and takes no caller's word for it; it runs before `task list` and `task claim` answer, and sminos starts it as well (D3, D5).
-- A claim whose thread's record was purged or removed is released by no machine: sminos cannot say "deleted" apart from "not seen", so the retire prints what stays held (D3, "What is accepted").
-- `claimed` is a display that every verb corrects from the fold; lists and takeability read the fold (D3).
-- A `/clear` grants its successor the takeover at the moment sminos sees the `/clear`. When the thread that was left ends, its successor is not sent a message; it is shown the offer at its own starts (D5).
-- A takeover without a stated reason is open only along a `/clear`; every other is forced, with its reason written (D3).
-- An issue is on the board when it carries a readiness label, and an outsider's issue is never takeable (D1, D8).
-- A ticket is not takeable when it is `undecided`, when a blocker was closed as not planned, or when it is `planned` with no blocker (D1).
-- `deferred` has no mechanical target in the relabel, an in-flight ticket gets no claim from it, and the old labels' definitions are left for the owner to delete later (D6).
-- The trusted account is the one the CLI writes as, not a value in the repository, and the CLI rewrites no body it does not trust: `task adopt` is the one act that makes an edited body trusted (D8).
-- A clone's board is the repository of one designated remote, and its configuration is read from that remote's default branch as last fetched, never from the working tree. The `binding` there is the cutover switch, and reaches every worktree of a clone at its next fetch. The old scripts refuse a board that has moved, and any board but their clone's own (D4, D7).
-- The rule that a composite's children are not tickets changes what two skills tell sessions to do: `decomposing`'s optional step 6 and `organizing-sprints`' Materialization (D7).
+- **Enabling the plugin.** After the plugin's first release (M1 to M3 merged), `task@doperpowers` is enabled on each machine that runs sessions (`/plugin install task@doperpowers`, or the owner's word that a session may edit the settings that list enabled plugins). M4 waits on it, and so do M6's live checks.
+- **Reading each repository's relabel table** (O2). Before a repository's plan is applied, the owner reads the table of its decision rows once: each ticket the old labels do not decide, with the readiness and horizon proposed for it and a one-line reason. For this repository that is 23 rows, in the description of the flip's pull request (M4); for `cua`, `MAWS` and `arkho`, in each repository's own pull request (M5).
+- **Ruling on another `task`**, only if M1 finds another program of that name ahead of the plugin's on some kind of machine (Delegated unknowns): M4 waits on the owner's ruling for that kind.
 
 ## Delegated unknowns
 
@@ -401,8 +385,8 @@ Each names the milestone that settles it and what each outcome changes.
 
 - **Whether the confirming read of a claim sees every earlier comment** (M3). D3's arbitration assumes it, and GitHub does not document it. Acceptance 23 measures it: rounds in which five claimants, each held at a barrier after a first read that found the ticket unheld, append in competition, and each records which claim comments its confirming read saw. Five processes merely started together can run one after another and show nothing. The result is reported as a measurement (so many rounds on one day, so many confirming reads that missed a lower-numbered claim), not as a proof. With one winner in every round and no missed claim, the assumption stands as measured and D3's accepted window stays as written. A round with two winners, or any missed claim, stops M3, and the question returns to this document's author with the evidence: D3 names the other primitive, and choosing it is a design decision.
 - **Blocked-by across repositories** (M1). Several `deferred` tickets wait on another repository's work, and GitHub's documentation does not say whether a dependency may cross repositories. M1 tries one edge between two scratch issues in two scratch repositories. If it holds, `--blocked-by owner/name#n` is accepted. If not, such a wait is prose in the body and the ticket is `planned` with no edge, which D1 keeps from being takeable.
-- **The `gh` client from the daemon** (M4). A settle the daemon starts must reach GitHub as the owner's account from a service's environment (a launch agent on a Mac, the supervisor on a Linux host). M4 checks each kind it can reach and says which it could not. Where `gh` does not work from the service, the daemon's settle reports the board unreachable and the release waits for the settle that a `task list` or `task claim` on that board runs in a session on that machine (D3): late, not lost.
-- **Another `task` on `PATH`** (M1). A plugin's `bin/` comes last on a session's `PATH`, and two widely installed tools (Taskwarrior, go-task) install a command of this name. None of the owner's Macs has one today. M1 runs `command -v task` and `task --version` on every kind of machine the owner runs sessions on. Where another program answers, it is reported and M5 waits on the owner's ruling for that kind of machine; the name is the owner's (R9).
+- **The `gh` client from the daemon** (M6). A settle the daemon starts must reach GitHub as the owner's account from a service's environment (a launch agent on a Mac, the supervisor on a Linux host). M6 checks each kind it can reach and says which it could not. Where `gh` does not work from the service, the daemon's settle reports the board unreachable and the release waits for the settle that a `task list` or `task claim` on that board runs in a session on that machine (D3): late, not lost.
+- **Another `task` on `PATH`** (M1). A plugin's `bin/` comes last on a session's `PATH`, and two widely installed tools (Taskwarrior, go-task) install a command of this name. None of the owner's Macs has one today. M1 runs `command -v task` and `task --version` on every kind of machine the owner runs sessions on. Where another program answers, it is reported and M4 waits on the owner's ruling for that kind of machine; the name is the owner's (R9).
 
 ## Out of scope
 
@@ -438,14 +422,14 @@ Each item names the milestone that proves it, and no item is proved in part by a
 
 **In sminos's suite** (the `sminos` gates, with a stand-in `task`):
 
-16. **The guide** (M4). A thread's session start makes one `held` call with its session and thread and prints the line built from what is held, lapsed and offered; nothing held, lapsed or offered prints no line. With no plugin, one below the floor, one that exits non-zero and one slower than the bound, the start prints no board line and takes no longer than the bound.
-17. **The `/clear` grant** (M4). A start whose source is `clear`, with the note of the session left in place and that session the current one of a thread of this machine: the `held` call carries `--cleared-from <that thread's id>`, and the guide prints that `task takeover <n>` takes a ticket over. It does so with the guide's hook run before the record hook and after it, when the session left has already given up its name, and for a session left that is unnamed. A note older than sminos believes it, a session left that is no thread, and a start of any other source: no `--cleared-from`.
-18. **Retire** (M4). For a thread its human opened and a spawned one: `settle --thread <id>` is called once, after the end's transition has returned, with no argument that states an end, and what it released is printed. For a purge of each, and a `remove`: the same call, and each ticket the answer lists as unknown for that thread is printed with a release that names its repository and its claim id. A plugin that fails or is slower than the bound does not fail the retire, which says the board gave no answer.
-19. **The ending pass** (M4). Each pass starts one `settle`, never a second while one runs, and does not wait for it; a change in the count of owed or unknown rows is logged.
+16. **The guide** (M6). A thread's session start makes one `held` call with its session and thread and prints the line built from what is held, lapsed and offered; nothing held, lapsed or offered prints no line. With no plugin, one below the floor, one that exits non-zero and one slower than the bound, the start prints no board line and takes no longer than the bound.
+17. **The `/clear` grant** (M6). A start whose source is `clear`, with the note of the session left in place and that session the current one of a thread of this machine: the `held` call carries `--cleared-from <that thread's id>`, and the guide prints that `task takeover <n>` takes a ticket over. It does so with the guide's hook run before the record hook and after it, when the session left has already given up its name, and for a session left that is unnamed. A note older than sminos believes it, a session left that is no thread, and a start of any other source: no `--cleared-from`.
+18. **Retire** (M6). For a thread its human opened and a spawned one: `settle --thread <id>` is called once, after the end's transition has returned, with no argument that states an end, and what it released is printed. For a purge of each, and a `remove`: the same call, and each ticket the answer lists as unknown for that thread is printed with a release that names its repository and its claim id. A plugin that fails or is slower than the bound does not fail the retire, which says the board gave no answer.
+19. **The ending pass** (M6). Each pass starts one `settle`, never a second while one runs, and does not wait for it; a change in the count of owed or unknown rows is logged.
 
 **In the old scripts' suite** (the `issue-tracker` gate, while the scripts ship):
 
-20. **The old scripts refuse a moved board, and any board but their clone's** (M5). In a fixture clone whose remote-tracking ref for the designated remote's default branch holds a file saying `task`, with the working tree's file saying `gh` and with none: `board-body.sh`, `board-transition.sh` and `board-list.sh` exit non-zero with M5's first line, and the stand-in `gh` logs no call. In a clone that has not moved, aimed at another repository in each of three ways (`BOARD_REPO` in the environment, the working tree's file, the stand-in client's own resolution): the same scripts exit non-zero with M5's second line, and no call is logged. With the target the clone's own repository, and its default branch saying `gh`, holding no file, or having no ref, the scripts run as before.
+20. **The old scripts refuse a moved board, and any board but their clone's** (M4). In a fixture clone whose remote-tracking ref for the designated remote's default branch holds a file saying `task`, with the working tree's file saying `gh` and with none: `board-body.sh`, `board-transition.sh` and `board-list.sh` exit non-zero with M4's first line, and the stand-in `gh` logs no call. In a clone that has not moved, aimed at another repository in each of three ways (`BOARD_REPO` in the environment, the working tree's file, the stand-in client's own resolution): the same scripts exit non-zero with M4's second line, and no call is logged. With the target the clone's own repository, and its default branch saying `gh`, holding no file, or having no ref, the scripts run as before.
 
 **Live, on scratch repositories** (`bash task/tests/live.sh <case>`, run with the worktree's own launcher against real GitHub; `TASK_LIVE_REPO` names a private scratch repository whose default branch carries the file of §1). Every case makes a `TASK_HOME` of its own and passes it to each session it starts, so that no case reads, settles or releases a row of the machine's real index:
 
@@ -454,18 +438,18 @@ Each item names the milestone that proves it, and no item is proved in part by a
 23. `race` (M3): twenty rounds, each on one fresh ticket. In a round five `task claim` processes run at once, each with a session id, a thread id and an address of its own from the stand-in `sminos`, and an index of its own. Each is held at a barrier after its first read has found the ticket unheld, and the five are let go together, so that every round has five appends made in competition; a round in which any claimant did not reach the barrier is run again and not counted. Each claimant records which claim comments its confirming read saw, and no loser deletes its record before all five reads are recorded. The case prints, as a measurement: the rounds, the exit 0s in each, and the confirming reads that missed a claim comment with a lower id than the reader's own. Twenty rounds with one exit 0 each, no missed comment, and a fresh `task show --json` naming each round's winner is the result on which M3 goes on.
 24. `lapse` (M3): on a machine whose sminos makes no call to the plugin, a spawned thread claims a scratch ticket with the worktree's launcher and is retired. A `task list` of the scratch board run afterwards in another session of that machine, the settle interval set short, lists the ticket unheld, and the ticket shows a `release` with `reason: ended` and no `claimed`.
 
-After M4's release is on a machine where the plugin is enabled (run by the session that holds this spec):
+After M6's release is on a machine where the plugin is enabled (run by the session that holds this spec):
 
-25. `end` (M4): a spawned thread claims a scratch ticket and is retired: the retire prints the ticket, which then shows a `release` with `reason: ended` and no `claimed`. With `SMINOS_THREAD_END_AFTER` set short on a test home, a stopped thread's claim is released by the daemon's pass. A spawned thread that claims and is then removed: the remove prints the ticket as still held, with a release naming the repository and the claim id; run as printed, that release is written.
-26. By hand (M4), in an interactive session that holds a claim on a scratch ticket: `/clear`; the new session's guide names the ticket; `task takeover <n>` there exits 0 without `--force`; from a third session it exits 3.
+25. `end` (M6): a spawned thread claims a scratch ticket and is retired: the retire prints the ticket, which then shows a `release` with `reason: ended` and no `claimed`. With `SMINOS_THREAD_END_AFTER` set short on a test home, a stopped thread's claim is released by the daemon's pass. A spawned thread that claims and is then removed: the remove prints the ticket as still held, with a release naming the repository and the claim id; run as printed, that release is written.
+26. By hand (M6), in an interactive session that holds a claim on a scratch ticket: `/clear`; the new session's guide names the ticket; `task takeover <n>` there exits 0 without `--force`; from a third session it exits 3.
 
 **Receipts**, each taken once when its act is done and recorded in Progress with its evidence:
 
-27. This repository's flip (M5): the plan's counts before; after, `task lint` prints no FAIL, no open issue carries a `status:*` label, a ticket that had a hidden note shows it on its page, and the two issues that opened with the retired service's banner no longer say they are read-only.
-28. A worktree from before the flip (M5): in a linked worktree on a branch that predates the flip, whose own file still says `gh`, after one fetch in that clone, `task list` lists the board, and `board-list.sh` and then the old body writer (`board-body.sh`), both from the installed plugin, exit non-zero with M5's first line. The body writer is aimed at a ticket registered for this check, whose body and record block are read unchanged afterwards.
-29. The skill's pressure tests (M5): each scenario M5 lists, run without the skill and with it, recorded in the pull request that carries the skill.
-30. After the first step of the cutover reaches a machine, a fresh session there lists `task:tickets`. After each board's flip, the first ticket a session registers there with `task create` is named (M5 for this repository, M6 for each sibling).
-31. Each sibling repository moved in M6: `task lint` there prints no FAIL, no open issue carries a `status:*` label, and its `CLAUDE.md` holds no "Board Write Hard Gate".
+27. This repository's flip (M4): the plan's counts before; after, `task lint` prints no FAIL, no open issue carries a `status:*` label, a ticket that had a hidden note shows it on its page, and the two issues that opened with the retired service's banner no longer say they are read-only.
+28. A worktree from before the flip (M4): in a linked worktree on a branch that predates the flip, whose own file still says `gh`, after one fetch in that clone, `task list` lists the board, and `board-list.sh` and then the old body writer (`board-body.sh`), both from the installed plugin, exit non-zero with M4's first line. The body writer is aimed at a ticket registered for this check, whose body and record block are read unchanged afterwards.
+29. The skill's pressure tests (M4): each scenario M4 lists, run without the skill and with it, recorded in the pull request that carries the skill.
+30. After the first step of the cutover reaches a machine, a fresh session there lists `task:tickets`. After each board's flip, the first ticket a session registers there with `task create` is named (M4 for this repository, M5 for each sibling).
+31. Each sibling repository moved in M5: `task lint` there prints no FAIL, no open issue carries a `status:*` label, and its `CLAUDE.md` holds no "Board Write Hard Gate".
 
 **Final, at M7**, repeatable:
 
@@ -475,28 +459,30 @@ After M4's release is on a machine where the plugin is enabled (run by the sessi
 
 ## Execution
 
-**Verification.** Three independent reads of this spec: `doperpowers:adversarial-reviewer` on the design and, the execution section having several milestones, on its buildability in the same round; then a second reviewer on the repair of that round, and once more on the repair of its own findings. Each pull request is reviewed through `doperpowers:review-code`: the plugin's (M1 to M3) and sminos's (M4) at the high rung (`doperpowers:reviewer-high`), the first because it carries an arbitration rule and a trust rule for public repositories, the second because it touches the thread sweep, the retire paths and the start guide; M5's and M7's at the medium rung. M6's pull requests follow their own repositories' review.
+**Verification.** Three independent reads of this spec: `doperpowers:adversarial-reviewer` on the design and, the execution section having several milestones, on its buildability in the same round; then a second reviewer on the repair of that round, and once more on the repair of its own findings. Each pull request is reviewed through `doperpowers:review-code`: the plugin's (M1 to M3) and sminos's (M6) at the high rung (`doperpowers:reviewer-high`), the first because it carries an arbitration rule and a trust rule for public repositories, the second because it touches the thread sweep, the retire paths and the start guide; M4's and M7's at the medium rung. M5's pull requests follow their own repositories' review.
 
-**How it lands.** Not as one branch. M1 to M3 are one branch and one pull request, the plugin's first release. M4 is its own branch, cut from `main` when it starts, and a sminos release. M5 is two small pull requests here (what sessions read, with the old scripts' refusal; then the flip) and a live relabel. M6 is one pull request in each sibling repository. M7 is one pull request here. A `doperpowers:plan-executor` can run M1 to M3 as one branch from this document, and M4 as another; M5 to M7 act on live boards and on other repositories and wait on the owner's answers, so the session that holds this spec runs them.
+**How it lands.** Not as one branch. M1 to M3 are one branch and one pull request, the plugin's first release. M4 is two small pull requests here (what sessions read, with the old scripts' two refusals; then the flip) and a live relabel. M5 is one pull request in each sibling repository. M6 is its own branch, cut from `main` when it starts, and a sminos release. M7 is one pull request here. A `doperpowers:plan-executor` can run M1 to M3 as one branch from this document, and M6 as another; M4, M5 and M7 act on live boards and on other repositories and need the owner's hand ("For the owner's read"), so the session that holds this spec runs them.
 
-**What waits on whom.** O1 before M3 starts, and its answer also says where M4 stands:
+**The order** (R11). The plugin's half of the release is built, and the boards move on it, before sminos calls the plugin. The cutover then waits on no change to sminos's code and on none of the work in flight on that code (M6 names it). *Weighed: sminos's calls before the cutover*, so that the first session on a moved board already had the guide line, the release at a retire and the `/clear` offer. It lost to that wait. M4 says what a session meets without them; a claim that stays meanwhile on a machine where no session lists its board is released by the daemon's first pass once M6 is there.
 
-- *Two steps.* M5 and M6 start once the plugin's first release (M1 to M3) is enabled on the machines; M4 runs after them or beside them and gates nothing. Between a board's flip and M4's release, a claim of an ended thread is released when a session on its machine next lists or claims on that board, and not at the retire (where no session does, not at all), a thread that returns reads what lapsed from `task list` and not from its guide, and a takeover after a `/clear` is forced, with a reason. Acceptance 25 and 26 are taken when M4's release is on a machine, the boards having moved.
-- *The milestones' order.* M5 starts once M4's sminos release is on the machines, and M4 is agreed with whoever holds the question sheet's child before it branches.
-- *The lighter design.* M4 and the lifecycle half of M3 are dropped (the index, `held`, `settle`, the settle before `list` and `claim`); acceptance 14 to 19 and 24 to 26 go with them, as does the index's part of 10 to 12, and this document is revised before M3 is built. The three outcomes of a writer's own record (D3, Arbitration) stay: they belong to the fold.
+**What waits on whom.**
 
-O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and before M4's live checks. O2 and O4 before M5's flip. O3 before M7.
+- M1 to M3 wait on nothing.
+- M4 waits on the plugin's first release being enabled on the owner's machines, and on no kind of machine having an unresolved other `task`; its flip waits on the owner's read of the decision table (O2).
+- M5 waits on M4's receipts (acceptance 27 and 28): this repository's flip is the first, and the trial of the steps each sibling repeats. Each repository's apply waits on the owner's read of that repository's table.
+- M6 waits on M3's review, which freezes §9, and its live checks on the enabled plugin. It comes after the cutover (R11). Neither cutover waits on it and it waits on neither, so where whoever holds sminos is free sooner it may be built beside them.
+- M7 waits on M5 (acceptance 31 for each repository), on the ticket that records leaving `ida-solution` out (O3), and on M6's release with acceptance 25 and 26 taken. Nothing in the archive move itself depends on M6; M7 waits on it as the final verification, which cites every earlier item.
 
 **Binding on every milestone.**
 
 - This repository is public: no hostnames, IPs, accounts, project ids, secret names or values, or local absolute paths in code, comments, committed fixtures, documents or commit messages. Fixtures use invented addresses, as this document's examples do. Nothing about a private repository's issues, or about the inside of a repository the owner's account cannot read, is written here or on this board.
 - The `task` plugin is Python 3.9, standard library only, as sminos's CLI is; it imports nothing of doperpowers or sminos, and reaches GitHub only through `gh api` with the repository named in the call.
-- No issue or label of a real board is written before M5's flip. M1 to M4 run against the stand-ins and scratch repositories.
-- No machine sends a thread a message because of a ticket; the one message this unit sends is `create --to`'s, by a session, if O5 keeps it.
+- No issue or label of a real board is written before M4's flip. M1 to M3, and M6 whenever it runs, work against the stand-ins and scratch repositories.
+- No machine sends a thread a message because of a ticket; the one message this unit sends is `create --to`'s, by a session (R12).
 - Verify a commit with `ci-gate` from the worktree (`ci-gate --gates task` for the plugin's suite); do not run a gate's command locally as the verification. One focused test file while iterating is fine.
-- Versions move in the commit that changes a shipped file: `scripts/bump-version.sh --plugin task` (the plugin is created at 0.1.0; a new plugin directory with readable manifests passes the `version-bump` gate), `--plugin sminos` in M4 and wherever the sminos skill's text changes, doperpowers' own in M5 and M7.
+- Versions move in the commit that changes a shipped file: `scripts/bump-version.sh --plugin task` (the plugin is created at 0.1.0; a new plugin directory with readable manifests passes the `version-bump` gate), doperpowers' own in M4 and M7, and `--plugin sminos` in M6 and wherever the sminos skill's text changes (M4 and M7 each change a line of it).
 - A new plugin reaches a machine by the owner enabling it there once; after that the marketplace updates it by version number.
-- Skill text (M5's new skill and its changes to four others, M7's removals) goes through doperpowers:writing-skills.
+- Skill text (M4's new skill and its changes to four others, M7's removals) goes through doperpowers:writing-skills.
 - A Repo map row in the root `CLAUDE.md` orients in a sentence or two; the plugin's detail is in `task/CLAUDE.md`. `README.md` and `docs/whats-inside.md` follow the tree in the same change.
 - Dated documents under `docs/doperpowers/` are history and are not rewritten; `docs/doperpowers/board-service-tickets.md` stays as it is.
 
@@ -513,7 +499,7 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 - All GitHub access sits in one module. `skills/issue-tracker/scripts/_board.py` (its snapshot query, its edge mutations) and `tests/issue-tracker/mock-gh/gh` show what the API takes and how a stand-in keeps state; they are references, not code to import or extend.
 - Label writes are single-label adds and removes. A replacement of the whole set would drop a `claimed` another writer set a moment before.
 - The trusted account is read from the `gh` client once per run (the authenticated login).
-- `create` refuses an empty body and enforces no sections: what a body must carry is the skill's (M5). It writes a record block only when it has a key to put in it.
+- `create` refuses an empty body and enforces no sections: what a body must carry is the skill's (M4). It writes a record block only when it has a key to put in it.
 - A new label is created at first need, with a description that names its axis.
 - `task --version` prints the version and that it is the task plugin of the doperpowers marketplace (the unknown about another `task` on `PATH`).
 - sminos is found as devcloud finds it (`_sminos` in `devcloud/driver/context.py`): `TASK_SMINOS`, then `PATH`, then the marketplace clone; each call bounded at 30 seconds. The address is read from `sminos who`'s line as devcloud's `session_creator` reads it.
@@ -521,9 +507,8 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 - Nothing in this milestone reads the `claimed` label or a claim record, and none of its acceptance items is about a holder: `show` and `list` give `holder: null`, takeability is D1's conditions 2 to 6, and `close` asks nothing about a holder. M3 adds the fold to each of them and proves it there.
 - The designated remote is `git config --get task.remote`, else `origin`. Its repository is read from the remote's URL in the forms git writes a GitHub repository (`https://github.com/owner/name`, `git@github.com:owner/name`, `ssh://git@github.com/owner/name`, with or without `.git`) and compared with the file's `repo` without regard to case; any other URL is refused. In a clone the configuration is read with `git show refs/remotes/<that remote>/HEAD:.doperpowers/board.json` and from nowhere else; where the ref is missing the refusal names it and `git remote set-head <remote> --auto`. `task` makes no fetch of its own.
 - A body's digest is `sha256:` and the hex SHA-256 of the body's bytes as the API returns them, the same in `show`, `adopt` and M2's plan.
-- If O5 is answered against the message, `--to` writes `for:` and sends nothing, and acceptance 2's send is dropped.
 
-**Does not touch:** `migrate` (M2); `claim`, `release`, `takeover`, `held`, `settle`, the fold and the index (M3); the skill (M5); the `issue-tracker` skill and its scripts; sminos's code; any issue of a real board.
+**Does not touch:** `migrate` (M2); `claim`, `release`, `takeover`, `held`, `settle`, the fold and the index (M3); the skill (M4); the `issue-tracker` skill and its scripts; sminos's code; any issue of a real board.
 
 **Proves:** acceptance 1 to 7 and 21; the two unknowns it names.
 
@@ -551,15 +536,14 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 
 ### M3 — claims
 
-**At its end:** `task claim`, `release`, `takeover`, `held` and `settle` behave as D3 says, with the real sminos for identity. `show` and `list` name holders from the fold and correct the label, and `close` respects a holder. A claim whose thread has ended is released by the settle that `task list` and `task claim` run for their board on its machine. No sminos code calls the plugin yet, and none is needed for that.
+**At its end:** `task claim`, `release`, `takeover`, `held` and `settle` behave as D3 says, with the real sminos for identity. `show` and `list` name holders from the fold and correct the label, and `close` respects a holder. A claim whose thread has ended is released by the settle that `task list` and `task claim` run for their board on its machine. No sminos code calls the plugin until M6, and none is needed for that: the boards move on this milestone's release.
 
 **Touches:** `task/cli/`, `task/tests/`, `task/CLAUDE.md` (the contract with sminos in both directions, which is where its detail lives).
 
-**Interfaces:** exposes §4, §7 and §9, §5's `holder` and §6's WARN that needs the fold; §9 is frozen at this milestone's review, since M4 builds against it. Consumes §1 to §3 and §10.
+**Interfaces:** exposes §4, §7 and §9, §5's `holder` and §6's WARN that needs the fold; §9 is frozen at this milestone's review: M6 builds against it after the plugin has been released and the boards have moved, and no release in between changes it. Consumes §1 to §3 and §10.
 
 **Decisions:**
 
-- It starts once O1 is answered. Under the lighter design this milestone is the record, the fold with the three outcomes of a writer's own record, `claim`, `release`, `takeover --force` and the holder in `show` and `list`; the index, `held` and `settle` are not built, and this document is revised first.
 - Acceptance 23 is run first. A round with two winners, or a confirming read that missed a lower-numbered claim, stops the milestone (Delegated unknowns). Its barrier and its trace are test seams of `claim`, off unless their variables are set: `TASK_CLAIM_BARRIER` names a file the claim waits for, at most a minute, after a first read that found the ticket unheld, and `TASK_TRACE` a file that receives what each of its reads saw. The same seam holds each claimant again after its confirming read: no loser deletes its record until every claimant's read is captured, so that a lower record its loser deleted is not counted as one a later read missed.
 - The index is one JSON file, rewritten by atomic replace under a lock held across the read and the write: several sessions of one machine claim at once. The lock is never held across a call to GitHub or to sminos.
 - Inside `claim` and `takeover` the order is: the session's thread asked, pending row, read and fold, append, read and fold, the outcome of its own record (D3, Arbitration), the label and the look after it, row held or lapsed. Inside a release: record, the label and the look, row. Inside a settle's release: row owed, record, the label and the look, row lapsed. Each order is what makes the crash cases of acceptance 10, 11, 12 and 14 come out as written.
@@ -577,7 +561,54 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 
 **Proves:** 9 to 15, 23 and 24.
 
-### M4 — sminos calls the board at a thread's start, `/clear` and end
+### M4 — the skill, the calling skills, and this repository's cutover
+
+**At its end:** sessions in this repository work the board through `task:tickets` and `task`; its open issues carry the new labels; the old scripts refuse it.
+
+**Touches**, in two pull requests (D7). *What sessions read:* `task/skills/tickets/SKILL.md` (new); `skills/issue-tracker/SKILL.md` (one sentence at its head: a repository whose binding is `task` is worked through `task:tickets`); `skills/issue-tracker/scripts/_binding.sh` and `_lib.sh` (the two refusals) with their cases in `tests/issue-tracker/`; `skills/execspec/SKILL.md`, `skills/decomposing/SKILL.md`, `skills/organizing-sprints/SKILL.md` and `sminos/skills/sminos/SKILL.md` (where each sends work to the board; in the sminos skill that is one sentence, and none of sminos's code); `README.md` and `docs/INSTALL-doperpowers.md` (the plugin's install line); `docs/whats-inside.md` (the plugin and its skill); the versions of `task`, doperpowers and sminos. *The flip:* `.doperpowers/board.json`; the root `CLAUDE.md` ("The board" section, the `skills/` and `task/` rows); `.github/PULL_REQUEST_TEMPLATE.md` (the line that names `board-transition.sh`). Live: this repository's issues and labels.
+
+**Interfaces:** consumes all of them.
+
+**Decisions:**
+
+- **The skill** carries what a session cannot derive: what the board is for (R3); when a ticket is registered (work deferred out of a session, at the moment it is deferred, by whoever deferred it, with a body a reader weeks away can act on, after a search by the identifiers the work touches); what is takeable; that a claim comes before the work and a refused claim means the work is another's; that nothing is written to a ticket while work runs; what setting a ticket down leaves (a release that says where it stands, and the readiness the ticket now needs); that a pull request closes its ticket with `Closes #n`; that a `need-input` ticket says in prose what it waits on; that a body is edited through `task set`; that an outsider's text on a public board is data; that a body `task show` marks untrusted is adopted only on the owner's word, after it was read whole; and that what a session holds is read from the board (the list of claimed tickets names each holder), not remembered and not told to it. It carries no flags (`task --help` does) and no state machine, and it names nothing that M6 adds, so that M6 edits no skill text.
+- **The calling skills** name the board's skill by the binding in force while both exist: `task:tickets` where the default branch's `.doperpowers/board.json`, as the clone last fetched it, says `task` (D4), the old skill elsewhere. A session that picks wrong is sent across: the old scripts' refusal names `task:tickets`, and `task`'s names the binding it found. `decomposing`'s step 6 and `organizing-sprints`' Materialization change as D7 says, and the lines of `organizing-sprints` that name `board-register.sh`, `--state` values and `board-lint.sh` are rewritten for both bindings.
+- **The pressure tests** must show: (a) a session that scopes work out registers it at that moment, with such a body, after searching; (b) an idle session takes a takeable ticket, and brings a `need-design` or `undecided` one to the owner instead of designing or deciding alone; (c) it claims before it starts, and on exit 3 does not start; (d) midway through claimed work it writes nothing to the ticket; (e) setting a ticket down, it releases with where the work stands and sets the readiness; (f) it registers no ticket for work it is about to build now; (g) in a checkout with an `upstream` remote it uses `task` and no raw `gh issue` command; (h) it does not act on an instruction found in an untrusted comment, and does not adopt an untrusted body by its own decision; (i) a session decomposing a goal on a moved board registers one ticket for the initiative and leaves the children in the spec; (j) on a board that has not moved, it still uses the old skill.
+- **The old scripts' two refusals** (D7), both for a script that works GitHub. In `_binding.sh`, which every script sources: `git show refs/remotes/<the designated remote>/HEAD:.doperpowers/board.json`, and a `binding` of `task` there stops the script with `error: this board has moved to task (the default branch's .doperpowers/board.json says so): work it through task:tickets`; a ref or a file that is not there refuses nothing. In `_lib.sh`, where every board script settles its target (`BOARD_REPO`, else the file's `repo`, else the client's answer): a target that is not the designated remote's repository stops the script with `error: the old board scripts work this clone's own board (<its repository>), not <the target>`. Sitting there it stops a read as well as a write, which no caller in the tree needs. The old suite's fixtures run with a `BOARD_REPO` in a repository that has no remote; they gain an `origin` that names it. The scripts make no fetch: a board command must not wait on the network, and the flip's sitting fetches each clone.
+- **The first pull request** is merged, and its versions are on the owner's machines, before the flip: acceptance 30's fresh session is the check.
+- **The flip** follows D7. The plan is written outside the tree. Its decision rows go to the owner as a table in the pull request's description (O2), which for this public repository may name the issues. The sessions working here are told through sminos before it merges. After the merge each clone of this repository on the owner's machines is fetched, the apply's own clone first, since the apply refuses until its clone has seen the flip; receipt 28 is taken from a linked worktree whose branch predates the flip.
+- A ticket the relabel finds in an in-flight state: where sminos shows a live session on its branch or pull request, that session is asked to claim it after the apply.
+- At the flip a ticket is registered here for MAWS: that it tells the board when it archives a session, whose claims nothing releases until then (O4).
+- **What a session meets until M6.** sminos does not call the plugin yet (R11), and neither the skill nor the flip assumes that it does. (a) No guide line: a session is not told at its start what its thread holds, what lapsed or what is offered to it. It reads what it holds from the board, and a thread that returns reads what lapsed from the lines `task list` and `task claim` print for the rows its session made (a thread that has since moved to a new session id is not shown them). (b) A retire releases nothing as it returns and says nothing of the board: the claims of an ended thread are released when a session on that machine next lists or claims on that board, and on a machine where none does they stay, showing their age. A purge or a remove names no ticket that stays held. (c) After a `/clear` the new session is not told what the conversation it left holds, and no grant exists, so `task takeover` there is refused without `--force "<reason>"`; a claim left that way stays with the thread that was left until the three-day rule ends it and that board is next settled. Each of these is in D3's "What is accepted" or follows from "When settle runs"; none is a fault to repair during the cutover.
+- It starts once the plugin is enabled on the owner's machines and no machine kind has an unresolved other `task` (What waits on whom). It waits on no change to sminos's code. Its first pull request moves sminos's version for that one sentence of the skill; a number other work on sminos has taken by then is the ordinary rebase.
+
+**Does not touch:** the sibling repositories; the old skill and its scripts beyond that one sentence and those two refusals.
+
+**Proves:** 20 on the first pull request's branch; 27 to 29, and 30 for this repository.
+
+### M5 — the sibling repositories' cutover
+
+**At its end:** `cua`, `MAWS` and `arkho` are on `task`, each by one pull request in that repository and one applied plan.
+
+**Touches**, in each repository, through its own worktree and pull request: a new `.doperpowers/board.json` with `"binding": "task"` and that repository's `owner/name`; the text its agent instructions carry about the board. In `cua` that is the "Board Write Hard Gate" bullet of its `CLAUDE.md`, replaced by one sentence that the board is worked through `task:tickets`. `MAWS` and `arkho` hold no such text; a search for `issue-tracker` and `board-` at the cutover finds what there is. Live: their issues and labels.
+
+**Interfaces:** consumes all of them.
+
+**Decisions:**
+
+- It starts when this repository's flip has its receipts (acceptance 27 and 28): that flip is the trial of the steps repeated here. A session on a moved sibling meets what M4 lists until M6.
+- Before a repository's pull request opens, the threads in charge there are told through sminos what changes and when, since sessions working there read the labels. The plan is applied in the same sitting as the merge, after each clone of that repository on the owner's machines has been fetched, as in M4.
+- `cua` and `MAWS` use native edges: the horizon rule of D6 applies, and parents keep their children.
+- `arkho` is private. Its plan and its decision table never enter this repository or a public pull request.
+- Each repository's decision rows go to the owner per O2. Each plan is checked for the retired service's banner.
+- Every worktree of a clone gets the change at that clone's next fetch, whatever branch it is on (D4). The text its own branch carries about the board changes when that branch takes the default branch's commit; nothing is edited there.
+- `ida-solution` is left out (O3). A ticket on this board records it, saying what kind of text waits there (its agent instructions, one of its runbooks, two workflows that speak the old vocabulary) and naming none of that repository's files. Whoever moves it later does so by these same steps, from an account that can read it, with the workflow that writes `status:*` labels retired in the same pull request.
+
+**Does not touch:** this repository, beyond Progress.
+
+**Proves:** 31, and 30 for each repository.
+
+### M6 — sminos calls the board at a thread's start, `/clear` and end
 
 **At its end:** a thread's start guide lists what it holds, what lapsed and what is offered to it. After a `/clear`, the new session is told what the conversation it left holds and can take it over without force. A retire releases the retired thread's claims as it returns and prints them; after a purge or a remove it prints what stays held. The daemon's ending pass starts a settle, so a thread the three-day rule ends loses its claims within that pass, on a machine where no session runs `task` as well.
 
@@ -587,7 +618,8 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 
 **Decisions:**
 
-- This milestone is for whoever holds sminos when it starts. Before branching, read what is in flight on the thread sweep, the retire paths and the start hooks, and tell its holder. At this writing that is the question sheet's sminos child (`docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md`), which adds a sweep of its own to the daemon and changes the start hooks. The channels composite is not amended: every child of it has landed, and this is a change of its own to code it landed.
+- It is the second stage of R11 and gates nothing before it: the cutover neither waits on it nor assumes it, and it needs only M3's review, which freezes §9 (What waits on whom). By the time its release reaches a machine the boards there may have moved, so the daemon's first settle releases real claims of threads that ended meanwhile, which is its purpose.
+- This milestone is for whoever holds sminos when it starts. Before branching, read what is in flight on the thread sweep, the retire paths and the start hooks, and tell its holder. When this document was approved that was the question sheet's sminos child (`docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md`), which adds a sweep of its own to the daemon and changes the start hooks; if it has landed by then, this milestone builds beside its code. The functions named here are sminos 1.58.0's, and one that has moved or been renamed since is found by what this document says it does. The channels composite is not amended: every child of it has landed, and this is a change of its own to code it landed.
 - Every call to settle is a trigger (D3). sminos passes nothing that states an end, and nothing in sminos depends on a call having been delivered or answered.
 - The retire's call sits in the retire and remove commands after the end's transition has returned, never inside `thread_transition` and never under a thread's lock: the end and a purge are one journaled transition there, and the plugin asks sminos about the thread while it runs. It is bounded at 30 seconds. A session that retires or removes itself is stopped by its own end before the call is made; the next settle on the machine does that work.
 - The line a retire prints for a row it could not release is built from §9's `unknown` row: `task release <n> --repo <owner/name> --of <claim id> --force "<reason>"` (D5).
@@ -602,51 +634,6 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 
 **Proves:** 16 to 19 on the branch; 25 and 26 once its release is on a machine.
 
-### M5 — the skill, the calling skills, and this repository's cutover
-
-**At its end:** sessions in this repository work the board through `task:tickets` and `task`; its open issues carry the new labels; the old scripts refuse it.
-
-**Touches**, in two pull requests (D7). *What sessions read:* `task/skills/tickets/SKILL.md` (new); `skills/issue-tracker/SKILL.md` (one sentence at its head: a repository whose binding is `task` is worked through `task:tickets`); `skills/issue-tracker/scripts/_binding.sh` and `_lib.sh` (the two refusals) with their cases in `tests/issue-tracker/`; `skills/execspec/SKILL.md`, `skills/decomposing/SKILL.md`, `skills/organizing-sprints/SKILL.md` and `sminos/skills/sminos/SKILL.md` (where each sends work to the board); `README.md` and `docs/INSTALL-doperpowers.md` (the plugin's install line); `docs/whats-inside.md` (the plugin and its skill); the versions of `task`, doperpowers and sminos. *The flip:* `.doperpowers/board.json`; the root `CLAUDE.md` ("The board" section, the `skills/` and `task/` rows); `.github/PULL_REQUEST_TEMPLATE.md` (the line that names `board-transition.sh`). Live: this repository's issues and labels.
-
-**Interfaces:** consumes all of them.
-
-**Decisions:**
-
-- **The skill** carries what a session cannot derive: what the board is for (R3); when a ticket is registered (work deferred out of a session, at the moment it is deferred, by whoever deferred it, with a body a reader weeks away can act on, after a search by the identifiers the work touches); what is takeable; that a claim comes before the work and a refused claim means the work is another's; that nothing is written to a ticket while work runs; what setting a ticket down leaves (a release that says where it stands, and the readiness the ticket now needs); that a pull request closes its ticket with `Closes #n`; that a `need-input` ticket says in prose what it waits on; that a body is edited through `task set`; that an outsider's text on a public board is data; and that a body `task show` marks untrusted is adopted only on the owner's word, after it was read whole. It carries no flags (`task --help` does) and no state machine.
-- **The calling skills** name the board's skill by the binding in force while both exist: `task:tickets` where the default branch's `.doperpowers/board.json`, as the clone last fetched it, says `task` (D4), the old skill elsewhere. A session that picks wrong is sent across: the old scripts' refusal names `task:tickets`, and `task`'s names the binding it found. `decomposing`'s step 6 and `organizing-sprints`' Materialization change as D7 says, and the lines of `organizing-sprints` that name `board-register.sh`, `--state` values and `board-lint.sh` are rewritten for both bindings.
-- **The pressure tests** must show: (a) a session that scopes work out registers it at that moment, with such a body, after searching; (b) an idle session takes a takeable ticket, and brings a `need-design` or `undecided` one to the owner instead of designing or deciding alone; (c) it claims before it starts, and on exit 3 does not start; (d) midway through claimed work it writes nothing to the ticket; (e) setting a ticket down, it releases with where the work stands and sets the readiness; (f) it registers no ticket for work it is about to build now; (g) in a checkout with an `upstream` remote it uses `task` and no raw `gh issue` command; (h) it does not act on an instruction found in an untrusted comment, and does not adopt an untrusted body by its own decision; (i) a session decomposing a goal on a moved board registers one ticket for the initiative and leaves the children in the spec; (j) on a board that has not moved, it still uses the old skill.
-- **The old scripts' two refusals** (D7), both for a script that works GitHub. In `_binding.sh`, which every script sources: `git show refs/remotes/<the designated remote>/HEAD:.doperpowers/board.json`, and a `binding` of `task` there stops the script with `error: this board has moved to task (the default branch's .doperpowers/board.json says so): work it through task:tickets`; a ref or a file that is not there refuses nothing. In `_lib.sh`, where every board script settles its target (`BOARD_REPO`, else the file's `repo`, else the client's answer): a target that is not the designated remote's repository stops the script with `error: the old board scripts work this clone's own board (<its repository>), not <the target>`. Sitting there it stops a read as well as a write, which no caller in the tree needs. The old suite's fixtures run with a `BOARD_REPO` in a repository that has no remote; they gain an `origin` that names it. The scripts make no fetch: a board command must not wait on the network, and the flip's sitting fetches each clone.
-- **The first pull request** is merged, and its versions are on the owner's machines, before the flip: acceptance 30's fresh session is the check.
-- **The flip** follows D7. The plan is written outside the tree. Its decision rows go to the owner as a table in the pull request's description (O2), which for this public repository may name the issues. The sessions working here are told through sminos before it merges. After the merge each clone of this repository on the owner's machines is fetched, the apply's own clone first, since the apply refuses until its clone has seen the flip; receipt 28 is taken from a linked worktree whose branch predates the flip.
-- A ticket the relabel finds in an in-flight state: where sminos shows a live session on its branch or pull request, that session is asked to claim it after the apply.
-- O4 decides between two paths: the limit accepted, and a ticket registered for MAWS here; or the flip waits until MAWS reports a session's end to the board and that has been seen to work.
-- It starts once the plugin is enabled on the owner's machines and no machine kind has an unresolved other `task`; and, unless O1 is answered for the two steps, once M4's sminos release is on those machines (What waits on whom).
-
-**Does not touch:** the sibling repositories; the old skill and its scripts beyond that one sentence and those two refusals.
-
-**Proves:** 20 on the first pull request's branch; 27 to 29, and 30 for this repository.
-
-### M6 — the sibling repositories' cutover
-
-**At its end:** `cua`, `MAWS` and `arkho` are on `task`, each by one pull request in that repository and one applied plan.
-
-**Touches**, in each repository, through its own worktree and pull request: a new `.doperpowers/board.json` with `"binding": "task"` and that repository's `owner/name`; the text its agent instructions carry about the board. In `cua` that is the "Board Write Hard Gate" bullet of its `CLAUDE.md`, replaced by one sentence that the board is worked through `task:tickets`. `MAWS` and `arkho` hold no such text; a search for `issue-tracker` and `board-` at the cutover finds what there is. Live: their issues and labels.
-
-**Interfaces:** consumes all of them.
-
-**Decisions:**
-
-- Before a repository's pull request opens, the threads in charge there are told through sminos what changes and when, since sessions working there read the labels. The plan is applied in the same sitting as the merge, after each clone of that repository on the owner's machines has been fetched, as in M5.
-- `cua` and `MAWS` use native edges: the horizon rule of D6 applies, and parents keep their children.
-- `arkho` is private. Its plan and its decision table never enter this repository or a public pull request.
-- Each repository's decision rows go to the owner per O2. Each plan is checked for the retired service's banner.
-- Every worktree of a clone gets the change at that clone's next fetch, whatever branch it is on (D4). The text its own branch carries about the board changes when that branch takes the default branch's commit; nothing is edited there.
-- `ida-solution`, per O3. Left out: a ticket on this board records it, saying what kind of text waits there (its agent instructions, one of its runbooks, two workflows that speak the old vocabulary) and naming none of that repository's files. Moved: by these same steps, by a session whose account can read it, with the workflow that writes `status:*` labels retired in the same pull request.
-
-**Does not touch:** this repository, beyond Progress.
-
-**Proves:** 31, and 30 for each repository.
-
 ### M7 — the old scripts retire; the final verification
 
 **At its end:** doperpowers no longer ships the `issue-tracker` skill, what referred to it refers to `task:tickets` alone, and the final checks have passed.
@@ -657,7 +644,7 @@ O5 before M1 ships `--to`. The plugin enabled on the machines before M5 and befo
 
 **Decisions:**
 
-- It starts when `cua`, `MAWS` and `arkho` have moved (acceptance 31 recorded for each) and O3 has been carried out: the ticket that records leaving `ida-solution` out exists, or that repository has moved.
+- It starts when `cua`, `MAWS` and `arkho` have moved (acceptance 31 recorded for each), the ticket that records leaving `ida-solution` out exists (O3), and M6's release is on the machines with acceptance 25 and 26 taken (What waits on whom).
 - Archived tests stay with what they test and are run by nothing, as `archive/experimental-context/` keeps its own.
 - The move removes the shipped copies of the scripts, and the plugin's next update the installed ones. A copy tracked in a worktree on an older branch of this repository is not removed by it (D7).
 - The final verification is acceptance 32 to 34 together with the suites (1 to 19, by `ci-gate`) and the scratch cases (21 to 24). The acts that happen once (27 to 31, and 25 and 26) are not repeated: their receipts in Progress are read and cited. Item 20 leaves with the scripts it tests, and its last passing run before the archive is cited.
@@ -676,7 +663,7 @@ The suites (acceptance 1 to 15 for the plugin, 16 to 19 for sminos, 20 for the o
     # PASS task … GREEN <run url>
 
     ci-gate
-    # every gate the change touches (sminos's in M4, issue-tracker in M5's first pull request); GREEN <run url>
+    # every gate the change touches (issue-tracker in M4's first pull request, sminos's in M6); GREEN <run url>
 
     task/bin/task --version
     # task <the plugin's version> (the task plugin of the doperpowers marketplace)
@@ -695,13 +682,7 @@ The scratch cases, with a private scratch repository of the owner's account (a s
     TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh lapse      # M3 (24)
     # a spawned thread claimed <owner>/<scratch>#<n> and was retired; task list: #<n> unheld; release reason ended; label off
 
-After M4's release, on a machine where the plugin is enabled (25; 26 is by hand, and `live.sh clear` prints its three steps):
-
-    TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh end
-    # retire printed <owner>/<scratch>#<n>; release reason ended; label off
-    # remove printed <owner>/<scratch>#<m> as still held, with: task release <m> --repo <owner>/<scratch> --of <claim id> --force "<reason>"
-
-This repository's flip, M5 (receipts 27 and 28):
+This repository's flip, M4 (receipts 27 and 28):
 
     task migrate plan --out <a file outside the tree>
     # 53 rows: 30 mechanical, 23 decisions; incoming: 0   (the counts of 2026-11-24)
@@ -722,6 +703,12 @@ Receipt 28, in a linked worktree on a branch that predates the flip (its own fil
     <the plugin's root>/skills/issue-tracker/scripts/board-body.sh <n> --body-file <a file>
     # each: error: this board has moved to task (the default branch's .doperpowers/board.json says so): work it through task:tickets
     # each exits 1; task show <n>: the body and its record block unchanged
+
+After M6's release, on a machine where the plugin is enabled (25; 26 is by hand, and `live.sh clear` prints its three steps):
+
+    TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh end
+    # retire printed <owner>/<scratch>#<n>; release reason ended; label off
+    # remove printed <owner>/<scratch>#<m> as still held, with: task release <m> --repo <owner>/<scratch> --of <claim id> --force "<reason>"
 
 The final checks, M7 (32 to 34):
 
