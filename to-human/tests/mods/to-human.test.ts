@@ -1893,6 +1893,70 @@ describe('the message tool', () => {
     expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
   })
 
+  test('a lone message whose group unmounts without redrawing draws as a message and drops its phantom group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    // On a resume, a message call alone in its stretch (e.g. right after an Agent spawn)
+    // first renders as a collapsed ToolGroup of one, which then unmounts once the MCP tool loads.
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: { calls: [{ tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: {} }], isExpanded: false, isActive: false },
+    } as never)
+    await group.unmount()
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    // The phantom group must not linger in order as record and steal the next run's button.
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a group led by a message that splits into a message and a new group draws both and drops the old group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const groupProps = (calls: { id: string; tool: string }[]) =>
+      ({ calls: calls.map(({ id, tool }) => ({ tool_use_id: id, tool, input: {} })), isExpanded: false, isActive: false }) as never
+    const first = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: groupProps([{ id: 'toolu_m1', tool: MESSAGE_TOOL }, { id: 'toolu_b1', tool: 'Bash' }]),
+    } as never)
+    await first.unmount()
+    // The new group mounts under its own first call (toolu_b1) before the message renders.
+    const rest = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-2',
+      props: groupProps([{ id: 'toolu_b1', tool: 'Bash' }]),
+    } as never)
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    expect(await rest.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('an AskUserQuestion whose lone group unmounts breaks the run and drops its phantom group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: { calls: [{ tool_use_id: 'toolu_q1', tool: 'mcp__sminos__AskUserQuestion', input: {} }], isExpanded: false, isActive: false },
+    } as never)
+    await group.unmount()
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'toolu_q1',
+      props: { tool_use_id: 'toolu_q1', tool: 'mcp__sminos__AskUserQuestion', input: {}, isRunning: false, isErrored: false, isInterrupted: false },
+    } as never)
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
   test('its result row draws nothing', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -2120,5 +2184,31 @@ describe('the message tool', () => {
     // Each of the others opens a run of working record, as any unmarked response does.
     expect(await written.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await other.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a made-up response drawn before its transcript flag arrives leaves order once known so the next run keeps its button', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const transcript = ['"uuid":"m1"', '"uuid":"h1"', '"answeredWithoutRequest":true', '"uuid":"r1"'].join('\n')
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const base = listing(transcript)
+    on('process.run', async (ctx, e) => {
+      if ((e.argv[2] ?? '').startsWith('search()')) await gate
+      return base(ctx, e)
+    })
+    on('classic.SessionStart', () => ({}))
+    const m1 = await message($, 'm1', '<message>Starting.</message>')
+    const resuming = $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    // While the resume search is still running, both the made-up response and the next record row draw.
+    await m1.redraw()
+    const made = await message($, 'h1', FINAL_ANSWER)
+    const after = await message($, 'r1', 'Reading the logs.')
+    release()
+    await resuming
+
+    expect(await isBlank(made)).toBe(true)
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 })

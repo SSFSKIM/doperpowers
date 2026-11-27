@@ -1188,6 +1188,23 @@ export function joinGroup(view: View, id: string, calls: readonly string[]): boo
   return true
 }
 
+/** Removes a row that no longer stands in the view's order; whether it stood there. */
+function dropRow(view: View, id: string): boolean {
+  const was = view.rowOf.delete(id)
+  const at = view.order.indexOf(id)
+  if (at >= 0) {
+    view.order.splice(at, 1)
+  }
+  view.unfolded.delete(id)
+  view.shown.delete(id)
+  view.endOf.delete(id)
+  view.requestIds.delete(id)
+  if (view.folded === id) {
+    view.folded = undefined
+  }
+  return was || at >= 0
+}
+
 /**
  * Notes a row as it draws: its place among the rows drawn so far, and what it
  * is. A row that lands beside another, or turns into a kind that ends or joins
@@ -1661,6 +1678,81 @@ export function registerToHuman(on: On) {
   // What MAWS advertises, read once for this registration (`native`).
   const setting: Setting = {}
 
+  // Where the engine expands a group itself (`--verbose`, the ctrl+o
+  // transcript) each call is a row of its own: which group's run a call's
+  // row stands in, and which call is a group's last, whose row draws the
+  // run's end in the group's place.
+  const groupOf = new Map<string, string>()
+  const membersOf = new Map<string, Set<string>>()
+  const lastOf = new Map<string, string>()
+  const expanded = new Set<string>()
+
+  // The ids of the Agent and Workflow calls the transcript drew, whose
+  // failure notifications stay in the report as the spawns do.
+  const spawns = new Set<string>()
+
+  // The row drawn before each TurnDuration whose place was not yet known.
+  const before = new Map<string, string | undefined>()
+
+  // The message tool's calls that sent nothing (refused, errored, cut by an
+  // abort), by their ids: their rows, the call's and its result's, stand in
+  // the working record as the engine draws them. The result row cannot say
+  // it was cut, so it reads what its call's row said.
+  const unsent = new Set<string>()
+
+  // The rows the engine's pill has drawn under, by the view's id for the row
+  // (a group's, for a call in one): while the row is live, the pill draws
+  // the run's end beneath itself, and a pill that first draws asks the row
+  // to draw again without it. An expanded group's last call draws its end.
+  const pills = new Set<string>()
+
+  /**
+   * Takes `call` out of whichever group held it; when that empties the group
+   * (or leaves a collapsed group without its first call, under which the group
+   * was known), drops the group's row from the view's order so it cannot stay
+   * as an unmounted head of a run. Whether a group row was dropped.
+   */
+  function leaveGroup(call: string): boolean {
+    const old = groupOf.get(call)
+    if (old === undefined) {
+      return false
+    }
+    groupOf.delete(call)
+    if (view.heldBy.get(call) === old) {
+      view.heldBy.delete(call)
+    }
+    const members = membersOf.get(old)
+    if (members === undefined) {
+      return false
+    }
+    members.delete(call)
+    if (members.size === 0 || (!expanded.has(old) && old === GROUP + call)) {
+      for (const member of members) {
+        if (groupOf.get(member) === old) {
+          groupOf.delete(member)
+        }
+        if (view.heldBy.get(member) === old) {
+          view.heldBy.delete(member)
+        }
+      }
+      membersOf.delete(old)
+      lastOf.delete(old)
+      expanded.delete(old)
+      pills.delete(old)
+      return dropRow(view, old)
+    }
+    if (lastOf.get(old) === call) {
+      let last: string | undefined
+      for (const member of members) {
+        last = member
+      }
+      if (last === undefined) lastOf.delete(old)
+      else lastOf.set(old, last)
+      return expanded.has(old) && unfolded.has(runStart(view.order, view.rowOf, old))
+    }
+    return false
+  }
+
   // Each load of the module raises this, the first and every reload: the
   // start-up read (`started`) runs here, where no redraw of a row cuts it
   // short, unless it already finished under a row's draw.
@@ -1692,17 +1784,35 @@ export function registerToHuman(on: On) {
       view.unkept.clear()
       view.heldBy.clear()
       view.endOf.clear()
+      view.requestIds.clear()
+      view.shown.clear()
+      view.folded = undefined
       unfolded.clear()
+      groupOf.clear()
+      membersOf.clear()
+      lastOf.clear()
+      expanded.clear()
+      spawns.clear()
+      before.clear()
+      unsent.clear()
+      pills.clear()
       // A cleared conversation keeps no row yet; a resumed one's are listed by its file.
       view.isWhole = e.source === 'clear'
-      $.ui.invalidate('ui.render')
+      if (e.source === 'clear') {
+        $.ui.invalidate('ui.render')
+      }
     }
     if (e.source !== 'resume' && e.source !== 'fork') {
       return next(e)
     }
     // The hooks beneath run while this searches: sminos' ask mod reads
-    // the same transcript for the questions it draws.
-    const [result] = await Promise.all([next(e), place($, view, (list) => placeArgs(e.transcript_path, list), next.signal)])
+    // the same transcript for the questions it draws. Invalidate once the
+    // search finishes so rows redraw with places, errors and unrequested
+    // flags already known.
+    const [result] = await Promise.all([
+      next(e),
+      place($, view, (list) => placeArgs(e.transcript_path, list), next.signal).finally(() => $.ui.invalidate('ui.render')),
+    ])
     return result
   })
 
@@ -1769,19 +1879,6 @@ export function registerToHuman(on: On) {
     return {}
   })
 
-  // Where the engine expands a group itself (`--verbose`, the ctrl+o
-  // transcript) each call is a row of its own: which group's run a call's
-  // row stands in, and which call is a group's last, whose row draws the
-  // run's end in the group's place.
-  const groupOf = new Map<string, string>()
-  const membersOf = new Map<string, ReadonlySet<string>>()
-  const lastOf = new Map<string, string>()
-  const expanded = new Set<string>()
-
-  // The ids of the Agent and Workflow calls the transcript drew, whose
-  // failure notifications stay in the report as the spawns do.
-  const spawns = new Set<string>()
-
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
@@ -1821,7 +1918,6 @@ export function registerToHuman(on: On) {
   // (`anchorOf`), a line the transcript holds no record of, placed right
   // after its anchor: the line stands for its turn, shown while a run of
   // that turn is unfolded (`isTurnOpen`), the run it stands in included.
-  const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
@@ -1860,6 +1956,10 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     if (drawsApart(view, e.requestId, 'AssistantMessage', e.props.text)) return next(e)
     if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(keyOf(e.requestId)) && e.props.text.trim() === FINAL_ANSWER)) {
+      adopt(view, e.requestId)
+      if (dropRow(view, e.requestId) && isFolding()) {
+        $.ui.invalidate('ui.render')
+      }
       const { Box } = $.ui.resolve(e)
       return <Box />
     }
@@ -1916,12 +2016,6 @@ export function registerToHuman(on: On) {
     )
   })
 
-  // The message tool's calls that sent nothing (refused, errored, cut by an
-  // abort), by their ids: their rows, the call's and its result's, stand in
-  // the working record as the engine draws them. The result row cannot say
-  // it was cut, so it reads what its call's row said.
-  const unsent = new Set<string>()
-
   // A tool call is working record too, and stands in the run it falls in,
   // except one the person reads: the question dialog's, whose row is the
   // answer they gave, an agent spawn, and a message sent through the tool;
@@ -1946,6 +2040,15 @@ export function registerToHuman(on: On) {
       unsent.add(e.props.tool_use_id)
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
+    // A read call drawn as a ToolUse of its own (or an unsent message whose
+    // collapsed group unmounted) stands in no group: a resume's first frame
+    // puts a lone message or question in a collapsed ToolGroup before its MCP
+    // server connects, then unmounts that group without redrawing it.
+    if (held !== undefined && (read || (isRead(e.props.tool) && !expanded.has(held)))) {
+      if (leaveGroup(e.requestId) && isFolding()) {
+        $.ui.invalidate('ui.render')
+      }
+    }
     // A message sent through the tool draws as a span does, under its label,
     // and turns the view on as a span does. While its input streams the row
     // draws the text so far, or nothing until some has arrived. The full
@@ -2009,12 +2112,12 @@ export function registerToHuman(on: On) {
       expanded.delete(id)
     }
     note(view, id, e.props)
-    const isJoined = joinGroup(view, id, e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : [])))
-    see($, view, id, 'record')
     // A group can let a call go: a resume's first frame groups every call of
     // a turn, a message's included, then draws the message as a row of its
-    // own. A call let go stands in no group, or its row is the engine's.
-    const held = new Set(e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : [])))
+    // own. A call let go stands in no group, or its row is the engine's; one
+    // now held by a group under a new first call leaves its old group behind.
+    const calls = e.props.calls.flatMap((call) => (call.tool_use_id ? [call.tool_use_id] : []))
+    const held = new Set(calls)
     for (const call of membersOf.get(id) ?? []) {
       if (!held.has(call) && groupOf.get(call) === id) {
         groupOf.delete(call)
@@ -2024,6 +2127,14 @@ export function registerToHuman(on: On) {
         }
       }
     }
+    let isDropped = false
+    for (const call of held) {
+      if (groupOf.get(call) !== undefined && groupOf.get(call) !== id) {
+        isDropped = leaveGroup(call) || isDropped
+      }
+    }
+    const isJoined = joinGroup(view, id, calls)
+    see($, view, id, 'record')
     membersOf.set(id, held)
     let last: string | undefined
     for (const call of e.props.calls) {
@@ -2035,7 +2146,7 @@ export function registerToHuman(on: On) {
         }
       }
     }
-    if (isJoined && isFolding()) {
+    if ((isJoined || isDropped) && isFolding()) {
       $.ui.invalidate('ui.render')
     }
     if (last !== undefined && lastOf.get(id) !== last) {
@@ -2048,11 +2159,6 @@ export function registerToHuman(on: On) {
     return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded && !(e.props.isActive && pills.has(id)) }) : next(e)
   })
 
-  // The rows the engine's pill has drawn under, by the view's id for the row
-  // (a group's, for a call in one): while the row is live, the pill draws
-  // the run's end beneath itself, and a pill that first draws asks the row
-  // to draw again without it. An expanded group's last call draws its end.
-  const pills = new Set<string>()
   on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)
