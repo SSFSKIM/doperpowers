@@ -993,4 +993,38 @@ describe('subagents (§6, I9)', () => {
     expect(h.submits[0]).toContain('"keys":["k2"]')
     expect(h.sends).toHaveLength(1)
   })
+
+  test("a reload: its first drain, with no view held yet, passes the subagents running, so a running subagent's answer stays its own", async () => {
+    const open = [{ id: 'q1', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const first = await started(record([], { open }), { agents: [A1] })
+    const rec = record([], { open })
+    rec.queued.push(out('k1', 'q1', { recipient: { agentId: 'a1' } }))
+    const reloaded = sheetOn({ kept: first.kept, agents: [A1], step: rec.script })
+    await reloaded.start()
+    await reloaded.settle()
+    expect(steps(reloaded, 'drain')[0]?.agents).toEqual({ running: ['a1'], direct: true })
+    await reloaded.hop()
+    expect(reloaded.sends.map((s) => s.agentId)).toEqual(['a1'])
+  })
+
+  test("a subagent's call settled after that agent stopped: each settle names the agents running then, so the stopped one is not", async () => {
+    let hold: ((error: Error) => void) | undefined
+    const rec = record()
+    const h = await started(rec, {
+      agents: [A1],
+      step: (event, n) => {
+        if (event.event === 'call') return Promise.reject(new Error('timed out'))
+        if (event.event === 'settle' && hold === undefined) return new Promise<string>((_, reject) => (hold = reject))
+        return rec.script(event, n)
+      },
+    })
+    const asking = h.ask({ ask: [{ question: 'Ship it?' }] }, 'a1')
+    await h.settle()
+    expect(steps(h, 'settle').map((s) => s.agents)).toEqual([{ running: ['a1'], direct: true }])
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    hold?.(new Error('timed out'))
+    await asking
+    expect(steps(h, 'settle').map((s) => s.agents)).toEqual([{ running: ['a1'], direct: true }, { running: [], direct: true }])
+  })
 })

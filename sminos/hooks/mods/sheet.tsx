@@ -383,7 +383,9 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
   const own = isRecord(event.call) ? event.call.callId : undefined
   const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
-  if (running === undefined && (hasSubagent(gen.held) || gen.sentTo.size > 0)) {
+  // A view not held yet (a reload's first drain) may hold a running subagent's question: its agents are read too.
+  const mayHoldSubagent = (gen.held === undefined && event.event !== 'start') || hasSubagent(gen.held) || gen.sentTo.size > 0
+  if (running === undefined && mayHoldSubagent) {
     running = await runningAgents(port, gen).catch(() => undefined)
   }
   const full = {
@@ -1336,14 +1338,15 @@ export async function askCall(port: Port, e: Record<string, unknown>): Promise<{
   }
   const view = gen.held
   const floor = view === undefined || view.nextId === 1 ? await floorNow(port, gen) : undefined
-  // The running agents as the call is ordered, after its staging (a capture can be slow).
-  const running = agentId !== undefined || hasSubagent(view) || gen.sentTo.size > 0 ? await runningAgents(port, gen).catch(() => undefined) : undefined
-  const first = await step(port, gen, { event: 'call', call: { callId, ...(floor !== undefined && { floor }) } }, running)
+  // The running agents as each step is ordered: the call's after its staging (a capture can be slow), each settle's
+  // then, so an agent that stopped meanwhile is not named.
+  const running = () => (agentId !== undefined || hasSubagent(gen.held) || gen.sentTo.size > 0 ? runningAgents(port, gen).catch(() => undefined) : Promise.resolve(undefined))
+  const first = await step(port, gen, { event: 'call', call: { callId, ...(floor !== undefined && { floor }) } }, await running())
   if (first.ok) {
     return outcomeOf(port, gen, callId, first.effects, 'a settle foreclosed it', call)
   }
   for (let i = 0; i < SETTLES; i++) {
-    const settled = await step(port, gen, { event: 'settle', call: { callId } }, running)
+    const settled = await step(port, gen, { event: 'settle', call: { callId } }, await running())
     if (settled.ok) {
       return outcomeOf(port, gen, callId, settled.effects, first.error, call)
     }
