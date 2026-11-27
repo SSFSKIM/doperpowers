@@ -1,0 +1,228 @@
+{
+ "after": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000111/toolu_v11/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000111/toolu_v11/entry-1.json": {
+   "id": "q1",
+   "options": [
+    {
+     "label": "Passkeys"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000111/inbox.jsonl": "{\"v\":1,\"key\":\"page-1101a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:00.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000111/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v11",
+     "result": "Nothing done.\nNot done: entry 1, q1 is not open (answered at 10:00)."
+    }
+   ],
+   "closed": {
+    "q1": {
+     "answer": "\"Which auth method should the login use?\" → OAuth.",
+     "asker": "main",
+     "at": "2026-11-24T10:00:00.000Z",
+     "header": "Auth method",
+     "how": "answered",
+     "key": "page-1101a001",
+     "places": [
+      1
+     ],
+     "question": "Which auth method should the login use?",
+     "receipt": "OAuth",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 131,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [
+     {
+      "kind": "answered",
+      "n": 2,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000111:q1",
+      "text": "\"Which auth method should the login use?\" → OAuth."
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [
+    {
+     "acceptedAt": "2026-11-24T10:00:00.000Z",
+     "acrossStop": false,
+     "at": "2026-11-24T09:59:00.000Z",
+     "by": "page",
+     "id": "q1",
+     "images": [],
+     "key": "page-1101a001",
+     "kind": "answer",
+     "picks": [
+      "OAuth"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:01:00.000Z",
+      "asker": "main",
+      "header": "Auth method",
+      "multiSelect": false,
+      "options": [
+       "OAuth",
+       "Passkeys",
+       "Magic link"
+      ],
+      "question": "Which auth method should the login use?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    }
+   ],
+   "questions": [],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000111",
+   "v": 1,
+   "verdicts": {
+    "page-1101a001": {
+     "at": "2026-11-24T10:00:00.000Z",
+     "id": "q1",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [
+    "page-1101a001"
+   ],
+   "owed": 1,
+   "result": "Nothing done.\nNot done: entry 1, q1 is not open (answered at 10:00).",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000111/toolu_v11/call.json": {
+   "asker": "main",
+   "entries": [
+    {
+     "captures": [],
+     "file": "entry-1.json"
+    }
+   ]
+  },
+  "sheet/.staging/5eed0000-0000-4000-8000-000000000111/toolu_v11/entry-1.json": {
+   "id": "q1",
+   "options": [
+    {
+     "label": "Passkeys"
+    }
+   ],
+   "question": "Which auth method should the login use?"
+  },
+  "sheet/5eed0000-0000-4000-8000-000000000111/inbox.jsonl": "{\"v\":1,\"key\":\"page-1101a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:00.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000111/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 2,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 2,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000111",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call drains before it applies its entries: the queued answer is applied, and the revise that follows finds its question answered",
+ "event": {
+  "acked": [],
+  "call": {
+   "callId": "toolu_v11"
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-drains-first",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000111",
+ "tz": "UTC"
+}

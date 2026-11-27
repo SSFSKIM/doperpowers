@@ -9,8 +9,10 @@
  *
  * `ask`: the ask mod's async asks and the answers on their way to the model
  * (hooks/mods/ask.tsx), kept so that a reload of the module takes them up,
- * and written on every change of any field it carries. Another plugin reads
- * it and observes its writes; only sminos writes it. doperpowers' appeal ends
+ * and written on every change of any field it carries; in a session under
+ * the question sheet, the sheet's answered questions in the same shape
+ * (hooks/mods/sheet.tsx, its `sheet` field below). Another plugin reads it
+ * and observes its writes; only sminos writes it. doperpowers' appeal ends
  * its passes when `answered` grows, and its reload waits while `isDialogUp`:
  *
  *   const ASK = { plugin: 'sminos', key: 'ask' } as const
@@ -38,6 +40,49 @@ export type AskSnapshot = {
   answered: number
   /** Where the session's pasted pictures are kept, once the session start named it. */
   store?: { slug: string; sessionId: string; root?: string | null }
+  /**
+   * A session under the question sheet (hooks/mods/sheet.tsx; the plan
+   * docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I13): its
+   * open questions, each at its revision (`asker` is `main` or the asking
+   * agent's id), and how many accepted answers and dismissals are still owed
+   * to the agent. There, `asks` holds the questions answered last as
+   * answered asks, one each (`id` `sheet:<question id>`, no options), from
+   * the sheet's record, `answered` counts every question the human
+   * answered, a dismissal not being an answer, and no ask is open,
+   * undelivered or behind a dialog: the sheet raises none.
+   */
+  sheet?: { open: { id: string; revision: number; header?: string; question: string; asker: string }[]; owed: number }
+}
+
+/**
+ * `sheet`: the question sheet's start choice (hooks/mods/sheet.tsx; the plan
+ * docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I8), made at
+ * the process's first `session.start` and kept, so a reload of the module and
+ * a /clear keep the process's choice: `sheet` (the tool under the sheet's
+ * schema, its `runner` a terminal or MAWS), `today` (today's ask) or `none`.
+ * `session` is the session the process is in; `started` the session whose
+ * `start` step has answered, before which no other step is ordered for it;
+ * `starting` the start step owed for `session` (its nonce, which every retry
+ * repeats, its source, the conversation's floor, its transcript and, for a
+ * resume, the asks of today's tool it imports), until it answers;
+ * `preparing` a resume's or a copy's start still being made ready (its
+ * nonce, source and transcript, kept before its floor is read and its asks
+ * staged), so that a reload makes it ready again under the same nonce;
+ * `left` the session a /clear left, whose record is removed, and
+ * `leftWitness` that record's identity as witnessed at the clear
+ * (`sminos sheet witness`), which every retry of the removal names. Only sminos
+ * writes or reads it.
+ */
+export type SheetKept = {
+  shape: 1
+  choice: 'sheet' | 'today' | 'none'
+  runner?: 'terminal' | 'maws'
+  session: string
+  started?: string
+  starting?: { nonce: string; source: 'startup' | 'resume' | 'fork' | 'clear'; floor?: number; transcript?: string; today?: { definite: boolean; asks: { file: string }[]; floorUnknown?: boolean } }
+  preparing?: { nonce: string; source: 'resume' | 'fork'; transcript: string }
+  left?: string
+  leftWitness?: string
 }
 
 /**
@@ -167,6 +212,6 @@ export type StoppedReceipt = { session: string; id: string; attempt: number; bod
  */
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept; bridgeSeat: Tier }
+    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept; bridgeSeat: Tier; sheet: SheetKept }
   }
 }

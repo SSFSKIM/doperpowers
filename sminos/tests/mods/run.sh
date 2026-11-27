@@ -12,3 +12,4 @@ claude plugin test "$root"
 # whatever its tests say (a `$` kept in a variable did so in O12 M4b's live check).
 claude plugin validate "$root"
 "$root/tests/mods/test-ask-search.sh"
+"$root/tests/mods/test-sheet-step.sh"

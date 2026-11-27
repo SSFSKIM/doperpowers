@@ -44,7 +44,7 @@
     {
       "name": "to-human",
       "description": "Read a session as a report, not a transcript: under the to-human output style the session sends you messages through its message tool (mcp__to-human__message), the terminal folds its working record (tool calls, scratch notes, other sessions' messages) behind buttons, and each message raises a notification",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",
@@ -55,7 +55,7 @@
     {
       "name": "sminos",
       "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
-      "version": "1.58.0",
+      "version": "1.59.0",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",

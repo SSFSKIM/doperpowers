@@ -150,10 +150,17 @@ back by a fill.
     sminos sheet    show <member>|--session <id> [--json [--keys K,..]]   # a session's question sheet as its
                    record has it: each open question by its handle (q7, q7@2 after a revise) with a queued answer;
                    --json the reader's model (sminos/types/sheet/), --keys holds it to those lines' keys
+    sminos sheet    answer <member>|--session <id> <q>[@<rev>] [--pick <label|n>]... [--text T] [--image F]...
+                   # an answer to an open question, named as `show` names it (a bare q7 only at revision 1);
+                   picks by place or by label in any case; images copied into the sheet first
+    sminos sheet    dismiss <member>|--session <id> <q>...   # dismissals, sent as one batch
+    sminos sheet    retract <member>|--session <id> <key>    # takes back a line not yet applied
+    sminos sheet    remove <member>|--session <id>       # a stopped session's sheet (refused while it runs)
+    sminos sheet    surfaces [--json]                     # the registered surfaces, and which are alive
     sminos sheet    put <member>|--session <id> [--no-wait]   # the sheet's one door: JSON lines on stdin (an
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
-                   session told; prints each key's state, `queued` until a verdict comes. Exit 2 a line refused,
-                   3 no sheet, 75 busy
+                   session told; prints each key's state, `queued` until a verdict comes (answer, dismiss and
+                   retract print the same). Exit 2 a line refused, 3 no sheet, 75 busy
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -11867,6 +11874,7 @@ def _askers(project, session, srcs):
 
 
 QUESTION_CLOSED = "closed: the session stopped before this was answered"   # Interfaces §2
+SHEET_SRC = "sheet:"   # a question sheet's events' src prefix (sminos_sheet's projection): the stop leaves them open
 
 
 def close_questions(thread):
@@ -11884,7 +11892,9 @@ def close_questions(thread):
     id) is closed, but for the current session in the project it is in now,
     where a question of an unmarked episode (from before threads) is its own
     too: an unmarked episode of a former session, or elsewhere, may be
-    another conversation's. The events appended."""
+    another conversation's. A question sheet's question is passed over: it
+    survives its process, and its record writes its closing (sminos_sheet's
+    projection). The events appended."""
     out, tid, cur = [], thread["thread"], thread["current"]
     projects, home = known_projects(), last_project(cur)
     for sid in dict.fromkeys(thread["sessions"] + [cur]):
@@ -11894,7 +11904,9 @@ def close_questions(thread):
             marks = ("", tid) if sid == cur and home is not None and project.id == home.id else (tid,)
             log = _own_events(project, sid)
             own = log + _own_events(project, sid, HOST_STORE)
-            asked = [q for q in own if q["kind"] == "question" and q.get("src")]
+            # A question sheet's (src `sheet:<session>:<id>`) outlives its process: its record closes it (I12).
+            asked = [q for q in own if q["kind"] == "question" and q.get("src")
+                     and not str(q["src"]).startswith(SHEET_SRC)]
             if not asked:
                 continue
             r = _projection(log).get(sid)
@@ -12173,8 +12185,45 @@ def _member_alias(project, session, seat, peer, marked=False, evidence=None, ove
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
+    return _alias_held(project, session, seat, peer, own)
+
+
+def _alias_held(project, session, seat, peer, own):
+    """The alias a member's host events carry (_member_alias): its seat's, else the one it goes by."""
     return (seat or {}).get("alias") or held_alias(*own_alias(own, session), peer, session,
                                                     shadowing(project, session))[0] or session[:8]
+
+
+def alias_in(project, session):
+    """The alias a session's host events carry in `project` (_member_alias's),
+    whether or not its membership there is in effect now: where a question
+    the session asked there before it moved is written."""
+    seat, peer = _on_sight(project, session) or (None, None)
+    return _alias_held(project, session, seat, peer, _own_events(project, session))
+
+
+def held_member(session, transcript="", cwd=""):
+    """(project, alias) where a session's host events go now: its project as
+    `sminos record` resolves it (from its launch directory, `cwd` only until
+    its transcript names one), and the alias its events carry there
+    (_member_alias's), when its membership there is in effect; None when it
+    is in no project or no member of it. Joins nothing: a session the log
+    does not hold yet is joined by its own hooks (its first Stop), and what
+    waits on it (the question sheet's projection to the log) waits until
+    then. A session whose launch directory nothing names any more (a
+    stopped one whose transcript is gone) is where its membership in effect
+    puts it (last_project)."""
+    where = launch_cwd(session, transcript, fallback=cwd)
+    project = session_project(session, where) or (None if where else last_project(session))
+    if project is None:
+        return None
+    own = _own_events(project, session)
+    if latest_membership(own) != "joined":
+        return None
+    seen = _on_sight(project, session)
+    if seen is None:
+        return None
+    return project, _alias_held(project, session, *seen, own)
 
 
 def export_live(cwd, session, records):
@@ -12369,6 +12418,27 @@ def cmd_record(_a, payload=None):
     except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
         try:
             daemon_log("record %s %s: %s: %s" % (event, session[:8], type(e).__name__, e))
+        except OSError:
+            pass
+    if event == "Stop":
+        record_sheet(session, tpath, cwd)
+
+
+def record_sheet(session, tpath, cwd):
+    """At a Stop, what the session's question sheet owes the project log
+    (sminos_sheet.project_log, I12), for a session that has one: the record
+    keeps it until the log has it, so what the mod's own projection could
+    not write (the session joined only at this Stop) goes now. A failure is
+    a line in daemon.log; the next Stop, or the mod's next projection,
+    writes it."""
+    sheet = sibling_module("sminos_sheet")
+    if not sheet.has_record(session):
+        return
+    try:
+        sheet.project_log(session, here=lambda s: held_member(s, tpath, cwd))
+    except Exception as e:  # noqa: BLE001 — a logging failure must never fail the turn
+        try:
+            daemon_log("record Stop %s: the question sheet's log: %s: %s" % (session[:8], type(e).__name__, e))
         except OSError:
             pass
 
@@ -13761,11 +13831,18 @@ def _same_dir(a, b):
     return os.path.realpath(a) == os.path.realpath(b)
 
 
-def _read_registry(d):
+def _read_registry(d, whole=False):
+    """The registry under `d`. A listing that fails reads as none, and a registration that cannot be read is passed
+    over; `whole`, either raises OSError instead (a registry gone is still an empty one), for a decision that
+    rests on knowing every config dir (engine_dirs_whole)."""
     recorded = {}
     try:
         names = os.listdir(d)
+    except FileNotFoundError:
+        names = []
     except OSError:
+        if whole:
+            raise
         names = []
     for name in names:
         sid, ext = os.path.splitext(name)
@@ -13773,10 +13850,16 @@ def _read_registry(d):
             continue
         try:
             cfg = json_at(os.path.join(d, name)).get("configDir")
-        except (OSError, ValueError, AttributeError):
+        except FileNotFoundError:
+            continue   # removed since the listing
+        except (OSError, ValueError, AttributeError) as e:
+            if whole:
+                raise OSError("the config dir registration %s could not be read: %s" % (name, e))
             continue
         if isinstance(cfg, str) and os.path.isabs(cfg):
             recorded[sid] = cfg
+        elif whole:
+            raise OSError("the config dir registration %s names no directory" % name)
     owners = {}
     for sid, cfg in recorded.items():
         owners.setdefault(os.path.realpath(cfg), set()).add(sid)
@@ -13836,6 +13919,15 @@ def engine_dirs(fresh=False):
     """Every config dir whose engine files sminos reads: the default, then
     each one a session's hook recorded, each once."""
     return [d for d, _ in _registry(fresh)[1]]
+
+
+def engine_dirs_whole():
+    """engine_dirs read now (not the generation's registry, nor a kept
+    listing of it), and whole: raises OSError
+    when the registry's listing, or any registration in it, cannot be read,
+    so a removal resting on a transcript being in none of them
+    (transcript_confirmed_gone) is never answered without one."""
+    return [d for d, _ in _read_registry(os.path.join(root(), CONFIG_DIRS), whole=True)[1]]
 
 
 def engine_record_paths(fresh=False):
@@ -14184,6 +14276,40 @@ def running_now(session_id):
     global _PEERS
     _PEERS = None
     return session_running(session_id)
+
+
+def running_elsewhere(session_id, besides):
+    """running_now with the record of process `besides` left out (a
+    /clear's own process, which may still be on record as running the
+    session it left): the record of another process running the session,
+    or None. For a removal that must never take a record a resume holds,
+    so the scan is its own and fails closed: every config dir of the
+    registry read whole, each one's `sessions/` listed now (absent: none
+    there), every record read; OSError where a listing, a registration or
+    a record fails for any reason but absence."""
+    found = []
+    for d, owners in _read_registry(os.path.join(root(), CONFIG_DIRS), whole=True)[1]:
+        base = os.path.join(d, "sessions")
+        try:
+            names = os.listdir(base)
+        except FileNotFoundError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(base, name)) as f:
+                    rec = json.load(f)
+            except FileNotFoundError:
+                continue   # its session ended while the directory was read
+            except (OSError, ValueError) as e:
+                raise OSError("the engine session record %s could not be read: %s" % (name, e))
+            if not isinstance(rec, dict):
+                raise OSError("the engine session record %s is no object" % name)
+            if speaks_for(owners, rec) and not engine_spare(rec):
+                found.append(rec)
+    return next((r for r in found if session_id and r.get("sessionId") == session_id and r.get("pid") != besides
+                 and peer_running(r)), None)
 
 
 def quiet_inbox_refusal(ref):
@@ -14896,6 +15022,87 @@ def transcripts_now():
     for base, index in [(os.path.join(config_dir({}), "projects"), _TINDEX), *list(_TINDEXES.items())]:
         with index.lock:
             index.refresh(base)
+
+
+def _own_transcript(session_id):
+    """The transcript's own path as the session's launch cache names it
+    (`<config dir>/projects/<dir>/<session>.jsonl`), or None where none of
+    that shape is named; OSError or ValueError when the cache is there and
+    cannot be read."""
+    try:
+        own = json_at(launch_cache_path(session_id)).get("transcript")
+    except FileNotFoundError:
+        return None
+    except AttributeError:
+        raise ValueError("the launch cache is no object")
+    if not isinstance(own, str) or not os.path.isabs(own) or os.path.basename(own) != session_id + ".jsonl" \
+            or os.path.basename(os.path.dirname(os.path.dirname(own))) != "projects":
+        return None
+    return own
+
+
+def _transcripts_listed(session_id, own=None):
+    """{path: st_mtime} of every `<session>.jsonl` in a project directory of
+    the config dir `own` names, the session's own, the default and every one
+    the registry names (read whole, engine_dirs_whole), each listed now and
+    never through the index (whose listing that fails reads as empty).
+    Raises OSError where a listing, a read or a stat fails for any reason but
+    absence."""
+    name = session_id + ".jsonl"
+    cfgs = [os.path.dirname(os.path.dirname(os.path.dirname(own)))] if own else []
+    found = {}
+    for cfg in dict.fromkeys([*cfgs, session_config_dir(session_id), config_dir({}), *engine_dirs_whole()]):
+        base = os.path.join(cfg, "projects")
+        try:
+            subs = os.listdir(base)
+        except FileNotFoundError:
+            continue
+        for sub in subs:
+            path = os.path.join(base, sub, name)
+            try:
+                found[path] = os.stat(path).st_mtime
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+    return found
+
+
+def transcript_confirmed_gone(session_id):
+    """Whether a session's transcript is known to be gone from this machine,
+    for a removal that rests on its absence (the question sheet's sweep),
+    never through the index: the transcript's own path, as its launch cache
+    names it (_own_transcript), is stat'd missing now, and no project
+    directory of its config dir, nor of any other config dir sminos knows
+    (the registry read whole), holds `<session>.jsonl` (the engine moved it;
+    _transcripts_listed). Where that path is not known (no launch cache, or
+    one naming no transcript of that shape), or a read, a listing or a stat
+    fails for any reason but absence, absence is not established: False."""
+    try:
+        own = _own_transcript(session_id)
+        if own is None:
+            return False
+        try:
+            os.stat(own)
+            return False
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        return not _transcripts_listed(session_id, own)
+    except (OSError, ValueError):
+        return False
+
+
+def transcript_written_at(session_id):
+    """When any transcript of a session on this machine was last written
+    (the latest st_mtime among _transcripts_listed, its launch cache's dir
+    included where one names it), or None when there is none: for a
+    removal that rests on nothing having been written since (a /clear's
+    note, the question sheet's sweep). Raises OSError when that cannot be
+    established: a launch cache, a listing or a stat that fails for any
+    reason but absence, or a registry not read whole."""
+    try:
+        own = _own_transcript(session_id)
+    except ValueError as e:
+        raise OSError("the launch cache of %s could not be read: %s" % (session_id, e))
+    return max(_transcripts_listed(session_id, own).values(), default=None)
 
 
 def transcript_path(session_id, fresh=False):
@@ -21652,6 +21859,18 @@ class Given(argparse.Action):
         namespace.given = getattr(namespace, "given", frozenset()) | {self.dest}
 
 
+class _PublicChoices(dict):
+    """A subcommand map whose private names are taken (membership, lookup) but never listed: argparse lists choices
+    by iterating them, in its usage and in an invalid choice's error."""
+
+    def __init__(self, private):
+        super().__init__()
+        self.private = frozenset(private)
+
+    def __iter__(self):
+        return (k for k in dict.__iter__(self) if k not in self.private)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="sminos", add_help=False)
     sub = p.add_subparsers(dest="cmd")
@@ -21854,15 +22073,42 @@ def build_parser():
     # session's own hooks and surfaces call it, and it reads no registry.
     sq = sub.add_parser("sheet", add_help=False)
     sqsub = sq.add_subparsers(dest="sheet_op")
-    for op in ("put", "show"):
+    # The tool's and the sheet mod's own verbs run, but a person who mistypes one is told the people's verbs only.
+    sqsub.choices = sqsub._name_parser_map = _PublicChoices(("step", "probe", "log", "witness"))
+    for op in ("put", "show", "answer", "retract", "remove"):
         so = sqsub.add_parser(op, add_help=False)
         so.add_argument("member", nargs="?", default="")
         so.add_argument("--session", default="")
         if op == "put":
             so.add_argument("--no-wait", dest="no_wait", action="store_true")
-        else:
+        elif op == "show":
             so.add_argument("--json", action="store_true")
             so.add_argument("--keys", default=None)
+        elif op == "answer":
+            so.add_argument("handle")
+            so.add_argument("--pick", action="append", default=[])
+            so.add_argument("--text", default=None)
+            so.add_argument("--image", action="append", default=[])
+        elif op == "retract":
+            so.add_argument("target")
+        else:
+            # The sheet mod's own, after a /clear (sminos_sheet.cmd_sheet), in no usage text.
+            so.add_argument("--cleared", action="store_true")
+            so.add_argument("--witness", default=None)    # with --cleared: the record's identity at the /clear
+            so.add_argument("--clearing", type=int, default=None)   # with --cleared: the pid that cleared
+        so.set_defaults(fn=cmd_sheet)
+    so = sqsub.add_parser("dismiss", add_help=False)    # its ids follow the member: words, split in sminos_sheet
+    so.add_argument("words", nargs="*")
+    so.add_argument("--session", default="")
+    so.set_defaults(fn=cmd_sheet, member="")
+    so = sqsub.add_parser("surfaces", add_help=False)
+    so.add_argument("--json", action="store_true")
+    so.set_defaults(fn=cmd_sheet, session="")
+    for op in ("step", "probe", "log", "witness"):      # the tool's and the sheet mod's own, in no usage text
+        so = sqsub.add_parser(op, add_help=False)
+        so.add_argument("--session", default="")
+        if op == "probe":
+            so.add_argument("--remote", action="store_true")
         so.set_defaults(fn=cmd_sheet)
 
     wa = sub.add_parser("watch", add_help=False)
@@ -22079,7 +22325,7 @@ def main(argv=None):
         # registry, so it runs no migration (which takes the registry's lock).
         cmd_bridge(a)
         return
-    if a.cmd == "sheet" and getattr(a, "session", ""):
+    if a.cmd == "sheet" and (getattr(a, "session", "") or getattr(a, "sheet_op", None) == "surfaces"):
         # The sheet's verbs given --session read no registry (the door, a reader, the tool's own step): no
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
@@ -22111,8 +22357,8 @@ def main(argv=None):
         if a.cmd == "project":
             die("usage: sminos project init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]")
         if a.cmd == "sheet":
-            die("usage: sminos sheet put (<member> | --session <id>) [--no-wait] | show (<member> | --session <id>) "
-                "[--json [--keys <k,...>]]")
+            die("usage: sminos sheet show|answer|dismiss|retract|put|remove (<member> | --session <id>) ... | surfaces "
+                "(sminos help)")
         if a.cmd == "channel":
             die("usage: sminos channel create <name> [<thread>] | add <channel> [<thread>...] | remove <channel> "
                 "[<thread>...] | show <channel> [--json] | env add|remove <channel> <machine> | lead <channel> "

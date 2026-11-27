@@ -1,4 +1,4 @@
-import type { EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On, ToolGroupCall } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
@@ -1574,6 +1574,29 @@ describe('failures', () => {
     expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test('a fork keeps an agent failure in the report when its spawn is offscreen', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    on('process.run', listing(['"uuid":"m1"', '"uuid":"m2"', '"type":"tool_use","id":"toolu_agent"', '"uuid":"n1"'].join('\n')))
+    on('classic.SessionStart', () => ({}))
+    await message($, 'm1', '<message>Dispatching.</message>')
+    const spawn = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'toolu_agent',
+      props: { tool_use_id: 'toolu_agent', tool: 'Agent', input: {}, isInterrupted: false },
+    } as never)
+    await spawn.unmount()
+    await $.classic.SessionStart({ source: 'fork', transcript_path: '/t.jsonl' })
+
+    const text = 'Agent "Review" failed: Agent terminated early due to an API error: terminated'
+    const failure = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'UserMessage', requestId: 'n1',
+      props: { text, origin: { kind: 'task-notification' }, isExpanded: false, task: { id: 'a1', toolUseId: 'toolu_agent', status: 'failed' } },
+    })
+
+    expect(await failure.find({ type: 'Text', text })).toBeDefined()
+  })
+
   test('a spawned agent\'s failure notification stays in the report, a failed command\'s does not', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -1838,12 +1861,12 @@ describe('the message tool', () => {
       type: 'Text',
       children: [String((e.props as { text?: string }).text ?? (e.component === 'ToolResult' ? 'sent' : e.component))],
     }))
-  type Call = { input: unknown; isRunning?: boolean; isErrored?: boolean; isInterrupted?: boolean; output?: unknown }
-  const callRow = ($: Engine, id: string, { input, isRunning = false, isErrored = false, isInterrupted = false, output }: Call) =>
+  type Call = { input: unknown; isRunning?: boolean; isErrored?: boolean; isInterrupted?: boolean; isExpanded?: boolean; output?: unknown }
+  const callRow = ($: Engine, id: string, { input, isRunning = false, isErrored = false, isInterrupted = false, isExpanded, output }: Call) =>
     $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
-      props: { tool_use_id: id, tool: MESSAGE_TOOL, input, isRunning, isErrored, isInterrupted, output },
-    } as never)
+      props: { tool_use_id: id, tool: MESSAGE_TOOL, input, isRunning, isErrored, isInterrupted, isExpanded, output },
+    })
   const resultRow = ($: Engine, id: string, output: unknown, isErrored = false) =>
     $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'ToolResult', requestId: id,
@@ -1856,6 +1879,25 @@ describe('the message tool', () => {
       plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
       props: { tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'ok' },
     } as never)
+
+  const groupedMessage = {
+    tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: { text: 'Done.' }, output: 'sent',
+    isRunning: false, isErrored: false, isInterrupted: false,
+  }
+  const groupedBash = {
+    tool_use_id: 'toolu_b1', tool: 'Bash', input: { command: 'ls' }, output: 'ok',
+    isRunning: false, isErrored: false, isInterrupted: false,
+  }
+  const expandedGroup = ($: Engine, calls: readonly ToolGroupCall[]) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'expanded-1',
+      props: { calls, isExpanded: true, isActive: false },
+    })
+  const viewBand = ($: Engine) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
 
   test('its call draws as a message, between runs of working record it breaks, and turns the view on', async ($, on) => {
     mock.env(on, {})
@@ -1877,6 +1919,155 @@ describe('the message tool', () => {
     expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
+  test('an expanded group holding only a message stays unfolded as its call draws', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [groupedMessage])
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await group.press({ key: 'to-human-toggle' })
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await call.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    await call.press({ key: 'to-human-toggle' })
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('an expanded group ending in a message keeps its fold under that call across redraws', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [groupedBash, groupedMessage])
+    const first = await bash($, 'toolu_b1')
+    const last = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+
+    await group.press({ key: 'to-human-toggle' })
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await last.find(fold)).toBeDefined()
+    await group.redraw()
+    await first.redraw()
+    await last.redraw()
+    expect(await first.find(fold)).toBeUndefined()
+    expect(await group.find(fold)).toBeUndefined()
+    expect(await last.find(fold)).toBeDefined()
+  })
+
+  test('a standalone result releases a message whose expanded group unmounted', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const band = await viewBand($)
+    await band.press({ key: 'to-human-mode' })
+    const group = await expandedGroup($, [groupedMessage])
+    const child = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    await child.unmount()
+    await group.unmount()
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    // ToolUse alone cannot distinguish a group child from a standalone call.
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+    // The result asks for a redraw even in the full transcript.
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    await band.press({ key: 'to-human-mode' })
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a standalone message stays visible until its result releases it from an unmounted folded group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await expandedGroup($, [groupedMessage])
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    await group.unmount()
+
+    // The standalone call draws before its separate result, still carrying isExpanded.
+    const call = await callRow($, groupedMessage.tool_use_id, { ...groupedMessage, isExpanded: true })
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+  })
+
+  test('shrinking an expanded group redraws a message that already drew as a grouped call', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const band = await viewBand($)
+    await band.press({ key: 'to-human-mode' })
+    const group = await expandedGroup($, [groupedBash, groupedMessage])
+
+    // The standalone call draws before its old group shrinks, so it still looks grouped.
+    const call = await callRow($, groupedMessage.tool_use_id, groupedMessage)
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    await group.redraw({ calls: [groupedBash], isExpanded: true, isActive: false })
+    await resultRow($, groupedMessage.tool_use_id, groupedMessage.output)
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Markdown', text: 'Done.' })).toBeDefined()
+  })
+
+  test('an errored desktop message and its nested call and result keep their group unfolded', async ($, on) => {
+    mock.env(on, { MAWS_NATIVE_TO_HUMAN: '9' })
+    mock.store(on)
+    on('ui.render', { component: 'ToolResult' }, (_, e) => ({ type: 'Text', children: [String(e.props.output)] }))
+    engineDrawing(on)
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'AssistantMessage', requestId: 'm0',
+      props: { text: '<message>Starting.</message>', isFirstOfReply: true },
+    })
+    const failed = { ...groupedMessage, isErrored: true, output: 'Message was refused.' }
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolGroup', requestId: 'run-of-one',
+      props: { calls: [failed], isExpanded: false, isActive: false },
+    })
+    await group.press({ key: 'to-human-toggle' })
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await group.find(fold)).toBeDefined()
+    const child = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolUse', requestId: failed.tool_use_id,
+      props: failed,
+    })
+    expect(await group.find(fold)).toBeDefined()
+    expect(await child.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    const result = await $.ui.mount({
+      plugin: PLUGIN, surface: 'desktop', component: 'ToolResult', requestId: failed.tool_use_id,
+      props: { tool_use_id: failed.tool_use_id, tool: MESSAGE_TOOL, output: failed.output, isErrored: true },
+    })
+
+    expect(await group.find({ type: 'Text', text: 'ToolGroup' })).toBeDefined()
+    expect(await group.find({ type: 'Button', text: 'working record' })).toBeUndefined()
+    expect(await result.find({ type: 'Text', text: 'Message was refused.' })).toBeDefined()
+  })
+
+  test('a group expanded by a downstream hook stays unfolded with a single fold control', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', { component: 'ToolGroup' }, (_, e, next) => next({ ...e, props: { ...e.props, isExpanded: true } }))
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'expanded-downstream',
+      props: { calls: [groupedMessage], isExpanded: false, isActive: false },
+    })
+    await group.press({ key: 'to-human-toggle' })
+    // The engine draws the child with the rewritten expansion state, not the group's incoming props.
+    const child = await callRow($, groupedMessage.tool_use_id, { ...groupedMessage, isExpanded: true })
+
+    const fold = { type: 'Button', text: 'fold to report' } as const
+    expect(await group.findAll(fold)).toHaveLength(1)
+    expect(await child.find(fold)).toBeUndefined()
+    expect(await child.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await child.find({ type: 'Markdown', text: 'Done.' })).toBeUndefined()
+  })
+
   test('a call a group held and let go of draws as a message', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
@@ -1891,6 +2082,70 @@ describe('the message tool', () => {
 
     expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
     expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+  })
+
+  test('a lone message whose group unmounts without redrawing draws as a message and drops its phantom group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    // On a resume, a message call alone in its stretch (e.g. right after an Agent spawn)
+    // first renders as a collapsed ToolGroup of one, which then unmounts once the MCP tool loads.
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: { calls: [{ tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: {} }], isExpanded: false, isActive: false },
+    } as never)
+    await group.unmount()
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    // The phantom group must not linger in order as record and steal the next run's button.
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a group led by a message that splits into a message and a new group draws both and drops the old group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const groupProps = (calls: { id: string; tool: string }[]) =>
+      ({ calls: calls.map(({ id, tool }) => ({ tool_use_id: id, tool, input: {} })), isExpanded: false, isActive: false }) as never
+    const first = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: groupProps([{ id: 'toolu_m1', tool: MESSAGE_TOOL }, { id: 'toolu_b1', tool: 'Bash' }]),
+    } as never)
+    await first.unmount()
+    // The new group mounts under its own first call (toolu_b1) before the message renders.
+    const rest = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-2',
+      props: groupProps([{ id: 'toolu_b1', tool: 'Bash' }]),
+    } as never)
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    expect(await rest.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('an AskUserQuestion whose lone group unmounts breaks the run and drops its phantom group', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const group = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolGroup', requestId: 'collapsed-1',
+      props: { calls: [{ tool_use_id: 'toolu_q1', tool: 'mcp__sminos__AskUserQuestion', input: {} }], isExpanded: false, isActive: false },
+    } as never)
+    await group.unmount()
+    await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'toolu_q1',
+      props: { tool_use_id: 'toolu_q1', tool: 'mcp__sminos__AskUserQuestion', input: {}, isRunning: false, isErrored: false, isInterrupted: false },
+    } as never)
+    const after = await message($, 'r1', 'Reading the logs.')
+
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
   test('its result row draws nothing', async ($, on) => {
@@ -1947,10 +2202,7 @@ describe('the message tool', () => {
     mock.store(on)
     engineDrawing(on)
     const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
-    const band = await $.ui.mount({
-      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: false, isCollapsed: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
-    })
+    const band = await viewBand($)
     await band.press({ key: 'to-human-mode' })
     expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
     const result = await resultRow($, 'toolu_m1', 'sent')
@@ -2120,5 +2372,31 @@ describe('the message tool', () => {
     // Each of the others opens a run of working record, as any unmarked response does.
     expect(await written.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await other.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a made-up response drawn before its transcript flag arrives leaves order once known so the next run keeps its button', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const transcript = ['"uuid":"m1"', '"uuid":"h1"', '"answeredWithoutRequest":true', '"uuid":"r1"'].join('\n')
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const base = listing(transcript)
+    on('process.run', async (ctx, e) => {
+      if ((e.argv[2] ?? '').startsWith('search()')) await gate
+      return base(ctx, e)
+    })
+    on('classic.SessionStart', () => ({}))
+    const m1 = await message($, 'm1', '<message>Starting.</message>')
+    const resuming = $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    // While the resume search is still running, both the made-up response and the next record row draw.
+    await m1.redraw()
+    const made = await message($, 'h1', FINAL_ANSWER)
+    const after = await message($, 'r1', 'Reading the logs.')
+    release()
+    await resuming
+
+    expect(await isBlank(made)).toBe(true)
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 })

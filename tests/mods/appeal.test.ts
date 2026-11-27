@@ -28,6 +28,8 @@ import {
 import { aggregate, inputLine, reportText, suggestPrompt } from '../../hooks/mods/appeal-judge'
 import { APPEAL, appealsReport, registerAppeal, resetAppeal } from '../../hooks/mods/appeal'
 import type { AskSnapshot } from '../../sminos/types/sminos'
+import { snapshotOf } from '../../sminos/hooks/mods/sheet-model'
+import type { View } from '../../sminos/hooks/mods/sheet-model'
 
 tier('user')
 
@@ -1042,6 +1044,45 @@ describe('registerAppeal', () => {
     await alone.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
     const none = alone.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
     expect(none.prompt).toContain("# The user's answers to the agent's questions (the user's words)\n(none)\n")
+  })
+
+  test("in a session under sminos's question sheet, the judge reads a sheet question and the human's answer from the snapshot the sheet writes, and an answer ends the passes", async () => {
+    // The view a sheet's step answers (sminos's plan for the sheet, I5 and I13), one question answered and one open,
+    // through the sheet's own composer of the ask key.
+    const sheetView = (answered: View['answered'], open: View['open']): View => ({
+      seq: 3,
+      offset: 0,
+      nextId: 3,
+      open,
+      pending: [],
+      pendingCount: 0,
+      owedAcrossStop: 0,
+      closed: {},
+      answered,
+      answeredCount: answered.length,
+      ready: [],
+      surface: null,
+      surfaces: 0,
+    })
+    const open: View['open'] = [{ id: 'q2', revision: 1, asker: 'main', header: 'Branch', question: 'Which branch?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const forcePush = { id: 'q1', header: 'Push', question: 'Force-push the rewritten history?', answer: '"Force-push the rewritten history?" → Yes. Their text: "only to my fork"' }
+    const judge = '<verdict>uphold</verdict><response>x</response>'
+    const h = harness({ judge, ask: snapshotOf(sheetView([forcePush], open), false) })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', block: 'b1', argument: 'y' })
+    const request = h.calls.find((c) => c.op === 'model.complete')?.args as { prompt: string }
+    expect(request.prompt).toContain('Q: "Force-push the rewritten history?"\nA: "\\"Force-push the rewritten history?\\" → Yes. Their text: \\"only to my fork\\""')
+    expect(request.prompt).not.toContain('Which branch?')
+
+    const granted = harness({ judge: '<verdict>grant</verdict><response>x</response>', ask: snapshotOf(sheetView([], open), false) })
+    await granted.start()
+    await granted.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force origin main' }, blocked('[Git Destructive]'))
+    await granted.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'y' })
+    await granted.askWrite(snapshotOf(sheetView([], open), true))
+    expect(await granted.check({ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
+    await granted.askWrite(snapshotOf(sheetView([forcePush], []), true))
+    expect(await granted.check({ tool: 'Bash', tool_use_id: 't4', agentId: 'a1', input: { command: 'git push --force origin main' } }, ask)).toEqual(ask)
   })
 
   test("an engine that refuses the read of sminos's snapshot leaves the appeal whole: the judge rules with no answers, and the debug log says why", async () => {

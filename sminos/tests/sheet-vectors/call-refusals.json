@@ -1,0 +1,303 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000105/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000105/state.json": {
+   "calls": [
+    {
+     "callId": "toolu_v05",
+     "result": "Added q4 (entry 1). Revised q1 (entry 6, revision 2).\nNot done: entry 2, q2 is not open (answered at 14:05). entry 3, q3 was asked by the subagent reviewer; only its asker revises it. entry 4, the reference src/x.ts could not be read: permission denied. entry 5, two options share the label \"Yes\". q9 is not open (never asked)."
+    }
+   ],
+   "closed": {
+    "q2": {
+     "answer": "\"Ship the migration today?\" → Yes.",
+     "asker": "main",
+     "at": "2026-11-23T14:05:00.000Z",
+     "header": "Migration",
+     "how": "answered",
+     "key": "page-0502a001",
+     "places": [
+      1
+     ],
+     "question": "Ship the migration today?",
+     "receipt": "Yes",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 6,
+    "owed": [
+     {
+      "choices": [],
+      "kind": "question",
+      "n": 5,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000105:q4",
+      "text": [
+       "Which log level in production?"
+      ]
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa",
+     "q3": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 5,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v05",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "OAuth"
+      },
+      {
+       "label": "Passkeys"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 2
+    },
+    {
+     "askedAt": "2026-11-23T09:03:00.000Z",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "callId": "toolu_01Empt0003",
+     "header": "Empty state",
+     "id": "q3",
+     "multiSelect": false,
+     "options": [],
+     "question": "What should the empty state say?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-24T10:00:00.000Z",
+     "asker": "main",
+     "callId": "toolu_v05",
+     "id": "q4",
+     "multiSelect": false,
+     "options": [],
+     "question": "Which log level in production?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 7,
+   "session": "5eed0000-0000-4000-8000-000000000105",
+   "v": 1,
+   "verdicts": {
+    "page-0502a001": {
+     "at": "2026-11-23T14:05:00.000Z",
+     "id": "q2",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [],
+   "owed": 1,
+   "result": "Added q4 (entry 1). Revised q1 (entry 6, revision 2).\nNot done: entry 2, q2 is not open (answered at 14:05). entry 3, q3 was asked by the subagent reviewer; only its asker revises it. entry 4, the reference src/x.ts could not be read: permission denied. entry 5, two options share the label \"Yes\". q9 is not open (never asked).",
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000105/inbox.jsonl": "",
+  "sheet/5eed0000-0000-4000-8000-000000000105/state.json": {
+   "calls": [],
+   "closed": {
+    "q2": {
+     "answer": "\"Ship the migration today?\" → Yes.",
+     "asker": "main",
+     "at": "2026-11-23T14:05:00.000Z",
+     "header": "Migration",
+     "how": "answered",
+     "key": "page-0502a001",
+     "places": [
+      1
+     ],
+     "question": "Ship the migration today?",
+     "receipt": "Yes",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 5,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa",
+     "q3": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 4,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": "main",
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:03:00.000Z",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "callId": "toolu_01Empt0003",
+     "header": "Empty state",
+     "id": "q3",
+     "multiSelect": false,
+     "options": [],
+     "question": "What should the empty state say?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 6,
+   "session": "5eed0000-0000-4000-8000-000000000105",
+   "v": 1,
+   "verdicts": {
+    "page-0502a001": {
+     "at": "2026-11-23T14:05:00.000Z",
+     "id": "q2",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "a call given inline (as a shell gives one), partly refused: an id not open, another asker's question, an entry the mod refused, two options with one label, a withdrawal of an id never asked; the rest applied; every added and revised id with its entry's place; the clauses in order",
+ "event": {
+  "acked": [],
+  "call": {
+   "asker": "main",
+   "callId": "toolu_v05",
+   "entries": [
+    {
+     "question": "Which log level in production?"
+    },
+    {
+     "id": "q2",
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?"
+    },
+    {
+     "id": "q3",
+     "question": "What should the empty state say?"
+    },
+    {
+     "refused": "the reference src/x.ts could not be read: permission denied"
+    },
+    {
+     "options": [
+      {
+       "label": "Yes"
+      },
+      {
+       "label": "Yes"
+      }
+     ],
+     "question": "Keep the export?"
+    },
+    {
+     "header": "Auth method",
+     "id": "q1",
+     "options": [
+      {
+       "label": "OAuth"
+      },
+      {
+       "label": "Passkeys"
+      }
+     ],
+     "question": "Which auth method should the login use?"
+    }
+   ],
+   "withdraw": [
+    "q9"
+   ]
+  },
+  "event": "call",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "call-refusals",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000105",
+ "tz": "UTC"
+}

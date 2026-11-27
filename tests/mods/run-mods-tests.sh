@@ -16,7 +16,10 @@ printf '{ "modules": ["./mods/register.tsx"] }\n' > "$stage/hooks/hooks.json"
 cp -R "$root/hooks/mods" "$stage/hooks/mods"
 cp -R "$root/tests/mods" "$stage/tests/mods"
 # sminos's contract, which appeal and reload read the ask's snapshot by
-# (sminos/types/sminos.d.ts), where the repository keeps it.
+# (sminos/types/sminos.d.ts), where the repository keeps it; and the question
+# sheet's composer of that snapshot, which appeal's case reads the sheet's by.
 cp -R "$root/sminos/types" "$stage/sminos/types"
+mkdir -p "$stage/sminos/hooks/mods"
+cp "$root/sminos/hooks/mods/sheet-model.tsx" "$stage/sminos/hooks/mods/sheet-model.tsx"
 
 claude plugin test "$stage"

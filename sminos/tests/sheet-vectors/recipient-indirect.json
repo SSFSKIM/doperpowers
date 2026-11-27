@@ -1,0 +1,285 @@
+{
+ "after": {
+  "sheet/5eed0000-0000-4000-8000-000000000121/inbox.jsonl": "{\"v\":1,\"key\":\"page-2001a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:00.000Z\"}\n{\"v\":1,\"key\":\"page-2001a002\",\"kind\":\"answer\",\"id\":\"q2\",\"revision\":1,\"picks\":[\"No\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:01.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000121/state.json": {
+   "calls": [],
+   "closed": {
+    "q1": {
+     "answer": "\"Which auth method should the login use?\" → OAuth.",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "at": "2026-11-24T10:00:00.000Z",
+     "header": "Auth method",
+     "how": "answered",
+     "key": "page-2001a001",
+     "places": [
+      1
+     ],
+     "question": "Which auth method should the login use?",
+     "receipt": "OAuth",
+     "revision": 1
+    },
+    "q2": {
+     "answer": "\"Ship the migration today?\" → No.",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "at": "2026-11-24T10:00:00.000Z",
+     "header": "Migration",
+     "how": "answered",
+     "key": "page-2001a002",
+     "places": [
+      2
+     ],
+     "question": "Ship the migration today?",
+     "receipt": "No",
+     "revision": 1
+    }
+   },
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 259,
+    "skipped": 0
+   },
+   "log": {
+    "next": 5,
+    "owed": [
+     {
+      "kind": "answered",
+      "n": 3,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000121:q1",
+      "text": "\"Which auth method should the login use?\" → OAuth."
+     },
+     {
+      "kind": "answered",
+      "n": 4,
+      "src": "sheet:5eed0000-0000-4000-8000-000000000121:q2",
+      "text": "\"Ship the migration today?\" → No."
+     }
+    ],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [
+    {
+     "acceptedAt": "2026-11-24T10:00:00.000Z",
+     "acrossStop": false,
+     "at": "2026-11-24T09:59:00.000Z",
+     "by": "page",
+     "id": "q1",
+     "images": [],
+     "key": "page-2001a001",
+     "kind": "answer",
+     "picks": [
+      "OAuth"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:01:00.000Z",
+      "asker": {
+       "agentId": "a1b2c3",
+       "name": "reviewer"
+      },
+      "header": "Auth method",
+      "multiSelect": false,
+      "options": [
+       "OAuth",
+       "Passkeys",
+       "Magic link"
+      ],
+      "question": "Which auth method should the login use?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    },
+    {
+     "acceptedAt": "2026-11-24T10:00:00.000Z",
+     "acrossStop": false,
+     "at": "2026-11-24T09:59:01.000Z",
+     "by": "page",
+     "id": "q2",
+     "images": [],
+     "key": "page-2001a002",
+     "kind": "answer",
+     "picks": [
+      "No"
+     ],
+     "question": {
+      "askedAt": "2026-11-23T09:02:00.000Z",
+      "asker": {
+       "agentId": "a7c0ffee",
+       "name": "explorer"
+      },
+      "header": "Migration",
+      "multiSelect": false,
+      "options": [
+       "Yes",
+       "No"
+      ],
+      "question": "Ship the migration today?"
+     },
+     "recipient": "main",
+     "revision": 1,
+     "taken": false,
+     "text": ""
+    }
+   ],
+   "questions": [],
+   "seq": 3,
+   "session": "5eed0000-0000-4000-8000-000000000121",
+   "v": 1,
+   "verdicts": {
+    "page-2001a001": {
+     "at": "2026-11-24T10:00:00.000Z",
+     "id": "q1",
+     "kind": "answer",
+     "verdict": "applied"
+    },
+    "page-2001a002": {
+     "at": "2026-11-24T10:00:00.000Z",
+     "id": "q2",
+     "kind": "answer",
+     "verdict": "applied"
+    }
+   }
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "answer": {
+  "effects": {
+   "applied": [
+    "page-2001a001",
+    "page-2001a002"
+   ],
+   "owed": 2,
+   "skipped": 0,
+   "verdicts": {}
+  },
+  "ok": true
+ },
+ "before": {
+  "sheet/5eed0000-0000-4000-8000-000000000121/inbox.jsonl": "{\"v\":1,\"key\":\"page-2001a001\",\"kind\":\"answer\",\"id\":\"q1\",\"revision\":1,\"picks\":[\"OAuth\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:00.000Z\"}\n{\"v\":1,\"key\":\"page-2001a002\",\"kind\":\"answer\",\"id\":\"q2\",\"revision\":1,\"picks\":[\"No\"],\"by\":\"page\",\"at\":\"2026-11-24T09:59:01.000Z\"}\n",
+  "sheet/5eed0000-0000-4000-8000-000000000121/state.json": {
+   "calls": [],
+   "closed": {},
+   "import": {
+    "calls": {},
+    "never": false
+   },
+   "inbox": {
+    "offset": 0,
+    "skipped": 0
+   },
+   "log": {
+    "next": 3,
+    "owed": [],
+    "projects": {
+     "q1": "1c0de000-0000-5000-8000-0000000000aa",
+     "q2": "1c0de000-0000-5000-8000-0000000000aa"
+    }
+   },
+   "nextId": 3,
+   "pending": [],
+   "questions": [
+    {
+     "askedAt": "2026-11-23T09:01:00.000Z",
+     "asker": {
+      "agentId": "a1b2c3",
+      "name": "reviewer"
+     },
+     "callId": "toolu_01Auth0001",
+     "header": "Auth method",
+     "id": "q1",
+     "multiSelect": false,
+     "options": [
+      {
+       "description": "The provider's flow; nothing stored here.",
+       "label": "OAuth",
+       "recommended": true
+      },
+      {
+       "description": "WebAuthn; needs a fallback on old devices.",
+       "label": "Passkeys"
+      },
+      {
+       "label": "Magic link"
+      }
+     ],
+     "question": "Which auth method should the login use?",
+     "references": [],
+     "revision": 1
+    },
+    {
+     "askedAt": "2026-11-23T09:02:00.000Z",
+     "asker": {
+      "agentId": "a7c0ffee",
+      "name": "explorer"
+     },
+     "callId": "toolu_01Ship0002",
+     "header": "Migration",
+     "id": "q2",
+     "multiSelect": false,
+     "options": [
+      {
+       "label": "Yes",
+       "recommended": true
+      },
+      {
+       "label": "No"
+      }
+     ],
+     "question": "Ship the migration today?",
+     "references": [],
+     "revision": 1
+    }
+   ],
+   "seq": 2,
+   "session": "5eed0000-0000-4000-8000-000000000121",
+   "v": 1,
+   "verdicts": {}
+  },
+  "sheet/surfaces/standin.json": {
+   "heartbeatAt": "2026-11-24T09:59:55.000Z",
+   "name": "standin",
+   "pid": 1,
+   "reach": "local",
+   "url": "http://sheet.localhost:47590",
+   "v": 1
+  }
+ },
+ "covers": "an answer's recipient when a subagent cannot be reached directly: the main conversation, the asker running or not",
+ "event": {
+  "acked": [],
+  "agents": {
+   "direct": false,
+   "running": [
+    "a1b2c3",
+    "a7c0ffee"
+   ]
+  },
+  "event": "drain",
+  "remote": false,
+  "runner": "terminal"
+ },
+ "name": "recipient-indirect",
+ "now": "2026-11-24T10:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-000000000121",
+ "tz": "UTC"
+}

@@ -1,6 +1,7 @@
 import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 
 import type { AskSnapshot } from '../../types/sminos'
+import { isSheetCall } from './sheet-model'
 
 /**
  * The tool's names a transcript may hold, as each plugin that registered it
@@ -447,6 +448,65 @@ let raised = 0
  * built-in while it does), cleared should the tool not be registered.
  */
 let isServing = false
+/**
+ * The question sheet serves this session (sheet.tsx, I11): set by the sheet's
+ * session.start before this mod's runs. Yielded, the ask registers no tool,
+ * describes and withdraws nothing, holds and delivers nothing, and draws no
+ * band and no open ask; its row hooks still draw a stored call of today's form
+ * and pass the sheet's on. The module's own variable: a reload starts
+ * unyielded, and the kept choice yields it again.
+ */
+let isYielded = false
+
+/** The sheet takes this session's questions: the ask stands aside (I11). */
+export function yieldAsk() {
+  isYielded = true
+}
+
+/** Whether the ask has yielded to the sheet. */
+export const isAskYielded = () => isYielded
+
+/**
+ * The sheet decides at its session.start whether the ask serves this process
+ * (sheet.tsx, I11), and a launch's classic SessionStart can come before or
+ * while it does (2.1.331). While the choice is awaited, a SessionStart's
+ * adoption of the session's asks waits for it; the hook itself does not.
+ */
+let isChoiceAwaited = false
+/** A SessionStart's adoption waiting for the choice. */
+let adoption: { adopt: () => void } | undefined
+
+/**
+ * What the sheet's import takes of a resumed session's asks of today's tool
+ * (plan M5): the open ones, each with its call's time where the transcript
+ * holds one, and whether the read was definite: the whole file read, or the
+ * search run and its output not cut. An indefinite read imports nothing.
+ */
+export type TodayRead = { isDefinite: boolean; asks: { callId: string; askedAt?: string; questions: AskQuestion[] }[] }
+
+/** The sheet is registered: it will make the choice, which the ask's adoptions wait for. */
+export function deferAskToChoice() {
+  isChoiceAwaited = true
+}
+
+/**
+ * The sheet's choice is made (after `yieldAsk` when it is the sheet): an
+ * adoption waiting for it is made now under 'today' or 'none', and dropped
+ * under the sheet, its read kept for the import.
+ */
+export function askChoiceMade() {
+  isChoiceAwaited = false
+  const waiting = adoption
+  adoption = undefined
+  // Under the sheet nothing is adopted: the sheet's start reads the asks for its import itself (`readTodayAsks`).
+  if (waiting !== undefined && !isYielded) {
+    waiting.adopt()
+  }
+}
+
+/** A stored call's result in the sheet's form: its first line is one of I6's three. */
+const SHEET_RESULT = /^(?:(?:Added|Revised|Withdrew) q[1-9]|Nothing done\.|Outcome not known yet\.)/
+
 /** What the built-in's tool.describe last answered: withdrawn or not; undefined before it was described. */
 let wasWithdrawn: boolean | undefined
 /** A blocking ask was declined without feedback in the running turn: its later model calls are refused. */
@@ -519,6 +579,9 @@ export function resetAsk() {
   answeredCount = 0
   external = undefined
   keep = undefined
+  isYielded = false
+  isChoiceAwaited = false
+  adoption = undefined
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -924,7 +987,7 @@ function conversationOf(rows: readonly Row[]): Row[] {
  * file is on it. Lines a search found (`isWholeFile` false) carry no ancestry
  * to follow, and all count.
  */
-export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { isWholeFile?: boolean } = {}): OpenAsk[] {
+export function rebuildAsks(lines: readonly string[], { isWholeFile = true, times }: { isWholeFile?: boolean; times?: Map<string, string> } = {}): OpenAsk[] {
   const parsed = lines.flatMap((line) => {
     try {
       const row: unknown = JSON.parse(line)
@@ -934,11 +997,11 @@ export function rebuildAsks(lines: readonly string[], { isWholeFile = true }: { 
     }
   })
   const isRewound = parsed.some((row) => row.type === 'last-prompt' && row.rewound === true)
-  return asksIn(isWholeFile && isRewound ? conversationOf(parsed) : parsed)
+  return asksIn(isWholeFile && isRewound ? conversationOf(parsed) : parsed, times)
 }
 
-/** The async asks rows in the transcript's shape hold, every row counting. */
-function asksIn(rows: readonly Row[]): OpenAsk[] {
+/** The async asks rows in the transcript's shape hold, every row counting; each call's row's time into `times`, when given. */
+function asksIn(rows: readonly Row[], times?: Map<string, string>): OpenAsk[] {
   const calls: { id: string; input: Record<string, unknown> }[] = []
   const results = new Map<string, { content: unknown; is_error?: boolean }>()
   const answers = new Map<string, string>()
@@ -949,6 +1012,9 @@ function asksIn(rows: readonly Row[]): OpenAsk[] {
       // Any call not marked blocking may be async; isAccepted reads which from its result.
       if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && ASK_TOOLS.includes(String(block.name)) && isRecord(block.input) && block.input.async !== false) {
         calls.push({ id: String(block.id), input: block.input })
+        if (times !== undefined && typeof row.timestamp === 'string') {
+          times.set(String(block.id), row.timestamp)
+        }
       } else if (isRecord(block) && block.type === 'tool_result') {
         results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
       }
@@ -1331,45 +1397,75 @@ export function grepArgs(path: string): string[] {
 /** What `$.fs.read` takes whole: it refuses a file over 4 MiB. */
 const READ_LIMIT = 4 * 1024 * 1024
 
+/** What a read of a transcript's asks found, whether it was definite, and when each call was made. */
+type AsksRead = { asks: OpenAsk[]; isDefinite: boolean; times: Map<string, string> }
+
+/** What a read of a transcript takes of the engine: the ask's own `$`, or the sheet's port (its import, plan M5). */
+export type TranscriptReader = {
+  /** A file's size, or undefined when it cannot be had. */
+  size: (path: string) => Promise<number | undefined>
+  read: (path: string) => Promise<string>
+  exec: (argv: string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated?: boolean }>
+  log: (text: string) => void
+}
+
 /**
  * The async asks the transcript at `path` holds. One too large to read whole
  * (over 4 MiB) is searched for the lines that can name an ask, which carry no
  * ancestry: the asks of a branch the human rewound past count there too. A
  * search that fails, or whose output was cut at the same 4 MiB (it would drop
  * the newest asks), rebuilds nothing rather than a part, with a debug line.
+ * The read is definite when the whole file was read, or the search ran and
+ * its output was not cut: only then does "none" mean none (the sheet's
+ * import, plan M5).
  */
-async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
+async function readAsks($: EngineInterface, path: string): Promise<AsksRead> {
+  return readTranscriptAsks(
+    {
+      size: (file) =>
+        $.fs.stat(file).then(
+          (stat) => stat.size,
+          () => undefined,
+        ),
+      read: (file) => $.fs.read(file),
+      exec: (argv) => $.process.run(argv),
+      log: (text) => $.ui.log(text, { to: 'debug' }),
+    },
+    path,
+  )
+}
+
+/** `readAsks` through a reader of the caller's. */
+async function readTranscriptAsks(reader: TranscriptReader, path: string): Promise<AsksRead> {
+  const times = new Map<string, string>()
   // A file past what one read takes goes straight to the search: the read's
   // refusal costs a round trip of its own, while the questions wait to draw.
-  const size = await $.fs.stat(path).then(
-    (stat) => stat.size,
-    () => undefined,
-  )
+  const size = await reader.size(path)
   let text: string | undefined
   let unread = `${size} bytes, past what one read takes`
   if (size === undefined || size <= READ_LIMIT) {
     try {
-      text = await $.fs.read(path)
+      text = await reader.read(path)
     } catch (error) {
       unread = message(error)
     }
   }
   if (text !== undefined) {
-    return rebuildAsks(text.split('\n'))
+    return { asks: rebuildAsks(text.split('\n'), { times }), isDefinite: true, times }
   }
-  const failed = (why: string) => {
-    $.ui.log(`ask: the transcript could not be read whole (${unread}) and ${why}; no async ask is rebuilt`, { to: 'debug' })
-    return []
+  const failed = (why: string): AsksRead => {
+    reader.log(`ask: the transcript could not be read whole (${unread}) and ${why}; no async ask is rebuilt`)
+    return { asks: [], isDefinite: false, times }
   }
-  let search: Awaited<ReturnType<typeof $.process.run>>
+  let search: Awaited<ReturnType<TranscriptReader['exec']>>
   try {
-    search = await $.process.run(searchArgs(path)).catch(() => $.process.run(grepArgs(path)))
+    search = await reader.exec(searchArgs(path)).catch(() => reader.exec(grepArgs(path)))
   } catch (searchError) {
     return failed(`could not be searched (${message(searchError)})`)
   }
   // 0 lines found, 1 none, anything else a failure.
   if (search.exitCode === 1) {
-    return []
+    return { asks: [], isDefinite: true, times }
   }
   if (search.exitCode !== 0) {
     return failed(`could not be searched (the search exited ${search.exitCode})`)
@@ -1377,7 +1473,22 @@ async function readAsks($: EngineInterface, path: string): Promise<OpenAsk[]> {
   if (search.isStdoutTruncated === true) {
     return failed('its asks run past what one search returns')
   }
-  return rebuildAsks(search.stdout.split('\n'), { isWholeFile: false })
+  return { asks: rebuildAsks(search.stdout.split('\n'), { isWholeFile: false, times }), isDefinite: true, times }
+}
+
+/**
+ * The open asks of today's tool the transcript at `path` holds, as the
+ * sheet's import takes them (plan M5): read as `readAsks` reads, through the
+ * caller's reader, so a start of the sheet's reads them with its own calls.
+ */
+export async function readTodayAsks(reader: TranscriptReader, path: string): Promise<TodayRead> {
+  const read = await readTranscriptAsks(reader, path)
+  return {
+    isDefinite: read.isDefinite,
+    asks: read.asks
+      .filter((ask) => ask.status === 'open')
+      .map((ask) => ({ callId: ask.id, ...(read.times.has(ask.id) && { askedAt: read.times.get(ask.id) }), questions: ask.questions })),
+  }
 }
 
 /**
@@ -1451,6 +1562,9 @@ export function openCount(open: readonly OpenAsk[]): string {
  */
 export function registerAskBand(on: On) {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const inner = await next(e)
     const open = asks.filter((ask) => ask.status === 'open')
     const oldest = open[0]
@@ -1535,7 +1649,7 @@ export function registerAsk(on: On) {
   // whatever decides when the tool would otherwise register.
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
-    if (maws !== undefined && maws !== '') {
+    if (isYielded || (maws !== undefined && maws !== '')) {
       return next(e)
     }
     isServing = true
@@ -1567,26 +1681,47 @@ export function registerAsk(on: On) {
   // copy's from the conversation it copied; a cleared one has none, and a
   // compaction keeps them.
   on('classic.SessionStart', { hook_event_name: 'SessionStart' }, async ($, e, next) => {
-    store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
-    if (e.source !== 'compact') {
-      forgetAsyncAsks()
+    if (isYielded) {
+      return next(e)
     }
+    let read: OpenAsk[] | undefined
     if (e.source === 'resume' || e.source === 'fork') {
       // A copy's transcript is unwritten, but for /branch's, written whole
       // before the session starts and read with no cap on its length.
-      asks =
+      read =
         e.source === 'fork' && !(await $.fs.exists(e.transcript_path))
           ? await historyAsks($).catch((error: unknown) => {
               $.ui.log(`ask: the conversation could not be read (${message(error)}); no async ask is rebuilt`, { to: 'debug' })
               return []
             })
-          : await readAsks($, e.transcript_path)
-      $.ui.invalidate('ui.render')
-      for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
-        note({ kind: 'open', id: ask.id, questions: ask.questions })
-      }
+          : (await readAsks($, e.transcript_path)).asks
     }
-    save()
+    // The choice may have been made while the read was pending: under the
+    // sheet nothing is adopted (its start reads the asks it imports).
+    if (isYielded) {
+      return next(e)
+    }
+    // The hook contributes nothing to its own result: all it does is take the
+    // session's asks up, which can wait for the sheet's choice.
+    const adopt = () => {
+      store = { slug: slugOf(e.transcript_path), sessionId: e.session_id }
+      if (e.source !== 'compact') {
+        forgetAsyncAsks()
+      }
+      if (read !== undefined) {
+        asks = read
+        $.ui.invalidate('ui.render')
+        for (const ask of asks.filter((candidate) => candidate.status === 'open')) {
+          note({ kind: 'open', id: ask.id, questions: ask.questions })
+        }
+      }
+      save()
+    }
+    if (isChoiceAwaited) {
+      adoption = { adopt }
+    } else {
+      adopt()
+    }
     return next(e)
   }).catch((_, e, next) => next(e))
 
@@ -1663,7 +1798,9 @@ export function registerAsk(on: On) {
   // open async ask with its `[ answer ]`; its result row draws nothing beside
   // it. A resumed session's rows may name the tool under either plugin.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (!ASK_TOOLS.includes(e.props.tool)) {
+    // A stored call of the sheet's form is the sheet's row's, in every session (I11): passed on, the engine's head and
+    // its unfolded view beneath it.
+    if (!ASK_TOOLS.includes(e.props.tool) || isSheetCall(e.props.input) || (isYielded && !(isRecord(e.props.input) && 'questions' in e.props.input))) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
@@ -1712,7 +1849,7 @@ export function registerAsk(on: On) {
     )
   })
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (!ASK_TOOLS.includes(e.props.tool)) {
+    if (!ASK_TOOLS.includes(e.props.tool) || SHEET_RESULT.test(textOf(e.props.output))) {
       return next(e)
     }
     const ask = asks.find((candidate) => candidate.id === e.props.tool_use_id)
@@ -1743,6 +1880,9 @@ export function registerAsk(on: On) {
   // described the built-in; the built-in waits behind tool search, its name
   // alone in view.
   on('tool.describe', { tool: 'mcp__sminos__AskUserQuestion' }, async (_, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const described = await next(e)
     isDescribed = true
     describedFrom = builtinDescription
@@ -1750,6 +1890,9 @@ export function registerAsk(on: On) {
     return { ...described, description, isDeferred: false } as ToolDescribeResult
   })
   on('tool.describe', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (isYielded) {
+      return next(e)
+    }
     const described = await next(e)
     if (builtinDescription !== described.description) {
       $.ui.log(`ask: the built-in's description read (${described.description.length} characters)`, { to: 'debug' })
