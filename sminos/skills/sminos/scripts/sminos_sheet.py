@@ -1260,6 +1260,35 @@ def parse_identity(text):
     return (int(m.group(1)), int(m.group(2)), m.group(3)) if m else None
 
 
+WITNESS_RE = re.compile(r"([0-9]+):([0-9]+):([0-9a-f]{32}):([A-Za-z0-9_.-]{0,256})")
+
+
+def start_mark(session):
+    """Which start the session's record last had, as a /clear's witness binds it: the nonce of the mod's last start
+    (its receipt in the staging, `.start-receipt.json`, which every start with a nonce writes and every other start
+    removes); "" for none there; None when it cannot be read (not known: no witness, and a removal keeps)."""
+    try:
+        r = _read_json(os.path.join(staging_dir(session), RECEIPT))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return None
+    nonce = r.get("nonce") if isinstance(r, dict) else None
+    return nonce if isinstance(nonce, str) and _call_id_ok(nonce) else None
+
+
+def witness_text(identity, start):
+    """A /clear's witness as `sheet witness` prints it: the record's identity and the start it had,
+    `<st_dev>:<st_ino>:<nonce>:<start nonce>`."""
+    return "%s:%s" % (identity_text(identity), start)
+
+
+def parse_witness(text):
+    """A /clear's witness: (identity, start nonce), or None when the text is none."""
+    m = WITNESS_RE.fullmatch(text or "")
+    return ((int(m.group(1)), int(m.group(2)), m.group(3)), m.group(4)) if m else None
+
+
 def same_record(identity, witnessed):
     """Whether the record whose identity is `identity` (record_identity, now) is the one `witnessed` was: True only
     when both hold a minted nonce and agree; False when it is known not to be (no record there, another directory,
@@ -1580,15 +1609,15 @@ class Refused(Exception):
         self.code = code
 
 
-def remove(session, cleared=False, witnessed=None, clearing=None):
+def remove(session, cleared=False, witnessed=None, clearing=None, started=None):
     """remove_record for the command: a refusal is its exit."""
     try:
-        remove_record(session, cleared, witnessed=witnessed, clearing=clearing)
+        remove_record(session, cleared, witnessed=witnessed, clearing=clearing, started=started)
     except Refused as e:
         S.die(str(e), e.code)
 
 
-def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=None, clearing=None):
+def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=None, clearing=None, started=None):
     """A stopped session's record and its staging (I1, M2), and its log (I12, M6). Liveness is checked before the lock
     and again under it (a session resumed while this waited; not with `cleared`, the session a /clear left); under
     the lock the staging, then the record, are detached, each by one rename inside sheet/, so no reader or step sees
@@ -1602,8 +1631,9 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
     one changed since, is refused (2); `confirm`, a check the removal rests on (the sweep's: the transcript gone,
     or what a /clear's note describes), is run again there, and anything but True, or a failure, refuses (2).
     `clearing` (a /clear's removal: the pid of the process that cleared): under the lock, a session another process
-    runs (a resume of the session left) is refused (2), and so is one whose liveness cannot be told. The lock file
-    stays."""
+    runs (a resume of the session left) is refused (2), and so is one whose liveness cannot be told. `started` (with
+    a /clear's witness): the start the record had then (start_mark); one started since (a resume, even one that
+    has stopped again), or whose start cannot be read, is refused (2). The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops" % session, 2)
     finish_removed()
@@ -1624,6 +1654,14 @@ def remove_record(session, cleared=False, witnessed=None, touched=None, confirm=
                 raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
+            if started is not None:
+                now = start_mark(session)
+                if now is None:
+                    raise Refused("sheet remove: which start %s's sheet last had could not be told; it stays"
+                                  % session, 2)
+                if now != started:
+                    raise Refused("sheet remove: %s's sheet was started since the /clear (a resume); it stays"
+                                  % session, 2)
             if clearing is not None:
                 try:
                     other = S.running_elsewhere(session, clearing)
@@ -1812,20 +1850,22 @@ def cmd_sheet(a):
         return
     if op == "remove":
         session = resolve(a, "remove")
-        witnessed = None
+        witnessed = started = None
         if a.cleared:
             # What a /clear left goes with no liveness check (the clearing process may still be on record as running
             # it), so only the record witnessed at the clear may go: never one a resume of that session made since.
             # Nor while another process runs it (a resume during a retry): only the clearing process is excused.
-            witnessed = parse_identity(a.witness)
-            if witnessed is None:
-                S.die("sheet remove: --cleared takes --witness <dev>:<ino>:<nonce>, the record the /clear left as "
-                      "`sminos sheet witness` printed it then; nothing removed", 2)
+            witness = parse_witness(a.witness)
+            if witness is None:
+                S.die("sheet remove: --cleared takes --witness, the record the /clear left as `sminos sheet witness` "
+                      "printed it then; nothing removed", 2)
+            witnessed, started = witness
             if a.clearing is None or a.clearing < 1:
                 S.die("sheet remove: --cleared takes --clearing <pid>, the process that cleared; nothing removed", 2)
         elif a.witness is not None or a.clearing is not None:
             S.die("sheet remove: --witness and --clearing go with --cleared", 2)
-        remove(session, cleared=a.cleared, witnessed=witnessed, clearing=a.clearing)
+        remove(session, cleared=a.cleared, witnessed=witnessed, clearing=a.clearing,
+               started=started if a.cleared else None)
         print("removed %s's question sheet" % session)
         return
     if op == "surfaces":
@@ -1853,7 +1893,11 @@ def cmd_sheet(a):
                 S.die("no sheet: %s has no question sheet on this machine" % a.session, EXIT_NO_SHEET)
             if not identity[2]:
                 S.die("sheet witness: %s's sheet holds no nonce that can be read; it has no identity" % a.session, 1)
-            print(identity_text(identity))
+            start = start_mark(a.session)
+            if start is None:
+                S.die("sheet witness: which start %s's sheet last had could not be read; it has no witness"
+                      % a.session, 1)
+            print(witness_text(identity, start))
         elif op == "step":
             print(_dumps(run_step(a.session, sys.stdin.buffer.read())))
         elif op == "log":

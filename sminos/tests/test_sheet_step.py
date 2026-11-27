@@ -525,7 +525,7 @@ class Verbs(unittest.TestCase):
             self.assertNotRegex(err, r"\b%s\b" % private, err)
         code, out, err = self.cli("witness", "--session", SESSION)
         self.assertEqual(code, 0, err)
-        self.assertRegex(out.strip(), r"^[0-9]+:[0-9]+:[0-9a-f]{32}$", "a private verb still runs")
+        self.assertRegex(out.strip(), r"^[0-9]+:[0-9]+:[0-9a-f]{32}:[A-Za-z0-9_.-]*$", "a private verb still runs")
 
     def test_dismiss_is_one_batch_and_retract_takes_a_queued_answer_back(self):
         code, out, err = self.cli("dismiss", "--session", SESSION, "q1", "q2")

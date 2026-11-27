@@ -1481,8 +1481,8 @@ async function stageToday(port: Port, session: string, nonce: string, transcript
 /** I2's time (K6): what a staged ask's `askedAt` must be. */
 const TIME = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/
 
-/** A record's identity as `sminos sheet witness` prints it: its directory's device and inode, and its nonce. */
-const IDENTITY = /^[0-9]+:[0-9]+:[0-9a-f]{32}$/
+/** A witness as `sminos sheet witness` prints it (the record's identity and the start it had), opaque here: one token. */
+const IDENTITY = /^[\x21-\x7e]{1,1024}$/
 
 /**
  * The record a /clear left, as it is now (`sminos sheet witness`, its nonce

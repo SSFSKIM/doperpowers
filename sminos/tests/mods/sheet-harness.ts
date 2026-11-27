@@ -23,9 +23,9 @@ export const HOME = '/home/sm'
 export const COMMAND = '/plug/skills/sminos/scripts/sminos'
 export const S1 = '5eed0000-0000-4000-8000-0000000000c1'
 export const S2 = '5eed0000-0000-4000-8000-0000000000c2'
-/** A record's identity as `sminos sheet witness` prints it, and another record's. */
-export const W1 = `16777220:4242:${'a'.repeat(32)}`
-export const W2 = `16777220:4242:${'b'.repeat(32)}`
+/** A record's witness as `sminos sheet witness` prints it (its identity, the start it had), and another record's. */
+export const W1 = `16777220:4242:${'a'.repeat(32)}:n-before`
+export const W2 = `16777220:4242:${'b'.repeat(32)}:`
 /** The pid of the engine process the harness stands for. */
 export const ENGINE_PID = '31337'
 export const ALIVE: Probe = { record: false, open: 0, pending: 0, queued: 0, surface: { name: 'standin', url: 'http://sheet.localhost:47590', reach: 'local' }, surfaces: 1 }

@@ -602,8 +602,8 @@ class ClearsRemoval(Log):
         self.assertEqual(sheet.record_identity(rec)[2], "", "no reader has bound to it yet")
         code, out = self.witness(sid)
         self.assertEqual(code, 0, out)
-        self.assertEqual(out, "%d:%d:%s" % sheet.record_identity(rec))
-        self.assertRegex(out, r"^[0-9]+:[0-9]+:[0-9a-f]{32}$")
+        self.assertEqual(out, "%d:%d:%s:" % sheet.record_identity(rec), "and the start it had: none with a nonce")
+        self.assertRegex(out, r"^[0-9]+:[0-9]+:[0-9a-f]{32}:$")
         self.assertEqual(self.witness(sid), (0, out), "minted once")
         sheet.remove_record(sid, cleared=True)
         self.assertEqual(self.witness(sid)[0], sheet.EXIT_NO_SHEET)
@@ -684,6 +684,39 @@ class ClearsRemoval(Log):
         with mock.patch.object(os, "listdir", side_effect=failing(real_listdir)), \
                 mock.patch.object(os, "scandir", side_effect=failing(real_scandir)):
             code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("could not be told", out)
+        self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
+
+    def test_a_clears_retry_keeps_a_record_a_resume_started_and_left_since(self):
+        """Witnessed at the clear; the left session resumed in another process (a new start: the mod's, with a nonce
+        of its own), asked, had an answer accepted, and stopped; then the delayed retry runs. The record is the same
+        directory with the same nonce, but it was started since the witness: it stays, answer and all."""
+        sid, clearing = self.opened()
+        self.step(sid, {"event": "start", "start": {"source": "startup", "nonce": "n-at-start"}})
+        self.ask(sid, "toolu_1", [entry("Before the clear?")])
+        _, witnessed = self.witness(sid)
+        _, resumed = self.session(sid=sid)
+        self.step(sid, {"event": "start", "start": {"source": "resume", "nonce": "n-of-the-resume"}})
+        self.ask(sid, "toolu_2", [entry("After the resume?")])
+        self.answer(sid, "q2", ["Yes"])
+        self.step(sid, {"event": "drain"})
+        self.assertEqual([o["id"] for o in self.state(sid)["pending"]], ["q2"], "an answer accepted")
+        self.end(resumed)
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
+        self.assertEqual(code, 2, out)
+        self.assertIn("started since", out)
+        self.assertEqual([o["id"] for o in self.state(sid)["pending"]], ["q2"], "kept, with its answer")
+
+    def test_a_clears_witness_whose_start_cannot_be_read_is_no_witness(self):
+        sid, clearing = self.opened()
+        self.step(sid, {"event": "start", "start": {"source": "startup", "nonce": "n-at-start"}})
+        _, witnessed = self.witness(sid)
+        with open(os.path.join(sheet.staging_dir(sid), sheet.RECEIPT), "w") as f:
+            f.write("{not json")
+        code, out = self.witness(sid)
+        self.assertEqual(code, 1, out)
+        code, out = self.remove_cleared(sid, witnessed, clearing.pid)
         self.assertEqual(code, 2, out)
         self.assertIn("could not be told", out)
         self.assertTrue(os.path.isfile(os.path.join(sheet.record_dir(sid), "state.json")))
