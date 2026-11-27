@@ -945,6 +945,54 @@ class Sweep(Log):
         self.assertEqual(sminos.transcript_path(sid, fresh=True), to)
         return cfg, to
 
+    def moved_to_a_registered_dir(self, sid):
+        """The engine moved the session's transcript under a config dir known only by its registration
+        (config-dirs/), while its launch cache still names where it was."""
+        cfg = os.path.join(self.home, "cfg-moved")
+        d = os.path.join(cfg, "projects", "p-elsewhere")
+        os.makedirs(d)
+        to = os.path.join(d, sid + ".jsonl")
+        os.rename(sminos.transcript_path(sid), to)
+        path = sminos.config_dir_path(sid)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"configDir": cfg}, f)
+        sminos._TINDEX.at = None
+        sminos._TINDEXES.clear()
+        sminos.forget_caches()
+        return path, to
+
+    def test_a_registry_that_could_not_be_read_whole_establishes_no_absence(self):
+        """R3: the config dirs a removal looks in are the registry read whole; a listing of it that fails, or a
+        registration that cannot be read, is no answer, and the sheet stays."""
+        sid = self.asked_and_stopped()
+        registration, to = self.moved_to_a_registered_dir(sid)
+        self.aged(sid, 3700)
+        registry = os.path.dirname(registration)
+        real_listdir, real_open = os.listdir, open
+
+        def listing_fails(path=".", *a, **k):
+            if os.path.realpath(str(path)) == os.path.realpath(registry):
+                raise OSError(errno.EIO, "input/output error")
+            return real_listdir(path, *a, **k)
+
+        def reading_fails(path, *a, **k):
+            if str(path) == registration:
+                raise OSError(errno.EIO, "input/output error")
+            return real_open(path, *a, **k)
+        for patch in (mock.patch.object(os, "listdir", side_effect=listing_fails),
+                      mock.patch("builtins.open", side_effect=reading_fails)):
+            with self.subTest(patch=patch.attribute), patch:
+                sminos.forget_caches()
+                self.assertFalse(sminos.transcript_confirmed_gone(sid))
+                self.sweep()
+                self.assertTrue(self.exists(sid), "its transcript is on disk, in the dir the registry names")
+        sminos.forget_caches()
+        self.assertFalse(sminos.transcript_confirmed_gone(sid), "read whole, the registry finds it")
+        os.unlink(to)
+        sminos.forget_caches()
+        self.assertTrue(sminos.transcript_confirmed_gone(sid), "and then gone")
+
     def test_the_duty_keeps_a_sheet_whose_transcript_one_listing_missed_in_its_own_config_dir(self):
         sid = self.asked_and_stopped()
         cfg, to = self.in_config_dir(sid)

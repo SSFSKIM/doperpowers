@@ -13832,11 +13832,18 @@ def _same_dir(a, b):
     return os.path.realpath(a) == os.path.realpath(b)
 
 
-def _read_registry(d):
+def _read_registry(d, whole=False):
+    """The registry under `d`. A listing that fails reads as none, and a registration that cannot be read is passed
+    over; `whole`, either raises OSError instead (a registry gone is still an empty one), for a decision that
+    rests on knowing every config dir (engine_dirs_whole)."""
     recorded = {}
     try:
         names = os.listdir(d)
+    except FileNotFoundError:
+        names = []
     except OSError:
+        if whole:
+            raise
         names = []
     for name in names:
         sid, ext = os.path.splitext(name)
@@ -13844,10 +13851,16 @@ def _read_registry(d):
             continue
         try:
             cfg = json_at(os.path.join(d, name)).get("configDir")
-        except (OSError, ValueError, AttributeError):
+        except FileNotFoundError:
+            continue   # removed since the listing
+        except (OSError, ValueError, AttributeError) as e:
+            if whole:
+                raise OSError("the config dir registration %s could not be read: %s" % (name, e))
             continue
         if isinstance(cfg, str) and os.path.isabs(cfg):
             recorded[sid] = cfg
+        elif whole:
+            raise OSError("the config dir registration %s names no directory" % name)
     owners = {}
     for sid, cfg in recorded.items():
         owners.setdefault(os.path.realpath(cfg), set()).add(sid)
@@ -13907,6 +13920,14 @@ def engine_dirs(fresh=False):
     """Every config dir whose engine files sminos reads: the default, then
     each one a session's hook recorded, each once."""
     return [d for d, _ in _registry(fresh)[1]]
+
+
+def engine_dirs_whole():
+    """engine_dirs read now, past every cache, and whole: raises OSError
+    when the registry's listing, or any registration in it, cannot be read,
+    so a removal resting on a transcript being in none of them
+    (transcript_confirmed_gone) is never answered without one."""
+    return [d for d, _ in _read_registry(os.path.join(root(), CONFIG_DIRS), whole=True)[1]]
 
 
 def engine_record_paths(fresh=False):
@@ -14976,10 +14997,11 @@ def transcript_confirmed_gone(session_id):
     transcript's own path, as its launch cache names it
     (`<config dir>/projects/<dir>/<session>.jsonl`), is stat'd missing now,
     and no project directory of its config dir, nor of any other config dir
-    sminos knows, holds `<session>.jsonl` (the engine moved it), each listed
-    now. Where that path is not known (no launch cache, or one naming no
-    transcript of that shape), or a read, a listing or a stat fails for any
-    reason but absence, absence is not established: False."""
+    sminos knows (the registry read whole, engine_dirs_whole), holds
+    `<session>.jsonl` (the engine moved it), each listed now. Where that
+    path is not known (no launch cache, or one naming no transcript of that
+    shape), or a read, a listing or a stat fails for any reason but absence,
+    absence is not established: False."""
     def missing(path):
         try:
             os.stat(path)
@@ -14998,7 +15020,7 @@ def transcript_confirmed_gone(session_id):
         if not missing(own):
             return False
         own_cfg = os.path.dirname(os.path.dirname(os.path.dirname(own)))
-        for cfg in dict.fromkeys([own_cfg, session_config_dir(session_id), config_dir({}), *engine_dirs(fresh=True)]):
+        for cfg in dict.fromkeys([own_cfg, session_config_dir(session_id), config_dir({}), *engine_dirs_whole()]):
             base = os.path.join(cfg, "projects")
             try:
                 subs = os.listdir(base)
