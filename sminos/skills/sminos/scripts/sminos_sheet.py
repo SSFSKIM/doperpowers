@@ -1160,7 +1160,7 @@ def record_identity(rec, mint=False):
     except FileNotFoundError:
         return None
     path = os.path.join(rec, INCARNATION)
-    if mint and not os.path.lexists(path):
+    if mint and stat.S_ISDIR(st.st_mode) and not os.path.lexists(path):
         tmp = os.path.join(rec, ".tmp-" + uuid.uuid4().hex)
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(uuid.uuid4().hex + "\n")
@@ -1462,7 +1462,7 @@ def remove(session, cleared=False):
         S.die(str(e), e.code)
 
 
-def remove_record(session, cleared=False, witnessed=None):
+def remove_record(session, cleared=False, witnessed=None, touched=None):
     """A stopped session's record and its staging (I1, M2), and its log (I12, M6). Liveness is checked before the lock
     and again under it (a session resumed while this waited; not with `cleared`, the session a /clear left); under
     the lock the staging, then the record, are detached, each by one rename inside sheet/, so no reader or step sees
@@ -1470,8 +1470,9 @@ def remove_record(session, cleared=False, witnessed=None):
     the detached record's log projected: what it still owes, then a closing for each question still open; a refusal
     before it publishes nothing. A record whose log could not all be written stays detached (Refused, 1) and the next
     removal or the daemon's sweep finishes it (finish_removed); otherwise both are deleted, and what could not be is
-    said. `witnessed` (the daemon's, from a /clear's note): the record directory's (st_dev, st_ino) the removal rests
-    on, looked at again under the lock; another record there is refused (2). The lock file stays."""
+    said. `witnessed` and `touched` (the daemon's sweep): the record's identity (record_identity) and its
+    state.json's st_mtime_ns the removal was decided on, looked at again under the lock; another record there, or
+    one changed since, is refused (2). The lock file stays."""
     if not cleared and S.session_running(session):
         raise Refused("sheet remove: %s runs; its sheet goes when it stops (or with --cleared, after a /clear)"
                       % session, 2)
@@ -1493,8 +1494,10 @@ def remove_record(session, cleared=False, witnessed=None):
                 raise Refused("no sheet: %s has no question sheet on this machine" % session, EXIT_NO_SHEET)
             if not cleared and S.running_now(session):
                 raise Refused("sheet remove: %s started while this waited; its sheet stays" % session, 2)
-            if witnessed is not None and record_identity(rec) != tuple(witnessed):
-                raise Refused("sheet remove: %s's sheet is not the record the /clear left; it stays" % session, 2)
+            if witnessed is not None and (record_identity(rec) != tuple(witnessed) or touched is not None
+                                          and os.stat(os.path.join(rec, "state.json")).st_mtime_ns != touched):
+                raise Refused("sheet remove: %s's sheet is not the record the sweep decided on, or changed since; "
+                              "it stays" % session, 2)
             for d in (staging_dir(session), rec):
                 if os.path.exists(d):
                     to = os.path.join(sheet_root(), "%s%d-%s" % (REMOVED, int(time.time()), uuid.uuid4().hex))

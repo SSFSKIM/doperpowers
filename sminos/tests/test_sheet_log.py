@@ -720,6 +720,60 @@ class Sweep(Log):
         self.sweep()
         self.assertTrue(self.exists(sid), "where its transcript was is not known: absence is not established")
 
+    def test_a_sheet_made_again_between_the_sweeps_decision_and_its_lock_stays(self):
+        sid = self.asked_and_stopped()
+        self.transcript_gone(sid)
+        self.aged(sid, 3700)
+        real = sminos.transcript_confirmed_gone
+
+        def replaced_meanwhile(session):
+            gone = real(session)
+            # Decided gone; before the removal takes the lock, the session's sheet is removed and made again.
+            sheet.remove_record(sid, cleared=True)
+            self.start(sid)
+            self.ask(sid, "toolu_2", [entry("Asked again?")])
+            return gone
+        with mock.patch.object(sminos, "transcript_confirmed_gone", side_effect=replaced_meanwhile):
+            self.sweep()
+        self.assertTrue(self.exists(sid), "the record made again is not the one the sweep decided on")
+        self.assertEqual([q["question"] for q in self.state(sid)["questions"]], ["Asked again?"])
+
+    def test_a_sheet_touched_between_the_sweeps_decision_and_its_lock_stays(self):
+        sid = self.asked_and_stopped()
+        self.transcript_gone(sid)
+        self.aged(sid, 3700)
+        real = sminos.transcript_confirmed_gone
+
+        def touched_meanwhile(session):
+            gone = real(session)
+            self.ask(sid, "toolu_2", [entry("One more?")])
+            return gone
+        with mock.patch.object(sminos, "transcript_confirmed_gone", side_effect=touched_meanwhile):
+            self.sweep()
+        self.assertTrue(self.exists(sid), "touched since the decision: no longer an hour quiet")
+        self.assertEqual(len(self.state(sid)["questions"]), 2)
+
+    def test_a_clears_witness_that_cannot_be_read_keeps_the_note_for_a_later_pass(self):
+        sid = self.asked_and_stopped()
+        note, proc = self.note(sid)
+        self.end(proc)
+        witness = os.path.splitext(note)[0] + ".sheet"
+        real = open
+
+        def eio(path, *a, **k):
+            if str(path) == witness:
+                raise OSError(errno.EIO, "input/output error")
+            return real(path, *a, **k)
+        with mock.patch("builtins.open", side_effect=eio):
+            self.sweep()
+            self.daemon.sweep_cleared()
+        self.assertTrue(self.exists(sid), "no witness read: no removal")
+        self.assertTrue(os.path.exists(note) and os.path.exists(witness), "unknown is not absent: both kept")
+        self.sweep()
+        self.assertFalse(self.exists(sid), "read on the next pass: the /clear is finished")
+        self.daemon.sweep_cleared()
+        self.assertFalse(os.path.exists(note) or os.path.exists(witness))
+
     def in_config_dir(self, sid):
         """The session's transcript under a config dir of its own, recorded for it (config-dirs/), as its
         launch record names it."""

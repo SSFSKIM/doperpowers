@@ -2289,18 +2289,28 @@ def _cleared_notes():
                 ats, ids = seen.setdefault(sid, ([], set()))
                 ats.append(at)
                 ids.add(_witnessed(path))
-    return {sid: (max(ats), next(iter(ids)) if len(ids) == 1 else None) for sid, (ats, ids) in seen.items()}
+    return {sid: (max(ats), next(iter(ids)) if len(ids) == 1 and isinstance(next(iter(ids)), tuple) else None)
+            for sid, (ats, ids) in seen.items()}
+
+
+WITNESS_UNKNOWN = "unknown"   # a `/clear`'s witness that is there but could not be read: neither a record nor none
 
 
 def _witnessed(note):
     """The identity (sminos_sheet.record_identity: st_dev, st_ino, nonce) of the sheet record a `/clear` note's hook
-    found, from `<pid>.sheet` beside the note, or None."""
+    found, from `<pid>.sheet` beside the note; None when there is none (the hook found no record); WITNESS_UNKNOWN
+    when one is there and could not be read, or reads as no identity: no removal rests on it, and nothing is
+    cleaned up on it either."""
     try:
         with open(os.path.splitext(note)[0] + ".sheet", encoding="utf-8") as f:
             dev, ino, nonce = f.read().strip().split(":")
-        return (int(dev), int(ino), nonce) if nonce else None
-    except (OSError, ValueError):
+        if not nonce:
+            return WITNESS_UNKNOWN
+        return int(dev), int(ino), nonce
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError):
+        return WITNESS_UNKNOWN
 
 
 def _cleared_sheet(sid, note_at, witnessed):
@@ -2310,7 +2320,7 @@ def _cleared_sheet(sid, note_at, witnessed):
     cannot be stat'd is no answer: False."""
     sheet = sminos.sibling_module("sminos_sheet")
     try:
-        if witnessed is None or sheet.record_identity(sheet.record_dir(sid)) != witnessed:
+        if not isinstance(witnessed, tuple) or sheet.record_identity(sheet.record_dir(sid)) != witnessed:
             return False
     except OSError:
         return False
@@ -2355,18 +2365,26 @@ def sweep_sheets():
     for sid in sessions:
         if sminos.session_running(sid):
             continue
-        touched = mtime(os.path.join(sheet.record_dir(sid), "state.json"))
-        if touched is None:
+        # What the decision is about, read together under the lock: the record (its identity, a nonce minted when
+        # it has none) and when its state was last written. The removal looks at both again under the lock.
+        rec = sheet.record_dir(sid)
+        try:
+            with sheet.Lock(sid):
+                identity = sheet.record_identity(rec, mint=True)
+                touched_ns = os.stat(os.path.join(rec, "state.json")).st_mtime_ns
+        except (sheet.Busy, OSError):
             continue
-        witnessed = None
-        if sid in notes and _cleared_sheet(sid, *notes[sid]):
-            why, witnessed = "a /clear left it", notes[sid][1]
+        if identity is None:
+            continue
+        touched = touched_ns / 1e9
+        if sid in notes and notes[sid][1] == identity and _cleared_sheet(sid, *notes[sid]):
+            why = "a /clear left it"
         elif now - touched < SHEET_QUIET_S or sminos.transcript_path(sid) or not sminos.transcript_confirmed_gone(sid):
             continue
         else:
             why = "its transcript is gone"
         try:
-            sheet.remove_record(sid, witnessed=witnessed)
+            sheet.remove_record(sid, witnessed=identity, touched=touched_ns)
         except sheet.Refused as e:
             if e.code != sheet.EXIT_NO_SHEET:
                 sminos.daemon_log("the question sheet of %s was not removed: %s" % (sid[:8], e))
@@ -2396,13 +2414,15 @@ def sweep_cleared():
     `<pid>.sheet` beside it) whose engine process runs no more is removed: it
     is believed for a minute, and only by that process. One that witnessed a
     question sheet it still describes stays until sweep_sheets has removed
-    that sheet."""
+    that sheet; one that could not be read, or whose witness could not be
+    while its session has a sheet, stays for a later pass."""
     d = os.path.join(sminos.root(), sminos.CLEARED)
     try:
         names = os.listdir(d)
     except OSError:
         return
     running = {str(r.get("pid")) for r in sminos.peer_records() if sminos.peer_running(r)}
+    sheet = sminos.sibling_module("sminos_sheet")
     for name in names:
         pid, ext = os.path.splitext(name)
         if not pid.isdigit() or pid in running:
@@ -2414,9 +2434,16 @@ def sweep_cleared():
             try:
                 note, at = sminos.json_at(path), os.stat(path).st_mtime
                 sid = str(note.get("session_id") or "") if isinstance(note, dict) else ""
-            except (OSError, ValueError):
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue   # not read: what it names is not known, so it is kept for a later pass
+            except ValueError:
                 sid = ""
-            if sminos.UUID_RE.fullmatch(sid) and _cleared_sheet(sid, at, _witnessed(path)):
+            witnessed = _witnessed(path) if sminos.UUID_RE.fullmatch(sid) else None
+            if witnessed == WITNESS_UNKNOWN and sheet.has_record(sid):
+                continue   # its witness not read: whether it names this sheet is not known; both kept for a later pass
+            if isinstance(witnessed, tuple) and _cleared_sheet(sid, at, witnessed):
                 continue   # the question sheet it witnessed is still to be removed (sweep_sheets): kept for that
             gone = [os.path.join(d, pid + ".sheet"), path]
         else:
