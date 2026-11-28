@@ -111,7 +111,8 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  *   from its fixture, and the rule that routes a command by it;
  * - bridge-catalog.tsx (which takes `$`): the desk's `read` catalog;
  * - bridge-state.tsx: the one state object, its types, and `resetBridge`;
- * - bridge-receipts.tsx (which takes `$` only to read the conversation):
+ * - bridge-receipts.tsx (which takes `$` to read the conversation and the
+ *   session's id, so a cleared session never takes the last one's marks):
  *   which receipts a lane B observer's main request carried;
  * - bridge-stream.tsx: the mod's copy of the session's live state, which
  *   every resync carries, and the poster;

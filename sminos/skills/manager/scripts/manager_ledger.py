@@ -396,8 +396,9 @@ def apply(st, doc, now, lineages=None):
     """One update's ledger change, applied to a copy of `st` at `now` (epoch seconds): (the new state, the report).
     `lineages` maps a subscription's stored session to every session of its lineage (the command resolves them;
     a subscription missing from it stands for its stored session alone).
-    The whole document is validated first, every item as it would stand after the merge; any problem raises
-    Invalid naming each, and nothing is changed. The report: `new` (ids created), `changed` (ids changed in a
+    The whole document is validated first, every item as it would stand after the merge; a problem raises
+    Invalid naming each one found (a field of the wrong kind stops the checks that read it), and the state and
+    archive are left unchanged. The report: `new` (ids created), `changed` (ids changed in a
     substantive field), `unchanged_open` (open items it left as they were), `archived` (the items moved out),
     `briefs` and `roadmaps` (the initiatives whose brief, whose roadmap, it replaced)."""
     problems = []

@@ -640,8 +640,8 @@ def meta_get(seat_id, field):
 
 
 def record_files():
-    # Every `*.json` at the root is a seat to this code and to every older sminos on the machine: a new store goes in
-    # a directory of its own (as threads/ does), never at the root.
+    # A `*.json` at the root, but a `*.reply.json`, is read as a seat here, and older sminos copies on the machine
+    # scan the same root: a new store goes in a directory of its own (as threads/ does).
     for p in sorted(glob.glob(os.path.join(glob.escape(root()), "*.json"))):
         if p.endswith(".reply.json"):
             continue
@@ -15524,9 +15524,10 @@ def migration_skipped(step, lock):
 
 def migrate(quiet=False, lock_until=None):
     """Bring a pre-seat state root up to date. Idempotent; main runs it before
-    every verb but the ones it dispatches first, which read without the
-    registry's lock (bridge, sheet --session, guide, rpc-query, daemon owed and
-    profile, a who with no target), so a working copy's CLI run against the real root
+    the verbs it does not dispatch first: `record` migrates bounded, in
+    run_record, and bridge, sheet --session (and surfaces), guide, rpc-query,
+    daemon owed and profile, and a who with no target skip it, so they never
+    wait on the registry's lock. A working copy's CLI run against the real root
     migrates it, one way (the chats/ import among the steps): try one under a
     temporary HOME and SMINOS_HOME, as tests/run-sminos-tests.sh does.
 

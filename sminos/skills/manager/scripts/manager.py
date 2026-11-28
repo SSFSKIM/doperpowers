@@ -17,10 +17,12 @@ Every command takes --json and --name N (which manager's state: $SMINOS_HOME/man
 from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a failure, 2 usage (and a ledger
 change refused), 4 an unknown or ambiguous member.
 
-Nothing here writes to a session or a project log: it reads transcripts and host events, and writes only the
+No verb here writes to a session or a project log itself: it reads transcripts and host events, and writes only the
 manager's own state file and its archive (and, for `serve --install`, serve.json and the launchd agent); `query`
 asks a fork of the session, which the session never sees.
-Resolving a member may let sminos reconcile a project's membership, as any sminos read does.
+Resolving a member goes through sminos's views, which may reconcile a project as any sminos read does: finish
+a journal entry, append a lifecycle event. `transcript`, `query` and a subscription take sessions of this machine only
+(refuse_remote).
 """
 
 import argparse
