@@ -8,11 +8,17 @@ State ($TASK_SMINOS_STATE):
   threads    {"<name>": <answer object> | {"exit": n, "said": "..."}}; an
              entry with "sleep" answers that many seconds late
   say        {"exit": n}: how `sminos say` ends (0 by default)
+  task       {"stdout": "...", "stderr": "...", "exit": n, "signal": n}: how every
+             `sminos task <verb>` answers (nothing printed and exit 0 by default;
+             "signal" ends it by that signal instead)
 
-Each call is appended to $TASK_SMINOS_LOG as {"argv": [...], "session": ...}.
+Each call is appended to $TASK_SMINOS_LOG as {"argv": [...], "session": ...};
+a `task` call also as "stdin": its standard input whole, base64.
 """
+import base64
 import json
 import os
+import signal
 import sys
 
 
@@ -21,9 +27,21 @@ def main(argv):
         s = json.load(f)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     log = os.environ.get("TASK_SMINOS_LOG")
+    entry = {"argv": argv, "session": session}
+    if argv[:1] == ["task"]:
+        entry["stdin"] = base64.b64encode(sys.stdin.buffer.read()).decode()
     if log:
         with open(log, "a") as f:
-            f.write(json.dumps({"argv": argv, "session": session}) + "\n")
+            f.write(json.dumps(entry) + "\n")
+    if argv[:1] == ["task"]:
+        answer = s.get("task", {})
+        sys.stdout.write(answer.get("stdout", ""))
+        sys.stderr.write(answer.get("stderr", ""))
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if answer.get("signal"):
+            os.kill(os.getpid(), answer["signal"])
+        return answer.get("exit", 0)
     if argv[:1] == ["who"] and len(argv) == 1:
         if not session:
             sys.stderr.write("usage: sminos who <commit|PR>\n")

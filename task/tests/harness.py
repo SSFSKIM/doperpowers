@@ -167,16 +167,18 @@ class BoardCase(unittest.TestCase):
             env["CLAUDE_CODE_SESSION_ID"] = session
         return env
 
-    def task(self, *args, cwd=None, session=SESSION, repo=True, env=None):
-        """Run the CLI; `repo` adds `--repo acme/widgets` (a string names another)."""
+    def task(self, *args, cwd=None, session=SESSION, repo=True, env=None, input=None):
+        """Run the CLI; `repo` adds `--repo acme/widgets` (a string names another). Its standard input is `input`
+        (text), else empty."""
         argv = [str(TASK)] + list(args)
         if repo:
             argv += ["--repo", REPO if repo is True else repo]
         e = self.env(session)
         if env:
             e.update(env)
-        done = subprocess.run(argv, cwd=str(cwd or self.outside), env=e, capture_output=True, text=True,
-                              timeout=60)
+        stdin = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+        done = subprocess.run(argv, cwd=str(cwd or self.outside), env=e, capture_output=True, text=True, timeout=60,
+                              **stdin)
         self.load()  # what the command wrote, so that a later save() keeps it
         return done.returncode, done.stdout, done.stderr
 
@@ -201,10 +203,12 @@ class BoardCase(unittest.TestCase):
             if p.exists():
                 p.unlink()
 
-    def sminos_calls(self):
+    def sminos_calls(self, whole=False):
+        """Each call's argv, or with `whole` each logged entry."""
         if not self.sm_log.exists():
             return []
-        return [json.loads(line)["argv"] for line in self.sm_log.read_text().splitlines()]
+        entries = [json.loads(line) for line in self.sm_log.read_text().splitlines()]
+        return entries if whole else [e["argv"] for e in entries]
 
     @staticmethod
     def is_write(call):

@@ -2,7 +2,7 @@
 
 A path here is named from `task/` when it is the plugin's own file; `docs/` and `.github/` paths are the repository's.
 
-A sixth plugin in this marketplace (versioned on its own: `scripts/bump-version.sh --plugin task`), the `task` command: the agents' one command for tracked work, which today works tickets on a repository's GitHub board. Design, decisions and the milestones still to come: `docs/doperpowers/specs/2026-11-24-ticket-board-design.md`. How the code meets it is each module's docstring.
+A sixth plugin in this marketplace (versioned on its own: `scripts/bump-version.sh --plugin task`), the `task` command: the agents' one command for tracked work, which works tickets on a repository's GitHub board and tasks on the human's board, which sminos keeps. Design, decisions and the milestones still to come: `docs/doperpowers/specs/2026-11-24-ticket-board-design.md`; the human's board's verbs, `docs/doperpowers/specs/2026-11-27-task-board-design.md`. How the code meets it is each module's docstring.
 
 ## Map
 
@@ -14,6 +14,7 @@ A sixth plugin in this marketplace (versioned on its own: `scripts/bump-version.
 - `cli/claims.py`: the claim record (`task-claim`) and the fold. `cli/index.py`: the machine's index (`$TASK_HOME/claims.json`). `cli/settle.py`: settle, `converge` (the label) and `write_release`.
 - `cli/migrate.py`: the one-time relabel (`migrate plan`, `migrate apply`); `cli/legacy.py`: what the old board left in a body.
 - `cli/sminos_client.py`: what `task` asks sminos.
+- `cli/human.py`: the human's board's verbs, recognized before anything of the ticket board and run as `sminos task`.
 
 ## Traps
 
