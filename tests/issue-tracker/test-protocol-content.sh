@@ -202,16 +202,31 @@ echo "protocol doctrine:"
 assert_contains "$proto" "doperpowers:issue-tracker" "protocol points at the board schema"
 assert_not_contains "$proto" "status:blocked" "no retired vocabulary in doctrine"
 
-echo "dispatch ritual (issue-tracker):"
+# THE SKILL DESCRIBES THE BOARD; THE DORMANT DOCTRINE IS ONE POINTER AWAY.
+# Left looking live, the pipeline's doctrine misled sessions (the dormancy
+# spec, 2026-10-18), so SKILL.md names no dormant reference file: it says in
+# one place that everything under references/ but the two hosted map
+# templates is dormant, and the spec lists each.
+echo "dormant machinery (issue-tracker):"
 TRACKER="$REPO_ROOT/skills/issue-tracker/SKILL.md"
 [ -f "$TRACKER" ] || { echo "missing $TRACKER"; exit 1; }
 tracker="$(cat "$TRACKER")"
 assert_not_contains "$tracker" "codex-spawn.sh" "ritual: codex-CLI spawn path retired (no new codex-CLI workers)"
-assert_contains "$tracker" "worker-bootstrap.md" "ritual: renders the bootstrap, not the protocol"
 assert_not_contains "$tracker" "embedded verbatim" "ritual: verbatim-embed spawn retired"
-assert_contains "$tracker" "implement-worker-protocol.md" "ritual: names the implement protocol file it pins"
 assert_not_contains "$tracker" "doperpowers:executing" "ritual: no pointer at the retired executing skill"
 assert_not_contains "$tracker" "doperpowers:architecting" "ritual: no pointer at the retired architecting skill"
+assert_contains "$tracker" 'every file under `references/` except the two hosted' "tracker: one sentence marks the references dormant"
+assert_contains "$tracker" "2026-10-18-board-dispatch-dormant.md" "tracker: the ruling, which lists each dormant file, is linked"
+named=""
+for f in "$REFS"/*; do
+    case "$(basename "$f")" in board-pages.yml|board-cloudflare-pages.yml) continue ;; esac
+    if grep -Fq -- "$(basename "$f")" <<<"$tracker"; then named="$named $(basename "$f")"; fi
+done
+if [ -z "$named" ]; then pass "tracker: names no dormant reference file"
+else fail "tracker: names no dormant reference file"; echo "    named:$named"; fi
+for f in board-pages.yml board-cloudflare-pages.yml; do
+    assert_contains "$tracker" "references/$f" "tracker: the live template $f is named"
+done
 
 echo "ticket gate (schema file, single copy):"
 GATE="$REPO_ROOT/skills/issue-tracker/references/ticket-gate.md"
@@ -226,19 +241,18 @@ assert_contains "$gate" "land on main independently" "gate: landability decompos
 assert_contains "$gate" "recommendation, never inherited trust" "gate: registrar verdicts are recommendations (gate re-runs)"
 assert_contains "$gate" "The human is a source too" "gate: human-as-async-answer-source clause carried over"
 assert_not_contains "$gate" "{{" "gate: placeholder-free (opened at runtime, never rendered)"
-assert_contains "$tracker" "ticket-gate.md" "tracker: both lane-queue rows name their bar (the gate file)"
 assert_contains "$manual" "ticket-gate.md" "manual: gate section routes to the schema file"
 assert_not_contains "$manual" "one obvious best answer" "manual: fork table not re-vendored"
 assert_contains "$spike" "ticket-gate.md" "spike: graduation bar routes to the gate file"
 assert_contains "$decomp" "ticket-gate.md" "decompose doc: child triage bar routes to the gate file"
 
-echo "board schema single-source (issue-tracker owns the discriminant):"
-assert_contains "$tracker" "Park discriminant — who unparks it?" "tracker: canonical discriminant lives here"
+echo "board schema single-source (issue-tracker owns the park meanings):"
+assert_contains "$tracker" "parked for your human partner as themselves" "tracker: each park's meaning says who unparks it"
 assert_contains "$tracker" "recommended answer" "tracker: needs-human note contract (question list with recommendations)"
-assert_contains "$tracker" "ENUMERABLE" "tracker: enumerable-decisions→needs-human rule is canonical here"
-assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (edges + lane queues)"
-assert_contains "$tracker" "which no park state does" "tracker: sweep rationale recorded (why edges beat park states)"
-assert_contains "$tracker" "instead of registering a duplicate" "tracker: pre-register duplicate search in the ticket contract"
+assert_contains "$tracker" 'Decisions that can be listed, however many, are `needs-human`' "tracker: a listable set of decisions is needs-human, not interactive-preferred"
+assert_contains "$tracker" "Waiting on other tickets" "tracker: dependency-wait is not a park (an edge)"
+assert_contains "$tracker" "which no park state does" "tracker: why edges beat park states (the board re-surfaces the ticket)"
+assert_contains "$tracker" "instead of a duplicate ticket" "tracker: the seam search's duplicate hit is commented on, not re-registered"
 daemons="$(cat "$REPO_ROOT/sminos/skills/sminos/SKILL.md")"
 assert_not_contains "$daemons" "discriminant in doperpowers:executing" "sminos (seats): no stale pointer at the old vendored copy"
 assert_contains "$decomp" "doperpowers:issue-tracker" "decompose doc: child gate-triage routes through the ticket contract"
@@ -249,9 +263,8 @@ echo "unattended sweep (dispatch is event/cron-driven, ritual unchanged):"
 # attaches"; now the seat is the one that would dispatch, so the same
 # shakedown finding reads as "you dispatch no review over a draft".
 assert_contains "$proto" "you dispatch no review over one" "proto: worker knows the consequence — a draft gets no reviewer (live shakedown finding)"
-assert_contains "$tracker" "board-sweep.sh" "tracker: toolkit names the unattended tick"
-assert_contains "$tracker" "references/sweep-setup.md" "tracker: arming doc routed"
-assert_contains "$tracker" "execute-dispatch.sh" "tracker: ritual names its mechanical executable"
+assert_contains "$tracker" "board-sweep.sh" "tracker: the dormant pointer names the unattended tick"
+assert_contains "$tracker" "execute-dispatch.sh" "tracker: the dormant pointer names the dispatcher"
 assert_contains "$tracker" "Taking a ticket is not a dispatch" "tracker: dispatch is dormant; a named ticket is taken by the session"
 sweepdoc="$(cat "$REPO_ROOT/skills/issue-tracker/references/sweep-setup.md")"
 assert_contains "$sweepdoc" "launchd" "sweep-setup: launchd user agent is the macOS path"
@@ -531,12 +544,12 @@ assert_contains "$tracker" '`bug` | `enhancement` | `spike` | `env-issue`' \
     "board doctrine: the category set is the four-member one"
 assert_contains "$tracker" 'defaults to `needs-human`' \
     "board doctrine: env-issue's birth default is the inverted one"
-assert_contains "$tracker" 'REQUIRES `--note` naming the' \
+assert_contains "$tracker" 'refuses that default without a `--note` naming the' \
     "board doctrine: the env-issue default path requires --note (register refuses otherwise)"
-assert_contains "$tracker" 'RETURNS to `ready-for-architect`' \
+assert_contains "$tracker" 'the epic is not closed: it returns to' \
     "board doctrine: a fully-terminal epic returns for recomposition instead of auto-closing"
 assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
-assert_contains "$tracker" "convergence counter" \
+assert_contains "$tracker" "a return the escalation count ignores" \
     "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
 assert_contains "$tracker" '`in-design` from `ready-for-architect`' \
     "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"

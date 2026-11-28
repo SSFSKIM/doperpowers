@@ -1,449 +1,252 @@
 ---
 name: issue-tracker
-description: Use when working with the board (a repo's ticket backlog, in GitHub issues or on an Arkho board service) — registering or searching tickets, taking a ticket your human partner named, recording its progress, or closing it out.
+description: What the board is and how it behaves — a repository's ticket backlog, in GitHub issues or on an Arkho board service, with its states, its commands, what they refuse and its conventions. For registering or searching tickets, taking a ticket, recording its progress, or closing it out.
 ---
 
 # Issue Tracker
 
-The board is the state of future work: a backlog. A ticket is registered
-when work is deferred out of a session or named for later — a scope-out, a
-review's residue, something your human partner wants kept — and it waits
-there until a session takes it. The record of work done is the
-commits and the PRs, not the board; work that will be built now needs no
-ticket.
+The board is a repository's backlog: the state of future work. A ticket
+holds work deferred out of a session or named for later, and waits until a
+session takes it. Work done is recorded by commits and PRs; work that will
+be built now needs no ticket.
 
-Taking a ticket is not a dispatch. A session takes a ticket because your
-human partner named it, or on its own initiative when the ticket is ready
-to build; either way it runs it like any other work, through the attended
-workflow: design where
-it needs design (doperpowers:brainstorming, doperpowers:execspec), a
-plan-executor or subagents to build, doperpowers:review-code to review, the
-session to merge. The ticket records where the work stands.
+Taking a ticket is not a dispatch. Nothing starts a session from the board:
+automatic dispatch is dormant by the owner's ruling of 2026-10-18
+([the spec](../../docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md)).
+A session takes a ticket because your human partner named it, or on its own
+initiative when the ticket is ready to build, and runs the work as it would
+without a ticket; the ticket records where the work stands. A body, comment
+or note that expects a worker to pick the ticket up is stale.
 
-**Automatic dispatch is dormant** (the owner's ruling of 2026-10-18,
-[docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md](../../docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md)).
-Nothing starts a session from the board: no sweep, no event trigger, no
-Architect, Executor, spike or review stand-in seat, no QA agent owned by a
-seat. Their protocols and scripts are still in this skill (Dormant
-machinery, at the end) and describe nothing that runs. A ticket body,
-comment or note that expects a worker to pick the ticket up is stale.
+## Where it lives
 
-GitHub Issues or the board service is the single source of truth; every
-script talks to it directly and may run from any checkout.
-`doperpowers/issue-tracker/` in the consumer repo is only a gitignored
-render cache for `board-map.sh`.
-
-## The Board Write Hard Gate (put this in the consumer CLAUDE.md)
-
-> Board Write Hard Gate: issue creation and every state/edge change MUST go
-> through the issue-tracker scripts — never raw `gh issue edit` for
-> `status:*` labels or sub-issue/dependency edges. At registration, category +
-> status + parent + blocked-by are each either set or consciously N/A —
-> silence is not N/A.
-
-The scripts are the schema: they enforce the state machine, mandatory notes,
-PR gates, and cycle/deadlock checks that GitHub's API will not.
-`board-lint.sh` catches what slips past.
-
-## Who writes the board
-
-| writer | writes |
-|---|---|
-| **The session working a ticket** | that ticket's open states as the work moves (Taking a ticket, below), its comments, and new tickets for what it defers |
-| **Your human partner** | everything else — priorities, park answers, `wontfix`, edge re-cuts, closes of non-PR work |
-| **Board bookkeeping** (the scripts' inline sweeps; on the api binding, the board service's reconciler) | epic states nobody claims by hand: an epic pulled in-flight by its first active child, and returned to `ready-for-architect` when its last child lands (`[board-epic]` comments); on the api binding also the `needs-human` park of a dependency wait gone silent (State vocabulary) |
-
-## Categories
-
-`bug` | `enhancement` | `spike` | `env-issue`. The first two are GitHub's
-own labels; the board manages the other two. `spike` is exploration — its
-deliverable is a findings comment, never a merge. `env-issue` is
-environmental friction someone hit and routed around (missing tool in the
-image, flaky registry, broken fixture), filed as its own ticket so the
-report survives the session that found it.
-
-An `env-issue` defaults to `needs-human` — its birth rule is INVERTED
-from every other category's. Elsewhere unsure means
-`ready-for-implementer`; here unsure means the human, because friction an
-authorized agent could have cleared would usually already be cleared.
-Registration on that default path REQUIRES `--note` naming the
-intervention being asked for (register refuses without it). An explicit
-`--state` is the registrar's claim that a concrete repair path exists for
-an agent to execute. Filing is fire-and-continue: the reporter files it
-and goes on with its own work.
-
-## State vocabulary
-
-The vocabulary was cut for the dispatch lanes, and the scripts and the
-board service still enforce it, so an attended session walks the same
-edges:
-
-    ready-for-implementer → in-progress → in-review → done
-    ready-for-architect → in-design → in-progress → in-review → done
-
-(`ready-for-implementer` keeps its legacy spelling because live boards
-depend on it.)
-
-| state | GitHub encoding | meaning | note |
-|---|---|---|---|
-| `ready-for-architect` | open + `status:ready-for-architect` | backlog: the work needs design before it is built. On an EPIC, its recomposition is due (Epics below) | — |
-| `in-design` | open + `status:in-design` | a session is designing it. A leaf exits to `in-progress` by the **build edge**, which takes a note, `--branch`, and the pin of what will be built: `--plan <path>@<sha>` (a spec pushed to that branch) or `--plan pre-spec` (the body is enough) — the gh binding refuses it without all three; to `ready-for-implementer` with a note when the build is left for later (a real pin there needs `--branch` too); or to `deferred` or a park — never back to `ready-for-architect`. An epic never takes the build edge (the gh binding refuses it); once every child is terminal it also exits to `done`/`in-review`, the recomposition verdict (Epics below) | optional |
-| `ready-for-implementer` | open + `status:ready-for-implementer` | backlog: buildable from its body, or from the plan pinned to it (`plan:`). The DEFAULT birth state | — |
-| `in-progress` | open + `status:in-progress` | a session is building it | optional |
-| `needs-human` | open + `status:needs-human` | parked for your human partner **as themselves**: a decision only they can make, or a real-world input only they hold (credentials, auth, production data) | **required** |
-| `needs-info` | open + `status:needs-info` | rare: the spec is unambiguous but lacks depth, or core decisions need substantial research first | **required** |
-| `interactive-preferred` | open + `status:interactive-preferred` | rare: the work's CORE needs live steering in a doperpowers:brainstorming session, not a question list | **required** |
-| `in-review` | open + `status:in-review` | PR open (`--pr` required). A same-state transition carrying `--plan <path>@<sha>` **re-pins** a plan the review re-cut (without `--plan` the self-edge is refused as a no-op); `in-progress` with a repaired pin is the **rebuild** | PR link (epic: closure package) |
-| `done` | **closed — completed** | landed — normally by the merge itself; a manual flip for non-PR work, after verifying it landed | optional |
-| `wontfix` | **closed — not planned** | rejected | **required** |
-| `deferred` | open + `status:deferred` | tracked, not now | optional |
-
-**Park discriminant — who unparks it?** A session that needs your human
-partner asks them in the conversation. A park is for a ticket left waiting
-after the session moves on, and its state says who unparks it: a decision
-or a real-world input only the human holds → `needs-human`, the note a
-crisp question list, each with a recommended answer; knowledge work anyone
-could do → `needs-info`, the note says what is missing; ongoing steering
-of the work's core → `interactive-preferred` — but any ENUMERABLE set of
-open decisions, however many, is `needs-human`. Missing design an agent
-can author is not a park: it is `ready-for-architect`. On the gh binding
-the board counts escalation edges into it: a second traversal of the same
-edge on one ticket converts to `needs-human` mechanically (the api board
-counts only a worker's traversals).
-
-Your human partner's answers to a park go on the ticket. On the gh
-binding that is two operations: `board-comment.sh <n> "[answers] …"` (a
-comment opening `[answers]` is what resets that count), then
-`board-transition.sh <n> <state>` out of the park. On the api binding
-`board-answer.sh <n> "<answers>" --to <state>` does both (Toolkit).
-
-Waiting on other tickets is NOT a park: dependencies are edges
-(`board-edge.sh <n> --block <blocker>`), and the board re-surfaces the
-ticket when its blockers land, which no park state does. `in-progress →
-ready-for-implementer` is the dependency yield and is refused `not-blocked`
-unless an unfinished blocker is already on record, so cut the edge first.
-On the api binding the board service's reconciler bounds the wait: a
-blocker gone unworked and silent past its threshold (48 hours by
-default), or a ring of blockers that can never resolve, parks the waiting
-ticket `needs-human` with the chain in its note. On the gh binding that
-pass lived in the dormant sweep, so nothing watches the wait:
-`board-list.sh` tags the ticket `waiting:#<blocker>`, and a blocker
-nobody is moving needs your human partner's attention by hand. (`blocked`
-was retired in v8; lint names any legacy label with the migration FIX.)
-
-Exactly one `status:*` label on every open issue; terminal states are the
-close reason (no label). An issue outside this scheme is `untracked` (no
-label) or `conflict` (2+ labels) — lint FAILs it; `board-transition.sh`
-repairs it (any open state is reachable from either).
-
-Ticket dependencies are **edges** (native GitHub dependencies), never states —
-eligibility is computed. Edges are born at register time and re-cut later with
-`board-edge.sh` (understanding changes; the graph follows). Notes
-land twice: the current note in the issue's `board:meta` body block, the audit
-trail as `[board]` comments.
-
-**Epics** (issues with sub-issues) ride their children: the first active
-child pulls the parent in-flight (`in-design` from `ready-for-architect`,
-`in-progress` from `ready-for-implementer` or from a `needs-info` release),
-and it stays there while they run. The other parks are never pulled. An
-epic whose children are all terminal is never closed by bookkeeping: it
-RETURNS to `ready-for-architect` (`recomposition-due`), and whoever holds
-the parent's composite verifies the parent's own acceptance and closes it
-— directly for a non-code parent, via `in-review` with a closure package
-for a code-bearing one (doperpowers:decomposing). Bookkeeping writes on
-epics post `[board-epic]` comments, a marker the convergence counter never
-reads.
-
-## API binding
-
-A repo's board lives either in its GitHub issues (**gh binding**, the default)
-or on an Arkho board service (**api binding**). `.doperpowers/board.json` says
-which — it is committed, so every checkout and every linked worktree of the
-repo resolves the same board (a linked worktree checked out at a head that
-predates the file resolves the binding from its main checkout):
+A repo's board is its GitHub issues (the **gh binding**, the default) or a
+board on an Arkho board service (the **api binding**). The committed
+`.doperpowers/board.json` says which, so every checkout and linked worktree
+resolves the same board:
 
 ```json
 { "binding": "gh", "repo": "owner/name" }
 { "binding": "api", "url": "https://…", "repo": "doperpowers" }
 ```
 
-On the gh binding `repo` is the GitHub repository, `owner/name`. Without it the
-scripts take whatever `gh repo view` answers, and in a fork carrying an
-`upstream` remote with no `gh repo set-default` that is the upstream project,
-so a fork names itself.
+- **gh `repo`** is optional. Without it the scripts take what `gh repo view`
+  answers, which in a fork with an `upstream` remote and no
+  `gh repo set-default` is the upstream project.
+- **api `repo`** is the name the service knows this repository by, and the
+  scripts die without it. One service keeps several repositories in one
+  ticket namespace, and a request naming none gets the server's pick (its
+  founding repo on a write, every repo on a read), so a wrong key files and
+  lists another board's tickets without an error.
+- `$BOARD_REPO` overrides the file's `repo`: `owner/name` on gh, the bare
+  key on api.
+- **api credentials** are in `~/.arkho-board/<main-checkout-dirname>.env`
+  (a worktree reads its main checkout's file): `BOARD_HUMAN_TOKEN`, under
+  which a session's writes go out as your human partner, and
+  `BOARD_AUTOMATION_TOKEN`, the dormant fleet's.
+- Reads and writes narrow to the bound repo. `board-list.sh` and
+  `board-search.sh` take `--all-repos`, which adds a repo column: ticket
+  numbers are repo-local, so `#12` from another board is another ticket.
 
-`repo` is the name the **board service** knows this repository by. One service
-serves several repositories out of one ticket namespace, and a request that
-names none is not repo-neutral — the server picks: its founding repo on a
-write, *every* repo on a list read. So the key is required. An api binding
-without it dies before any verb runs rather than falling back to the server's
-pick or to the checkout's directory name; neither is this repo's identity on
-the board, and a wrong one is silent (a register run from a neighbouring
-checkout filed its ticket here, and a list from there printed this board's
-tickets as its own).
+The store is the single source of truth and the scripts reach it from any
+checkout; `doperpowers/issue-tracker/` in a consumer repo is only
+`board-map.sh`'s gitignored render cache.
 
-`$BOARD_REPO` overrides the file, and means a different thing per binding: on
-the **api** binding it is the board's repo key (a bare name); on the **gh**
-binding it is `owner/name`, the file's `repo` when it names one, else what
-`gh repo view` answers in the checkout. It is the value the Toolkit table below calls the target repo.
+The scripts keep the schema GitHub's API will not: one `status:*` label on
+an open issue, legal edges, required notes, the script-owned meta block, no
+dependency cycles. A raw `gh issue edit` of a label or a body bypasses
+them. `board-lint.sh` reports what results (`untracked`, no status label;
+`conflict`, two or more), and a `board-transition.sh` to any open state
+repairs it.
 
-Credentials never live in the repo. The client reads
-`~/.arkho-board/<main-checkout-dirname>.env` (the *main* checkout's directory
-name, so a worktree reads the same file), with two lines:
+## States
 
-```
-BOARD_AUTOMATION_TOKEN=…    # the dormant fleet: dispatch, claims, sweeps
-BOARD_HUMAN_TOKEN=…         # your human partner: register, transition, answer
-```
+    ready-for-implementer → in-progress → in-review → done
+    ready-for-architect → in-design → in-progress → in-review → done
 
-A session's writes go out as your human partner. (A dispatched worker spoke
-as its claimed run, resolved from its sminos seat record; with dispatch
-dormant there are no runs, and a verb that still finds one says so on
-stderr.)
+The vocabulary was cut for the dispatch lanes, and the scripts and the
+board service still enforce it. On the gh binding an open state is the
+label `status:<state>` on an open issue; `done` is a close as completed and
+`wontfix` a close as not planned, with no label.
 
-Every read narrows to the bound repo, and so does every write. The two **browse**
-verbs — `board-list.sh` and `board-search.sh` — take `--all-repos` to widen back
-to the whole service. A widened listing says so in its header line and carries
-the repo as a second column (`#<id> <repo> <state> <priority> <title>`): ticket
-numbers are repo-local, so `#12` from another board is a different ticket here,
-and every id-targeted verb takes a bare number.
+| state | meaning | note |
+|---|---|---|
+| `ready-for-architect` | backlog: needs design before it is built. On an epic, its recomposition is due | |
+| `in-design` | a session is designing it | |
+| `ready-for-implementer` | backlog: buildable from its body, or from the plan pinned to it. The default birth state (a legacy spelling live boards depend on) | |
+| `in-progress` | a session is building it | |
+| `in-review` | its PR is open | |
+| `needs-human` | parked for your human partner as themselves: a decision only they can make, or an input only they hold (credentials, auth, production data) | required: the questions, each with a recommended answer |
+| `needs-info` | parked on knowledge work anyone could do: the spec lacks depth, or research comes first | required: what is missing |
+| `interactive-preferred` | parked because the work's core needs live steering in a design session. Decisions that can be listed, however many, are `needs-human` | required |
+| `deferred` | tracked, not now | |
+| `done` | landed: by the merge, or by hand for work with no PR | |
+| `wontfix` | rejected | required |
 
-## Toolkit
+A park is for a ticket left waiting after the session moves on; a session
+that needs your human partner now asks them in the conversation. Design an
+agent can write is not a park: that ticket is `ready-for-architect`.
 
-Paths relative to this skill's `scripts/` directory. Ticket ids are issue
-numbers (`42` or `#42`). Target repo = `$BOARD_REPO` — `owner/name` on the gh
-binding (or the checkout's own repo), the board's repo key on the api binding
-(see API binding above).
+What `board-transition.sh` requires beyond a legal edge:
+
+- **Into `in-review`**: `--pr <url>`.
+- **The build edge, `in-design → in-progress`**: a note, `--branch`, and
+  the pin of what will be built: `--plan <path>@<sha>` (a spec pushed on
+  that branch, verified on the remote) or `--plan pre-spec` (the body is
+  the plan). The gh binding refuses the edge without all three, and
+  refuses it to an epic.
+- **Out of `in-design` otherwise**: `ready-for-implementer` takes a note,
+  and the pin when a design was written. No edge leads back to
+  `ready-for-architect`; `deferred` does.
+- **Back toward design**: `ready-for-implementer`, `in-progress` or
+  `in-review` `→ ready-for-architect`, and `in-review → in-progress`, each
+  take a note. On the gh binding a second traversal of the same one of
+  these edges on a ticket lands in `needs-human` instead; a comment opening
+  `[answers]` resets the count. The api board counts only a worker's
+  traversals.
+- **`in-progress → ready-for-implementer`** is the dependency yield alone:
+  it takes a note and is refused `not-blocked` unless an unfinished blocker
+  is already on record.
+- **Into either backlog state**: refused while the body is still the
+  registration skeleton.
+
+**Waiting on other tickets is an edge, not a state**
+(`board-edge.sh <n> --block <m>`): the board re-surfaces the ticket when
+its blockers land, which no park state does. On the api binding the
+service bounds the wait: a blocker unworked and silent past its threshold
+(48 hours by default), or a ring of blockers that cannot resolve, parks
+the waiting ticket `needs-human` with the chain in its note. On the gh
+binding nothing watches (that pass lived in the dormant sweep):
+`board-list.sh` tags the ticket `waiting:#<m>`, and `STUCK` once a blocker
+is `wontfix`.
+
+**Epics** (issues with sub-issues) are moved by bookkeeping, which posts
+`[board-epic]` comments. The first active child pulls its parent in-flight:
+`in-design` from `ready-for-architect`, `in-progress` from
+`ready-for-implementer` or `needs-info`. The other parks are never pulled.
+When the last child lands the epic is not closed: it returns to
+`ready-for-architect`, a return the escalation count ignores, and whoever
+takes it goes `in-design`, verifies the parent's own acceptance and closes
+it (doperpowers:decomposing): `done` for a non-code parent; for a
+code-bearing one, `board-comment.sh <n> --kind closure-package` and
+`in-review` with the package's URL as `--pr`.
+
+**Closing.** On the gh binding a PR body's `Closes #<n>` closes the ticket
+at the merge and leaves a stale label and unswept epics;
+`board-transition.sh <n> done` finalizes it (idempotent). A merged PR that
+did not close its ticket makes it a close candidate (`CLOSE?` in the list,
+a lint warning); nothing closes it automatically. On the api binding a
+ticket number names no GitHub issue, so the PR carries no `Closes` line:
+`in-review → done` needs a `review-trail` comment first, and the note
+carries the merge commit.
+
+## Categories
+
+`bug` | `enhancement` | `spike` | `env-issue`. A `spike` is exploration: its
+deliverable is a findings comment, not a merge. An `env-issue` is
+environmental friction someone hit and routed around (a tool missing from
+the image, a flaky registry, a broken fixture), filed so the report
+outlives the session that found it. It defaults to `needs-human`, since
+friction an agent could clear would usually be cleared already, and
+register refuses that default without a `--note` naming the intervention
+asked for. An explicit `--state` says an agent can repair it.
+
+## Commands
+
+In this skill's `scripts/`. A ticket id is its number (`42` or `#42`).
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | open the issue with labels + typed edges; category is `bug`\|`enhancement`\|`spike`\|`env-issue` (Categories above owns their semantics — an `env-issue` with no explicit `--state` is born `needs-human` and is REFUSED without `--note`); priority (`P0`…`P3`, P0 = drop everything) is REQUIRED and becomes the managed `priority:*` label; author the body at register time via `--body-file` (The ticket body below — a skeleton birth is refused for a backlog state and demoted to `needs-info` otherwise); prints `<number> <url>` |
-| `board-body.sh <n> --body-file F` | rewrite a ticket's statement of work (`F` may be `-` for stdin; an empty file clears it). The gh route splices the trailing `board:meta` block back byte-for-byte, which bare `gh issue edit` clobbers |
-| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL] [--plan PATH@SHA\|pre-spec]` | apply a state change; enforces legality + notes + the in-review PR gate; `--plan` rides only the pin-minting edges (out of `in-design`, the rebuild, the re-pin), and a real pin is verified on the remote before anything is written; runs the epic/unblock sweeps; repairs untracked/conflict issues. Re-run `<n> done` on a merge-auto-closed ticket to **finalize** (strip the stale label + run the sweeps; idempotent). A ticket still bound to a worker session is fenced to that session — overrule a stale binding with `BOARD_OWNER_OVERRIDE="<why>"` |
-| `board-comment.sh <n> <text>` / `<n> --kind K [--text T] [--json P]` | append a comment-family event. `K` is `comment`\|`parent-impact`\|`closure-package`\|`parent-impact-consumed`\|`review-trail` — the last records the review (reviewer, range, verdict), which the API board's evidence-gated `in-review → done` requires. gh renders a typed kind as a `[K] …` marker comment; put `--` ahead of comment text that starts with a dash |
-| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cut edges after birth (one op per call): add/cut a dependency, move under another epic, or leave one. Rejects self-edges, cycles, ancestor-epic blockers; runs the same epic sweeps as transition |
-| `board-relate.sh <a> <b> [--cut]` | symmetric relates annotation (board:meta) — rendered by board-map, no effect on eligibility |
-| `board-priority.sh <n> <P0..P3>` | re-prioritize: swap the `priority:*` label (repairs a double label); prints `#n: P2 → P0` |
-| `board-surface.sh <n> --add NAME \| --remove NAME` | add/remove a `surface:*` label (Surfaces, under Dormant machinery) |
-| `board-list.sh [--all-repos] [state]` | the backlog in priority order (P0 rows first, unprioritized last); `CLOSE?` tag = close candidate (Edge cases). API binding: rows in the server's own order (the header says so), and `--all-repos` widens past the bound repo |
-| `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search for the pre-registration dedup / prior-art check (The ticket body). API binding: the board's `?q=` websearch (unquoted terms AND, `or`, `-` negation, quoted phrases) across ALL states; `--states` narrows; `--bodies` prints the first ≤20 hits' bodies; a query that leads with `-` rides behind `--`. gh binding: `gh issue list --state all --limit 200 -R <repo> --search` (`--states` refused; gh search already matches bodies) |
-| `board-show.sh <n>` | one ticket in full: header row, the statement of work, then the timeline (gh binding: node JSON + issue URL) |
-| `board-answer.sh <n> <answers> --to <state>` | API binding only: answer a `needs-human` park and move the ticket to `<state>` in one call — a queue, another park or a close; the server refuses an in-flight `<state>` on a park no worker is bound to, so a ticket you are about to take goes to its queue first. The gh binding refuses `--to`; its answer is a comment and a transition (Park discriminant) |
-| `board-map.sh [--write\|--serve\|--stop]` | human telemetry. `--write` renders **`BOARD.html`** (interactive layered DAG with a kanban toggle) and **`BOARD.md`** into the gitignored render dir; `--serve` also serves it on 127.0.0.1 (per-repo port; `$BOARD_PORT` overrides) with hot reload; `--stop` kills the server. No argument prints the table |
-| `board-reconcile.sh` | read-only catch-up: parked tickets with their notes, orphaned in-flight tickets, the backlog, then a lint pass |
-| `board-lint.sh` | schema invariants over the live board: one status label per open issue, none on closed, notes where required, no dependency cycles, at most one priority label (missing priority is a WARN), retired labels named with their migration FIX; WARNs close candidates. `FAIL … FIX: …` lines, exit 1 |
-| `board-migrate-gh.sh [--board FILE] [--apply]` | one-shot v6→v7 migration of a legacy `board.json` into GitHub (dry-run by default) |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | opens a ticket with its labels and edges and prints `<number> <url>`. Priority `P0`…`P3` (P0 = drop everything) is required. Without `--body-file` the body is a skeleton: refused for an explicit backlog `--state`, born `needs-info` otherwise |
+| `board-body.sh <n> --body-file F` | rewrites the statement of work (`-` reads stdin; an empty file clears it), keeping the meta block that a bare `gh issue edit` clobbers |
+| `board-transition.sh <n> <state> [note] [--branch B] [--pr URL] [--plan PATH@SHA\|pre-spec]` | moves a ticket under the requirements in States, runs the epic bookkeeping, repairs an `untracked` or `conflict` issue; `<n> done` on an already closed ticket finalizes it |
+| `board-comment.sh <n> <text>` / `<n> --kind K [--text T] [--json P]` | appends a comment. Kinds: `comment`, `parent-impact`, `closure-package`, `parent-impact-consumed`, `review-trail` (reviewer, range, verdict). gh renders a kind as a `[K] …` marker comment; `--` goes ahead of text that starts with a dash |
+| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cuts one edge per call: a dependency, or the epic a ticket sits under. Rejects self-edges, cycles and ancestor-epic blockers |
+| `board-relate.sh <a> <b> [--cut]` | a symmetric "relates" annotation, drawn on the map; no effect on eligibility |
+| `board-priority.sh <n> <P0..P3>` | swaps the `priority:*` label |
+| `board-surface.sh <n> --add NAME \| --remove NAME` | adds or removes a `surface:*` label (What may surprise you) |
+| `board-list.sh [--all-repos] [state]` | the backlog in priority order (api: the server's order). Tags: `ELIGIBLE` (gh: no unfinished blocker holds the row; on api read `blocked_by` in `board-show.sh`), `waiting:#n`, `STUCK`, `CLOSE?` |
+| `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search across all states. api: websearch syntax (terms AND, `or`, `-` negation, quoted phrases); `--states` narrows, `--bodies` prints the first ≤20 hits' bodies, a query that leads with `-` goes behind `--`. gh: `gh issue list --search` over 200 issues, bodies included; `--states` is refused |
+| `board-show.sh <n>` | one ticket in full: header, statement of work, timeline |
+| `board-answer.sh <n> <answers> --to <state>` | api only: records your human partner's answers to a `needs-human` park and moves the ticket to a queue, another park or a close (an in-flight `<state>` is refused when no worker is bound). On gh an answer is a comment opening `[answers]`, then a transition |
+| `board-map.sh [--write\|--serve\|--stop]` | the board for your human partner to look at: `--write` renders `BOARD.html` and `BOARD.md` into the render cache, `--serve` also serves it on 127.0.0.1 with hot reload (`$BOARD_PORT`), no argument prints the table |
+| `board-reconcile.sh` | read-only catch-up: parked tickets with their notes, orphaned in-flight tickets, the backlog, a lint pass |
+| `board-lint.sh` | checks the schema over the live board; `FAIL … FIX: …` lines, exit 1 |
 
-## Taking a ticket
+A hosted, always-current map is a workflow in the consumer repo:
+`references/board-pages.yml` (GitHub Pages, which is public even for a
+private repo below Enterprise) or `references/board-cloudflare-pages.yml`
+(Cloudflare Pages behind Access). Each template's header carries its setup.
 
-Your human partner names tickets ("#92 진행", "do 81 and 83"), and a
-ticket that is ready to build needs nobody's go-ahead: take one on your
-own initiative when your own work is done or it is the next valuable step.
-`board-list.sh ready-for-implementer` lists them in priority order (on the
-gh binding an `ELIGIBLE` tag says no unfinished blocker holds the row; on
-the api binding read `blocked_by` in `board-show.sh`). A
-`ready-for-architect` ticket is different: its design runs through
-doperpowers:brainstorming with your human partner, so bring it to them
-rather than design it alone. For each ticket you take:
+## What may surprise you
 
-1. `board-show.sh <n>` — the body is the statement of work; the comments
-   carry what was learned since.
-2. Move it as the work moves; the first move is your claim, so make it
-   before the work starts. A `ready-for-implementer` ticket goes
-   straight to `in-progress --branch <branch>`. A `ready-for-architect`
-   ticket goes `in-design` while you design it, then crosses the build
-   edge with a note, its pin and its branch:
-   `board-transition.sh <n> in-progress "<note>" --plan <path>@<sha>|pre-spec --branch <branch>`.
-   `in-review --pr <url>` when the PR opens.
+- **The first move is the claim, and on the gh binding it is visible, not
+  exclusive.** That move is `in-progress --branch <branch>`, or `in-design`
+  for a design. A ticket already taken refuses it:
+  `#<n> is already in-progress` on gh,
+  `refused: illegal-transition — in-progress → in-progress` on api. The api
+  service checks and writes under the ticket's row lock, so of two claims
+  the second is refused. The gh script reads the ticket, then rewrites its
+  labels and branch with nothing to arbitrate: two claims seconds apart can
+  both succeed, and the later branch stands. `board-show.sh <n>` after the
+  claim shows whose branch the ticket records.
+- **A surface can refuse the build edge** (gh). A repo may declare
+  contested code seams in `.doperpowers/surfaces.md`; tickets get
+  `surface:<name>` labels at registration and on entry to a backlog state,
+  by matching identifiers, and lint fails a label the file does not
+  declare. While another open leaf with the same label is `in-design`,
+  `in-progress` or `in-review`, the edge is refused:
+  `surface <name> is occupied by #<m> — hand off instead: ready-for-implementer with the same --plan`.
+  The queue that handoff feeds is dormant, so it only shelves the build.
+  `SURFACE_OVERRIDE=1` takes the edge and names the occupant on stderr.
+- **The meta block is script-owned and invisible.** A trailing
+  `<!-- board:meta … -->` comment in the issue body holds spawned-by,
+  relates-to, branch, pr, plan and the current note; the trail of notes is
+  the `[board]` comments. It does not render on the issue page, so a note
+  is a one-line status and never the spec's home.
+- **Label automation that speaks `status:*`** (assign →
+  `status:in-progress`) is a legitimate writer: same store, same
+  vocabulary.
 
-   A claim another session made first is refused as already in flight:
-   `#<n> is already in-progress` on the gh binding,
-   `refused: illegal-transition — in-progress → in-progress` on the api
-   binding (`in-design` for a design claim). Any other failure (auth,
-   network, the server, an argument the script rejects) is an ordinary
-   error to diagnose or report. On the api binding the claim is
-   exclusive: the board service checks the state and writes it in one
-   transaction under the ticket's row lock, so of two claims the second
-   is refused. On the gh binding it is visible, not exclusive: the script
-   reads the ticket, then rewrites its labels and branch with nothing to
-   arbitrate, so two claims seconds apart can both succeed and the later
-   branch stands. There, re-read the ticket (`board-show.sh <n>`) before
-   you build on it, and leave it if the branch it records is not yours.
-3. Run the work as you would without a ticket. The ticket changes nothing
-   about how it is designed, built or reviewed.
-4. Close it. On the gh binding the PR body's `Closes #<n>` closes it at the
-   merge; then `board-transition.sh <n> done` finalizes. On the api binding
-   a ticket number names no GitHub issue, so the PR carries no
-   `Closes`/`Fixes` line: post the review as a `review-trail` comment, then
-   `done` with the merge commit in the note.
-5. What the work left behind goes on the board before you report it done
-   (Scope-outs become tickets).
+## Conventions
 
-The build edge is a leaf's; the gh binding refuses an epic ("epics
-recompose, they never build"). An epic's work is its children, each taken
-as its own ticket. When the last one lands the epic returns to
-`ready-for-architect`, and whoever takes it then goes `in-design`,
-verifies the parent's own acceptance, and closes it: `done` directly for a
-non-code parent; for a code-bearing one, a closure package
-(`board-comment.sh <n> --kind closure-package`) and `in-review` with it as
-`--pr` (Epics above, doperpowers:decomposing).
-
-On the gh binding the build edge still checks surfaces (Dormant
-machinery). When the ticket carries a `surface:*` label, the repo has a
-`.doperpowers/surfaces.md`, and another open leaf with that label is
-`in-design`, `in-progress` or `in-review`, the edge is refused:
-`surface <name> is occupied by #<m> — hand off instead: ready-for-implementer with the same --plan`.
-The queue that handoff feeds is dormant, so it only shelves the build.
-Read the occupant: if nobody is working it, or your human partner accepts
-the overlap, `SURFACE_OVERRIDE=1 board-transition.sh …` takes the edge
-and names the occupant on stderr.
-
-A ticket set down unfinished goes to a park when it waits on your human
-partner; otherwise it takes one of its state's exits, with a note on where
-it stands:
-
-- from `in-design`: `deferred`, or `ready-for-implementer` (note
-  required, and the pin if a design was written) when only the build is
-  left. `ready-for-architect` is not an exit from `in-design`; `deferred`
-  is, and leads back to it.
-- from `in-progress`: `deferred`, or `ready-for-architect` (note
-  required) when its design is what changed. `ready-for-implementer` is
-  only the dependency yield (State vocabulary).
-
-A `deferred` ticket taken up again re-enters through its queue state,
-`ready-for-architect` or `ready-for-implementer`.
-
-## The ticket body (pre-spec)
-
-Before registering, run the pre-registration search — and search by
-SEAM: the identifiers your ticket touches (file paths, function/RPC
-names, table names). Title-keyword search may not be enough — different
-authors word the same work differently. Query each seam identifier with
-`board-search.sh "<function-or-file-name>"`. Where a title is not enough
-to judge a hit, `--bodies` prints the first ≤20 hits' statements of work.
-Then triage the hits:
-
-- **Same defect or scope** → comment your evidence on the existing
-  ticket instead of registering a duplicate.
-- **Same seam, different defect** → register, and in the same breath
-  `board-relate.sh` your new ticket to every open ticket on that seam.
-- **Cluster tripwire**: if your registration would put a THIRD
-  non-terminal ticket onto the same function or contract body, that
-  seam has outgrown patch-wise work — separate rewrites of one body
-  revert each other silently (different files, zero git conflicts).
-  Parked tickets count; only `deferred` and closed tickets are out of
-  the race. Register your finding, then raise consolidation: a ticket
-  born `ready-for-architect` that names every member and owns the
-  unified contract, with the members related. Each member is then
-  re-cut as a slice of the unified contract or closed with a reason.
-
-Whoever registers a ticket authors its body AT REGISTER TIME — write the
-sections to a temp file and pass `--body-file` in the same step. The
-registrar is the person who knows the most about the work at that moment;
-"register now, fill in later" loses exactly that context (and register
-refuses or demotes a skeleton anyway). Sections: Problem & intent /
-Constraints / Success criteria / Open questions / Decision log — plus, on
-a decomposed parent, Roadmap (the one sanctioned form of "ticket that
-doesn't exist yet"). Write it for a reader with no context: the session
-that takes it may be weeks away. A terminal outcome comment updates the
-record at close. The trailing `<!-- board:meta … -->` block is
-script-owned (spawned-by / relates-to / branch / pr / note) — edit around
-it, never inside it. The meta block is an HTML comment, INVISIBLE on the
-rendered issue page — `--note` is a one-line status summary, never the
-spec's home.
-
-## Scope-outs become tickets (deferral rule)
-
-Work deliberately deferred out of scope — during a grill, a brainstorm, a
-decomposition, a review, or a PR's residue — is registered on the board THE
-MOMENT the deferral is decided, by whoever decided it, with its lineage as
-edges:
-
-- `--parent <epic>` — decomposition children (they ARE the parent's content,
-  sliced) and work that belongs to an existing epic
-- `--spawned-by <origin>` — scope-outs and follow-ups discovered during work
-- `--blocked-by <numbers>` — what must land first
-
-Deferral without a ticket is silent scope loss: the decision exists only in
-the design conversation and dies with the session. The ticket's Decision log
-records *why* it was cut, so nobody re-litigates it later.
-
-A PR that addresses its ticket but leaves work behind still closes the
-ticket (done means the PR landed, not that every idea it surfaced died).
-The residue is registered (`--spawned-by <n>`) before the work is reported
-done — a follow-up not registered does not exist. A few-line residual
-inside the PR's own diff is in-scope polish the PR absorbs, not residue.
-
-## Remote board (hosted)
-
-`board-map.sh --serve` renders locally on demand. For an always-current hosted
-view, a workflow re-renders BOARD.html on every issue event (plus a cron safety
-net — sub-issue/dependency edits fire no webhook) and deploys it. Hosted pages
-hot-reload the same way served local tabs do. Two templates, pick by repo
-visibility:
-
-- **Public repo → GitHub Pages.** Copy `references/board-pages.yml` into
-  `.github/workflows/` and set Pages → Source to "GitHub Actions". Note: a
-  Pages site is *public* even for a private repo on non-Enterprise plans —
-  and on Free/most org plans, private-repo Pages is unavailable entirely.
-- **Private repo → Cloudflare Pages + Access.** Copy
-  `references/board-cloudflare-pages.yml`: a private, team-authenticated URL.
-  Read the template header: set up Access *before* the first deploy, or there
-  is a window where issue titles are public.
-
-## Edge cases
-
-- A merged PR auto-closed its ticket (`Closes #N`) → the board already reads
-  it `done`; the stale status label and unswept epics are what's left. Run
-  `board-transition.sh <n> done` to finalize — reconcile's lint pass names
-  these tickets.
-- A merged PR did NOT close its ticket → the ticket is a **close
-  candidate**: lint WARNs it, `board-list.sh` tags it `CLOSE?`, and the
-  kanban view pulls it into a close-candidate column. Verify it landed and
-  close it (`done`, or `wontfix "superseded by PR"`), or re-scope it; it is
-  never auto-closed.
-- A wontfix blocker makes a dependent `STUCK` — re-cut the edge
-  (`board-edge.sh <n> --unblock <blocker>`) or wontfix the dependent; that is
-  a human call.
-- An issue labeled by hand (or by external automation) lands `untracked` /
-  `conflict` → lint names it; `board-transition.sh` repairs it. A legacy
-  `status:blocked` label is a special case of conflict — lint's FIX line
-  carries the `needs-human` migration.
-- Consumer label automation that already speaks `status:*` (e.g. assign →
-  `status:in-progress`) is a legitimate board writer — same store, same
-  vocabulary, no sync.
+- **Who takes what.** A `ready-for-implementer` ticket needs nobody's
+  go-ahead. A `ready-for-architect` ticket's design is presented to your
+  human partner before it is built, as any design is, so it is brought to
+  them and not designed alone. Priorities and `wontfix` are your human
+  partner's calls.
+- **Deferred work has two homes, told apart by what the residue is.** Work
+  that should be done later (a scope-out, a follow-up a review or a PR left
+  behind) goes on the board with its lineage as edges: `--parent` for work
+  that belongs to an epic, `--spawned-by` for what another ticket's work
+  turned up, `--blocked-by` for what must land first. Its Decision log says
+  why it was cut. A flaw accepted as it is ("ship with it") is not future
+  work and goes to the repository's tech-debt tracker
+  (`tech-debt-tracker.md` or its tech-debt issue) as one line with the
+  reason. Both exist because a decision held only in a conversation is lost
+  when the session ends. A PR that leaves residue still closes its ticket:
+  `done` means the PR landed.
+- **Search by seam before registering**: the file, function, RPC or table
+  names the work touches. Authors word the same work differently, so a
+  title search misses it. A hit on the same defect gets your evidence as a
+  comment instead of a duplicate ticket; a hit on the same seam gets
+  related (`board-relate.sh`). Tickets that each rewrite one function or
+  contract body revert each other silently (different files, no git
+  conflict), so a pile-up on one body wants a consolidating
+  `ready-for-architect` ticket that owns the unified contract and names its
+  members.
+- **The body (the pre-spec) is written at registration**, when the
+  registrar knows the most about the work, for a reader with no context who
+  may come weeks later. Sections: Problem & intent / Constraints / Success
+  criteria / Open questions / Decision log, plus Roadmap on a decomposed
+  parent.
 
 ## Dormant machinery
 
-Kept in place and tested, armed nowhere. Read it to understand old tickets
-and comments, or as input to a redesign — if board-driven spawning returns,
-it will most likely run the attended workflow above on a trigger rather
-than wake this doctrine as written (the ruling).
-
-- **Dispatch.** `scripts/execute-dispatch.sh` (the Architect/Executor/spike
-  dispatcher), `scripts/review-dispatch.sh` (review seats for PRs),
-  `scripts/board-sweep.sh` with `_sweep_api.sh` (the unattended tick:
-  recovery, cancel, dispatch, land, relay), `scripts/board-bind.sh` (binds
-  a worker session to its ticket), and `board-answer.sh <n> <answers>`
-  without `--to` (relays answers to a bound worker and resumes it).
-  Operator manuals: `references/execution-loop.md`,
-  `references/sweep-setup.md`, `references/runner-setup.md`; event
-  triggers: `references/issue-dispatch.yml`,
-  `references/pr-review-dispatch.yml`.
-- **Worker doctrine.** `references/worker-bootstrap.md`,
-  `architect-worker-protocol.md`, `implement-worker-protocol.md`,
-  `implement-decompose.md`, `spike-worker-protocol.md`, `ticket-gate.md`.
-- **The seats' review loop.** `references/review-loop.md`,
-  `review-standin-protocol.md`, `review-standin-bootstrap.md`,
-  `wave-board.md`. The loop's agent itself is archived at
-  `archive/qa-loop/` and no longer registers, so the protocols here that
-  dispatch `doperpowers:qa-loop` name an agent that does not exist.
-- **Surfaces.** A consumer repo can declare contested code seams in
-  `.doperpowers/surfaces.md` (read from the default branch); the board
-  carries them as the closed `surface:<name>` label vocabulary (lint FAILs
-  a label with no entry). Labels still arrive at registration and on entry
-  to a backlog state, and on the gh binding the build edge's occupancy
-  check is live (Taking a ticket). The rest ran in the dormant machinery:
-  at most one implement worker per surface, and the sweep registering a
-  consolidation ticket when three pile onto one. The cluster tripwire
-  under The ticket body is the manual form that still applies.
+The dispatch pipeline is kept in this skill, tested and armed nowhere:
+`scripts/execute-dispatch.sh`, `scripts/review-dispatch.sh`,
+`scripts/board-sweep.sh`, `scripts/board-bind.sh`, `board-answer.sh`
+without `--to`, and every file under `references/` except the two hosted
+map templates. None of it describes how work runs today; the ruling lists
+each file. It explains an old ticket or comment, and is input to a
+redesign.
