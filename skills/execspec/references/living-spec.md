@@ -1,8 +1,8 @@
 # Living Specs
 
 The design spec doperpowers:execspec writes
-(`docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`), from the design
-doperpowers:brainstorming closed and your human partner approved, is not a
+(`docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`), from a design
+your human partner approved, is not a
 snapshot of an approval — it is the one document an initiative has, for the
 whole life of its feature: the design with its reasoning, the acceptance,
 the execution, and where the work stands. At every moment it states the
@@ -213,35 +213,27 @@ test named by the behavior it asserts is complete, and so is an
 implementation described by its contract. Pointing at a decision the spec
 makes elsewhere is not a placeholder — it is the rule.
 
-**When it is written.** After the design is approved, never before: with
-the rest of the spec, once the presentation is approved. Writing it is the first hostile read of the design — a design
-statement the milestones prove wrong is fixed in the design.
-
-**While the spec is being executed**, PLANS.md's implementing rule binds,
-with brainstorming's gate as the one stop: a fork under it that the spec
-does not cover goes to your human partner; everything else is decided, and
-written into the spec where a later reader needs it.
+**While the spec is being executed**, PLANS.md's implementing rule binds:
 
 > When implementing an executable specification (ExecPlan), do not prompt the user for "next steps"; simply proceed to the next milestone. Keep all sections up to date, add or split entries in the list at every stopping point to affirmatively state the progress made and next steps. Resolve ambiguities autonomously, and commit frequently.
 
 A gap or a contradiction the spec did not foresee is expected, not a
 failure of the spec: the executor resolves it in the spirit of the stated
 intent and the reasons behind the nearby decisions, and continues; what it
-chose reaches the spec through its one writer. It goes back to the spec's author only for a fork
-under the gate — a product, taste, or substantive design decision the spec
-does not cover — or when following the spec would defeat its own purpose.
+chose reaches the spec through its one writer. Two things stop the work
+and go back to the spec's author, and from there to your human partner
+when only they can answer: a product, taste, or substantive design
+decision the spec does not cover, and a spec whose letter would defeat
+its own purpose.
 
-A spec with one milestone is worked directly by its executor, who is its
-writer as it goes. Several run through
-doperpowers:subagent-driven-execution — a fresh executor per milestone, a
-review at each dependency frontier — under a `doperpowers:plan-executor`
-subagent (doperpowers:execspec step 4). On that path the controller is the
-spec's one writer: executors report what they decided and found, and the
-controller writes what a later reader needs into the section it belongs
-to ("Keeping the spec current"), ticks Progress when a milestone's review
-is clean, and commits, so each later executor reads it in the spec; the SDE
-ledger is gitignored, so the committed spec is what a recovery reader
-sees.
+A spec has one writer while it runs. With one milestone that is its
+executor. With several (doperpowers:subagent-driven-execution under a
+`doperpowers:plan-executor` subagent) it is the controller: executors
+report what they decided and found, and the controller writes what a
+later reader needs into the section it belongs to ("Keeping the spec
+current"), ticks Progress when a milestone's review is clean, and commits.
+The SDE ledger is gitignored, so the committed spec is what each later
+executor and a recovering session read.
 
 **A child of a composite spec** cannot extend the composite — siblings on
 parallel branches share it — so its execution section is a standalone file
@@ -318,8 +310,8 @@ diff — your human partner's approval and any condition on it, a review
 completed. A change of course shows here as the work it adds or reopens.
 How a unit went is the commit log's.
 
-**`## Outcomes & Retrospective`** — until finish, exactly the line "Pending —
-written at finish." At finish (after the whole-branch review), summarize
+**`## Outcomes & Retrospective`** — until finish, one line saying it is
+pending. At finish (after the whole-branch review), summarize
 what was achieved against the spec's original purpose, what remains, and
 lessons learned.
 
@@ -359,6 +351,9 @@ before re-proposing one.
 Untemplated on purpose: across this repo's existing specs no heading
 structure repeats, and that variance is a feature — form fits problem
 (state tables for state machines, JSON for schemas, prose for concepts).
-Required: the purpose-first opening, Progress right after it, an acceptance
-section phrased as observable behavior, the execution section, and
-Outcomes & Retrospective.
+Five parts every spec has, because something reads each: the purpose-first
+opening; Progress right after it, where the plan-executor, the execution
+loop and a recovering session find where the work stands (a composite
+spec's Tracking Map is its Progress); an acceptance section phrased as
+observable behavior, which the last milestone executes as written; the
+execution section; and Outcomes & Retrospective, which the finish writes.
