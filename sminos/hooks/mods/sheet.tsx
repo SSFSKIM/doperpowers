@@ -2179,10 +2179,11 @@ export function registerSheet(on: On) {
 
 /**
  * Whether a prompt is MAWS's ring (MAWS's C5, F33): three tests together, the
- * runner, the origin and the whole text. MAWS writes its frame as the
- * composer's, and never writes a person's message of exactly those words
- * (it appends a line break); any other origin, a terminal session, or text
- * that differs by one character is a prompt like any other.
+ * runner, the origin and the whole text, compared exactly with the marked
+ * sentence and nothing normalised. A person types no mark, so a person's
+ * message of the same words, in any form the engine hands it on, is a
+ * prompt like any other; so is any other origin, a terminal session, or
+ * text that differs by one character.
  */
 function isRing(e: { text: string; origin: { kind: string } }): boolean {
   return sheet.runner === 'maws' && isSheetChosen() && e.origin.kind === 'composer' && e.text === RING

@@ -1128,8 +1128,12 @@ export function endedNotice(agent: { agentId: string; name: string }, questions:
   return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
 }
 
-/** MAWS's constant frame (MAWS's C5, F33; the composite's §5.4): its `SHEET_RING` is the same bytes. */
-export const RING = 'The human answered questions on your sheet.'
+/**
+ * MAWS's constant frame (MAWS's C5, F33; the composite's §5.4): the sentence and its mark, one U+2060 WORD JOINER,
+ * which no trimming removes and no person types. Its `SHEET_RING` is the same bytes. The engine joins and trims a
+ * message's text blocks before the hook reads them, so the mark is on the ring, never on a person's message.
+ */
+export const RING = 'The human answered questions on your sheet.\u2060'
 /** The reason a ring is dropped with: MAWS's `SHEET_RING_DROP` is the same bytes, and it reads the drop by it (F39). */
 export const RING_DROP = 'nothing is ready on the sheet'
 

@@ -393,13 +393,17 @@ It submits no prompt of its own (a plugin's prompt carries no context of
 its own, and a Stop in MAWS does not withdraw it). When the session is idle
 and an answer is owed, MAWS writes its ring instead: a prompt of the
 composer's whose whole text is `The human answered questions on your
-sheet.` (`RING`). The prompt hook fills a ring with the ready envelope when
+sheet.` and one U+2060 WORD JOINER, its mark (`RING`, compared exactly and
+nothing normalised: the engine trims a message's text blocks, so the mark
+is on the ring and a person, who types none, is never taken for one). The
+prompt hook fills a ring with the ready envelope when
 that envelope's own block names an answer (`ringHasAnswer`), and otherwise
 drops it with `nothing is ready on the sheet` (`RING_DROP`, which MAWS reads)
 before taking anything or ordering a step, so a notice or a context that waits still waits; it
 awaits nothing first, the engine giving a prompt's hooks ten seconds in all.
-The same words under another origin, in a terminal session, or with one
-character more are a prompt like any other. The step packs that
+The plain sentence, without the mark, in any form and beside any block, the
+marked one under another origin or in a terminal session, and any text one
+character off are a prompt like any other. The step packs that
 conversation's envelope with the batches that hold an answer first (in a
 cut batch its answers first), so a ring finds an answer while one is
 pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,

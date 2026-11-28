@@ -1619,14 +1619,19 @@ subagents, and submits no prompt of its own: a plugin's prompt carries no
 context, and MAWS's Stop does not withdraw it. For a turn, MAWS writes its
 ring when the session is idle and an answer is owed: a prompt of origin
 `composer` whose whole text is `The human answered questions on your
-sheet.` (`RING`). The prompt hook, before taking anything, awaiting
+sheet.` and its mark, one U+2060 WORD JOINER (`RING`, written as an escape,
+compared by exact equality with nothing normalised: the engine joins and
+trims a message's text blocks before the hook reads them, so a person's
+message of those words is told from the ring by the mark it lacks). The
+prompt hook, before taking anything, awaiting
 nothing and ordering no step, fills a ring when the block of the envelope ready for the main
 conversation names an answer (one owed across a stop included), and
 otherwise drops it, `{ drop: 'nothing is ready on the sheet' }`
 (`RING_DROP`): nothing ready, the envelope on another route, dismissals
 alone, or the session's start not yet answered. A dropped ring takes no
-notice and no context. A prompt of those words under any other origin, in
-a terminal session, or with one character more enters as any prompt does.
+notice and no context. The plain sentence, unmarked, in any form and
+beside any block, the marked one under any other origin or in a terminal
+session, and any text one character off enter as any prompt does.
 Each ring's fate is a debug line.
 
 **A stopped turn** (MAWS's C5, F34, both runners). When a main turn ends

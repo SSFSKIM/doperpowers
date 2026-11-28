@@ -1484,14 +1484,23 @@ describe("MAWS's ring in a MAWS-run session (MAWS's C5, F33)", () => {
     }
   })
 
-  test("the plain sentence, without the ring's mark, from the composer: with an answer ready it enters carrying the envelope; with nothing ready it enters as any prompt, never dropped", async () => {
+  test("C1: the plain sentence in each form P9's engine gave the hook (as is, after a line break, before one, and joined and trimmed beside an image), nothing ready on the sheet, enters as any prompt and is not dropped", async () => {
+    // Beside an image the engine joins the message's text blocks and trims them: the hook reads the sentence as is.
+    for (const text of [PLAIN, `\n${PLAIN}`, `${PLAIN}\n`]) {
+      const h = await started(record(), { env: MAWS })
+      expect(await h.prompt(text)).toEqual({ text, context: undefined, origin: { kind: 'composer' } })
+      expect(h.logs().filter((line) => line.startsWith('sheet: a ring '))).toEqual([])
+    }
+  })
+
+  test('C3: an engine that strips the mark gives the plain sentence, which is no ring: it enters with the envelope when an answer is ready, and bare when none is', async () => {
     const rec = record()
     const h = await started(rec, { env: MAWS })
     await answered(h, rec, out('k1', 'q1'))
     expect(await h.prompt(PLAIN)).toEqual({ text: PLAIN, context: [envelopeOf([out('k1', 'q1')], 'main')], origin: { kind: 'composer' } })
     const empty = await started(record(), { env: MAWS })
     expect(await empty.prompt(PLAIN)).toEqual({ text: PLAIN, context: undefined, origin: { kind: 'composer' } })
-    expect(empty.logs().filter((line) => line.startsWith('sheet: a ring '))).toEqual([])
+    expect([...h.logs(), ...empty.logs()].filter((line) => line.startsWith('sheet: a ring '))).toEqual([])
   })
 
   test('a tool result carries the envelope while a turn runs, and a ring folded into that turn afterwards is dropped', async () => {
