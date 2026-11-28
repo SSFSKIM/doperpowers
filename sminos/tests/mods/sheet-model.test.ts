@@ -5,7 +5,10 @@ import {
   DESCRIPTION,
   FIELD_DESCRIPTIONS,
   INPUT_SCHEMA,
+  MAWS_FORM,
   NOT_KNOWN,
+  RING,
+  RING_DROP,
   SHEET_TOOL,
   WITHDRAWN,
   announcement,
@@ -34,16 +37,15 @@ import {
   parseResult,
   questionSentence,
   readInput,
+  ringHasAnswer,
   rowLines,
   searchedKeys,
   settingOf,
-  shownOutcomes,
-  steerContext,
   surfaceOf,
   unreadClause,
   validateCall,
 } from '../../hooks/mods/sheet-model'
-import type { ChoiceEnv, ChoiceReads, Probe, ShownOutcome, View } from '../../hooks/mods/sheet-model'
+import type { ChoiceEnv, ChoiceReads, Probe, View } from '../../hooks/mods/sheet-model'
 
 tier('user')
 
@@ -405,15 +407,23 @@ describe("the start choice: I8's table, row by row", () => {
     expect(await chooseStart(reads({ env: { SMNS_INTERNAL: '1', SMINOS_QUESTION_SHEET: '1' }, probed: ALIVE }).r)).toMatchObject({ choice: 'none' })
   })
 
-  test("MAWS's proof: the variable equal to the session's id is the sheet, run by MAWS; another id is no proof, said in the debug log", async () => {
-    expect(await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: 'S1', MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false }).r)).toEqual({
+  test("MAWS's proof: the form and the session's id, `2:<id>`, is the sheet, run by MAWS; any other value is no proof, said in the debug log", async () => {
+    expect(MAWS_FORM).toBe(2)
+    expect(await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: '2:S1', MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false }).r)).toEqual({
       choice: 'sheet',
       runner: 'maws',
-      why: 'MAWS_QUESTION_SHEET names this session',
+      why: 'MAWS_QUESTION_SHEET names this session in form 2',
     })
-    const nested = await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: 'S0' }, isInteractive: false }).r)
-    expect(nested).toMatchObject({ choice: 'none', why: 'not interactive' })
-    expect(nested.log).toEqual(['sheet: MAWS_QUESTION_SHEET is set and names another session (S0, not S1): not taken as MAWS\'s proof'])
+    const passed = async (value: string) => {
+      const chosen = await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: value }, isInteractive: false }).r)
+      expect(chosen).toMatchObject({ choice: 'none', why: 'not interactive' })
+      return chosen.log
+    }
+    // The published plugin's form, the bare id: a MAWS that rings is not one it delivers for.
+    expect(await passed('S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names no form (S1): not taken as MAWS's proof"])
+    expect(await passed('1:S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names the form 1, not 2 (1:S1): not taken as MAWS's proof"])
+    expect(await passed('3:S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names the form 3, not 2 (3:S1): not taken as MAWS's proof"])
+    expect(await passed('2:S0')).toEqual(["sheet: MAWS_QUESTION_SHEET names another session (S0, not S1): not taken as MAWS's proof"])
   })
 
   test("MAWS serves its own ask: none; a headless process: none, also with a sheet that has questions (U9)", async () => {
@@ -752,115 +762,22 @@ describe("the terminal's drawing (M5, §8.3)", () => {
   })
 })
 
-describe("a steer's context: what a subagent asked, for the message that answers it (MAWS's C5, F9)", () => {
-  const REVIEWER = { agentId: 'a1b2c3', name: 'reviewer' }
-  /** A pending outcome as `sminos sheet show --json --keys` prints it. */
-  const shown = (id: string, over: { kind?: 'answer' | 'dismiss'; revision?: number; asker?: ShownOutcome['question']['asker']; header?: string; question?: string; options?: string[] } = {}): ShownOutcome => ({
-    key: `key-${id}-0001`,
-    kind: over.kind ?? 'answer',
-    id,
-    revision: over.revision ?? 1,
-    question: {
-      asker: over.asker ?? REVIEWER,
-      ...(over.header !== undefined && { header: over.header }),
-      question: over.question ?? 'Ship the migration today?',
-      options: over.options ?? ['Yes', 'No'],
-    },
-  })
-  const HEAD_LINE = '[sheet v1] This message answers questions a subagent put on your sheet. What each asked:'
+describe("a ring: MAWS's constant frame, and what fills it (MAWS's C5, F33)", () => {
+  const block = (answered: string[], dismissed: string[]) =>
+    `<sheet-delivery>${JSON.stringify({ v: 1, keys: [...answered, ...dismissed].map((id) => `key-${id}-0001`), answered: answered.map((id) => ({ id, revision: 1, picks: [1], text: '', images: [] })), dismissed })}</sheet-delivery>`
+  const ready = (text: string) => ({ recipient: 'main' as const, keys: ['key-q1-0001'], text, wakes: false, more: false })
 
-  test('one answered question of a subagent: its id, revision, asker, header and question as JSON strings, its labels by place', async () => {
-    expect(steerContext([shown('q12', { header: 'Migration' })])).toBe(
-      [HEAD_LINE, 'q12 (revision 1), asked by the subagent reviewer (a1b2c3) "Migration" — "Ship the migration today?" Options: 1. Yes; 2. No.'].join('\n'),
-    )
+  test("the sentence and the drop's reason are MAWS's bytes (its SHEET_RING and SHEET_RING_DROP)", async () => {
+    expect(RING).toBe('The human answered questions on your sheet.')
+    expect(RING_DROP).toBe('nothing is ready on the sheet')
   })
 
-  test("several, by the id's number; a question with no options is answered in text; the main conversation's and a dismissal get no line", async () => {
-    const pending = [
-      shown('q14', { revision: 2, question: 'Which region first?', options: [] }),
-      shown('q3', { asker: 'main', question: 'Mine?' }),
-      shown('q12', { header: 'Migration' }),
-      shown('q9', { kind: 'dismiss' }),
-      shown('q10', { asker: { agentId: 'b7', name: 'explorer' }, question: 'Say "when"?', options: ['Now', 'Later', 'Never'] }),
-    ]
-    expect(steerContext(pending)).toBe(
-      [
-        HEAD_LINE,
-        'q10 (revision 1), asked by the subagent explorer (b7) — "Say \\"when\\"?" Options: 1. Now; 2. Later; 3. Never.',
-        'q12 (revision 1), asked by the subagent reviewer (a1b2c3) "Migration" — "Ship the migration today?" Options: 1. Yes; 2. No.',
-        'q14 (revision 2), asked by the subagent reviewer (a1b2c3) — "Which region first?" No options: answered in text.',
-      ].join('\n'),
-    )
-  })
-
-  test("nothing when no answered outcome is a subagent's question", async () => {
-    expect(steerContext([])).toBeUndefined()
-    expect(steerContext([shown('q1', { asker: 'main' }), shown('q2', { kind: 'dismiss' })])).toBeUndefined()
-  })
-
-  test('past the budget, each question is cut at 300 characters and each label at 80; past it even so, the list stops with how many more', async () => {
-    const long = (n: number, c: string) => c.repeat(n)
-    // Twenty lines of about 2,100 units fit whole (about 42,000).
-    const fits = Array.from({ length: 20 }, (_, i) => shown(`q${i + 1}`, { question: long(1500, 'a'), options: [long(200, 'b'), long(200, 'c'), long(200, 'd')] }))
-    expect(steerContext(fits)).toContain(long(1500, 'a'))
-    // Forty of them do not (about 84,000): each is cut, and forty cut lines fit (about 17,000).
-    const cut = Array.from({ length: 40 }, (_, i) => shown(`q${i + 1}`, { question: long(1500, 'a'), options: [long(200, 'b'), long(200, 'c')] }))
-    const text = steerContext(cut) as string
-    const lines = text.split('\n')
-    expect(lines).toHaveLength(41)
-    expect(lines[1]).toBe(`q1 (revision 1), asked by the subagent reviewer (a1b2c3) — "${long(300, 'a')}…" Options: 1. ${long(80, 'b')}…; 2. ${long(80, 'c')}….`)
-    expect(text.length).toBeLessThanOrEqual(60_000)
-    // A thousand cut lines do not fit: as many as fit, then how many more, the whole within the budget.
-    const many = Array.from({ length: 1000 }, (_, i) => shown(`q${i + 1}`, { question: long(1500, 'a'), options: [long(200, 'b'), long(200, 'c')] }))
-    const stopped = (steerContext(many) as string).split('\n')
-    const shownCount = stopped.length - 2
-    expect(stopped[0]).toBe(HEAD_LINE)
-    expect(stopped.at(-1)).toBe(`and ${1000 - shownCount} more.`)
-    expect(stopped.slice(1, -1).every((line, i) => line.startsWith(`q${i + 1} (revision 1)`))).toBe(true)
-    expect(stopped.join('\n').length).toBeLessThanOrEqual(60_000)
-    // One more line would not have fitted.
-    expect(stopped.join('\n').length + stopped[1]!.length + 1).toBeGreaterThan(60_000)
-  })
-
-  test("a subagent's name past 200 characters is cut as the start's context cuts it", async () => {
-    const name = 'n'.repeat(201)
-    expect(steerContext([shown('q1', { asker: { agentId: 'a1', name } })])).toContain(`asked by the subagent ${'n'.repeat(200)}… (a1)`)
-  })
-})
-
-describe("`sminos sheet show --json --keys` read for a steer's context", () => {
-  const outcome = {
-    key: 'key-q12-0001',
-    kind: 'answer',
-    id: 'q12',
-    revision: 1,
-    by: 'maws',
-    at: '2026-11-27T10:00:00.000Z',
-    acceptedAt: '2026-11-27T10:00:01.000Z',
-    recipient: 'main',
-    taken: false,
-    acrossStop: false,
-    question: { asker: { agentId: 'a1b2c3', name: 'reviewer' }, header: 'Migration', question: 'Ship it?', options: ['Yes', 'No'], multiSelect: false, askedAt: '2026-11-27T09:00:00.000Z' },
-    picks: ['Yes'],
-    text: '',
-    images: [],
-    places: [1],
-  }
-  const dismissal = { key: 'key-q13-0001', kind: 'dismiss', id: 'q13', revision: 2, by: 'cli', at: outcome.at, acceptedAt: outcome.acceptedAt, recipient: 'main', taken: false, acrossStop: false, question: { asker: 'main', question: 'Later?', options: [], multiSelect: false, askedAt: outcome.at } }
-
-  test('the pending outcomes it prints, as the context reads them', async () => {
-    expect(shownOutcomes(JSON.stringify({ v: 1, session: 's', seq: 4, sent: [], pending: [outcome, dismissal] }))).toEqual([
-      { key: 'key-q12-0001', kind: 'answer', id: 'q12', revision: 1, question: { asker: { agentId: 'a1b2c3', name: 'reviewer' }, header: 'Migration', question: 'Ship it?', options: ['Yes', 'No'] } },
-      { key: 'key-q13-0001', kind: 'dismiss', id: 'q13', revision: 2, question: { asker: 'main', question: 'Later?', options: [] } },
-    ])
-  })
-
-  test('what is not its output reads as none: not JSON, another version, no pending list; an outcome of another shape is passed over', async () => {
-    expect(shownOutcomes('')).toBeUndefined()
-    expect(shownOutcomes('{"v":1')).toBeUndefined()
-    expect(shownOutcomes(JSON.stringify({ v: 2, pending: [outcome] }))).toBeUndefined()
-    expect(shownOutcomes(JSON.stringify({ v: 1, session: 's' }))).toBeUndefined()
-    const odd = [{ ...outcome, id: 12 }, { ...outcome, question: { ...outcome.question, options: 'Yes' } }, { ...outcome, question: { ...outcome.question, asker: { name: 'x' } } }, { ...outcome, kind: 'retract' }]
-    expect(shownOutcomes(JSON.stringify({ v: 1, pending: [...odd, outcome] }))?.map((o) => o.id)).toEqual(['q12'])
+  test("an envelope fills a ring when its own block names an answer, one owed across a stop included; one of dismissals alone, none, or one with no block does not", async () => {
+    expect(ringHasAnswer(ready(`[sheet v1] The human answered questions on your sheet.\nq1 "Ship?" → Yes.\n${block(['q1'], [])}`))).toBe(true)
+    expect(ringHasAnswer(ready(`[sheet v1] The human answered questions on your sheet.\nq1 (asked 2026-11-23 14:02, answered 2026-11-23 16:40, while this session was stopped) "Ship?" → Yes.\nDismissed: q2.\n${block(['q1'], ['q2'])}`))).toBe(true)
+    expect(ringHasAnswer(ready(`[sheet v1] The human dismissed questions on your sheet; no answer will come for them.\nDismissed: q2.\n${block([], ['q2'])}`))).toBe(false)
+    expect(ringHasAnswer(undefined)).toBe(false)
+    // The head's words are not read: only the block.
+    expect(ringHasAnswer(ready('[sheet v1] The human answered questions on your sheet.\nq1 "Ship?" → Yes.'))).toBe(false)
   })
 })

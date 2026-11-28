@@ -2,7 +2,7 @@ import { describe, expect, test, tier } from 'claude-code/testing'
 
 import type { Recipient } from '../../hooks/mods/sheet-model'
 import { sheetNudge } from '../../hooks/mods/sheet'
-import { HOME, MODEL, S1, S2, ok, sheetOn } from './sheet-harness'
+import { HOME, MODEL, S1, S2, gated, ok, sheetOn } from './sheet-harness'
 import type { StepEvent, StepScript } from './sheet-harness'
 
 tier('user')
@@ -11,14 +11,22 @@ tier('user')
  * Delivery in a terminal session (plan
  * docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md, I9 and M4):
  * the routes, landing, a start's search and context, a compaction's context,
- * subagents. The record is a fake of the step's that keeps what is pending
- * and packs a recipient's envelope from it, the wakers first, as the
- * composer does (I7); the composer's own packing is the step's tests'.
+ * subagents; and in a MAWS-run session (MAWS's question-sheet C5: F8, F33,
+ * F34), the same routes, MAWS's ring and a stopped turn. The record is a fake
+ * of the step's that keeps what is pending and packs a recipient's envelope
+ * from it, the wakers first, as the composer does (I7), and under runner
+ * `maws` the main conversation's with its answers first; the composer's own
+ * packing is the step's tests'.
  */
 
 const PLUGIN_ROW = { kind: 'plugin', name: 'sminos' }
 const RESULT_ROW = { kind: 'plugin', event: 'tool.call' }
 const PROMPT_ROW = { kind: 'plugin', event: 'prompt.submit' }
+/** A session MAWS launched with the sheet: the form and its id (MAWS's C5, F32). */
+const MAWS = { MAWS_QUESTION_SHEET: `2:${S1}` }
+/** MAWS's constant frame and the drop's reason, as both repositories hold them (F33). */
+const RING = 'The human answered questions on your sheet.'
+const RING_DROP = 'nothing is ready on the sheet'
 
 type Out = { key: string; id: string; kind: 'answer' | 'dismiss'; recipient: Recipient; acrossStop: boolean }
 
@@ -49,15 +57,16 @@ const same = (a: Recipient, b: Recipient) => (a === 'main' ? b === 'main' : b !=
  * rule, and answers a view whose `ready` packs each recipient's envelope, at
  * most `per` outcomes, the wakers first.
  */
-function record(initial: readonly Out[] = [], options: { per?: number; context?: (event: StepEvent) => string | undefined; open?: unknown[] } = {}) {
+function record(initial: readonly Out[] = [], options: { per?: number; context?: (event: StepEvent) => string | undefined; open?: unknown[]; listed?: number } = {}) {
   const pending: Out[] = initial.map((o) => ({ ...o }))
   const queued: Out[] = []
   let seq = 0
   const per = options.per ?? 200
-  const envelope = (recipient: Recipient) => {
+  const envelope = (recipient: Recipient, runner = 'terminal') => {
     const mine = pending.filter((o) => same(o.recipient, recipient))
     if (mine.length === 0) return undefined
-    const packed = [...mine.filter(wakes), ...mine.filter((o) => !wakes(o))].slice(0, per)
+    const first = runner === 'maws' && recipient === 'main' ? (o: Out) => o.kind === 'answer' : wakes
+    const packed = [...mine.filter(first), ...mine.filter((o) => !first(o))].slice(0, per)
     const more = packed.length < mine.length
     return { recipient, keys: packed.map((o) => o.key), text: envelopeOf(packed, recipient, more), wakes: packed.some(wakes), more }
   }
@@ -73,9 +82,9 @@ function record(initial: readonly Out[] = [], options: { per?: number; context?:
     if (event.event === 'start') pending.forEach((o) => ((o.recipient = 'main'), (o.acrossStop = true)))
     const running = (event.agents as { running?: string[] } | undefined)?.running
     if (running !== undefined) pending.filter((o) => o.recipient !== 'main' && !running.includes(o.recipient.agentId)).forEach((o) => (o.recipient = 'main'))
-    const recipients: Recipient[] = event.runner === 'maws' ? [] : ['main']
+    const recipients: Recipient[] = ['main']
     pending.forEach((o) => o.recipient !== 'main' && !recipients.some((r) => same(r, o.recipient)) && recipients.push(o.recipient))
-    const ready = recipients.map(envelope).filter((e) => e !== undefined)
+    const ready = recipients.map((r) => envelope(r, String(event.runner))).filter((e) => e !== undefined)
     const context = options.context?.(event) ?? (event.event === 'start' || event.context === 'compact' ? `[sheet v1] context ${seq}: ${pending.map((o) => o.key).join(' ')}` : undefined)
     return ok(
       seq,
@@ -88,7 +97,7 @@ function record(initial: readonly Out[] = [], options: { per?: number; context?:
         nextId: 2,
         ready,
         open: (options.open ?? []) as never,
-        pending: pending.map((o) => ({ key: o.key, id: o.id, kind: o.kind, recipient: o.recipient, taken: o.recipient !== 'main', acrossStop: o.acrossStop })),
+        pending: pending.slice(0, options.listed).map((o) => ({ key: o.key, id: o.id, kind: o.kind, recipient: o.recipient, taken: o.recipient !== 'main', acrossStop: o.acrossStop })),
         pendingCount: pending.length,
       },
     )
@@ -731,21 +740,20 @@ describe('landing (I9)', () => {
     expect(steps(h, 'landed')).toHaveLength(ordered)
   })
 
-  test('in a MAWS-run session no envelope of the main conversation goes by any route and no row lands; a running subagent is still sent its envelope', async () => {
+  test("in a MAWS-run session one Send that answers the main conversation's question and a running subagent's: the subagent's goes by the send, the main conversation's by the next route, and its row lands it", async () => {
     const rec = record()
-    const h = await started(rec, { env: { MAWS_QUESTION_SHEET: S1 }, agents: [{ id: 'a1', description: 'reviewer', type: 'general', status: 'running' }] })
+    const h = await started(rec, { env: MAWS, agents: [{ id: 'a1', description: 'reviewer', type: 'general', status: 'running' }] })
     await answered(h, rec, out('k1', 'q1'), out('k2', 'q2', { recipient: { agentId: 'a1' } }))
     await h.hop()
     expect(h.submits).toEqual([])
-    await h.turnStart('t1')
-    expect(contextOf(await h.call('Read', {}))).toEqual([])
-    expect(((await h.prompt('steer')) as { context?: string[] }).context).toBeUndefined()
-    await h.append({ door: 'prompt', origin: PLUGIN_ROW, text: envelopeOf([out('k1', 'q1')], 'main') })
-    await h.settle()
     expect(h.sends.map((s) => s.agentId)).toEqual(['a1'])
-    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k2']])
+    await h.turnStart('t1')
+    expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+    await h.append({ door: 'hook-context', origin: RESULT_ROW, text: envelopeOf([out('k1', 'q1')], 'main') })
+    await h.settle()
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k2'], ['k1']])
+    expect(rec.pending).toEqual([])
   })
-
 })
 
 describe('a start (I9, I10)', () => {
@@ -817,13 +825,17 @@ describe('a start (I9, I10)', () => {
     }
   })
 
-  test('a MAWS-run session searches nothing at its start: there only a `delivered` line moves an outcome (§5.4)', async () => {
-    const rec = record([out('k1', 'q1')])
-    const h = sheetOn({ step: rec.script, env: { MAWS_QUESTION_SHEET: S1 }, exec: () => Promise.reject(new Error('searched')) })
+  test("a MAWS-run session's start searches the transcript as a terminal's does: an envelope that landed before the process died is not delivered again (the carriers round's B6)", async () => {
+    const rec = record([out('k1', 'q1'), out('k2', 'q2')])
+    const searched: string[][] = []
+    const h = sheetOn({ step: rec.script, env: MAWS, exec: (argv) => (argv[1] === '-MJSON::PP' && searched.push([...argv]), { exitCode: 0, stdout: `${stored('k1', 'prompt.submit')}\n` }) })
     await h.start()
     const answered = (await h.classicStart('resume')) as { additionalContext?: string[] }
-    expect(h.steps.map((s) => s.event)).toEqual(['start'])
-    expect(answered.additionalContext).toEqual(['[sheet v1] context 1: k1'])
+    expect(searched.map((argv) => argv.slice(4))).toEqual([['--', `/t/${S1}.jsonl`, 'k1', 'k2']])
+    expect(h.steps.map((s) => s.event)).toEqual(['start', 'landed', 'start'])
+    expect(steps(h, 'landed')[0]?.keys).toEqual(['k1'])
+    expect(answered.additionalContext).toEqual(['[sheet v1] context 3: k2'])
+    expect(((await h.prompt(RING)) as { context?: string[] }).context).toEqual([envelopeOf([out('k2', 'q2', { acrossStop: true })], 'main')])
   })
 
   test('a start with nothing pending before it searches nothing; a start with nothing to say adds no context', async () => {
@@ -889,23 +901,23 @@ describe('a compaction (E12)', () => {
     expect(contextOf(await h.call('Read', {}))).toEqual([])
   })
 
-  test('in a MAWS-run session the context with no answer at the SessionStart rides the next route alone, once: no answer goes by a route there', async () => {
+  test('in a MAWS-run session the context with no answer at the SessionStart rides the next route beside the envelope, once, as in a terminal session', async () => {
     let fails = true
     const rec = record()
-    const h = await started(rec, { env: { MAWS_QUESTION_SHEET: S1 }, step: (event, n) => (event.context === 'compact' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
+    const h = await started(rec, { env: MAWS, step: (event, n) => (event.context === 'compact' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
     await h.classicStart('compact')
     fails = false
     await h.tick()
     await answered(h, rec, out('k1', 'q1'))
     await h.turnStart('t1')
-    expect(contextOf(await h.call('Read', {}))).toEqual([expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
+    expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k1', 'q1')], 'main'), expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
     expect(((await h.prompt('steer', { turnId: 't1' })) as { context?: string[] }).context).toBeUndefined()
     expect(contextOf(await h.call('Read', {}))).toEqual([])
 
     // The same context, with no call before the prompt: the prompt carries it.
     let fails2 = true
     const rec2 = record()
-    const h2 = await started(rec2, { env: { MAWS_QUESTION_SHEET: S1 }, step: (event, n) => (event.context === 'compact' && fails2 ? Promise.reject(new Error('busy')) : rec2.script(event, n)) })
+    const h2 = await started(rec2, { env: MAWS, step: (event, n) => (event.context === 'compact' && fails2 ? Promise.reject(new Error('busy')) : rec2.script(event, n)) })
     await h2.classicStart('compact')
     fails2 = false
     await h2.tick()
@@ -913,7 +925,6 @@ describe('a compaction (E12)', () => {
     await h2.turnStart('t1')
     expect(contextOf(await h2.call('Read', {}))).toEqual([])
   })
-
 })
 
 describe('subagents (§6, I9)', () => {
@@ -1244,9 +1255,8 @@ describe('subagents (§6, I9)', () => {
   })
 })
 
-describe("a MAWS-run session's routes (MAWS's C5: F8, F9)", () => {
+describe("a MAWS-run session's routes (MAWS's C5, F8): a terminal's, but the idle route", () => {
   const A1 = { id: 'a1', description: 'reviewer', type: 'general', status: 'running' }
-  const MAWS = { MAWS_QUESTION_SHEET: S1 }
   const OPEN = [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
   const NOTICE = '[sheet v1] The subagent reviewer (a1) ended with questions still open on your sheet: q4 "Ship it?". Their answers will come to you; withdraw what you no longer need.'
 
@@ -1308,108 +1318,293 @@ describe("a MAWS-run session's routes (MAWS's C5: F8, F9)", () => {
     expect(contextOf(await h.call('Read', {}))).toEqual([])
   })
 
-  test("no envelope and no flight is ever made there, though a view holds the main conversation's envelope ready", async () => {
+  test("no idle submit is ever made there, whatever the view holds: a fresh answer while no turn runs, a turn's end with the answer, a stopped one", async () => {
     const rec = record()
-    // A step that packs the main conversation's envelope whatever the runner.
-    const h = await started(rec, { env: MAWS, step: (event, n) => rec.script({ ...event, runner: 'terminal' }, n), messages: { rows: [], api: [] } })
+    const h = await started(rec, { env: MAWS, messages: { rows: [], api: [] } })
+    await answered(h, rec, out('k1', 'q1'))
+    await h.hop()
+    await h.tick()
+    await h.turnStart('t1')
+    await answered(h, rec, out('k2', 'q2'))
+    await h.turnComplete('t1', 'answer')
+    await h.settle()
+    await h.hop()
+    await h.turnStart('t2')
+    await h.turnComplete('t2', 'aborted')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toEqual([])
+    expect(h.calls.filter((c) => c.op === 'prompt.submit')).toEqual([])
+    // What is ready waits for a route that opens.
+    expect(((await h.prompt('next')) as { context?: string[] }).context).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
+  })
+})
+
+describe("MAWS's ring in a MAWS-run session (MAWS's C5, F33)", () => {
+  const ring = (h: { prompt: (text: string, over?: Record<string, unknown>) => Promise<unknown> }, over: Record<string, unknown> = {}) => h.prompt(RING, over) as Promise<{ text?: string; context?: string[]; drop?: string }>
+  const DROPPED = { drop: RING_DROP }
+  const rings = (h: { logs: () => string[] }) => h.logs().filter((line) => line.startsWith('sheet: a ring '))
+
+  test('a ring with an answer ready enters with the envelope as its context; the stored hook-context row lands its keys; a second ring is dropped', async () => {
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
     await answered(h, rec, out('k1', 'q1'))
     await h.hop()
     expect(h.submits).toEqual([])
-    await h.turnStart('t1')
-    expect(contextOf(await h.call('Read', {}))).toEqual([])
-    expect(((await h.prompt('next', { turnId: 't1' })) as { context?: string[] }).context).toBeUndefined()
-    await h.turnComplete('t1')
+    const envelope = envelopeOf([out('k1', 'q1')], 'main')
+    expect(await ring(h)).toEqual({ text: RING, context: [envelope], origin: { kind: 'composer' } })
+    await h.append({ door: 'hook-context', origin: PROMPT_ROW, text: envelope })
     await h.settle()
-    expect(h.calls.filter((c) => c.op === 'session.messages')).toEqual([])
-    expect(steps(h, 'landed')).toEqual([])
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
+    expect(rec.pending).toEqual([])
+    expect(await ring(h)).toEqual(DROPPED)
+    expect(rings(h)).toEqual(["sheet: a ring is filled: the main conversation's envelope, 1 key", 'sheet: a ring is dropped: no envelope is ready for the main conversation'])
   })
 
-  describe("a prompt that carries a block: the words of a subagent's question it answers (F9)", () => {
-    const K1 = 'maws-answer-0001'
-    const K2 = 'maws-answer-0002'
-    const steer = (keys: string[]) =>
-      envelopeOf(
-        keys.map((key, i) => out(key, `q${12 + i}`)),
-        'main',
-      )
-    const pendingOf = (keys: readonly string[]) =>
-      keys.map((key, i) => ({
-        key,
-        kind: 'answer',
-        id: `q${12 + i}`,
-        revision: 1,
-        by: 'maws',
-        at: '2026-11-27T10:00:00.000Z',
-        acceptedAt: '2026-11-27T10:00:01.000Z',
-        recipient: 'main',
-        taken: false,
-        acrossStop: false,
-        question: { asker: i === 0 ? { agentId: 'a1b2c3', name: 'reviewer' } : 'main', header: 'Migration', question: 'Ship the migration today?', options: ['Yes', 'No'], multiSelect: false, askedAt: '2026-11-27T09:00:00.000Z' },
-        picks: ['Yes'],
-        text: '',
-        images: [],
-        places: [1],
-      }))
-    const answering = (args: readonly string[]) => ({ exitCode: 0, stdout: JSON.stringify({ v: 1, session: S1, seq: 9, sent: [], pending: pendingOf((args[args.indexOf('--keys') + 1] ?? '').split(',')) }) })
-    const CONTEXT = '[sheet v1] This message answers questions a subagent put on your sheet. What each asked:\nq12 (revision 1), asked by the subagent reviewer (a1b2c3) "Migration" — "Ship the migration today?" Options: 1. Yes; 2. No.'
-    const shows = (h: { runs: () => string[] }) => h.runs().filter((run) => run.startsWith('sheet show'))
+  test('a ring when only a dismissal is ready is dropped, and the dismissal rides the next prompt that enters, or the next tool result', async () => {
+    const dismissal = out('d1', 'q1', { kind: 'dismiss' })
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
+    await answered(h, rec, dismissal)
+    expect(await ring(h)).toEqual(DROPPED)
+    expect(rings(h)).toEqual(["sheet: a ring is dropped: the main conversation's envelope holds no answer"])
+    expect(rec.pending.map((o) => o.key)).toEqual(['d1'])
+    expect(((await h.prompt('go on')) as { context?: string[] }).context).toEqual([envelopeOf([dismissal], 'main')])
 
-    test("the block's keys are read from the record, and the subagent's question it answers rides the prompt as the tool's context, beside a notice waiting", async () => {
-      const h = await ended({ show: answering })
-      const text = steer([K1, K2])
-      const entered = (await h.prompt(text)) as { text: string; context?: string[] }
-      expect(shows(h)).toEqual([`sheet show --session ${S1} --json --keys ${K1},${K2}`])
-      expect(entered.text).toBe(text)
-      expect(entered.context).toEqual([NOTICE, CONTEXT])
-      // A context of that prompt alone: never put back.
-      const again = await ended({ show: answering })
-      await again.prompt(text, {}, async () => ({ drop: 'a hook beneath' }))
-      expect(((await again.prompt('next')) as { context?: string[] }).context).toEqual([NOTICE])
-    })
+    const rec2 = record()
+    const h2 = await started(rec2, { env: MAWS })
+    await answered(h2, rec2, dismissal)
+    expect(await ring(h2)).toEqual(DROPPED)
+    await h2.turnStart('t1')
+    expect(contextOf(await h2.call('Read', {}))).toEqual([envelopeOf([dismissal], 'main')])
+  })
 
-    test('a person\'s message whose last block is the envelope (a rider) is read the same', async () => {
-      const h = await started(record(), { env: MAWS, show: answering })
-      const entered = (await h.prompt(`Here is what I think.\n\n${steer([K1])}`)) as { context?: string[] }
-      expect(entered.context).toEqual([CONTEXT])
-    })
+  test('A5: a ring written for an answer that a tool result then landed, with a dismissal adopted before the hook ran, is dropped', async () => {
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'))
+    // MAWS, told k1 is owed, rings once the turn ends; meanwhile the turn's tool result carries it and its row lands it.
+    expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+    await h.append({ door: 'hook-context', origin: RESULT_ROW, text: envelopeOf([out('k1', 'q1')], 'main') })
+    await h.settle()
+    await answered(h, rec, out('d2', 'q2', { kind: 'dismiss' }))
+    await h.turnComplete('t1', 'answer')
+    await h.settle()
+    expect(await ring(h)).toEqual(DROPPED)
+    expect(rec.pending.map((o) => o.key)).toEqual(['d2'])
+  })
 
-    test("nothing is added when no answered outcome among the keys is a subagent's, or the record no longer holds them", async () => {
-      const none = (args: readonly string[]) => ({ exitCode: 0, stdout: JSON.stringify({ v: 1, session: S1, seq: 9, sent: [], pending: pendingOf(['x', ...(args[args.indexOf('--keys') + 1] ?? '').split(',')]).slice(1) }) })
-      const h = await started(record(), { env: MAWS, show: none })
-      expect(((await h.prompt(steer([K1, K2]))) as { context?: string[] }).context).toBeUndefined()
-      const gone = await started(record(), { env: MAWS, show: () => ({ exitCode: 0, stdout: JSON.stringify({ v: 1, session: S1, seq: 9, sent: [], pending: [] }) }) })
-      expect(((await gone.prompt(steer([K1]))) as { context?: string[] }).context).toBeUndefined()
-    })
+  test('a ring whose only ready answer was applied at a start (owed across a stop) is filled', async () => {
+    const rec = record([out('k1', 'q1')])
+    const h = await started(rec, { env: MAWS })
+    expect(rec.pending).toEqual([out('k1', 'q1', { acrossStop: true })])
+    expect((await ring(h)).context).toEqual([envelopeOf([out('k1', 'q1', { acrossStop: true })], 'main')])
+  })
 
-    test('a show that fails, runs out of time or prints what is not its output adds nothing and is logged; the prompt enters as it was', async () => {
-      for (const show of [() => ({ exitCode: 3, stdout: '' }), () => Promise.reject(new Error('timed out after 20000 ms')), () => ({ exitCode: 0, stdout: 'not json' })]) {
-        const h = await ended({ show })
-        const text = steer([K1])
-        const entered = (await h.prompt(text)) as { text: string; context?: string[] }
-        expect(entered.text).toBe(text)
-        expect(entered.context).toEqual([NOTICE])
-        expect(h.logs().filter((line) => line.startsWith("sheet: a prompt's keys could not be read"))).toHaveLength(1)
-      }
-    })
+  test("B4a: 250 outcomes pending, the main conversation's envelope of dismissals alone, one of its dismissals past the view's two hundredth: the ring is dropped", async () => {
+    const A1 = { id: 'a1', description: 'reviewer', type: 'general', status: 'running' }
+    const rec = record([], { listed: 200 })
+    const h = await started(rec, { env: MAWS, agents: [A1] })
+    const theirs = Array.from({ length: 150 }, (_, i) => out(`a${i}`, `q${i + 1}`, { recipient: { agentId: 'a1' } }))
+    const mine = Array.from({ length: 100 }, (_, i) => out(`d${i}`, `q${i + 151}`, { kind: 'dismiss' }))
+    await answered(h, rec, ...theirs, ...mine)
+    expect(rec.pending).toHaveLength(250)
+    expect(rec.envelope('main', 'maws')?.keys).toEqual(mine.map((o) => o.key))
+    // The view lists the subagent's 150 answers and 50 of the main conversation's dismissals; it cannot say what one envelope holds.
+    expect(await ring(h)).toEqual(DROPPED)
+  })
 
-    test('keys are asked for fifty at a time, and a key of no form the command takes is not asked for', async () => {
-      const keys = Array.from({ length: 120 }, (_, i) => `maws-answer-${String(i).padStart(4, '0')}`)
-      const h = await started(record(), { env: MAWS, show: answering })
-      const entered = (await h.prompt(steer([...keys.slice(0, 60), 'short']).concat('\n', steer(keys.slice(60))))) as { context?: string[] }
-      expect(shows(h).map((run) => run.split(' ').at(-1)?.split(',').length)).toEqual([50, 50, 20])
-      expect(shows(h).join(' ')).not.toContain('short')
-      // Each call's first key is the subagent's, in this script: one line from each.
-      expect(entered.context?.[0]?.split('\n')).toHaveLength(4)
-    })
+  test("B4b: at a resume, every outcome owed across a stop, dismissals enough to fill an envelope and one answer accepted after them: the main conversation's envelope leads with the answer, and the ring is filled", async () => {
+    const dismissals = Array.from({ length: 200 }, (_, i) => out(`d${i}`, `q${i + 1}`, { kind: 'dismiss' }))
+    const rec = record([...dismissals, out('k1', 'q201')])
+    const h = await started(rec, { env: MAWS })
+    const filled = await ring(h)
+    expect(filled.context).toHaveLength(1)
+    const text = filled.context?.[0] ?? ''
+    expect(text.split('\n')[0]).toBe('[sheet v1] The human answered questions on your sheet. More follows.')
+    expect(text).toContain('<sheet-delivery>{"v":1,"keys":["k1",')
+  })
 
-    test('a terminal session reads no keys; nor does a MAWS-run prompt with no block, or a slash command', async () => {
-      const terminal = await started(record(), { show: answering })
-      await terminal.prompt(steer([K1]))
-      expect(shows(terminal)).toEqual([])
-      const h = await started(record(), { env: MAWS, show: answering })
-      await h.prompt('just words')
-      await h.prompt(steer([K1]), { command: { name: 'compact' } })
-      expect(shows(h)).toEqual([])
-    })
+  test("a ring with nothing ready takes neither a notice nor a start's context that waits, which the next prompt that enters then carries; a ring before the session's start has answered is dropped", async () => {
+    const OPEN = [{ id: 'q4', revision: 1, asker: { agentId: 'a1', name: 'reviewer' }, question: 'Ship it?', askedAt: '2026-11-24T10:00:00.000Z' }]
+    const rec = record([], { open: OPEN })
+    const h = await started(rec, { env: MAWS, agents: [{ id: 'a1', description: 'reviewer', type: 'general', status: 'running' }] })
+    await h.dispatch('classic.SubagentStop', { hook_event_name: 'SubagentStop', session_id: S1, agent_id: 'a1' })
+    await h.settle()
+    expect(await ring(h)).toEqual(DROPPED)
+    expect(((await h.prompt('next')) as { context?: string[] }).context).toEqual([expect.stringContaining('ended with questions still open')])
+
+    let fails = true
+    const rec2 = record()
+    const h2 = await started(rec2, { env: MAWS, step: (event, n) => (event.context === 'compact' && fails ? Promise.reject(new Error('busy')) : rec2.script(event, n)) })
+    await h2.classicStart('compact')
+    fails = false
+    await h2.tick()
+    expect(await ring(h2)).toEqual(DROPPED)
+    expect(((await h2.prompt('next')) as { context?: string[] }).context).toEqual([expect.stringMatching(/^\[sheet v1\] context \d+: $/)])
+
+    const held = gated(['start'])
+    const h3 = sheetOn({ env: MAWS, step: held.script })
+    await h3.start()
+    void h3.classicStart('startup')
+    await h3.settle()
+    expect(held.waiting).toHaveLength(1)
+    expect(await ring(h3)).toEqual(DROPPED)
+    expect(rings(h3)).toEqual(['sheet: a ring is dropped: the sheet has not started in this session'])
+    held.waiting[0]?.release()
+    await h3.settle()
+  })
+
+  test('the sentence under another origin enters and carries what is ready; so does the sentence with a line break after it from the composer, and the sentence in a terminal session, whatever its origin', async () => {
+    const dismissal = out('d1', 'q1', { kind: 'dismiss' })
+    const carried = [envelopeOf([dismissal], 'main')]
+    for (const origin of [{ kind: 'scheduled-trigger' }, { kind: 'task-notification' }, { kind: 'peer' }, { kind: 'plugin', name: 'sminos' }]) {
+      const rec = record()
+      const h = await started(rec, { env: MAWS })
+      await answered(h, rec, dismissal)
+      expect(await ring(h, { origin })).toEqual({ text: RING, context: carried, origin })
+    }
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
+    await answered(h, rec, dismissal)
+    expect(await h.prompt(`${RING}\n`)).toEqual({ text: `${RING}\n`, context: carried, origin: { kind: 'composer' } })
+    for (const origin of [{ kind: 'composer' }, { kind: 'peer' }]) {
+      const terminal = record()
+      const t = await started(terminal)
+      await answered(t, terminal, dismissal)
+      expect(await ring(t, { origin })).toEqual({ text: RING, context: carried, origin })
+    }
+  })
+
+  test('a tool result carries the envelope while a turn runs, and a ring folded into that turn afterwards is dropped', async () => {
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'))
+    expect(contextOf(await h.call('Read', {}))).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+    expect(await ring(h, { turnId: 't1' })).toEqual(DROPPED)
+    expect(rings(h)).toEqual(["sheet: a ring is dropped: the main conversation's envelope is on a route already"])
+    await h.append({ door: 'hook-context', origin: RESULT_ROW, text: envelopeOf([out('k1', 'q1')], 'main') })
+    await h.settle()
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1']])
+  })
+
+  test('a sheet longer than one envelope: each ring carries what fits and says more follows, the next carries the rest, nothing twice', async () => {
+    const outs = ['k1', 'k2', 'k3', 'k4', 'k5'].map((key, i) => out(key, `q${i + 1}`))
+    const rec = record([], { per: 2 })
+    const h = await started(rec, { env: MAWS })
+    await answered(h, rec, ...outs)
+    const carried: string[] = []
+    for (const [part, more] of [[outs.slice(0, 2), true], [outs.slice(2, 4), true], [outs.slice(4), false]] as const) {
+      const envelope = envelopeOf(part, 'main', more)
+      expect((await ring(h)).context).toEqual([envelope])
+      await h.append({ door: 'hook-context', origin: PROMPT_ROW, text: envelope })
+      await h.settle()
+      carried.push(...part.map((o) => o.key))
+    }
+    expect(await ring(h)).toEqual(DROPPED)
+    expect(carried).toEqual(['k1', 'k2', 'k3', 'k4', 'k5'])
+    expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k1', 'k2'], ['k3', 'k4'], ['k5']])
+  })
+})
+
+describe("a stopped turn (MAWS's C5, F34): what was pending at it opens no idle route, in both runners", () => {
+  const A1 = { id: 'a1', description: 'reviewer', type: 'general', status: 'running' }
+
+  /** A terminal session whose main turn t1 the person stopped while answer k1 was pending. */
+  async function stopped(over: Parameters<typeof sheetOn>[0] = {}, rec = record()) {
+    const h = await started(rec, over)
+    await h.turnStart('t1')
+    await answered(h, rec, out('k1', 'q1'))
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    await h.hop()
+    expect(h.submits).toEqual([])
+    return { h, rec }
+  }
+
+  test('after it, a dismissal applied opens no idle route', async () => {
+    const { h, rec } = await stopped()
+    await answered(h, rec, out('d2', 'q2', { kind: 'dismiss' }))
+    await h.hop()
+    expect(h.submits).toEqual([])
+  })
+
+  test("after it, a reroute of a subagent's outcome opens no idle route", async () => {
+    const { h, rec } = await stopped({ agents: [A1], send: () => ({ isDelivered: false, reason: 'gone' }) })
+    await answered(h, rec, out('d3', 'q3', { kind: 'dismiss', recipient: { agentId: 'a1' } }))
+    await h.hop()
+    expect(steps(h, 'reroute').map((s) => s.keys)).toEqual([['d3']])
+    expect(h.submits).toEqual([])
+  })
+
+  test("after it, a `landed` retry opens no idle route", async () => {
+    let fails = true
+    const rec = record()
+    const h = await started(rec, { step: (event, n) => (event.event === 'landed' && fails ? Promise.reject(new Error('busy')) : rec.script(event, n)) })
+    await h.turnStart('t1')
+    await answered(h, rec, out('k0', 'q0'))
+    expect(contextOf(await h.call('Read', {}))).toHaveLength(1)
+    await h.append({ door: 'hook-context', origin: RESULT_ROW, text: envelopeOf([out('k0', 'q0')], 'main') })
+    await h.settle()
+    await answered(h, rec, out('k1', 'q1'))
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    fails = false
+    await h.tick()
+    expect(steps(h, 'landed').length).toBeGreaterThan(1)
+    expect(rec.pending.map((o) => o.key)).toEqual(['k1'])
+    await h.hop()
+    expect(h.submits).toEqual([])
+  })
+
+  test('an answer whose step was ordered before the stop and answered after it opens none; one ordered after it does, its envelope holding the stopped answer too', async () => {
+    const drains = gated(['drain'])
+    const rec = record()
+    const h = await started(rec, { step: (event, n) => (event.event === 'drain' ? drains.script(event, n) : rec.script(event, n)) })
+    // The drains run the fake record when released.
+    const release = async () => {
+      for (const w of drains.waiting.splice(0)) w.release(rec.script(w.event, 0) as string)
+      await h.settle()
+    }
+    await h.turnStart('t1')
+    rec.queued.push(out('k1', 'q1'))
+    void sheetNudge(['k1'])
+    await h.settle()
+    expect(drains.waiting).toHaveLength(1)
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    await release()
+    await h.hop()
+    expect(rec.pending.map((o) => o.key)).toEqual(['k1'])
+    expect(h.submits).toEqual([])
+
+    rec.queued.push(out('k2', 'q2'))
+    void sheetNudge(['k2'])
+    await h.settle()
+    await release()
+    await h.hop()
+    expect(h.submits).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
+  })
+
+  test('in both runners a prompt that enters carries everything pending at the stop, a dismissal sent since with it; so does the prompt of a message that preempted the turn', async () => {
+    for (const env of [{}, MAWS]) {
+      const { h, rec } = await stopped({ env })
+      await answered(h, rec, out('d2', 'q2', { kind: 'dismiss' }))
+      await h.hop()
+      expect(h.submits).toEqual([])
+      expect(((await h.prompt('go on')) as { context?: string[] }).context).toEqual([envelopeOf([out('k1', 'q1'), out('d2', 'q2', { kind: 'dismiss' })], 'main')])
+
+      const rec2 = record()
+      const h2 = await started(rec2, { env })
+      await h2.turnStart('t1')
+      await answered(h2, rec2, out('k1', 'q1'))
+      expect(((await h2.prompt('instead', { turnId: 't1' })) as { context?: string[] }).context).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
+      await h2.turnComplete('t1', 'aborted')
+      await h2.settle()
+      await h2.hop()
+      expect(h2.submits).toEqual([])
+    }
   })
 })

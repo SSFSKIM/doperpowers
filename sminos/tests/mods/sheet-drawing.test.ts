@@ -53,7 +53,7 @@ describe('the line above the prompt (§8.3)', () => {
     const today = harness()
     await today.ready()
     expect(await band(today)).toBe('beneath')
-    const maws = await startedWith({ open: open(3) }, { env: { MAWS_QUESTION_SHEET: S1 } })
+    const maws = await startedWith({ open: open(3) }, { env: { MAWS_QUESTION_SHEET: `2:${S1}` } })
     expect(await band(maws)).toBe('beneath')
   })
 
