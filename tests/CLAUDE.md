@@ -2,4 +2,7 @@
 
 A bare directory name is this directory's; `tests/…` paths are the repository's.
 
-Shell + harness integration tests, one subdir per harness (`claude-code/`, `codex/`, `shell-lint/`, …). Run via each dir's `run-*.sh`. `mods/` holds the function-hook mods' TypeScript tests, run with `tests/mods/run-mods-tests.sh` (it stages a plugin folder, which `claude plugin test` requires), and `typecheck.sh`, the `mods-types` gate: `tsc` over all five plugins' mods and tests. `mods/interim-audit/run.sh <since>` audits the interim-notification filter against this machine's transcripts (every dropped prompt, a check on each interim drop, and why each let-in notice passed); rerun it when the Claude Code engine version changes. (Note: `opencode/`, `kimi/`, `pi/`, `antigravity/` test harnesses whose plugin dirs were already pruned — orphaned, not wired to any runner.)
+One subdir per area (`claude-code/`, `codex/`, `mods/`, `issue-tracker/`, …), each run by its `run-*.sh` or its `test-*` files directly. Which of them CI runs, and how, is `.github/ci-kit.yml`; tests that call a live model are left out of it and run by hand.
+
+- `mods/`: the function-hook mods' TypeScript tests, run with `run-mods-tests.sh`, which stages a plugin folder because `claude plugin test` requires one. `typecheck.sh` is the `mods-types` gate.
+- `mods/interim-audit/run.sh <since>` audits the interim-notification filter against this machine's transcripts; rerun it when the Claude Code engine version changes, since the filter matches the engine's own wording.
