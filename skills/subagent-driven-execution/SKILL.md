@@ -17,8 +17,8 @@ for coordination. Quality comes from the loop: fresh executor, independent
 review, fixes re-reviewed.
 
 **Working posture:** execute all tasks without pausing to check in — stop
-only for a BLOCKED you cannot resolve, a fork under brainstorming's gate
-that the spec does not cover, or completion. Between tool calls, narrate at
+only for a BLOCKED you cannot resolve, a product, taste, or substantive
+design decision the spec does not cover, or completion. Between tool calls, narrate at
 most a line; the ledger and tool results carry the record.
 
 **The spec is the only requirements document.** Every executor and
@@ -48,7 +48,8 @@ or brainstorm first.
    and look for anything in the spec two milestones would read two ways or
    that the review rubric would call a defect (e.g. a mandated test that
    asserts nothing). Resolve what the spec's intent settles, write it into
-   the section it belongs to, and commit; only a fork under the gate goes to whoever
+   the section it belongs to, and commit; only a product, taste, or substantive design decision the spec
+   does not cover goes to whoever
    dispatched you (the spec's author session, or your human partner when
    you are running the loop yourself). A clean check proceeds without
    comment.
@@ -68,7 +69,8 @@ or brainstorm first.
    in now. A choice that changes a design decision goes in once the task's
    review is clean: written into its section it reads as approved design,
    and a later executor builds on it. A decision that works against the
-   spec's intent or crosses the gate is not written in: it goes back to
+   spec's intent or makes a product, taste, or substantive design decision
+   the spec does not cover is not written in: it goes back to
    the executor, or up to whoever dispatched you.
 5. **Review at the frontier:** a task is reviewed clean — nothing left
    that must be fixed (step 6) — before any task that consumes what it
@@ -174,7 +176,8 @@ partner's, and reaches you in your brief.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
   reasoning capacity (sonnet → opus; from opus, resolve the hard call in
-  the spec), task too large (split it), a fork under the gate (return to
+  the spec), task too large (split it), a product, taste, or substantive
+  design decision the spec does not cover (return to
   the session that dispatched you, or to the human when that is you).
   Something must change — a bare retry answers an escalation with
   nothing.
@@ -225,7 +228,8 @@ files:
   come back, against the spec's intent. A finding that exposes a spec
   statement as wrong is fixed in the spec by you — the statement
   rewritten; you are its one writer — and in the code by the worker; only
-  a fork under the gate goes up.
+  a product, taste, or substantive design decision the spec does not
+  cover goes up.
 - Fix messages — to a resumed executor or a fresh fixer — name the
   covering tests to re-run (a one-line fix doesn't need the whole suite);
   confirm the fix report carries their command and output before
@@ -273,4 +277,4 @@ agent handles), which do not belong in the spec:
 ## Integration
 
 - [isolated-workspace.md](isolated-workspace.md) — the workspace before the first task and its cleanup after the last
-- **doperpowers:execspec** — writes the spec this skill executes and, at its step 4, dispatches this loop through a `doperpowers:plan-executor` subagent
+- **doperpowers:execspec** — writes the spec this skill executes and, in its `## Executing` section, dispatches this loop through a `doperpowers:plan-executor` subagent
