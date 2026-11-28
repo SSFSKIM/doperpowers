@@ -19,9 +19,7 @@ BUDGET = 1500
 # An entry whose file is at or under budget fails the check: remove it, or the
 # file could grow back to its old allowance unnoticed.
 ALLOWANCE_DATE = "2026-11-28"
-ALLOWANCE = {
-    "task/CLAUDE.md": 1628,
-}
+ALLOWANCE = {}
 
 WHERE = (
     "A CLAUDE.md holds what a session needs before it reads the code and cannot get\n"

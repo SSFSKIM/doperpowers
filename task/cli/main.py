@@ -62,8 +62,8 @@ def parser():
 
     v = verb("create", verbs.create, "open a ticket with its labels, edges and record; prints <number> <url>")
     v.add_argument("title")
-    v.add_argument("--category", required=True, help="bug, enhancement, spike or env-issue")
-    v.add_argument("--priority", required=True, help="P0 to P3")
+    v.add_argument("--category", help="bug, enhancement, spike or env-issue")
+    v.add_argument("--priority", help="P0 to P3")
     v.add_argument("--readiness", required=True, help="ready-to-work, need-design or need-input")
     v.add_argument("--body-file", required=True, metavar="FILE")
     v.add_argument("--horizon", default="expected", help="planned, expected (the default) or undecided")

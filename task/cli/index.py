@@ -5,7 +5,9 @@ It is one JSON file, rewritten by atomic replace under a lock held across
 the read and the write, since several sessions of one machine claim at
 once. The lock is never held across a call to GitHub or to sminos: a
 caller reads, lets go, calls, and takes the lock again to write what it
-learned, finding its row again by its attempt token."""
+learned, finding its row again by its attempt token. Beside the rows it keeps, per
+board, when its last settle completed (`settled`) and a mark while a pass
+runs there (`running`), so verbs started together run one."""
 import contextlib
 import datetime
 import fcntl
