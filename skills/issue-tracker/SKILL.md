@@ -232,7 +232,7 @@ private repo below Enterprise) or `references/board-cloudflare-pages.yml`
   comment instead of a duplicate ticket; a hit on the same seam gets
   related (`board-relate.sh`). Tickets that each rewrite one function or
   contract body revert each other silently (different files, no git
-  conflict), so a pile-up on one body wants a consolidating
+  conflict), so a third open ticket on one body wants a consolidating
   `ready-for-architect` ticket that owns the unified contract and names its
   members.
 - **The body (the pre-spec) is written at registration**, when the
