@@ -19,9 +19,18 @@ sminos/types/tasks/, written by sminos/tests/tasks-contract.gen.py and never by 
     bind_step(session, wait=LOCK_WAIT) -> None        # the same as a step of its own, when one waits
     apply_line(line, memo=None) -> verdict            # one of the door's lines, checked, in a step of its own
     notice_text, ended_line, start_line               # §5's texts, word for word (X6)
+    send(task id, key, memo=None) -> bool             # resolves an outcome's due sending (M2)
+    tell_agent(session, agent id, text) -> "queued" | "refused:<why>" | "unanswered"
+    resolve_due(older=DUE_AFTER) -> [problem]         # every sending due longer than that, as any door call begins
+    hourly() -> [problem]                             # the daemon's hourly duty: due sendings, pairs, the prune
 
-Nothing is sent from here until M2: every outcome is written with `send: null`, and the door's `told` is
-`next-start` wherever M2's will be `now` or `wake`.
+Telling the asker (M2). The door decides in the step that applies an act (told, §3's table): where a sending is
+decided the outcome's `send` is `due` in that same replace; then, with the lock let go, `send` tells a running
+subagent or writes the notice (sminos.board_notice) and records what it sent, or the refusal, in a step that
+changes the outcome only while its `send` is still `due`. An ended target gets the ended line in its project's log
+instead (`endedLine`). A door that dies between leaves `due`, resolved by whatever next calls the door on this
+machine (resolve_due) or the daemon's hourly duty, so a wake that was asked is late, not lost; two that resolve one
+together can both send, and neither can wake against the human's choice, which the notice's own mark carries.
 """
 
 import argparse
@@ -45,6 +54,8 @@ HOOK_LOCK_WAIT = 3.0        # remind's bind is skipped past this; only a /clear'
 OPEN_MAX = 500
 KEPT = 30 * 86400           # a closed task is listed as closed for 30 days (D3)
 START_NAMED = 20            # the outcomes a start line names; the rest are counted
+DUE_AFTER = 60.0            # a sending due this long is any door call's, and the hourly duty's, to resolve
+TELL_WAIT_MS = 5000         # the bridge's wait for a tell: post_command's whole call stays within 10 s
 LINES_MAX = 50
 TEXT_MAX, TITLE_MAX, BODY_MAX, TAGS_MAX = 10000, 200, 20000, 8
 EXIT_FAIL, EXIT_USAGE, EXIT_REFUSED, EXIT_BUSY = 1, 2, 3, 75
@@ -682,13 +693,25 @@ def digest(line):
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def told_of(target, outcome):
-    """How the asker is to be told (§3's table, as M1 answers it): `ended` and `maws` as M2 will; `next-start`
-    wherever M2 answers `now` or `wake`, since nothing is sent until it is installed."""
-    if target["state"] == "ended":
-        return "ended"
-    if target["runner"] == "maws" and target["state"] == "gone" and outcome["wake"]:
+MADE = []   # the outcome the last apply_line made, (task id, key, the target that decided it); none for any other
+
+
+def told_of(target, task, line, outcome):
+    """How the asker is told of an act just applied (§3's table, the composite's D5): `now` (a running target and
+    an urgent act: a done, a comment, a decline of a blocking task, or a line that asked for a wake), `wake` (a
+    stopped one, addressable, the outcome's wake true), `maws` (MAWS's to bring up), `ended` (the ended line),
+    else `next-start`. `now` and `wake` decide a sending, made due in the act's own step; `now` stands whether or
+    not the target is addressable, since a tell needs no project and a refusal is the sending's to record."""
+    state, wake = target["state"], outcome["wake"]
+    urgent = line["act"] in ("done", "comment") or task.get("class") == "blocking" or line["wake"] is True
+    if state == "running":
+        return "now" if urgent else "next-start"
+    if state == "stopped":
+        return "wake" if wake and target["project"] is not None else "next-start"
+    if state == "gone" and target["runner"] == "maws" and wake:
         return "maws"
+    if state == "ended":
+        return "ended"
     return "next-start"
 
 
@@ -697,8 +720,11 @@ def apply_line(line, memo=None):
     unknown), kept under its key in the replace that decides it, so the same line again answers the same, `told`
     included, and changes nothing; `refused` (key-reused) answers a key already kept and is not kept itself.
     `memo`: the call's targets, shared by every line of one call, so a task's target is resolved once for each
-    distinct asker (§2)."""
+    distinct asker (§2). Nothing is sent from here: the outcome this very step made, (task id, key, target), is left in
+    MADE for door_line, so only the call that made an outcome sends for it at once, and a resend of the line, which
+    answers the kept verdict, leaves a due sending to resolve_due."""
     memo = {} if memo is None else memo
+    del MADE[:]
     key, act, tid = line["key"], line["act"], line["task"]
     head = {"v": V, "key": key, "act": act}
 
@@ -727,7 +753,9 @@ def apply_line(line, memo=None):
         if act in ("done", "decline") and line["revision"] != t["revision"]:
             return dict(head, verdict="stale", **where)
         if act in KIND:
-            verdict = _act(st, t, line, KIND[act], target_of(s, t, memo), head)
+            target = target_of(s, t, memo)
+            verdict = _act(st, t, line, KIND[act], target, head)
+            MADE.append((tid, verdict["outcome"], target))
         elif act == "seen":
             t["seenSeq"] = max(t["seenSeq"], min(line["seq"], s["seq"]))
             verdict = dict(head, verdict="applied", **where)
@@ -768,9 +796,12 @@ def _act(st, t, line, kind, target, head):
         t["closed"] = {"how": kind, "seq": st.seq, "at": st.at, "text": line["text"]}
     outcome = {"key": okey, "seq": st.seq, "kind": kind, "at": st.at, "revision": t["revision"],
                "text": line["text"], "wake": wake, "shown": None, "send": None, "endedLine": None}
+    told = told_of(target, t, line, outcome)
+    if told in ("now", "wake"):
+        outcome["send"] = {"state": "due", "since": st.at}
     t["outcomes"].append(outcome)
     return dict(head, verdict="applied", task=t["id"], revision=t["revision"], state=t["state"], outcome=okey,
-                told=told_of(target, outcome))
+                told=told)
 
 
 def jline(obj):
@@ -784,6 +815,311 @@ def verdict_line(v):
     """A verdict as the door prints it, its keys in §3's order whatever order the store kept them in."""
     return jline({**{k: v[k] for k in VERDICT_ORDER if k in v}, **{k: x for k, x in v.items() if k not in
                                                                    VERDICT_ORDER}})
+
+
+# ------------------------------------------------------------ the sending (§5, M2)
+
+
+def _due(o):
+    send = o.get("send") if isinstance(o, dict) else None
+    return isinstance(send, dict) and send.get("state") == "due"
+
+
+def tell_agent(session, agent, text):
+    """The bridge's `tell` op on the session's socket, as sminos_sheet.nudge posts its op, bounded at 10 s:
+    `queued` (the bridge answered ok: the message is in the subagent's queue, not read), `refused:<why>` (the agent
+    ended or is unknown, the bridge is an observer's, or it answered otherwise), `unanswered` (no socket, no bridge
+    listening, no answer in time: it may have been queued). No project is needed."""
+    sock = os.path.join(sminos.root(), "bridge", session + ".sock")
+    if not os.path.exists(sock):
+        return "unanswered"
+    C = sminos.control_module()
+    try:
+        r = C.post_command(sock, {"op": "tell", "agentId": agent, "resolvedAgentId": agent, "text": text},
+                           TELL_WAIT_MS)
+    except C.Unanswered:
+        return "unanswered"
+    if r is None:
+        return "unanswered"
+    status, out = r
+    out = out if isinstance(out, dict) else {}
+    if status == 504:
+        return "unanswered"
+    if status == 200 and out.get("ok") is True:
+        return "queued"
+    why = out.get("code") or out.get("error") or "status %d" % status
+    return "refused:%s" % safe(why)[:200]
+
+
+def _agent_of(task):
+    a = task["askers"][0].get("agent")
+    return a["id"] if isinstance(a, dict) and isinstance(a.get("id"), str) and AGENT_ID.fullmatch(a["id"]) else None
+
+
+def _tells(task, target):
+    """Whether a tell goes to the task's subagent: the task names one, the target is the very session that
+    assigned it, and that session runs in a terminal. A subagent's id means something only in the session that
+    dispatched it, so a successor, or a session a hand-off went on in, is never asked to tell one."""
+    return (_agent_of(task) is not None and target["state"] == "running" and target["runner"] == "terminal"
+            and target["session"] == task["askers"][0].get("session"))
+
+
+def _notice(task, o, target):
+    """The sending as §3's table reads the target as it stands now: `send` as it then reads. A running target is
+    sent the notice (for the live alone unless the outcome's wake is true); a stopped one only when the outcome's
+    wake is true; every other (ended, gone, unknown, run by MAWS with its process gone, or stopped with no wake
+    asked) is `none`, `not-addressable`, as is a target with no project. The form is §5's for how it was reached."""
+    agent = _agent_of(task)
+    clause = "successor" if target["via"] == "cleared" else "subagent" if agent else "asker"
+    text = notice_text(clause, o["kind"], task["id"], agent)
+    live_only = o.get("wake") is not True
+    sendable = target["state"] == "running" or target["state"] == "stopped" and not live_only
+    if not sendable or target["project"] is None:
+        return {"state": "none", "at": stamp(clock()), "why": "not-addressable"}
+    how, answer = sminos.board_notice(target["session"], target["project"], text, live_only)
+    if how != "sent":
+        return {"state": "none", "at": stamp(clock()), "why": answer}
+    return {"state": "sent", "how": "notice", "at": stamp(clock()), "session": target["session"], "agent": None,
+            "liveOnly": live_only, "project": target["project"], "answer": answer}
+
+
+def _found(state, task_id, key):
+    t = (state or {}).get("tasks", {}).get(task_id) if state is not None else None
+    o = _outcome(t, key) if isinstance(t, dict) else None
+    return (t, o) if o is not None else (None, None)
+
+
+def _sendable_store(state):
+    """The snapshot a sending is made from, refused when it is of a newer version than this sminos writes: an older
+    copy never sends for a store it could not record the sending in (each try would append another notice)."""
+    if state is not None and newer(state):
+        raise Refused(EXIT_FAIL, "the store is of version %d, newer than this sminos writes (%d): nothing is sent; "
+                                 "update the sminos plugin" % (state["version"], VERSION))
+    return state
+
+
+def send(task_id, key, memo=None):
+    """Resolve the outcome's sending while it is `due`, with the store's lock not held: the target read as it
+    stands now (target_of), so a late resolution goes to whom the outcome belongs to then; first a tell where
+    _tells, then, where the tell was refused or unanswered (the target read again), the notice in §5's form, for
+    the live alone unless the outcome's wake is true; a target that is not addressable is `none`, nothing tried.
+    What it sent, or the refusal, is recorded in a step that changes the outcome only while its `send` is still
+    `due`; a refusal is not tried again. How it is sent is §3's table against the target read now (_notice): a
+    target that has ended since gets no addressed notice, but its ended line when none was written. The verdict is
+    never touched. `memo`: the door's call's targets, for the sending the call's own step made due, held to the
+    store read here (_memo_for: a /clear's pair written since empties it); a later resolution reads afresh. A store
+    of a newer version is refused before anything is sent (_sendable_store). Whether this call recorded a result."""
+    state = _sendable_store(read_state())
+    t, o = _found(state, task_id, key)
+    if o is None or not _due(o):
+        return False
+    target = target_of(state, t, _memo_for(state, memo) if memo is not None else None)
+    result = None
+    if _tells(t, target):
+        agent = _agent_of(t)
+        got = tell_agent(target["session"], agent, notice_text("asker", o["kind"], task_id))
+        if got == "queued":
+            result = {"state": "sent", "how": "tell", "at": stamp(clock()), "session": target["session"],
+                      "agent": agent, "liveOnly": True, "project": target["project"], "answer": got}
+        else:
+            _fresh_engine()
+            state = _sendable_store(read_state())
+            t, o = _found(state, task_id, key)
+            if o is None or not _due(o):
+                return False
+            target = target_of(state, t)
+    if result is None:
+        result = _notice(t, o, target)
+
+    def change(st):
+        _, o2 = _found(st.state if st is not None else None, task_id, key)
+        if o2 is None or not _due(o2):
+            return False
+        o2["send"] = result
+        st.changed = True
+        return True
+    recorded = step(change)
+    if recorded and target["state"] == "ended":
+        write_ended_line(task_id, key, target)   # the target that decided it, never one read again
+    return recorded
+
+
+def ended_project(target, task):
+    """The project of the thread that ended, for its ended line: a seat's own, else the one its session's last
+    membership event puts it in (last_project, as end_by_rule reads it); else the task's, when this machine knows
+    it. A thread ended by the rule is a member of no project any more, so member_project_now has none."""
+    s, tid = target["session"], target.get("thread")
+    rec = threads().get(tid) if tid else None
+    try:
+        if rec is not None and rec.get("opened") == "spawned":
+            seat = sminos.reload_seat(tid)
+            p = sminos.seat_project(seat) if seat is not None else None
+        else:
+            p = sminos.last_project(s) if s else None
+        if p is None and task.get("project"):
+            p = sminos.known_project(task["project"])
+    except (OSError, ValueError):
+        return None
+    return p.id if p is not None else None
+
+
+def write_ended_line(task_id, key, target):
+    """The ended line, once: by the call that applied the act, or by a late resolution that found the target
+    ended (send). To nobody, in the log of the project the thread ended in, naming the task and no session;
+    `endedLine` set only when something was appended. `target` is the ended one that decided the line (the act's,
+    or the late resolution's): its thread's project is the line's, whatever the store's pairs say by now."""
+    state = _sendable_store(read_state())
+    t, o = _found(state, task_id, key)
+    if o is None or o.get("endedLine") is not None:
+        return False
+    pid = ended_project(target, t)
+    if pid is None:
+        return False
+    how, _ = sminos.board_notice(None, pid, ended_line(o["kind"], task_id), False)
+    if how != "sent":
+        return False
+
+    def change(st):
+        _, o2 = _found(st.state if st is not None else None, task_id, key)
+        if o2 is None or o2.get("endedLine") is not None:
+            return False
+        o2["endedLine"] = st.at
+        st.changed = True
+        return True
+    return step(change)
+
+
+def resolve_due(older=DUE_AFTER):
+    """Every sending on this machine that has been due for longer than `older`, resolved (send), in the order of
+    the outcomes' seq: what a call of the door does before its own lines, and the hourly duty. A sending that fails
+    stays due and the rest go on; the problems, one line each."""
+    state = read_state()
+    if state is None:
+        return []
+    now, due = clock(), []
+    for t in state["tasks"].values():
+        for o in (t.get("outcomes") if isinstance(t, dict) else None) or []:
+            since = epoch(o["send"].get("since")) if _due(o) else None
+            if since is not None and now - since > older:
+                due.append((o.get("seq") or 0, t["id"], o["key"]))
+    problems = []
+    for _, tid, key in sorted(due):
+        try:
+            send(tid, key)
+        except Exception as e:   # one sending's failure is no other's
+            problems.append("the sending of %s is left due: %s" % (key, getattr(e, "message", None) or e))
+    return problems
+
+
+def door_line(line, memo):
+    """One line of the door: its verdict, printed; then, for the outcome this very step made, its sending or its
+    ended line. The verdict was kept before anything is sent, so a failure here changes it in nothing: it is said on
+    standard error and the sending is left as it stands."""
+    verdict = apply_line(line, memo)
+    made = MADE[0] if MADE else None
+    print(verdict_line(verdict), flush=True)
+    if made is not None:
+        try:
+            if verdict.get("told") in ("now", "wake"):
+                send(made[0], made[1], memo=memo)
+            elif verdict.get("told") == "ended":
+                write_ended_line(*made)   # to the project of the target that decided `ended`
+        except Exception as e:
+            sys.stderr.write("sminos: task: the sending of %s is left as it stands: %s\n"
+                             % (made[1], getattr(e, "message", None) or e))
+    return verdict
+
+
+def door_begins():
+    """What every call of the door does before its own lines: the sendings due for more than a minute."""
+    for why in resolve_due():
+        sys.stderr.write("sminos: task: %s\n" % why)
+
+
+def _chains(state):
+    """The sessions some task's chain of pairs may pass through (§2's `first`, then each pair's successor and, for
+    a bound one, its thread's current session), or None when a thread record of a task cannot be read: the prune of
+    pairs then waits, since a chain it cannot read might need any of them."""
+    th, succ = threads(), state.get("successors") or {}
+    reach = set()
+    for t in state["tasks"].values():
+        a = (t.get("askers") or [{}])[0] if isinstance(t, dict) else {}
+        if not isinstance(a, dict) or not a.get("thread"):
+            continue
+        rec = th.get(a["thread"])
+        if rec is None and th.unreadable(a["thread"]):
+            return None
+        todo = [rec["current"] if rec is not None and rec.get("current") else a.get("session")]
+        while todo:
+            cur = todo.pop()
+            if not cur or cur in reach:
+                continue
+            reach.add(cur)
+            pair = succ.get(cur)
+            if isinstance(pair, dict):
+                todo.append(pair.get("session"))
+                if pair.get("thread"):
+                    r = th.get(pair["thread"])
+                    if r is None and th.unreadable(pair["thread"]):
+                        return None
+                    todo.append(r.get("current") if r is not None else None)
+    return reach
+
+
+def _settled(t):
+    """Whether nothing of a closed task is still owed: its outcomes read as a list of records, each shown and none
+    with a sending still `due`. One that does not read stays, as keeps() reads it (no answer keeps a thread)."""
+    outs = t.get("outcomes")
+    return isinstance(outs, list) and all(isinstance(o, dict) and o.get("shown") is not None and not _due(o)
+                                          for o in outs)
+
+
+def hourly():
+    """sminos_daemon's hourly duty (override_duty): each sending due for more than a minute resolved; then, in one
+    step, each pair bound that can be (§2), each task removed whose state is not open, whose closing is more than
+    30 days old and none of whose outcomes waits, with its `applied` keys; each `applied` key of an id that names
+    no task (an `unknown` verdict) once 30 days old; and each successor pair in no task's chain. What keeps() reads
+    as holding a thread is never removed: an open task, an outcome not shown, outcomes that do not read; nor a
+    task with a sending still due. The problems, one line each."""
+    if not os.path.exists(state_path()):
+        return []
+    try:
+        _sendable_store(read_state())
+    except Refused as e:
+        return [e.message]   # an older sminos sends nothing and prunes nothing of a newer store
+    _fresh_engine()
+    problems = resolve_due()
+
+    def change(st):
+        if st is None:
+            return
+        s, now = st.state, st.now
+        for p in list((s.get("successors") or {}).values()):
+            if isinstance(p, dict) and p.get("session") and not p.get("thread") and bind(s, p["session"]):
+                st.changed = True
+        gone = [tid for tid, t in s["tasks"].items() if isinstance(t, dict) and t.get("state") != "open"
+                and isinstance(t.get("closed"), dict) and epoch(t["closed"].get("at")) is not None
+                and now - epoch(t["closed"]["at"]) > KEPT and _settled(t)]
+        for tid in gone:
+            del s["tasks"][tid]
+        for k, v in list(s["applied"].items()):
+            named = v.get("task") if isinstance(v, dict) else None
+            old = isinstance(v, dict) and epoch(v.get("at")) is not None and now - epoch(v["at"]) > KEPT
+            if named in gone or named not in s["tasks"] and old:
+                del s["applied"][k]
+                st.changed = True
+        reach = _chains(s)
+        if reach is not None:
+            for left in [k for k in s["successors"] if k not in reach]:
+                del s["successors"][left]
+                st.changed = True
+        if gone:
+            st.changed = True
+    try:
+        step(change)
+    except Refused as e:
+        problems.append(e.message)
+    return problems
 
 
 # ------------------------------------------------------------ what a person reads
@@ -849,6 +1185,26 @@ def closed_lately(t, now):
     return t.get("state") != "open" and at is not None and now - at <= KEPT
 
 
+def sent_words(o):
+    """What was sent for an outcome and what sminos or the bridge answered then (§5), as `show` prints it: a report
+    of the sending, never a reading of what arrived; "" when nothing was to be sent."""
+    send = o.get("send") if isinstance(o.get("send"), dict) else {}
+    state = send.get("state")
+    if state == "due":
+        return "sending: due since %s" % local_time(send.get("since"))
+    if state == "sent" and send.get("how") == "tell":
+        return "told its subagent %s: %s" % (safe(send.get("agent")), safe(send.get("answer")))
+    if state == "sent":
+        return "a notice to [%s] %s: %s" % (str(send.get("session") or "")[:8],
+                                            "for the live alone" if send.get("liveOnly") else "that may wake",
+                                            safe(send.get("answer")))
+    if state == "none":
+        return "not sent: %s" % safe(send.get("why"))
+    if o.get("endedLine"):
+        return "the ended line, in the log of the project the conversation ended in"
+    return ""
+
+
 def history(t):
     """A task's history by seq: each agent's comment, each act of the human with its word and its text, a
     withdrawal; a human's comment and its outcome are one line."""
@@ -866,6 +1222,9 @@ def history(t):
         w = {"done": "done", "declined": "declined", "comment": "commented"}[o["kind"]]
         said = '  "%s"' % safe(o["text"]) if o.get("text") else ""
         lines.append((o["seq"], "%s  %s%s" % (w, local_time(o["at"]), said)))
+        told = sent_words(o)
+        if told:
+            lines.append((o["seq"], "  " + told))
     c = t.get("closed")
     if isinstance(c, dict) and c.get("how") == "withdrawn":
         said = '  "%s"' % safe(c["text"]) if c.get("text") else ""
@@ -1265,8 +1624,8 @@ def human_act(fields, key):
     line = check_line({"v": V, "key": key, **fields})
     sys.stderr.write("key %s\n" % key)
     sys.stderr.flush()
-    verdict = apply_line(line)
-    print(verdict_line(verdict))
+    door_begins()
+    verdict = door_line(line, {})
     return 0 if verdict["verdict"] == "applied" else EXIT_REFUSED
 
 
@@ -1283,9 +1642,10 @@ def cmd_done(a, act):
 def cmd_act(_a):
     refuse_session()
     lines = read_lines(sys.stdin.buffer.read() if sys.stdin is not None else b"")
+    door_begins()
     memo = {}
     for line in lines:
-        print(verdict_line(apply_line(line, memo)), flush=True)
+        door_line(line, memo)
     return 0
 
 

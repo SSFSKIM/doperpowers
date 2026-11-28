@@ -9,7 +9,7 @@
 ## Progress
 
 - [x] (2026-11-28T01:57Z) M1 — The store, its commands, the door, the start line, the published set (gate G1). Task review clean after two fix rounds; sminos 1.60.0; the set's digest is in `sminos/types/tasks/MANIFEST.json`.
-- [ ] M2 — Telling the asker now: the notice, the subagent's message, the wake.
+- [x] (2026-11-28T10:30Z) M2 — Telling the asker now: the notice, the subagent's message, the wake. The review at the high rung converged after three rounds; sminos 1.63.0. U2's live check is owed: it runs after the merge on the released sminos, by the dispatching session's ruling, and its result is written here.
 - [x] (2026-11-28T06:40Z) M3 — The `task` verbs. Review at the medium rung clean after one fix (a prefix of `--human`); task 0.3.0.
 - [ ] M4 — The session's side: the subagent's attribution, the terminal's line, the notification.
 - [ ] M5 — What agents are told, what is written beside the code, the acceptance. Waits on B5.
@@ -322,6 +322,20 @@ Which form a notice takes is decided by the target and the task, in this order: 
 
 **Gate.** `ci-gate --gates sminos,sminos-suites-a,sminos-suites-b,sminos-suites-c,sminos-idle,version-bump`.
 
+**As built** (what M4 and B3 consume). In `S/sminos_tasks.py`: `told_of(target, task, line, outcome)` is §3's table, and `now` and `wake` write `send: due` in the act's own replace. `send(task_id, key, memo=None)` resolves a due sending with the lock let go and records it only while `send` is still `due`. `tell_agent(session, agent_id, text)` waits 5 s, so the whole `post_command` call stays within 10 s, and a 504 is `unanswered`. `resolve_due(older=60)` is the first step of every door call (`act`, `done`, `decline`, the human's `comment`; not the `seen` that text `show` sends). `hourly()` is called by `sminos_daemon.sweep_tasks` from `override_duty`. In `S/sminos.py`: `board_notice(session | None, project_id, text, live_only)`; `say_appends`, the append that `say_into` and `board_notice` share; `broadcast(e)`. A notice for the live alone carries `addressed: true`, a field only `board_notice` writes, and reads as addressed (`→ @you`, `@<alias>`); every other `wake` event reads `@all` as before.
+
+Readings M2 settled:
+- **The act decides that a sending is due; its resolution applies §3's table again** to the target as it stands then. A running target gets the notice, for the live alone unless the outcome's `wake` is true. A stopped one gets it only when `wake` is true and it is addressable. Anything else resolves to `none`, `not-addressable`, and an ended target also gets its ended line when none was written.
+- **Only the call whose step made an outcome sends at once**; the same line again leaves a sending under a minute old to `resolve_due`.
+- **The verdict is printed before the sending**, and the exit is the verdict's. A sending that fails is one line on standard error.
+- **A store of a newer version is sent nothing.**
+- **Once a notice is appended, every delivery failure is `sent` with answer `owed`**, and nothing is appended again.
+- **The sending's record**: `send.agent` is null on every notice. A `tell` is recorded `liveOnly: true` with answer `queued`, as the set's example froze it.
+- **The ended line** is written once, by the call that applied the act or by the resolution that found the target ended, and never retried. Its project is the ended target's (a seat's own, else `last_project` of its session, else the task's when this machine knows it), passed from the decision to the append.
+- **The prune** removes a closed task only when its outcomes read as records, every one shown and none with a sending `due`, so nothing `keeps` reads is pruned.
+- **`show`** prints what was sent beneath each act.
+- **`cmd_say`**: an OSError while reading the audiences, or a StreamUnknown, now exits 1 with "say could not be recorded" where it was a traceback. Nothing else of it moved.
+
 ### M3 — The `task` verbs
 
 **At its end.** `task assign-human`, `task show t7`, `task comment t7`, `task list --human`, `task revise`, `task withdraw` and `task reopen` do what the matching `sminos task` verbs do, from any directory; `task assign-human` no longer says the Task Board is not built.
@@ -472,6 +486,23 @@ M2 consumes the "As built" paragraph under M1 and its own notes (`told_of` repla
 
 **M3 (2026-11-28).** Built in one pass on its own branch from `main` after the `task` plugin's 0.2.0 (#648); task 0.3.0. The review at the medium rung found two things. The fix: argparse took a prefix of `--human` (`--huma`) for the flag the early dispatch did not see, so the ticket board answered with tickets; the dispatch now takes those prefixes as the flag. Recorded, not fixed: the ticket-number refusal of `revise`, `withdraw` and `reopen` reads the first argument only, and the plain form the milestone names holds. The lesson: a front that intercepts argv ahead of an argparse parser inherits that parser's abbreviations, and must match what the parser would resolve, not the literal flag.
 
-## For the composite's writer
+**M2 (2026-11-28).** Built on its own branch from `main` after B1a (#644), then rebased onto the help fix (#655); sminos 1.63.0. The review at the high rung took three rounds.
+- **Round 1** found four P1s:
+  - a due sending resolved late reached a target that had ended since;
+  - the act's own sending used a memo against a store read again, so it missed a /clear written in between;
+  - a store of a newer version was sent to on every try;
+  - a delivery failure after the append made the next resolution append again.
 
-- **X5's hand-over did not reach the ticket board's spec.** `docs/doperpowers/specs/2026-11-24-ticket-board-design.md` still says the dispatch keeps the human's names unused and that `task assign-human` exits 2 saying the Task Board is not built (its D4, and its acceptance 7, "The seam"). Since M3 both are false: the three branches are in the dispatch. The sentence and the acceptance item are the ticket board's writer's to rewrite.
+  It also found three P2s: two in the prune, against `keeps`, and the label rule changing what `say --notice '@all …'` shows.
+- **Round 2** found that the ended line re-read its target and that the label was keyed on the program's name.
+- **Round 3** found that the ended line's project is still looked up at the append (below).
+
+All of these are fixed but the last. The lesson: a sending resolved later than its decision must re-read everything the decision read, the store's version and the target included, because between the two the world is free to change. Each round found the next thing it had not re-read.
+
+Recorded, not fixed: the ended line's project is looked up at the append. An ended session that is opened again in another project, in the instant between the act's replace and the append, takes the line there. That is rare, and its cost is one log line in the wrong project. Also recorded: a door that dies between its replace and the ended line loses the line, though the start line still names the act if the thread returns.
+
+
+
+- *(Resolved by #654: the ticket board's D4, Out of scope and acceptance 7 now name the built verbs.)* **X5's hand-over did not reach the ticket board's spec.** `docs/doperpowers/specs/2026-11-24-ticket-board-design.md` still says the dispatch keeps the human's names unused and that `task assign-human` exits 2 saying the Task Board is not built (its D4, and its acceptance 7, "The seam"). Since M3 both are false: the three branches are in the dispatch. The sentence and the acceptance item are the ticket board's writer's to rewrite.
+- **The published set's README describes the time before M2.** `sminos/types/tasks/README.md` still says "Until M2 every outcome is written with `send: null` …". The README is inside the digest that MAWS pins, so it changes only in a revision of the set.
+- **What a subagent reads first.** The bridge's `tell` op (`H/bridge-agent-ops.tsx`) puts "From the person at the desk, not from your coordinator:" before form A. M2 does not touch the bridge, so a subagent reads that line and then the frozen text. M4's live `subagent` case shows it as it arrives. Whether D5's account of the subagent's message should name that line is the composite writer's call.
