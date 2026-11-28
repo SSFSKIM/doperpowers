@@ -2,30 +2,19 @@
 
 The design spec doperpowers:execspec writes
 (`docs/doperpowers/specs/YYYY-MM-DD-<topic>-design.md`), from a design
-your human partner approved, is not a
-snapshot of an approval — it is the one document an initiative has, for the
-whole life of its feature: the design with its reasoning, the acceptance,
+your human partner approved, is not a snapshot of an approval — it is the
+one document an initiative has, for the whole life of its feature: the design with its reasoning, the acceptance,
 the execution, and where the work stands. At every moment it states the
 design as it stands now: what is learned while building is written into
 the section it bears on, and the feature closes with a retrospective. Its
 history is git. Whoever drives the session maintains it: execspec writes
 it, execution keeps it true, finishing writes the retrospective.
 
-The norms come from Codex's ExecPlan doctrine, PLANS.md. The sections that
-bind are quoted below char-for-char — follow the quoted text, not a
-paraphrase; details die in paraphrase. Where the source says "ExecPlan" or
-"plan", read "spec". What is not quoted does not bind (see "What does NOT
-bind" below); the full source stays at `archive/execplan/references/PLANS.md`,
-and the reasons behind each rejection are in
-`docs/doperpowers/specs/2026-07-03-living-specs-design.md` and the Decision
-Log of `docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`.
-
-**The bar (recalibrated from PLANS.md's novice standard):** a fresh session
-with no conversation history can pick up the spec and continue the work —
-decisions, their whys, and what was learned that bears on them included — and an
-executor with nothing but this document and the code can build any one of
-its milestones. Define terms of art; reference repo common knowledge instead
-of duplicating it.
+**The bar:** a fresh session with no conversation history can pick up the
+spec and continue the work — decisions, their whys, and what was learned
+that bears on them included — and an executor with nothing but this
+document and the code can build any one of its milestones. Reference repo
+common knowledge instead of duplicating it.
 
 **What the document carries, and what it leaves out.** Intent, constraints,
 the decisions whose wrong answer is costly — each with its reason, so a gap
@@ -40,91 +29,76 @@ that tries to pre-decide everything grows long, goes stale against the
 code, and boxes in a worker who will see more than its author did. Say each
 thing once, in the section that owns it; every other section points to it.
 
-## What binds
+## What every spec has
 
-**Purpose and intent come first.**
+Untemplated on purpose: across this repo's existing specs no heading
+structure repeats, and that variance is a feature — form fits problem
+(state tables for state machines, JSON for schemas, prose for concepts).
+Five parts are in every spec, because something reads each: the purpose-first
+opening; Progress right after it, where the plan-executor, the execution
+loop and a recovering session find where the work stands (a composite
+spec's Tracking Map is its Progress); an acceptance section phrased as
+observable behavior, which the last milestone executes as written; the
+execution section; and Outcomes & Retrospective, which the finish writes.
 
-> Purpose and intent come first. Begin by explaining, in a few sentences, why the work matters from a user's perspective: what someone can do after this change that they could not do before, and how to see it working. Then guide the reader through the exact steps to achieve that outcome, including what to edit, what to run, and what they should observe.
+**Purpose comes first.** The spec opens by saying, in a few sentences, why
+the work matters from a user's perspective: what someone can do after this
+change that they could not do before, and how to see it working. What it
+delivers is behavior that can be demonstrated, not code changes that meet
+a definition: a feature described so narrowly by its letter that the code
+compiles and does nothing meaningful has missed. Spend the words on
+user-visible effects, not on incidental implementation.
 
-**Non-negotiables** (the two about a complete novice are recalibrated to the bar above; these three bind as written):
+**Terms of art are defined.** A phrase that is not ordinary English
+("daemon", "middleware", "RPC gateway") is defined in plain language where
+it first appears, with how it shows up in this repository — the files or
+commands where it lives — or it is not used. Files are named by
+repository-relative path and functions and modules by their exact names,
+so a reader finds each by searching for it.
 
-> * Every ExecPlan is a living document. Contributors are required to revise it as progress is made, as discoveries occur, and as design decisions are finalized. Each revision must remain fully self-contained.
-> * Every ExecPlan must produce a demonstrably working behavior, not merely code changes to "meet a definition".
-> * Every ExecPlan must define every term of art in plain language or do not use it.
-
-**Self-containment and plain language.** An excerpt: the paragraph goes on to ask for repetition ("even if you repeat yourself"), which the bar above recalibrates; the rule itself binds:
-
-> Self-containment and plain language are paramount. If you introduce a phrase that is not ordinary English ("daemon", "middleware", "RPC gateway", "filter graph"), define it immediately and remind the reader how it manifests in this repository (for example, by naming the files or commands where it appears).
-
-**Avoid common failure modes.**
-
-> Avoid common failure modes. Do not rely on undefined jargon. Do not describe "the letter of a feature" so narrowly that the resulting code compiles but does nothing meaningful. Do not outsource key decisions to the reader. When ambiguity exists, resolve it in the plan itself and explain why you chose that path. Err on the side of over-explaining user-visible effects and under-specifying incidental implementation details.
-
-**Anchor the plan with observable outcomes.** This is the acceptance section's standard — a legitimate end-to-end check of the feature, not a summary of it:
-
-> Anchor the plan with observable outcomes. State what the user can do after implementation, the commands to run, and the outputs they should see. Acceptance should be phrased as behavior a human can verify ("after starting the server, navigating to [http://localhost:8080/health](http://localhost:8080/health) returns HTTP 200 with body OK") rather than internal attributes ("added a HealthCheck struct"). If a change is internal, explain how its impact can still be demonstrated (for example, by running tests that fail before and pass after, and by showing a scenario that uses the new behavior).
-
-**Specify repository context explicitly.**
-
-> Specify repository context explicitly. Name files with full repository-relative paths, name functions and modules precisely, and describe where new files should be created. If touching multiple areas, include a short orientation paragraph that explains how those parts fit together so a novice can navigate confidently. When running commands, show the working directory and exact command line. When outcomes depend on environment, state the assumptions and provide alternatives when reasonable.
-
-**Validation is not optional.**
-
-> Validation is not optional. Include instructions to run tests, to start the system if applicable, and to observe it doing something useful. Describe comprehensive testing for any new features or capabilities. Include expected outputs and error messages so a novice can tell success from failure. Where possible, show how to prove that the change is effective beyond compilation (for example, through a small end-to-end scenario, a CLI invocation, or an HTTP request/response transcript). State the exact test commands appropriate to the project’s toolchain and how to interpret their results.
-
-**The retrospective.** Of PLANS.md's five bullets on living plans this one
-binds as written; `Progress` binds through the execution section below, and
-the rest are replaced by "Keeping the spec current":
-
-> * At completion of a major task or the full plan, write an `Outcomes & Retrospective` entry summarizing what was achieved, what remains, and lessons learned.
-
-**Prototyping milestones and parallel implementations.** When unknowns are large, the spec declares spike milestones (see "Spike milestones" below).
-
-> It is acceptable—-and often encouraged—-to include explicit prototyping milestones when they de-risk a larger change. Examples: adding a low-level operator to a dependency to validate feasibility, or exploring two composition orders while measuring optimizer effects. Keep prototypes additive and testable. Clearly label the scope as “prototyping”; describe how to run and observe results; and state the criteria for promoting or discarding the prototype.
->
-> Prefer additive code changes followed by subtractions that keep tests passing. Parallel implementations (e.g., keeping an adapter alongside an older path during migration) are fine when they reduce risk or enable tests to continue passing during a large migration. Describe how to validate both paths and how to retire one safely with tests. When working with multiple new libraries or feature areas, consider creating spikes that evaluate the feasibility of these features _independently_ of one another, proving that the external library performs as expected and implements the features we need in isolation.
+**Acceptance is observable behavior.** The acceptance section is a
+legitimate end-to-end check of the feature, not a summary of it: what
+someone can do once the work has landed, the commands to run, and the
+output to expect. Each item is phrased as behavior a person can verify
+("after starting the server, `GET /health` returns HTTP 200 with body
+`OK`"), not as an internal attribute ("added a HealthCheck struct"). For
+an internal change, say how its effect is demonstrated: a test that fails
+before and passes after, a scenario that uses the new behavior.
 
 ## The execution section
 
-Every spec carries its execution: `Progress`, placed right after the
-purpose (it is the spec's ledger, kept current at every stopping point),
-`Plan of Work` told as milestones, `Concrete Steps`, and
-`Interfaces and Dependencies` when the work defines new interfaces — in
-PLANS.md's skeleton wording:
+Every spec carries its execution, in four sections:
 
-    ## Progress
+- **`Progress`**, right after the purpose: the spec's ledger, kept current
+  at every stopping point. A checkbox list, one line per unit of work with
+  its state and date; a unit stopped partway is split into what is done
+  and what remains, so the list always shows the actual state of the work.
+  It also records the events that leave no diff — your human partner's
+  approval and any condition on it, a review completed.
 
-    Use a list with checkboxes to summarize granular steps. Every stopping point must be documented here, even if it requires splitting a partially completed task into two (“done” vs. “remaining”). This section must always reflect the actual current state of the work.
+      - [x] (2026-10-01 13:00Z) M1 — the parser accepts both forms.
+      - [ ] M2 — the migration (done: schema; remaining: backfill).
 
-    - [x] (2025-10-01 13:00Z) Example completed step.
-    - [ ] Example incomplete step.
-    - [ ] Example partially completed step (completed: X; remaining: Y).
+- **`Plan of Work`**, told as milestones (below).
+- **`Concrete Steps`**: the exact commands to run and the working
+  directory to run them in, with a short expected transcript where a
+  command prints something to compare against. This is where validation
+  lives, and it goes beyond compiling: how to run the tests, how to start
+  the system where that applies, and how to watch it do something useful —
+  a small end-to-end scenario, a CLI invocation, an HTTP exchange — with
+  the expected output and the error messages that tell success from
+  failure. Where an outcome depends on the environment, the assumption is
+  stated. Updated as the work proceeds.
+- **`Interfaces and Dependencies`**, when the work defines new interfaces:
+  the libraries, modules, and services to use and why, and the types,
+  interfaces, and function signatures that must exist at the end of a
+  milestone, by stable name and path (`crate::module::function`,
+  `package.submodule.Interface`).
 
-    Use timestamps to measure rates of progress.
-
-    ## Plan of Work
-
-    Describe, in prose, the sequence of edits and additions. For each edit, name the file and location (function, module) and what to insert or change. Keep it concrete and minimal.
-
-    ## Concrete Steps
-
-    State the exact commands to run and where to run them (working directory). When a command generates output, show a short expected transcript so the reader can compare. This section must be updated as work proceeds.
-
-    ## Interfaces and Dependencies
-
-    Be prescriptive. Name the libraries, modules, and services to use and why. Specify the types, traits/interfaces, and function signatures that must exist at the end of the milestone. Prefer stable names and paths such as `crate::module::function` or `package.submodule.Interface`. E.g.:
-
-    In crates/foo/planner.rs, define:
-
-        pub trait Planner {
-            fn plan(&self, observed: &Observed) -> Vec<Action>;
-        }
-
-**Milestones** shape the Plan of Work:
-
-> Milestones are narrative, not bureaucracy. If you break the work into milestones, introduce each with a brief paragraph that describes the scope, what will exist at the end of the milestone that did not exist before, the commands to run, and the acceptance you expect to observe. Keep it readable as a story: goal, work, result, proof. Progress and milestones are distinct: milestones tell the story, progress tracks granular work. Both must exist. Never abbreviate a milestone merely for the sake of brevity, do not leave out details that could be crucial to a future implementation.
->
-> Each milestone must be independently verifiable and incrementally implement the overall goal of the execution plan.
+**Milestones** tell the story of the work — goal, work, result, proof —
+where Progress tracks its state; a spec has both. Each milestone is
+independently verifiable and takes the work one increment toward the
+spec's goal.
 
 **Sizing a milestone.** A milestone is the unit one executor owns from
 this document and the code, and the unit reviewed at its boundary before
@@ -192,13 +166,21 @@ Not carried: commit messages, which test file or line to sit beside, exact
 strings that are not decisions, steps. The executor writes those once, with
 the real codebase in view, and runs its own test-first cycle.
 
-**Spike milestones.** A prototyping milestone's deliverable is knowledge,
-not shipped code: state the question it answers, what to build and how to
-run it, what to observe, and the promote-or-discard criteria. It has no
-tests; its proof is the verdict, written where the spec posed the question,
-with the criteria applied — promote (a following milestone
-hardens it with tests) or discard (delete the prototype; the knowledge
-stays).
+**Spike milestones.** When an unknown is large, a prototyping milestone
+de-risks the work that depends on it: a library's feasibility proven in
+isolation, two orders of composition measured against each other. Its
+deliverable is knowledge, not shipped code: state the question it answers,
+what to build and how to run it, what to observe, and the
+promote-or-discard criteria. Keep the prototype additive and labelled as
+one, and give independent unknowns a spike each. It has no tests; its
+proof is the verdict, written where the spec posed the question, with the
+criteria applied — promote (a following milestone hardens it with tests)
+or discard (delete the prototype; the knowledge stays).
+
+**Migrations** go additive first, then subtract with the tests passing. A
+parallel implementation (an adapter kept beside the older path) is fine
+where it lowers risk or keeps the tests passing through a large change;
+the spec says how both paths are validated and how one is retired.
 
 **The last milestone** executes the acceptance section as written — the
 behavior-phrased checks with their exact commands and expected output —
@@ -213,9 +195,10 @@ test named by the behavior it asserts is complete, and so is an
 implementation described by its contract. Pointing at a decision the spec
 makes elsewhere is not a placeholder — it is the rule.
 
-**While the spec is being executed**, PLANS.md's implementing rule binds:
-
-> When implementing an executable specification (ExecPlan), do not prompt the user for "next steps"; simply proceed to the next milestone. Keep all sections up to date, add or split entries in the list at every stopping point to affirmatively state the progress made and next steps. Resolve ambiguities autonomously, and commit frequently.
+**While the spec is being executed**, the work goes from one milestone to
+the next without asking your human partner for next steps: the executor
+keeps every section current, records at each stopping point what is done
+and what is next, resolves ambiguities itself, and commits often.
 
 A gap or a contradiction the spec did not foresee is expected, not a
 failure of the spec: the executor resolves it in the spirit of the stated
@@ -275,6 +258,13 @@ each of them must reconcile. A statement about the system's stages — what
 holds between two releases, what a later milestone builds, what the code on
 the branch still does — is design, not history, and stays.
 
+A spec that appends its changes instead — a decision log, a surprises
+section, revision notes at the bottom — grows a second account of itself
+that every reader must reconcile with the first. Measured over the 65
+specs here that kept those sections: they were 36% of the text, one
+changed ruling stood in four places, and the ruling it replaced was still
+asserted twice above the entry that overturned it.
+
 What is learned while building is written where it bears:
 
 | What it is | Where it goes |
@@ -302,58 +292,16 @@ documents have: `git log -- <spec>` for the changes,
 `git diff --word-diff <commit> -- <spec>` for everything since an approval
 or a pin.
 
-Two sections say where the work stands:
-
-**`## Progress`** — right after the purpose, in the skeleton above: one line
-per unit of work with its state and date, and the events that leave no
-diff — your human partner's approval and any condition on it, a review
-completed. A change of course shows here as the work it adds or reopens.
-How a unit went is the commit log's.
+A change of course shows in `Progress` as the work it adds or reopens; how
+a unit went is the commit log's.
 
 **`## Outcomes & Retrospective`** — until finish, one line saying it is
-pending. At finish (after the whole-branch review), summarize
-what was achieved against the spec's original purpose, what remains, and
-lessons learned.
+pending. At finish (after the whole-branch review), summarize what was
+achieved against the spec's original purpose, what remains, and lessons
+learned.
 
 A spec written in the earlier form — it keeps a `Decision Log` and
 `Surprises & Discoveries` — continues in that form until it closes: revise
 its sections and add its dated entry as its own entries do. Code may cite
 its log by number, and a log that stops without saying so reads as
 complete.
-
-## What does NOT bind
-
-Not quoted above, and superseded by doperpowers machinery: the single fenced
-code block, prose-first, no-tables formatting (specs are files, not chat
-payloads — use tables, JSON, or diagrams wherever they beat prose for
-precision); novice-grade self-containment (the bar above); the Idempotence
-and Recovery section (worktree isolation + git); Artifacts and Notes and
-"capture evidence" inside the fence (an evidence snippet beside the
-decision it supports); "do
-not prompt the user for next steps" at authoring time (the human gates —
-design approval in doperpowers:brainstorming and spec review in
-doperpowers:execspec — come first; the rule binds only during execution, as
-above); the `Surprises & Discoveries` and `Decision Log` sections, "Record
-all decisions in the `Decision Log` section", "document why in the
-`Decision Log`", and the separate bottom-note rule for revisions (the spec
-states the design as it stands and git is its history — measured
-2026-11-22: in the 65 specs here that kept those sections they were 36% of
-the text, one changed ruling stood in four places, and the ruling it
-replaced was still asserted twice above the entry that overturned it).
-These rejections
-carry rationale — read the Decision Logs in
-`docs/doperpowers/specs/2026-07-03-living-specs-design.md` and
-`docs/doperpowers/specs/2026-09-12-one-spec-sized-by-the-gate-design.md`
-before re-proposing one.
-
-## Front of the spec
-
-Untemplated on purpose: across this repo's existing specs no heading
-structure repeats, and that variance is a feature — form fits problem
-(state tables for state machines, JSON for schemas, prose for concepts).
-Five parts every spec has, because something reads each: the purpose-first
-opening; Progress right after it, where the plan-executor, the execution
-loop and a recovering session find where the work stands (a composite
-spec's Tracking Map is its Progress); an acceptance section phrased as
-observable behavior, which the last milestone executes as written; the
-execution section; and Outcomes & Retrospective, which the finish writes.
