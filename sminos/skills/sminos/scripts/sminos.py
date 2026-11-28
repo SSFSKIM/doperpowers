@@ -15523,10 +15523,12 @@ def migration_skipped(step, lock):
 
 
 def migrate(quiet=False, lock_until=None):
-    """Bring a pre-seat state root up to date. Idempotent; runs before every verb,
-    so a working copy's CLI run against the real root migrates it, one way (the
-    chats/ import among the steps): try one under a temporary HOME and
-    SMINOS_HOME, as tests/run-sminos-tests.sh does.
+    """Bring a pre-seat state root up to date. Idempotent; main runs it before
+    every verb but the ones it dispatches first, which read without the
+    registry's lock (bridge, sheet --session, guide, rpc-query, daemon owed and
+    profile, a who with no target), so a working copy's CLI run against the real root
+    migrates it, one way (the chats/ import among the steps): try one under a
+    temporary HOME and SMINOS_HOME, as tests/run-sminos-tests.sh does.
 
     The whole cutover is serialized by an exclusive flock on
     ~/.claude/.agora-migrate.lock — under the tool's former name on purpose, so

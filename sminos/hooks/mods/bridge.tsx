@@ -101,12 +101,18 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, the wait for a decision, and the
- * reads of which guard is loaded. The modules beside it take none, and reach
- * the engine only through the calls the session start keeps in the state
- * (`post`, `read`, `log`, `after`). Each imports only those listed before it:
+ * reads of which guard is loaded. The modules beside it take none unless
+ * their entry below says so, and reach the engine only through the calls
+ * the session start keeps in the state (`post`, `read`, `log`, `after`).
+ * They are listed in dependency order: each imports only those before it.
  * - bridge-place.tsx: the rule that judges the bridge's place among the
  *   guards from what settled beneath its hook;
+ * - bridge-routes.tsx, bridge-commands.tsx: the desk's route table, written
+ *   from its fixture, and the rule that routes a command by it;
+ * - bridge-catalog.tsx (which takes `$`): the desk's `read` catalog;
  * - bridge-state.tsx: the one state object, its types, and `resetBridge`;
+ * - bridge-receipts.tsx (which takes `$` only to read the conversation):
+ *   which receipts a lane B observer's main request carried;
  * - bridge-stream.tsx: the mod's copy of the session's live state, which
  *   every resync carries, and the poster;
  * - bridge-requests.tsx: requests from outside, and their settlement;
@@ -115,19 +121,14 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  *   and the row a delivered prompt became;
  * - bridge-agents.tsx: the agents the module did not see spawn, learned from
  *   the engine's list;
- * - bridge-routes.tsx, bridge-commands.tsx: the desk's route table, written
- *   from its fixture, and the rule that routes a command by it;
  * - bridge-controls.tsx: the desk's per-control capability map;
- * - bridge-reads.tsx (which takes `$`, as bridge-catalog.tsx does): the
- *   desk's reads of usage, config, settings and MCP servers, cut to what the
- *   desk shows;
+ * - bridge-reads.tsx (which takes `$`): the desk's reads of usage, config,
+ *   settings and MCP servers, cut to what the desk shows;
  * - bridge-btw.tsx, bridge-agent-ops.tsx and bridge-media.tsx (which take
  *   `$`): the desk's side question, one subagent stopped or told, and the
  *   desk's images and PDFs read into the conversation;
  * - bridge-ask.tsx (which takes `$`): the owner's manager's question, a
  *   read-only fork agent;
- * - bridge-receipts.tsx (which takes `$` only to read the conversation):
- *   which receipts a lane B observer's main request carried;
  * - bridge-holder.tsx (which takes `$`): a lane B observer's part in MAWS's
  *   release fence (O12 M4a): the gate's arms installed and acknowledged,
  *   each main-loop request asked of the host before it goes, the origin

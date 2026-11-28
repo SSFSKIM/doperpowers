@@ -15,7 +15,7 @@ Paths below are named from `sminos/`; `docs/` paths are the repository's.
 | `skills/sminos/SKILL.md`, `references/setup.md` | What a member acts on; machine setup (mirror, hub enrollment, daemon, policy) |
 | `skills/manager/` | The owner's read-only session manager (`docs/doperpowers/specs/2026-10-31-session-manager-design.md`); its command imports the CLI's modules and adds no verb |
 | `types/sheet/` | The question sheet's published contract, which MAWS pins; see below |
-| `tests/` | `run-sminos-tests.sh` (the `sminos` gate), `mods/run.sh` (the `sminos-mods` gate) |
+| `tests/` | `run-sminos-tests.sh` (the hermetic suite; `SMINOS_PART` picks the part each `sminos*` gate runs), `mods/run.sh` (the `sminos-mods` gate) |
 
 ## Before you change anything
 
