@@ -36,7 +36,7 @@ Everything the `doperpowers`, `sminos` and `to-human` plugins install, by what i
 |---|---|
 | [`issue-tracker`](../skills/issue-tracker/SKILL.md) | The board as a backlog, in GitHub issues or an Arkho board service: register, search, take the ticket you name, close it out |
 | [`kairos`](../skills/kairos/SKILL.md) | *Manual* (`/kairos`, `/kairos off`). Proactive mode: the agent takes the next sound step without waiting for a go, and stops only at a real fork |
-| [`writing-skills`](../skills/writing-skills/SKILL.md) | Writing and pressure-testing any authored agent behavior: a skill, an agent definition, a prompt for other agents |
+| [`writing-skills`](../skills/writing-skills/SKILL.md) | The doctrine for text another agent will execute (a skill, an agent definition, a prompt for other agents): what it is for, where it loads, which form fits which failure, how hard to test it |
 
 ## doperpowers: agents
 

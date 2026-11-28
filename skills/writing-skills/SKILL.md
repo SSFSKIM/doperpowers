@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: Use when creating or editing any authored agent behavior — a skill, a registered agent definition, a worker protocol, a dispatch-prompt template — or verifying a skill works before deployment
+description: Doctrine for writing text another agent will execute, and for testing it by its stakes. For creating or editing a skill, a registered agent definition, a worker protocol or a dispatch-prompt template, or verifying a skill before it is relied on.
 ---
 
 # Writing Skills
@@ -9,7 +9,8 @@ description: Use when creating or editing any authored agent behavior — a skil
 
 This applies to any authored agent behavior — a skill, a subagent or
 dispatch prompt, a worker protocol. The reader is a model either way,
-and the same economics hold.
+and the same economics hold. A one-off brief for a subagent needs this
+section and nothing below it.
 
 The model reading your skill carries its own situational judgment. A
 skill's job is to supply what that judgment cannot derive on its own —
@@ -46,81 +47,74 @@ changing behavior the reader wouldn't already produce; cut the rest. A
 draft that survives this pass is normally much shorter than the one
 that entered it.
 
-## Overview
+## What stays, where it lives, what binds
 
-**Writing skills is Test-Driven Development applied to process
-documentation.** Run scenarios without the skill (baseline — watch the
-failure), write the skill against those observed failures, verify agents
-now succeed, and refine what still misses.
-
-**Core principle:** if you didn't watch an agent fail without the skill,
-you don't know if the skill teaches the right thing.
-
-**Personal skills live in your runtime's skills directory** —
-`~/.claude/skills/` on Claude Code. Codex, Copilot CLI, and Gemini CLI
-also recognize `~/.agents/skills/` as a cross-runtime alias.
-
-**Official guidance:** for Anthropic's skill authoring best practices,
-see anthropic-best-practices.md — an external reference; where it
-conflicts with this repo's tested philosophy, this skill governs.
+- **The line is what the reader can derive against what it cannot.**
+  Kept: a measured value, a contract another party depends on (a format
+  that is parsed, a field that is read), a gotcha, your human partner's
+  taste, the reason behind a rule. Cut: generic procedure, a restated
+  default, anything already said elsewhere. What a tool does is the
+  first kind; how to use it is usually the second.
+- **Where a text loads decides what it costs.** A description, a
+  CLAUDE.md, a tool description or an output style is in context for
+  every session on every turn; a skill body once it is invoked; a
+  supporting file when it is read. A line goes in the cheapest place
+  that still reaches its reader: heavy reference in a supporting file,
+  flags behind `--help`, other skills named
+  (`doperpowers:test-driven-development`) and never `@`-linked, which
+  loads the file at once.
+- **Text that should not bind is removed, or moved behind a read the
+  agent chooses.** Softened in place ("consider", "you may") it still
+  steers: a model that follows its context closely takes what it was
+  shown as what is wanted.
+- **A kept rule carries its reason**, so a later author can tell when it
+  no longer applies and retire it. The incident behind it (the date, the
+  model, the counts) belongs in the commit message and the spec.
+- **One home per rule.** Stated twice, it is paid for twice and drifts
+  into two rules; any other place points to its home.
 
 ## What is a skill?
 
-A reference guide for proven techniques, patterns, or tools — reusable
-across projects. Not a narrative about how you solved a problem once.
+A reference for a technique, a pattern or a tool that is reused across
+work: a directory holding `SKILL.md` and, for heavy reference (100+
+lines) or a reusable tool, supporting files. Not worth one: a one-off
+solution, standard practice documented well elsewhere, a
+project-specific convention (the project's instructions file holds
+those), or anything a validator can enforce — automate that;
+documentation is for judgment calls.
 
-**Create one when** the technique wasn't intuitively obvious, you'd
-reference it again, and it applies broadly. **Don't create one for**
-one-off solutions, standard practice already documented well elsewhere,
-project-specific conventions (those go in the project's instructions
-file), or anything enforceable with a validator — automate that; save
-documentation for judgment calls.
+Frontmatter requires `name` (letters, numbers, hyphens) and
+`description`, 1024 characters together
+([agentskills.io/specification](https://agentskills.io/specification)).
+Personal skills live in `~/.claude/skills/` on Claude Code; Codex,
+Copilot CLI and Gemini CLI also read `~/.agents/skills/`.
 
-Three rough types, which test differently (see Testing below):
-**technique** (concrete method with steps), **pattern** (way of thinking
-about a problem class), **reference** (API docs, syntax, tools).
+Anthropic's guide is
+[Skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices).
+This skill departs from it twice: steps are kept for an observed
+failure, where the guide teaches workflows as copyable checklists; and
+testing follows stakes, where the guide asks every skill for a fixed
+set of evaluations.
 
-## Structure
+## The description
+
+The description is in every session's context, and it is what a future
+agent reads to decide whether to load the skill. Its parts, in order:
+what the skill holds, then the situations it serves, in the third
+person.
 
 ```
-skills/
-  skill-name/
-    SKILL.md              # Main reference (required)
-    supporting-file.*     # Only for heavy reference (100+ lines) or reusable tools
+description: The board — a repository's ticket backlog — with its states, its commands and its conventions. For registering or searching tickets, taking a ticket, or closing it out.
 ```
 
-Keep principles, concepts, and short code patterns inline in SKILL.md;
-split out heavy API reference and runnable tools. Shape the sections to
-the skill — a typical arc is: overview with the core principle, when to
-use, the content itself, common mistakes — but form follows the
-material, not a fixed template.
-
-**Frontmatter:** two required fields, `name` and `description`, max 1024
-characters total (see [agentskills.io/specification](https://agentskills.io/specification)).
-Name with letters, numbers, and hyphens; verb-first gerunds read best
-(`creating-skills`, `root-cause-tracing`, `condition-based-waiting`).
-
-## Getting discovered
-
-The description is how future agents decide whether to load your skill.
-
-- **Describe ONLY when to use it — never summarize the workflow.**
-  Tested: a description that summarized the process ("code review
-  between tasks") caused agents to follow the description and skip the
-  skill body, missing the two-stage review the body required; a
-  trigger-only description sent them into the body.
-- Start with "Use when …", write in third person, and name concrete
-  triggers: symptoms, situations, error messages, tool names, and the
-  synonyms an agent would search for.
-- Describe the problem (race conditions, flaky tests), not
-  language-specific symptoms — unless the skill itself is
-  technology-specific, in which case say so explicitly.
-
-Token economy: every loaded skill costs context. Keep SKILL.md lean,
-move heavy reference to supporting files, point at `--help` instead of
-documenting flags, and cross-reference other skills by name
-(`doperpowers:test-driven-development`) — never `@`-links, which
-force-load the file into context immediately.
+- **It is an offer.** Worded as a command over a class of work ("Use
+  when starting any …"), it reads as a mandate in every session that
+  loads it; the skill is there for the agent to reach for.
+- **The situations are named concretely**: the symptoms, the tool names,
+  the words an agent would search for. They are how the skill is found.
+- **Steps stay out of it.** A procedure summarized in a description gets
+  followed in place of the body: a description that said "code review
+  between tasks" produced one review where the body required two.
 
 ## Flowcharts and examples
 
@@ -132,7 +126,7 @@ a skill's graphs to SVG for your human partner.
 
 One excellent example beats many mediocre ones: complete, runnable,
 commented for WHY, drawn from a real scenario, in the single most
-relevant language. Agents port well — one great example is enough.
+relevant language. Agents port well.
 
 ## Match the form to the failure
 
@@ -164,37 +158,34 @@ stated shape or it doesn't.
   blocks" still suppresses code blocks. If part of the output must be
   exempt, restructure so the rule can't reach it.
 
-## Testing skills
+## Testing, by stakes
 
-Baseline first, always: run the scenario WITHOUT the skill and document
-the exact failure — what the agent did, its reasoning verbatim. Then
-write the minimal skill addressing those observed failures, re-run, and
-refine what still misses. Writing the skill first reveals what YOU think
-needs preventing, not what actually does.
+How hard to test follows what a wrong text would cost and the evidence
+behind what is being changed. It applies to text that persists (a skill,
+an agent definition, a protocol, a template), not to a one-off brief.
 
-Match the test to the skill type:
+- **A cut of duplicate, derivable, dead or wrong text** ships on review
+  alone.
+- **New guidance** answers a failure that was observed or is structural.
+  A control run without it shows whether the failure exists on the
+  models that will read it: a control that does not fail leaves nothing
+  to fix, and guidance written without one encodes what its author
+  imagined.
+- **Removing or weakening a rule with an incident or an eval behind it**
+  takes a control-versus-variant run on today's readers first. Where
+  that costs more than the change is worth, the rule stays, restated
+  with its reason.
+- **A rule that cuts against its reader's immediate goal** gets a
+  pressure run:
+  [testing-skills-with-subagents.md](testing-skills-with-subagents.md).
 
-- **Technique / pattern skills** — application scenarios: can an agent
-  apply it to a new case? Do the instructions have gaps? Does it know
-  when NOT to apply the pattern?
-- **Reference skills** — retrieval scenarios: can an agent find the
-  right information and use it correctly? Are common cases covered?
-- **Discipline skills** (rules with compliance costs) — pressure
-  scenarios with combined pressures (time, sunk cost, authority,
-  exhaustion). See
-  [testing-skills-with-subagents.md](testing-skills-with-subagents.md)
-  for scenario construction and the refinement loop.
-
-**Micro-test wording before full scenarios.** Full pressure runs are the
-final gate but slow per iteration; verify the wording itself first:
+The control run, which is also how wording is compared:
 
 1. One fresh-context sample per call — a raw API call or single-shot
    subagent. System prompt = the realistic context the guidance will
    live in (the full skill or prompt template, not the guidance in
    isolation); user message = a task that tempts the failure.
-2. Always include a no-guidance control. If the control doesn't exhibit
-   the failure, there is nothing to fix — stop; don't author the
-   guidance.
+2. A no-guidance control beside every variant.
 3. 5+ reps per variant. Single samples lie.
 4. Manually read every flagged match — template echoes and quoted
    counter-examples masquerade as hits; automated counts overstate both
@@ -202,9 +193,6 @@ final gate but slow per iteration; verify the wording itself first:
 5. Variance is a metric. When guidance lands, reps converge on the same
    shape; five interpretations across five reps means the wording isn't
    binding — tighten the form before adding words.
-
-Test each skill before starting the next — batching untested skills is
-deploying untested code. Commit when it passes.
 
 ## Last resort: enforcement machinery
 
@@ -218,13 +206,3 @@ prohibition list also ships a catalogue of the evasions it bans. When
 you do use it: close loopholes explicitly and specifically ("don't keep
 it as reference" works; "don't cheat" doesn't), and re-test until the
 observed rationalizations stop appearing.
-
-## Common mistakes
-
-- **Narrative examples** ("in session 2025-10-03 we found…") — too
-  specific to reuse.
-- **Multi-language example dilution** — one great example; agents port.
-- **Code in flowcharts, generic labels** (helper1, step3) — labels need
-  semantic meaning; code belongs in markdown blocks.
-- **Descriptions that summarize workflow** — the shortcut agents will
-  take instead of reading the skill.
