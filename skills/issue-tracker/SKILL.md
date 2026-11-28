@@ -1,6 +1,6 @@
 ---
 name: issue-tracker
-description: What the board is and how it behaves — a repository's ticket backlog, in GitHub issues or on an Arkho board service, with its states, its commands, what they refuse and its conventions. For registering or searching tickets, taking a ticket, recording its progress, or closing it out.
+description: The board — a repository's ticket backlog, in GitHub issues or on an Arkho board service — with its states, its commands, what they refuse and its conventions. For registering or searching tickets, taking a ticket, recording its progress, or closing it out.
 ---
 
 # Issue Tracker
@@ -157,7 +157,7 @@ In this skill's `scripts/`. A ticket id is its number (`42` or `#42`).
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | opens a ticket with its labels and edges and prints `<number> <url>`. Priority `P0`…`P3` (P0 = drop everything) is required. Without `--body-file` the body is a skeleton: refused for an explicit backlog `--state`, born `needs-info` otherwise |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | opens a ticket with its labels and edges and prints `<number> <url>`. Priority `P0`…`P3` (P0 = drop everything) is required. Without `--body-file` there is no statement of work (gh seeds a skeleton): an explicit backlog `--state` is refused, and the default birth becomes `needs-info` |
 | `board-body.sh <n> --body-file F` | rewrites the statement of work (`-` reads stdin; an empty file clears it), keeping the meta block that a bare `gh issue edit` clobbers |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL] [--plan PATH@SHA\|pre-spec]` | moves a ticket under the requirements in States, runs the epic bookkeeping, repairs an `untracked` or `conflict` issue; `<n> done` on an already closed ticket finalizes it |
 | `board-comment.sh <n> <text>` / `<n> --kind K [--text T] [--json P]` | appends a comment. Kinds: `comment`, `parent-impact`, `closure-package`, `parent-impact-consumed`, `review-trail` (reviewer, range, verdict). gh renders a kind as a `[K] …` marker comment; `--` goes ahead of text that starts with a dash |
