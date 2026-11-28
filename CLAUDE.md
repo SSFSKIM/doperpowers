@@ -3,7 +3,7 @@
 `doperpowers` is a personal fork of `obra/superpowers` — a multi-harness plugin
 (mostly *skills*) that gives coding agents a full software-development
 methodology (brainstorm → worktree → plan → subagent-driven TDD → review →
-finish), and the marketplace of four sibling plugins beside it.
+finish), and the marketplace of five sibling plugins beside it.
 
 The fork is for personal use. Staying in sync with upstream is **not** a goal,
 so tracked upstream files may be edited directly — do not contort a design into
@@ -70,7 +70,7 @@ A part's detail is in the `CLAUDE.md` nearest its code.
 | `.claude-plugin/` | Manifest and dev marketplace. `workflows` registers review-code's workflow as `doperpowers:code-review`; callers pass that name, since the Workflow tool refuses a `scriptPath` into the plugin cache. |
 | `.codex-plugin/`, `.agents/` | Codex: the local plugin manifest and its dev marketplace. |
 | `codex/agents/` | Codex ports (TOML) of the review roles, installed into `~/.codex/agents/` by hand; outside `agents/` because every `.md` there registers. `tests/codex/test-native-agents.py` holds each port to its source. |
-| `devcloud/`, `to-human/`, `sminos/`, `web/` | The sibling plugins, each versioned on its own: devcloud (opt-in: the secrets guard, the Linux host image, the `devenv` and `vm` skills), to-human (the report view and the message tool), sminos (standalone: the project family, its CLI and daemon, the bridge, the ask tool), web (the fetch tool and its clipper). |
+| `devcloud/`, `to-human/`, `sminos/`, `web/`, `task/` | The sibling plugins, each versioned on its own: devcloud (opt-in: the secrets guard, the Linux host image, the `devenv` and `vm` skills), to-human (the report view and the message tool), sminos (standalone: the project family, its CLI and daemon, the bridge, the ask tool), web (the fetch tool and its clipper), task (the `task` CLI, the agents' one command for tickets on a repository's GitHub board). |
 | `application-agents/` | Deployed agent applications that are not skills. |
 | `infra/` | Hosts of the dormant board machinery (`worker-host/`, the `board-sweep` plist); none runs. |
 | `devenv/` | This repository's own development environment, for devcloud hosts and the Macs. |
@@ -96,7 +96,7 @@ it is present only once cloned into `evals/` (setup in its README), and
 ## Working conventions here
 
 - **Version bumps.** Bump a plugin's version in the same commit as its change,
-  with `scripts/bump-version.sh` (`--plugin devcloud|to-human|sminos|web` for
+  with `scripts/bump-version.sh` (`--plugin devcloud|to-human|sminos|web|task` for
   the others), never by hand: one version lives in several manifests
   (`.version-bump.json`). The marketplace installs by version number alone,
   so a change under a number the cache already holds never reaches a session.

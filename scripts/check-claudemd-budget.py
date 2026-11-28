@@ -22,7 +22,8 @@ ALLOWANCE_DATE = "2026-11-28"
 ALLOWANCE = {
     "sminos/hooks/mods/CLAUDE.md": 6045,
     "sminos/skills/manager/scripts/CLAUDE.md": 3176,
-    "sminos/skills/sminos/scripts/CLAUDE.md": 43396,
+    "sminos/skills/sminos/scripts/CLAUDE.md": 44454,
+    "task/CLAUDE.md": 1628,
     "to-human/CLAUDE.md": 4380,
 }
 

@@ -102,6 +102,12 @@ gates:
     timeout: 15
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # The task plugin: its CLI against a stand-in gh and sminos (task/tests/standin/), no network.
+  - name: task
+    run: bash task/tests/run.sh
+    timeout: 10
+    paths: ["task/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
   - name: issue-tracker
     run: |
       for f in tests/issue-tracker/test-*.sh; do echo "== $f"; bash "$f"; done

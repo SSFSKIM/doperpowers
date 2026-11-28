@@ -1,0 +1,199 @@
+[
+ {
+  "agent": null,
+  "clause": "asker",
+  "form": "notice",
+  "kind": "done",
+  "task": "t7",
+  "text": "[tasks v1] The human marked t7 done, a task you assigned. Read it: sminos task show t7"
+ },
+ {
+  "agent": null,
+  "clause": "asker",
+  "form": "notice",
+  "kind": "declined",
+  "task": "t9",
+  "text": "[tasks v1] The human declined t9, a task you assigned. Read it: sminos task show t9"
+ },
+ {
+  "agent": null,
+  "clause": "asker",
+  "form": "notice",
+  "kind": "comment",
+  "task": "t4",
+  "text": "[tasks v1] The human commented on t4, a task you assigned. Read it: sminos task show t4"
+ },
+ {
+  "agent": null,
+  "clause": "successor",
+  "form": "notice",
+  "kind": "done",
+  "task": "t7",
+  "text": "[tasks v1] The human marked t7 done, a task assigned by the conversation this one replaced at a /clear. Read it: sminos task show t7"
+ },
+ {
+  "agent": "a1b2c3d4e5f60718",
+  "clause": "subagent",
+  "form": "notice",
+  "kind": "comment",
+  "task": "t4",
+  "text": "[tasks v1] The human commented on t4, a task your subagent a1b2c3d4e5f60718 assigned. Read it: sminos task show t4"
+ },
+ {
+  "form": "ended",
+  "kind": "done",
+  "task": "t7",
+  "text": "tasks: t7 was completed; the conversation that assigned it has ended. It is on the board: sminos task show t7"
+ },
+ {
+  "form": "ended",
+  "kind": "declined",
+  "task": "t7",
+  "text": "tasks: t7 was declined; the conversation that assigned it has ended. It is on the board: sminos task show t7"
+ },
+ {
+  "form": "ended",
+  "kind": "comment",
+  "task": "t7",
+  "text": "tasks: t7 was commented on; the conversation that assigned it has ended. It is on the board: sminos task show t7"
+ },
+ {
+  "blocking": 1,
+  "form": "start",
+  "more": 0,
+  "open": 2,
+  "outcomes": [],
+  "text": "Tasks you assigned to the human: 2 open (1 blocking)."
+ },
+ {
+  "blocking": 0,
+  "form": "start",
+  "more": 0,
+  "open": 0,
+  "outcomes": [
+   {
+    "kind": "done",
+    "task": "t7"
+   },
+   {
+    "kind": "declined",
+    "task": "t9"
+   }
+  ],
+  "text": "The human acted on tasks you assigned: marked t7 done; declined t9. Read one: sminos task show t7"
+ },
+ {
+  "blocking": 0,
+  "form": "start",
+  "more": 0,
+  "open": 1,
+  "outcomes": [
+   {
+    "kind": "comment",
+    "task": "t4"
+   }
+  ],
+  "text": "Tasks you assigned to the human: 1 open (0 blocking).\nThe human acted on tasks you assigned: commented on t4. Read one: sminos task show t4"
+ },
+ {
+  "blocking": 3,
+  "form": "start",
+  "more": 5,
+  "open": 3,
+  "outcomes": [
+   {
+    "kind": "done",
+    "task": "t1"
+   },
+   {
+    "kind": "done",
+    "task": "t2"
+   },
+   {
+    "kind": "done",
+    "task": "t3"
+   },
+   {
+    "kind": "done",
+    "task": "t4"
+   },
+   {
+    "kind": "done",
+    "task": "t5"
+   },
+   {
+    "kind": "done",
+    "task": "t6"
+   },
+   {
+    "kind": "done",
+    "task": "t7"
+   },
+   {
+    "kind": "done",
+    "task": "t8"
+   },
+   {
+    "kind": "done",
+    "task": "t9"
+   },
+   {
+    "kind": "done",
+    "task": "t10"
+   },
+   {
+    "kind": "done",
+    "task": "t11"
+   },
+   {
+    "kind": "done",
+    "task": "t12"
+   },
+   {
+    "kind": "done",
+    "task": "t13"
+   },
+   {
+    "kind": "done",
+    "task": "t14"
+   },
+   {
+    "kind": "done",
+    "task": "t15"
+   },
+   {
+    "kind": "done",
+    "task": "t16"
+   },
+   {
+    "kind": "done",
+    "task": "t17"
+   },
+   {
+    "kind": "done",
+    "task": "t18"
+   },
+   {
+    "kind": "done",
+    "task": "t19"
+   },
+   {
+    "kind": "done",
+    "task": "t20"
+   }
+  ],
+  "text": "Tasks you assigned to the human: 3 open (3 blocking).\nThe human acted on tasks you assigned: marked t1 done; marked t2 done; marked t3 done; marked t4 done; marked t5 done; marked t6 done; marked t7 done; marked t8 done; marked t9 done; marked t10 done; marked t11 done; marked t12 done; marked t13 done; marked t14 done; marked t15 done; marked t16 done; marked t17 done; marked t18 done; marked t19 done; marked t20 done (and 5 more: sminos task waiting --mine). Read one: sminos task show t1"
+ },
+ {
+  "blocking": 0,
+  "form": "start",
+  "more": 0,
+  "open": 0,
+  "outcomes": [],
+  "text": ""
+ },
+ {
+  "form": "fork",
+  "text": "This conversation is a fork: the tasks the conversation it was forked from assigned to the human stay with that conversation, and what the human does on them is told there, not here."
+ }
+]

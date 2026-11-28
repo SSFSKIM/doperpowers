@@ -1,0 +1,17 @@
+{
+ "argv": [
+  "task",
+  "reopen",
+  "t1",
+  "--comment",
+  "the console still asks for a login"
+ ],
+ "covers": "the asker reopens a done task with a comment: open again, closed null, revision + 1",
+ "exit": 0,
+ "name": "reopen",
+ "now": "2026-11-27T16:20:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1 reopened: revision 3\n"
+}

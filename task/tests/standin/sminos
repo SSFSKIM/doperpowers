@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""A stand-in `sminos` for the task plugin's suite (§10's calls only), over
+a JSON state file, every call logged.
+
+State ($TASK_SMINOS_STATE):
+  addresses  {"<session id>": "<address>"}: what `sminos who` prints after
+             `Sminos-Session: ` for the session in CLAUDE_CODE_SESSION_ID
+  threads    {"<name>": <answer object> | {"exit": n, "said": "..."}}; an
+             entry with "sleep" answers that many seconds late
+  say        {"exit": n}: how `sminos say` ends (0 by default)
+
+Each call is appended to $TASK_SMINOS_LOG as {"argv": [...], "session": ...}.
+"""
+import json
+import os
+import sys
+
+
+def main(argv):
+    with open(os.environ["TASK_SMINOS_STATE"]) as f:
+        s = json.load(f)
+    session = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    log = os.environ.get("TASK_SMINOS_LOG")
+    if log:
+        with open(log, "a") as f:
+            f.write(json.dumps({"argv": argv, "session": session}) + "\n")
+    if argv[:1] == ["who"] and len(argv) == 1:
+        if not session:
+            sys.stderr.write("usage: sminos who <commit|PR>\n")
+            return 2
+        address = s.get("addresses", {}).get(session)
+        if address:
+            print("Sminos-Session: %s" % address)
+        return 0
+    if argv[:1] == ["who"] and len(argv) == 2 and argv[1].startswith("--thread="):
+        answer = s.get("threads", {}).get(argv[1][len("--thread="):])
+        if answer is None:
+            sys.stderr.write("sminos: no seat or member matching '%s'\n" % argv[1][9:])
+            return 4
+        if "sleep" in answer:
+            import time
+            time.sleep(float(answer["sleep"]))
+        if "exit" in answer:
+            sys.stderr.write("sminos: %s\n" % answer.get("said", "no answer"))
+            return answer["exit"]
+        print(json.dumps({k: v for k, v in answer.items() if k != "sleep"}))
+        return 0
+    if argv[:1] == ["say"] and len(argv) == 2:
+        code = s.get("say", {}).get("exit", 0)
+        if code:
+            sys.stderr.write("sminos: could not deliver\n")
+        return code
+    sys.stderr.write("stand-in sminos: not served: %r\n" % argv)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

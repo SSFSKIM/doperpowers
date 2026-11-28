@@ -1,0 +1,20 @@
+{
+ "argv": [
+  "task",
+  "assign",
+  "--class",
+  "blocking",
+  "--title",
+  "Log in to the console",
+  "--body-file",
+  "-"
+ ],
+ "covers": "an assign that makes the store: t1, revision 1, open, born at seq 1",
+ "exit": 0,
+ "name": "assign-makes-the-store",
+ "now": "2026-11-27T16:00:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": "Open the console and sign in. Done when the dashboard loads.\n",
+ "stdout": "t1 blocking \"Log in to the console\"\n"
+}

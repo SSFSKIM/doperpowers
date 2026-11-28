@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "a done at the current revision: applied, its outcome waiting, its wake the blocking default; nothing sent until M2 (told next-start, send null)",
+ "exit": 0,
+ "name": "done-current",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2,\"text\":\"logged in with account B\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"done\",\"verdict\":\"applied\",\"task\":\"t1\",\"revision\":2,\"state\":\"done\",\"outcome\":\"t1.1\",\"told\":\"next-start\"}\n"
+}
