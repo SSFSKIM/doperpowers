@@ -1519,6 +1519,7 @@ def sweep_threads():
     landed = census_tick()   # a quiet tick's one stat; a recorded run supervised, a landing taken once
     ending_pass = spaced or landed
     candidates, due, kept = {}, [], {}
+    board = sminos.sibling_module("sminos_tasks").Reading()   # read at the first due thread, once for the pass
     for t in threads.all_threads():
         tid, cur = t["thread"], t["current"]
         if not cur or t.get("pending") or threads.record_ended(t):
@@ -1551,7 +1552,7 @@ def sweep_threads():
                     and (threads.thread_of(cur) or {}).get("thread") == tid:
                 # The session's canonical record alone is ended (thread_of); one the Task Board keeps (D7) is said
                 # and never asked about.
-                why = sminos.sibling_module("sminos_tasks").keeps(tid, after, now)
+                why = sminos.sibling_module("sminos_tasks").keeps(tid, after, now, board)
                 if why:
                     kept[tid] = leaves(t, cur, why, noted.get(tid))
                 else:

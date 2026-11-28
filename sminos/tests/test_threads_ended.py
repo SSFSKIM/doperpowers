@@ -1445,5 +1445,46 @@ class TaskBoard(Ending):
         self.assertTrue(self.ended(tid))
 
 
+    def test_a_wake_outcome_whose_time_does_not_read_keeps_the_thread_and_is_said(self):
+        sid, tid, task_id = self.asked_and_due()
+        self.task("done", task_id, "--wake")
+
+        def damage(s):
+            s["tasks"][task_id]["outcomes"][0]["at"] = "not a time"
+        self.rewrite(damage)
+        self.sweep()
+        self.assertFalse(self.ended(tid))
+        said = self.logged("could not be read")
+        self.assertEqual(len(said), 1, said)
+
+    def test_a_task_row_that_is_not_an_object_keeps_the_thread_and_is_said(self):
+        sid, tid, task_id = self.asked_and_due()
+        self.task("done", task_id, "--no-wake")
+        self.rewrite(lambda s: s["tasks"].update({"t99": "damaged"}))
+        self.sweep()
+        self.assertFalse(self.ended(tid))
+        said = self.logged("could not be read")
+        self.assertEqual(len(said), 1, said)
+
+    def test_an_asker_that_does_not_read_keeps_the_thread_and_is_said(self):
+        sid, tid, task_id = self.asked_and_due()
+        self.rewrite(lambda s: s["tasks"][task_id].update(askers=[]))
+        self.sweep()
+        self.assertFalse(self.ended(tid))
+        self.assertEqual(len(self.logged("could not be read")), 1)
+
+    def test_two_due_threads_of_one_ending_pass_read_the_store_once(self):
+        first = self.asked_and_due(name="alpha")
+        second = self.asked_and_due(name="beta")
+        self.spacing_due()
+        sminos.forget_caches()
+        with mock.patch.object(tasks, "read_state", wraps=tasks.read_state) as read:
+            self.daemon.sweep_threads()
+        self.assertEqual(read.call_count, 1)
+        for _, tid, _ in (first, second):
+            self.assertFalse(self.ended(tid))
+        self.assertEqual(len(self.logged()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
