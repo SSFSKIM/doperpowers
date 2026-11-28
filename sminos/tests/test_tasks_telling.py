@@ -106,8 +106,16 @@ class Board(Deliveries):
     def outcome(self, tid="t1", n=0):
         return self.store()["tasks"][tid]["outcomes"][n]
 
-    def notices(self):
-        return [e for e in self.log() if e.get("notice") == "tasks"]
+    def notices(self, p=None):
+        if p is None:
+            return [e for e in self.log() if e.get("notice") == "tasks"]
+        d = sminos.project_path(p, "log")
+        out = []
+        for name in sorted(os.listdir(d)):
+            if name.endswith(".jsonl"):
+                with open(os.path.join(d, name)) as f:
+                    out += [json.loads(x) for x in f if x.strip()]
+        return [e for e in out if e.get("notice") == "tasks"]
 
     def live(self, name="term-a", sid=None):
         """A terminal's process holding a session with an inbox, joined: (session, process, the inbox's file)."""
@@ -322,7 +330,8 @@ class Tell(Board):
         standin = self.bridge(sid, results={"tell": {"sent": True}})
         self.assertEqual(self.act("done", "t1")["told"], "now")
         [c] = self.told(standin)
-        self.assertEqual((c["agentId"], c["resolvedAgentId"], c["text"]), (AGENT, AGENT, self.form("A", "marked t1 done")))
+        self.assertEqual((c["agentId"], c["resolvedAgentId"], c["text"]),
+                         (AGENT, AGENT, self.form("A", "marked t1 done")))
         send = self.outcome()["send"]
         self.assertEqual({k: send[k] for k in ("state", "how", "session", "agent", "liveOnly", "answer")},
                          {"state": "sent", "how": "tell", "session": sid, "agent": AGENT, "liveOnly": True,
@@ -548,6 +557,49 @@ class Ended(Board):
         self.assertEqual(tasks.hourly(), [])
         self.assertEqual(len(self.notices()), 1, "once")
         self.assertEqual(self.resumes(sid), [])
+
+    def successor_opens_in_another_project_first(self, s1):
+        """A /clear's successor of s1, not alive (unbound, no process), opened in another project in the instant
+        between the decision that the target ended and the ended line's append: (that project, the successor)."""
+        other = self.repo("other")
+        q = self.project_of(other)
+        s2 = str(uuidlib.uuid4())
+        st = self.store()
+        st["successors"][s1] = {"session": s2, "thread": None, "at": tasks.stamp(time.time() - 5)}
+        tasks._replace(st)
+        real = tasks.write_ended_line
+
+        def opened_first(*a):
+            self.session(root=other, sid=s2, name="term-b")
+            self.reconcile(q)
+            return real(*a)
+        p = mock.patch.object(tasks, "write_ended_line", side_effect=opened_first)
+        p.start()
+        self.addCleanup(p.stop)
+        return q, s2
+
+    def test_the_acts_ended_line_goes_to_the_project_of_the_target_that_decided_it(self):
+        s1, _ = self.ended()
+        q, _ = self.successor_opens_in_another_project_first(s1)
+        self.assertEqual(self.act("done", "t1")["told"], "ended")
+        self.assertEqual(len(self.notices()), 1, "in the project the conversation ended in")
+        self.assertEqual(self.notices(q), [], "not the successor's, which opened after the decision")
+
+    def test_a_late_resolutions_ended_line_goes_to_the_project_of_the_target_it_read(self):
+        sid, proc, received = self.asked("needed")
+        tid = threads.current_record(sid)["thread"]
+        with mock.patch.object(tasks, "send", side_effect=Killed):
+            with self.assertRaises(Killed):
+                self.t("done", "t1")
+        self.end(proc)
+        self.edit(tid, ended={"at": sminos.now(), "reason": "ended", "by": "", "pid": None})
+        q, _ = self.successor_opens_in_another_project_first(sid)
+        self.later(61)
+        self.assertEqual(tasks.hourly(), [])
+        self.assertEqual(self.outcome()["send"]["why"], "not-addressable")
+        self.assertEqual(len(self.notices()), 1)
+        self.assertEqual(self.notices(q), [])
+        self.assertIsNotNone(self.outcome()["endedLine"])
 
     def test_ended_line_stays_null_when_nothing_could_be_appended(self):
         self.ended()

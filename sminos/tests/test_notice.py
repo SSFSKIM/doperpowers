@@ -298,25 +298,29 @@ class Shown(Notices):
 
 class LiveAlone(Notices):
     """The Task Board's notice for the live alone to one recipient (board_notice): the mark an @all carries, with a
-    `to` of one. Its frame and its chat line name its recipient as an addressed event's do, never `@all`; an @all,
-    a broadcast's scope, a board notice to several and any other program's notice (`say --notice … '@all …'` with
-    one live member among them) are read as before."""
+    `to` of one, and a mark of its own (`addressed`). Its frame and its chat line name its recipient as an
+    addressed event's do, never `@all`; an @all, a broadcast's scope, a notice to several, and any `say --notice
+    <program> '@all …'` with one live member (`tasks` as the program included) are read as before."""
 
-    def test_a_notice_for_the_live_alone_to_one_recipient_reads_as_addressed(self):
-        sid, _ = self.session()
-        e = sminos.log_append(self.p, HUMAN, "human", **{"from": "human", "to": [{"session": sid, "alias": "x"}],
-                                                         "text": "for whoever runs", "notice": "tasks", "wake": True})
+    def test_board_notices_notice_for_the_live_alone_reads_as_addressed(self):
+        sid, _ = self.session(name="live-a")
+        self.reconcile()
+        how, _ = sminos.board_notice(sid, self.p.id, "for whoever runs", True)
+        self.assertEqual(how, "sent")
+        [e] = self.events("for whoever runs")
+        self.assertEqual((e.get("wake"), e.get("addressed"), e["notice"]), (True, True, "tasks"))
         first = sminos.frame_of(self.p, e, sminos.log_read(self.p), sid, {}).split("\n", 1)[0]
         self.assertIn(" from tasks@testhost → @you", first)
-        self.assertEqual(sminos.target_label(e), "@x")
-        self.assertIn(" tasks@testhost → @x  for whoever runs", sminos.chat_line(e))
+        alias = e["to"][0]["alias"]
+        self.assertEqual(sminos.target_label(e), "@" + alias)
+        self.assertIn(" tasks@testhost → @%s  for whoever runs" % alias, sminos.chat_line(e))
 
     def test_an_at_all_a_scope_and_a_notice_to_several_are_broadcasts_as_before(self):
         sid, _ = self.session()
         one = [{"session": sid, "alias": "x"}]
         two = one + [{"session": str(uuidlib.uuid4()), "alias": "y"}]
-        for fields, label in (({"to": one}, "@all"), ({"to": two, "notice": "tasks"}, "@all"),
-                              ({"to": one, "notice": "devcloud"}, "@all"),
+        for fields, label in (({"to": one}, "@all"), ({"to": two, "notice": "tasks", "addressed": True}, "@all"),
+                              ({"to": one, "notice": "devcloud"}, "@all"), ({"to": one, "notice": "tasks"}, "@all"),
                               ({"to": one, "notice": "devcloud", "scope": {"here": "testhost"}}, "@all on testhost")):
             with self.subTest(fields=fields):
                 e = dict(event(**{"wake": True, **fields}))
@@ -327,15 +331,21 @@ class LiveAlone(Notices):
     def test_say_notice_at_all_with_one_live_member_reads_at_all_as_before(self):
         sid, _ = self.session(name="live-a")
         self.reconcile()
-        code, out = self.say_notice("@all devcloud on vm: for whoever runs")
-        self.assertEqual(code, 0, out)
-        [e] = self.events("for whoever runs")
-        self.assertEqual((e.get("wake"), [r["session"] for r in e["to"]], e.get("scope")), (True, [sid], None),
-                         "an unscoped notice for the live alone, to one recipient")
-        self.assertEqual(sminos.target_label(e), "@all")
-        self.assertIn(" → @all", sminos.frame_of(self.p, e, sminos.log_read(self.p), sid, {}).split("\n", 1)[0])
-        code, out = self.cli("chat", "-n", "5")
-        self.assertIn("devcloud@testhost → @all  @all devcloud on vm: for whoever runs", out)
+        for program in ("devcloud", "tasks"):
+            with self.subTest(program=program):
+                text = "%s on vm: for whoever runs" % program
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+                code, out = self.cli("say", "--notice", program, "@all " + text)
+                self.assertEqual(code, 0, out)
+                [e] = self.events(text)
+                self.assertEqual((e.get("wake"), [r["session"] for r in e["to"]], e.get("scope"), e["notice"]),
+                                 (True, [sid], None, program), "an unscoped notice for the live alone, to one")
+                self.assertNotIn("addressed", e, "no verb of say writes board_notice's mark")
+                self.assertEqual(sminos.target_label(e), "@all")
+                frame = sminos.frame_of(self.p, e, sminos.log_read(self.p), sid, {})
+                self.assertIn(" → @all", frame.split("\n", 1)[0])
+                code, out = self.cli("chat", "-n", "5")
+                self.assertIn("%s@testhost → @all  @all %s" % (program, text), out)
 
 
 # ------------------------------------------------------------ the route

@@ -11068,6 +11068,7 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
 
 
 TASKS_NOTICE = "tasks"   # the program the Task Board's notices name (sminos_tasks, X6)
+ADDRESSED = "addressed"  # board_notice's own mark: its notice for the live alone reads as addressed (broadcast)
 
 
 def board_notice(session, project, text, live_only):
@@ -11078,7 +11079,8 @@ def board_notice(session, project, text, live_only):
     `session` as its own row there gives it ({session, alias}: member_row,
     no alias resolved), for the live alone when `live_only` (the mark an
     @all carries, with one recipient: deliver_next settles it `recorded`
-    for a session no process holds, so it never starts one), then
+    for a session no process holds, so it never starts one; and its own
+    mark, `addressed`, so it reads as addressed: broadcast), then
     delivered as a sender's own call delivers (deliver_next, due);
     `session` None: to nobody, `to` `*`, delivered to no one. ("sent",
     the delivery's outcome for the event, or `owed` when the call gave
@@ -11103,8 +11105,9 @@ def board_notice(session, project, text, live_only):
     recipients = [{"session": session, "alias": member.alias}] if member is not None else []
     au = audience_module()
     try:
-        [(e, _)] = say_appends(dest, "", "human", recipients, text, None, "human", wake=bool(live_only and member),
-                               notice=TASKS_NOTICE)
+        live = bool(live_only and member)
+        [(e, _)] = say_appends(dest, "", "human", recipients, text, None, "human", wake=live, notice=TASKS_NOTICE,
+                               extra={ADDRESSED: True} if live else None)
     except (au.Unreachable, au.StreamUnknown, OSError):
         return "none", "log-refused"
     if member is None:
@@ -11125,15 +11128,15 @@ def board_notice(session, project, text, live_only):
 
 def broadcast(e):
     """Whether an event for the live alone (`wake`) is read as a broadcast:
-    every one but the Task Board's notice (its `notice` TASKS_NOTICE) to
-    one recipient with no scope (board_notice's for the live alone), which
-    is as addressed as any. Every other notice, `say --notice`'s @all
-    included, reads as it always has."""
+    every one but board_notice's, which carries its own mark (ADDRESSED,
+    a field no verb of say writes) on a machine's notice to one recipient
+    with no scope, and is as addressed as any. Every other event, any
+    `say --notice <program> '@all …'` included, reads as it always has."""
     if not e.get("wake"):
         return False
     to = e.get("to")
-    return isinstance(e.get("scope"), dict) or not (notice_of(e) == TASKS_NOTICE and isinstance(to, list)
-                                                    and len(to) == 1)
+    return isinstance(e.get("scope"), dict) or not (e.get(ADDRESSED) is True and notice_of(e)
+                                                    and isinstance(to, list) and len(to) == 1)
 
 
 def target_label(e):

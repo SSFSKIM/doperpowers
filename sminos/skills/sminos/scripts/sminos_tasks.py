@@ -693,7 +693,7 @@ def digest(line):
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-MADE = []   # the outcome the last apply_line made, (task id, key); none for any other answer
+MADE = []   # the outcome the last apply_line made, (task id, key, the target that decided it); none for any other
 
 
 def told_of(target, task, line, outcome):
@@ -720,7 +720,7 @@ def apply_line(line, memo=None):
     unknown), kept under its key in the replace that decides it, so the same line again answers the same, `told`
     included, and changes nothing; `refused` (key-reused) answers a key already kept and is not kept itself.
     `memo`: the call's targets, shared by every line of one call, so a task's target is resolved once for each
-    distinct asker (§2). Nothing is sent from here: the outcome this very step made, (task id, key), is left in
+    distinct asker (§2). Nothing is sent from here: the outcome this very step made, (task id, key, target), is left in
     MADE for door_line, so only the call that made an outcome sends for it at once, and a resend of the line, which
     answers the kept verdict, leaves a due sending to resolve_due."""
     memo = {} if memo is None else memo
@@ -753,8 +753,9 @@ def apply_line(line, memo=None):
         if act in ("done", "decline") and line["revision"] != t["revision"]:
             return dict(head, verdict="stale", **where)
         if act in KIND:
-            verdict = _act(st, t, line, KIND[act], target_of(s, t, memo), head)
-            MADE.append((tid, verdict["outcome"]))
+            target = target_of(s, t, memo)
+            verdict = _act(st, t, line, KIND[act], target, head)
+            MADE.append((tid, verdict["outcome"], target))
         elif act == "seen":
             t["seenSeq"] = max(t["seenSeq"], min(line["seq"], s["seq"]))
             verdict = dict(head, verdict="applied", **where)
@@ -939,7 +940,7 @@ def send(task_id, key, memo=None):
         return True
     recorded = step(change)
     if recorded and target["state"] == "ended":
-        write_ended_line(task_id, key)
+        write_ended_line(task_id, key, target)   # the target that decided it, never one read again
     return recorded
 
 
@@ -962,15 +963,16 @@ def ended_project(target, task):
     return p.id if p is not None else None
 
 
-def write_ended_line(task_id, key):
+def write_ended_line(task_id, key, target):
     """The ended line, once: by the call that applied the act, or by a late resolution that found the target
     ended (send). To nobody, in the log of the project the thread ended in, naming the task and no session;
-    `endedLine` set only when something was appended."""
+    `endedLine` set only when something was appended. `target` is the ended one that decided the line (the act's,
+    or the late resolution's): its thread's project is the line's, whatever the store's pairs say by now."""
     state = _sendable_store(read_state())
     t, o = _found(state, task_id, key)
     if o is None or o.get("endedLine") is not None:
         return False
-    pid = ended_project(target_of(state, t), t)
+    pid = ended_project(target, t)
     if pid is None:
         return False
     how, _ = sminos.board_notice(None, pid, ended_line(o["kind"], task_id), False)
@@ -1019,9 +1021,9 @@ def door_line(line, memo):
     if made is not None:
         try:
             if verdict.get("told") in ("now", "wake"):
-                send(*made, memo=memo)
+                send(made[0], made[1], memo=memo)
             elif verdict.get("told") == "ended":
-                write_ended_line(*made)
+                write_ended_line(*made)   # to the project of the target that decided `ended`
         except Exception as e:
             sys.stderr.write("sminos: task: the sending of %s is left as it stands: %s\n"
                              % (made[1], getattr(e, "message", None) or e))
