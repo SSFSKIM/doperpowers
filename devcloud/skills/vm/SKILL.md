@@ -105,26 +105,33 @@ A VM is owned by a thread: the one whose session made it, or the one it
 was last handed to. (A session the MAWS app launched is no thread: a VM
 it makes is recorded under that session, and nothing guards that VM when
 the session ends.) A kept VM costs its hourly price until someone downs
-it; a leased one is deleted, with everything on it, when its lease ends.
+it. At a leased one's lease end its departure starts, and it is deleted
+with everything on it (not at that instant: minutes later, longer for a held departure; check
+`vm ls` before calling it gone).
 
-The VM tells its owning thread itself, in a sminos message from
-`devcloud@<name>` (no session answers it) to the thread's current
-session, which wakes it if stopped: after three days with no activity (no
+A VM whose sminos is installed and cut over (an enrolled one) tells its
+owning thread itself, in a sminos message from `devcloud@<name>` (no
+session answers it) to the thread's current session, which wakes it if
+stopped and not held: after three days with no activity (no
 transcript written, no terminal login, no load) and every three idle days
 after, with its idle time, its cost and its unpushed work; and in a
 lease's last thirty minutes, naming the repositories with unpushed work.
 On an idle notice, down the VM when its work is done, or tell the person
-why it stays. Where the thread cannot be reached, the notice goes to its
-project's live sessions, or with none to the project's log. The VM also
-records each notice in the channels whose pool holds it (`sminos chat
-<channel>`), where everyone who reads the channel sees it, unpushed
-repositories included; downing the VM stays the owning thread's
-decision. `sminos channel show <channel>` lists each VM of the channel
-with its owner, how long it has run and what it has cost.
+why it stays. Where the thread is held, ended or gone, the notice goes
+to its project's live sessions, or with none to the project's log; a VM
+without sminos only logs it on the host. The VM also copies each notice,
+where it can, into the channels its own view of the pools puts it in
+(`sminos chat <channel>`): addressed to no one, so a copy there is no
+sign the owner was told, and read by everyone who reads the channel,
+unpushed repositories included; downing the VM stays the owning
+thread's decision. `sminos channel show <channel>` shows what this Mac's
+devcloud found of the channel's VMs (owner, age, and cost as list price
+times age), with a line for any account it could not ask.
 
 `devcloud vm lease <name> <duration>` sets the end to now plus the
-duration, and `lease <name> keep` removes it; `lease` waits while the
-host rejoins the tailnet under the same name. When the work is done, push
+duration, and `lease <name> keep` removes it. A change between kept and
+leased makes the host rejoin the tailnet under the same name, and
+`lease` waits until it is back. When the work is done, push
 it and `devcloud vm down <name>`: it refuses (exit 5) while a checkout
 under `~/Developer/GitHub` has unpushed or uncommitted work, and
 `--force` discards that work, so use it only for work nobody needs.

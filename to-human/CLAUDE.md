@@ -11,7 +11,7 @@ A third plugin in this marketplace (versioned on its own: `scripts/bump-version.
 
 ## Modules (`hooks/mods/`)
 
-- `message.tsx`: the message tool, `mcp__to-human__message` (`{text, final}`, result `sent`). Its name, input, result, refusals and the log event sminos writes for it are a contract MAWS and the desk build on (design `docs/doperpowers/specs/2026-10-20-to-human-message-tool-design.md`). Registered only under the `doperpowers:to-human` style, read once at start (`getsTool`). A final message ends the turn with no request after it: `turn.step` answers the next step itself with `FINAL_ANSWER` (`registerMessage`, `endsOnFinal`, `STANDING_ATTACHMENTS`).
+- `message.tsx`: the message tool, `mcp__to-human__message` (`{text, final}`, result `sent`). Its name, input, result, refusals and the log event sminos writes for it are a contract MAWS and the desk build on (design `docs/doperpowers/specs/2026-10-20-to-human-message-tool-design.md`). Registered only under the `doperpowers:to-human` style, read once at start (`getsTool`). A final message ends the turn with no request after it, when the next step would carry nothing else for the model (no other call, queued prompt or hook context): `turn.step` answers it with `FINAL_ANSWER` (`registerMessage`, `endsOnFinal`, `STANDING_ATTACHMENTS`).
 - `to-human.tsx`: the view, the style's consumer on every surface: marked spans drawn as the report, each run of working record between two rows the human reads folded behind one button, `/to-human-dump` for a fold drawn wrong (it writes the view's state under the configuration directory's `to-human/dumps/`).
 - `folds.tsx`: the run tracker: what a fold's button reads (the live call's line, then a haiku summary; design `docs/doperpowers/specs/2026-11-12-fold-summaries-design.md`).
 - `edits.tsx`: folds a run of `Edit`/`Write`/`NotebookEdit` rows into one summary line; registered from the view (`registerEdits`), beneath its hooks.
@@ -29,7 +29,7 @@ A third plugin in this marketplace (versioned on its own: `scripts/bump-version.
 
 ## Engine traps
 
-- **Row ids.** A kept row and its drawing are matched by the first 24 characters of the id (`rowKey`): once a message holds more than one block, the engine draws later rows under a derived id. Any table keyed by a row's id goes through `rowKey`.
+- **Row ids.** A kept row and its drawing are matched by the first 24 characters of the id (`rowKey`): once a message holds more than one block, the engine draws later rows under a derived id. A table that matches a drawing to its kept row goes through `rowKey`; one that tells a kept row's blocks apart (`View.rowOf`, `View.shown`) keeps the full id.
 - **Draw budget.** The engine allows a draw 10 s and unloads a plugin whose draws twice overrun it, deaf to their signal; so no draw waits on I/O for long (the start-up read waits at most `START_WAIT_MS`), and a transcript search must stay cheap on a file of hundreds of MB.
 - **Attachment answers are cached process-wide by UUID**, and a fork inherits main's, so a `prompt.attachment` answer cannot depend on which loop asked (`STYLE_FINAL`; the compact mod keeps the same rule).
 - **The loader refuses a module that keeps the value of a function it hands `on`**, which is why the view registers `edits.tsx` and `folds.tsx` rather than taking their state back.
@@ -37,4 +37,4 @@ A third plugin in this marketplace (versioned on its own: `scripts/bump-version.
 
 ## Tests
 
-`to-human/tests/mods/run.sh` is the `to-human-mods` gate: the kit's tests, then under bun the checks a kit test cannot make (`session-places.ts`, `maws-surface.ts`, `fold-label-cases.ts`). The live checks (`live-message-check.py`, `live-final-check.py`, `live-maws-check.py`, `live-resume-check.py`, `live-reload-check.py`, `live-folds-check.py`) each drive an isolated session in a tmux pane; they are run by hand, since they spend model calls (haiku, through the gateway keys in the environment). Each file's docstring says what it pins.
+`to-human/tests/mods/run.sh` is the `to-human-mods` gate: the kit's tests, then under bun the checks a kit test cannot make (`session-places.ts`, `maws-surface.ts`, `fold-label-cases.ts`). The live checks (`live-message-check.py`, `live-final-check.py`, `live-maws-check.py`, `live-resume-check.py`, `live-reload-check.py`, `live-folds-check.py`) each drive an isolated session in a tmux pane; they are run by hand, since they spend model calls (haiku, through the gateway keys in the environment), but for `live-reload-check.py`, which makes none. Each file's docstring says what it pins.
