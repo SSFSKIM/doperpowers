@@ -24,7 +24,8 @@ State ($TASK_GH_STATE):
                 another writer creates), {vanish: {repo}} (the repository gone from
                 the credential's sight), {sleep: seconds}, {kill: true} (the
                 calling process, killed as the call returns: a writer that
-                dies after a write)
+                dies after a write), {run: {argv, env}} (another command run
+                to its end meanwhile, with `env` over the call's environment)
   repos         {"owner/name": {default_branch, files: {path: text},
                  labels: {name: {color, description}}, next,
                  issues: {"<n>": issue}}}
@@ -32,7 +33,9 @@ An issue: number, title, body, state (OPEN|CLOSED), stateReason, author,
 editor (null), createdAt, labels [names], blocked_by [[repo, n]], parent
 [repo, n] | null, comments [{id, author, editor, createdAt, body}],
 prs [{number, state, updatedAt, url}], branches [{name, committedDate}],
-reopened [createdAt]: when it was reopened, oldest first.
+reopened [createdAt]: when it was reopened, oldest first; pull: true for a
+pull request, which shares the issues' numbers and their comments endpoint
+and is no issue to GraphQL. search_incomplete: true for a search that timed out.
 
 Each call is appended to $TASK_GH_LOG as {"argv": [...], "stdin": ...}.
 """
@@ -41,6 +44,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -174,7 +178,7 @@ def graphql(s, op, v):
     if op in ("TaskIssue", "TaskComments", "TaskIssueNode"):
         key, r = repo_of(s, "%s/%s" % (v["owner"], v["name"]))
         it = r["issues"].get(str(v["number"]))
-        if it is None:
+        if it is None or it.get("pull"):  # a pull request shares the numbers, never the issue lookup
             return {"data": {"repository": {"issue": None}},
                     "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to an Issue with the number "
                                 "of %s." % v["number"]}]}
@@ -191,7 +195,8 @@ def graphql(s, op, v):
         return {"data": {"repository": {"issue": node}}}
     if op == "TaskBoard":
         key, r = repo_of(s, "%s/%s" % (v["owner"], v["name"]))
-        open_ = sorted((it for it in r["issues"].values() if it["state"] == "OPEN"), key=lambda i: i["number"])
+        open_ = sorted((it for it in r["issues"].values() if it["state"] == "OPEN" and not it.get("pull")),
+                       key=lambda i: i["number"])
         size = int(s.get("page_size", 50))
         start = int(v["cursor"]) if v.get("cursor") else 0
         page = open_[start:start + size]
@@ -229,7 +234,7 @@ def graphql(s, op, v):
 
 
 # ── REST ───────────────────────────────────────────────────────────────────
-def search(s, q):
+def search(s, q, page=1, per_page=30):
     repos, words, state = [], [], None
     for tok in q.split():
         if tok.startswith("repo:"):
@@ -252,7 +257,11 @@ def search(s, q):
                 items.append({"number": it["number"], "title": it["title"], "state": it["state"].lower(),
                               "html_url": "https://github.com/%s/issues/%d" % (key, it["number"]),
                               "repository_url": "https://api.github.com/repos/%s" % key, "body": it["body"]})
-    return {"total_count": len(items), "items": items}
+    if page * per_page > 1000 and (page - 1) * per_page >= 1000:
+        fail(422, "Cannot access beyond the first 1000 results, or the page size is too large.")
+    # As GitHub: every match counted, only the first 1000 served, a page at a time.
+    served = items[:1000][(page - 1) * per_page:page * per_page]
+    return {"total_count": len(items), "incomplete_results": bool(s.get("search_incomplete")), "items": served}
 
 
 def rest(s, method, path, params, data):
@@ -260,7 +269,7 @@ def rest(s, method, path, params, data):
     if path.split("?")[0] == "user":
         return {"login": s["login"]}
     if path.startswith("search/issues"):
-        return search(s, params.get("q", ""))
+        return search(s, params.get("q", ""), int(params.get("page", 1)), int(params.get("per_page", 30)))
     m = re.fullmatch(r"repos/([^/]+/[^/]+)/(.*)", path)
     if not m:
         fail(404, "Not Found")
@@ -362,6 +371,10 @@ def delete_comment(s, path):
 
 # ── hooks: what another writer does at a chosen moment ─────────────────────
 def act(action):
+    if "run" in action:
+        subprocess.run(action["run"]["argv"], env=dict(os.environ, **action["run"].get("env", {})),
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        return
     s = load()
     if "sleep" in action:
         time.sleep(float(action["sleep"]))

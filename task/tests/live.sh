@@ -40,9 +40,25 @@ unset CLAUDE_CODE_SESSION_ID
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# A case writes to its repositories only once github.com has said each is private: its full name is kept in
+# resolved_<variable> (a renamed repository's answer is its new name).
+scratch() {
+  need "$1"
+  local seen
+  if ! seen="$(gh api --hostname github.com "repos/${!1}" -q '[.full_name, (.private | tostring)] | join(" ")')"; then
+    echo "live.sh $case: $1 could not be read on github.com; nothing was run" >&2
+    exit 2
+  fi
+  if [ "${seen##* }" != true ]; then
+    echo "live.sh $case: $1 is not a private repository; nothing was run" >&2
+    exit 2
+  fi
+  printf -v "resolved_$1" '%s' "$(lower "${seen% *}")"
+}
+
 case "$case" in
   fork)
-    need TASK_LIVE_REPO
+    scratch TASK_LIVE_REPO
     upstream="${TASK_LIVE_UPSTREAM:-cli/cli}"
     gh repo clone "$TASK_LIVE_REPO" "$work/clone" -- -q
     git -C "$work/clone" remote add upstream "https://github.com/$upstream.git"
@@ -84,9 +100,13 @@ PY
     exit "$status"
     ;;
   edge)
-    need TASK_LIVE_REPO
-    need TASK_LIVE_REPO2
-    blocker="$(gh api "repos/$TASK_LIVE_REPO2/issues" -X POST -f title="live edge check: the blocker" \
+    scratch TASK_LIVE_REPO
+    scratch TASK_LIVE_REPO2
+    if [ "$resolved_TASK_LIVE_REPO" = "$resolved_TASK_LIVE_REPO2" ]; then
+      echo "live.sh edge: TASK_LIVE_REPO and TASK_LIVE_REPO2 are one repository; the case needs two" >&2
+      exit 2
+    fi
+    blocker="$(gh api --hostname github.com "repos/$TASK_LIVE_REPO2/issues" -X POST -f title="live edge check: the blocker" \
       -f body="A scratch issue of task/tests/live.sh edge; closed by it." -q .number)"
     printf 'A scratch ticket of task/tests/live.sh edge, waiting on %s#%s; closed by it.\n' \
       "$TASK_LIVE_REPO2" "$blocker" > "$work/body.md"
@@ -111,14 +131,14 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     if [ -n "$number" ]; then
       "$task" close "$number" --not-planned --repo "$TASK_LIVE_REPO" > /dev/null
     fi
-    gh api "repos/$TASK_LIVE_REPO2/issues/$blocker" -X PATCH -f state=closed -f state_reason=not_planned > /dev/null
+    gh api --hostname github.com "repos/$TASK_LIVE_REPO2/issues/$blocker" -X PATCH -f state=closed -f state_reason=not_planned > /dev/null
     echo "cross-repository blocked-by: $verdict"
     ;;
   migrate)
     # Seeds one `live migrate: …` issue per row of D6's table, plans, settles the decisions (every row of an issue
     # it did not make is "leave"), applies twice and lints; its issues are closed at the end, and at the start
     # when an earlier run left them open. The fork case's standing ticket is on the board already: no row.
-    need TASK_LIVE_REPO
+    scratch TASK_LIVE_REPO
     helper="$here/live_migrate.py"
     python3 "$helper" clear "$TASK_LIVE_REPO"
     # On a failure the work directory (the plan, each step's output) is kept and named.
@@ -147,14 +167,14 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
   race)
     # Twenty rounds of five claimants on fresh tickets (live_race.py says how); each ticket is closed at its
     # round's end. Any count but one winner a round and no missed claim stops M3 (the spec's Delegated unknowns).
-    need TASK_LIVE_REPO
+    scratch TASK_LIVE_REPO
     python3 "$here/live_race.py" "$TASK_LIVE_REPO" "$task" "${TASK_LIVE_ROUNDS:-20}"
     ;;
   lapse)
     # A spawned thread claims a fresh scratch ticket with this launcher and is retired; nothing in sminos calls
     # the plugin, so the release comes from the settle a later `task list` of that board runs on this machine. The
     # real sminos is used (TASK_LIVE_SMINOS, else PATH, else the marketplace clone), with this case's TASK_HOME.
-    need TASK_LIVE_REPO
+    scratch TASK_LIVE_REPO
     sm="${TASK_LIVE_SMINOS:-$(command -v sminos || echo "$HOME/.claude/plugins/marketplaces/doperpowers/sminos/skills/sminos/scripts/sminos")}"
     if [ ! -x "$sm" ]; then echo "live.sh lapse: no sminos CLI found (set TASK_LIVE_SMINOS)" >&2; exit 2; fi
     printf 'A scratch ticket of task/tests/live.sh lapse: a spawned thread claims it and is retired; closed by it.\n' \
@@ -165,9 +185,12 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     trap '"$task" close "$number" --repo "$TASK_LIVE_REPO" --not-planned --force "live lapse check done" \
       > /dev/null 2>&1 || true; rm -rf "$work"' EXIT
     alias="task-lapse-$(date +%s)"
+    # Every word of the command quoted for a shell, a path or a name with a quote or a space in it staying one
+    # word; the assignments are env's arguments, since a quoted assignment is no assignment to the shell.
+    command="$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' env "TASK_HOME=$TASK_HOME" \
+      "TASK_SMINOS=$sm" "$task" claim "$number" --repo "$TASK_LIVE_REPO")"
     "$sm" spawn "$alias" "Run exactly this one command with your Bash tool and reply with its output and nothing \
-else: TASK_HOME='$TASK_HOME' TASK_SMINOS='$sm' '$task' claim $number --repo '$TASK_LIVE_REPO'" \
-      > "$work/spawn.txt" 2>&1 || true
+else: $command" > "$work/spawn.txt" 2>&1 || true
     # The seat works in the background: its claim is seen in this case's index, within ten minutes.
     held="$(python3 - "$TASK_HOME/claims.json" "$number" <<'PY'
 import json, sys, time

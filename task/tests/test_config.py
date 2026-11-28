@@ -101,6 +101,14 @@ class ConfigurationTest(BoardCase):
         self.assertIn("git remote set-head origin --auto", err)
         self.assertEqual(self.calls(), [])
 
+    def test_the_repair_quotes_the_remote_for_a_shell(self):
+        clone = self.clone(remotes={"up$tream;x": "https://github.com/%s.git" % A},
+                           defaults={"up$tream;x": self.NOREF})
+        self.git(clone, "config", "task.remote", "up$tream;x")
+        code, _, err = self.task("list", cwd=clone, repo=False)
+        self.assertEqual(code, 1)
+        self.assertIn("git remote set-head 'up$tream;x' --auto", err)
+
     def test_a_remote_that_is_no_github_repository(self):
         for url in ("https://gitlab.example.com/acme/widgets.git", "/srv/git/widgets.git"):
             with self.subTest(url=url):

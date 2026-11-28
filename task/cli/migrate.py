@@ -122,12 +122,24 @@ def _row(ticket, login):
 
 
 def _inside_a_work_tree(directory):
+    """The work tree holding a directory, or None when git confirms there is
+    none; any other answer (no git, a timeout, a repository git declines to
+    read) decides nothing, and the plan is not written."""
+    env = {k: v for k, v in os.environ.items() if k != "LANGUAGE"}
+    env["LC_ALL"] = "C"  # the one message read below, untranslated
     try:
         done = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"], capture_output=True,
-                              text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return done.stdout.strip() if done.returncode == 0 else None
+                              text=True, timeout=30, env=env)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        why = "git did not answer in time" if isinstance(e, subprocess.TimeoutExpired) else "git could not run: %s" % e
+    else:
+        if done.returncode == 0:
+            return done.stdout.strip()
+        if "not a git repository" in done.stderr:
+            return None
+        why = done.stderr.strip() or "git exited %d" % done.returncode
+    raise failed("could not tell whether %s is inside a repository's work tree (%s): a plan is written only where it "
+                 "is known never to be committed" % (directory, why))
 
 
 def _plan_path(out, repo):

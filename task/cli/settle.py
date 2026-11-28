@@ -10,6 +10,7 @@ import time
 
 import board as B
 import claims as C
+import config
 import index as I
 import sminos_client as sminos
 from common import Stop
@@ -117,12 +118,30 @@ def _selected(row, thread, repo, states):
             and (repo is None or row["repo"].lower() == repo.lower()))
 
 
-def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD, I.OWED)):
+def _bound_to_task(client, repo):
+    """None when the board's configuration, read from its default branch on
+    GitHub as `--repo` reads it, says `task` and names it; else why not. An
+    index row says where this machine once claimed, not that `task` still
+    works that board: the old scripts may own it again."""
+    try:
+        config.from_github(repo, client)
+    except OutOfTime:
+        raise
+    except Stop as e:
+        return e.message
+    return None
+
+
+def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD, I.OWED), verified=()):
     """One pass over this machine's rows (of one thread, of one board, or
-    all), least recently visited first. A `deadline` (a time.monotonic()
-    value) bounds every call made in the pass; when it is reached each row
-    keeps the state it had reached, and the board's pass is incomplete.
-    (report, the boards whose every selected row was reached)."""
+    all), least recently visited first. Before any write on a board its
+    configuration is read, unless the caller has just read it (`verified`):
+    a board no longer bound to `task`, or one whose binding cannot be
+    read, keeps its rows and is reported unreachable. A `deadline` (a
+    time.monotonic() value) bounds every call made in the pass; when it is
+    reached each row keeps the state it had reached, and the board's pass
+    is incomplete. (report, the boards whose every selected row was
+    reached)."""
     report = empty_report()
     with I.locked() as data:
         I.prune(data)
@@ -134,6 +153,7 @@ def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD
     for r in rows:
         if r["repo"] not in boards:
             boards.append(r["repo"])
+    known = {I.board_key(b) for b in verified}
     ask = asker(deadline)
     complete = set()
     before, client.deadline = client.deadline, deadline
@@ -147,6 +167,13 @@ def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD
             boards = []
         for b in boards:
             reached = True
+            try:
+                why = None if I.board_key(b) in known else _bound_to_task(client, b)
+            except OutOfTime:
+                continue
+            if why is not None:
+                report["unreachable"].append({"repo": b, "said": "not settled: %s" % why})
+                continue
             for row in (r for r in rows if r["repo"] == b):
                 try:
                     _settle_row(client, login, b, row, ask, report)
@@ -172,27 +199,35 @@ def _entry(row, **more):
 
 
 def _settle_row(client, login, repo, row, ask, report):
+    """One row, from its state in the index as the pass reaches it (not
+    from the pass's snapshot). Every transition names the state it was
+    decided from, so a concurrent writer's later transition (a takeover's
+    lapse, another settle's) is never undone."""
     token, number = row["attempt"], row["number"]
     # Visited as it is reached, so that a pass whose budget runs out in this read resumes past it next time.
-    I.change(token, visited=I.now())
+    row = I.change(token, visited=I.now())
+    if row is None or row["state"] == I.LAPSED:
+        return  # another writer settled it since the pass began
+    st = (row["state"],)
     try:
         t = read(client, login, repo, number)
     except GitHubError as e:
         if not e.not_found or isinstance(e, OutOfTime):
             raise
-        I.remove(token)  # the repository answered, and the issue is gone: no claim on it can stand
-        report["closed"].append(_entry(row))
+        if I.remove(token, expect=st):  # the repository answered, and the issue is gone: no claim on it can stand
+            report["closed"].append(_entry(row))
         return
     I.change(token, title=t.node["title"], url=t.node["url"])
     if t.state != "open":
         converge(client, login, t)
-        I.remove(token)
-        report["closed"].append(_entry(row))
+        if I.remove(token, expect=st):
+            report["closed"].append(_entry(row))
         return
     if row["state"] == I.PENDING:
         row = _settle_pending(client, login, t, row, report)
         if row is None:
             return
+        st = (row["state"],)
     if t.holder is None or t.holder.id != row["claim"]:
         # Its claim was ended: by this machine's own release before a crash (an owed row, whose reason stands), by
         # its holder, or by another session's takeover or forced release. Nothing is asked.
@@ -202,27 +237,27 @@ def _settle_row(client, login, repo, row, ask, report):
             reason = lapse_reason(t.fold, row["claim"])
         converge(client, login, t)
         if reason is None:
-            I.remove(token)
-            return
-        I.lapse(token, reason)
-        report["lapsed"].append(_entry(row, reason=reason))
+            I.remove(token, expect=st)
+        elif I.lapse(token, reason, expect=st):
+            report["lapsed"].append(_entry(row, reason=reason))
         return
     t = converge(client, login, t)
     if not row["thread"]:
         if row["state"] == I.OWED:  # no thread to ask about, so no end to stand on
-            I.change(token, state=I.HELD, reason="")
+            I.change(token, expect=st, state=I.HELD, reason="")
         return  # no thread (O4): no machine learns that it ended
     # An owed row's claim still stands: its release is written only on sminos's word of this moment, as any other.
     verdict, said = ask(row["thread"])
     if verdict == LIVE:
         if row["state"] == I.OWED:
-            I.change(token, state=I.HELD, reason="")  # it returned before the release was written
+            I.change(token, expect=st, state=I.HELD, reason="")  # it returned before the release was written
         return
     if verdict != ENDED:
         report["unknown"].append(_entry(row, title=t.node["title"], url=t.node["url"], claim=row["claim"],
                                         thread=row["thread"], said=said))
         return
-    I.change(token, state=I.OWED, reason="ended")
+    if I.change(token, expect=st, state=I.OWED, reason="ended") is None:
+        return  # another writer moved the row while sminos was asked: its transition stands
     _release(client, login, t, row, report)
 
 
@@ -230,17 +265,17 @@ def _release(client, login, t, row, report):
     """An owed row's release: the record, the label and the look, the row
     lapsed. A failure, or a release the confirming read does not show,
     leaves the row owed, for the next settle or writing verb on this board."""
-    token = row["attempt"]
+    token, owed = row["attempt"], (I.OWED,)
     try:
         kind, _, last = write_release(client, login, t.repo, t.number, row["claim"], "ended")
     except GitHubError:
-        I.change(token, tries=row["tries"] + 1)
+        I.change(token, expect=owed, tries=row["tries"] + 1)
         raise
     if kind == C.MISSING:
-        I.change(token, tries=row["tries"] + 1)
+        I.change(token, expect=owed, tries=row["tries"] + 1)
         return
     reason = "ended" if kind == C.CURRENT else (lapse_reason(last.fold, row["claim"]) or "ended")
-    I.lapse(token, reason)
+    I.lapse(token, reason, expect=owed)
     if kind == C.CURRENT:
         report["released"].append(_entry(row, title=t.node["title"], url=t.node["url"], claim=row["claim"],
                                          reason="ended"))
@@ -253,27 +288,25 @@ def _settle_pending(client, login, t, row, report):
     ticket: the record that carries its token is found, and the row follows
     its outcome. One in effect and current becomes held, and is returned
     to go on as any held row in the same pass; None when the row is done."""
-    token = row["attempt"]
+    token, pending = row["attempt"], (I.PENDING,)
     rec = t.fold.by_attempt(token)
     if rec is None:
         if I.age(row["at"]).total_seconds() >= PENDING_KEPT:
-            I.remove(token)
+            I.remove(token, expect=pending)
         return None
     kind, other = t.fold.outcome(rec.id)
     if kind == C.CURRENT:
-        held = I.change(token, state=I.HELD, claim=rec.id, since=rec.created)
-        return held
+        return I.change(token, expect=pending, state=I.HELD, claim=rec.id, since=rec.created)
     if kind == C.SUPERSEDED:
         reason = lapse_reason(t.fold, rec.id) or "forced"
-        I.change(token, claim=rec.id, since=rec.created)
-        I.lapse(token, reason)
+        if I.change(token, expect=pending, state=I.LAPSED, reason=reason, claim=rec.id, since=rec.created):
+            report["lapsed"].append(_entry(row, reason=reason))
         converge(client, login, t)
-        report["lapsed"].append(_entry(row, reason=reason))
     elif kind in (C.VOID, C.SHUT_OUT):
         client.delete_comment(t.repo, rec.id)
-        I.remove(token)
+        I.remove(token, expect=pending)
         converge(client, login, t)
     else:  # of an earlier open interval: it may have taken effect there, so it stays
-        I.remove(token)
+        I.remove(token, expect=pending)
         converge(client, login, t)
     return None

@@ -10,6 +10,7 @@ asks the GitHub client which repository a directory belongs to, and nothing
 fetches."""
 import json
 import re
+import shlex
 import subprocess
 
 from common import failed, usage
@@ -118,7 +119,7 @@ def from_clone(cwd):
     commit = out.strip()
     if code != 0 or not commit:
         raise failed("this clone has no %s, so remote %s's default branch is not known here: run `git remote "
-                     "set-head %s --auto` (task makes no fetch of its own)" % (ref, remote, remote))
+                     "set-head %s --auto` (task makes no fetch of its own)" % (ref, remote, shlex.quote(remote)))
     source = "%s:%s" % (ref, FILE)
     code, out, _ = _git(cwd, "show", "%s:%s" % (commit, FILE))
     if code != 0:

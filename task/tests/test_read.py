@@ -1,5 +1,6 @@
 """Acceptance 4: read (list, show, search)."""
 import hashlib
+import json
 import unittest
 
 from harness import ADDRESS, OTHER_ADDRESS, OUTSIDER, REPO, BoardCase
@@ -191,6 +192,41 @@ class SearchTest(BoardCase):
         self.assertEqual([h["number"] for h in self.json("search", "widget repo:acme/gears")["hits"]], [1, 2])
         self.assertEqual(self.json("search", "flicker", "--bodies")["hits"][0]["body"], "It flickers.")
         self.assertEqual(self.writes(), [])
+
+    def many(self, count):
+        for n in range(1, count + 1):  # written at once: a save per issue would be slow
+            self.state["repos"][REPO]["issues"][str(n)] = {
+                "number": n, "title": "widget %d" % n, "body": "", "state": "OPEN", "stateReason": None,
+                "author": "acme-owner", "editor": None, "createdAt": "2026-10-01T00:00:00Z", "labels": [],
+                "blocked_by": [], "parent": None, "comments": []}
+        self.save()
+
+    def searches(self):
+        return [c for c in self.calls() if "search/issues" in c["argv"]]
+
+    def test_every_page_up_to_githubs_limit(self):
+        self.many(250)
+        code, out, err = self.task("search", "widget", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([h["number"] for h in json.loads(out)["hits"]], list(range(1, 251)))
+        self.assertEqual(len(self.searches()), 3)
+        self.assertEqual(err, "")
+
+    def test_hits_past_the_limit_are_said_to_be_omitted(self):
+        self.many(1004)
+        code, out, err = self.task("search", "widget", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(json.loads(out)["hits"]), 1000)
+        self.assertEqual(len(self.searches()), 10)
+        self.assertIn("4 more hits were not read", err)
+
+    def test_an_incomplete_search_says_so(self):
+        self.many(3)
+        self.state["search_incomplete"] = True
+        self.save()
+        code, out, err = self.task("search", "widget")
+        self.assertEqual(code, 0, err)
+        self.assertIn("stopped before it was complete", err)
 
 
 if __name__ == "__main__":

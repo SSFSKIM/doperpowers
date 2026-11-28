@@ -40,6 +40,8 @@ Q_BOARD = """query TaskBoard($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(first: 50, after: $cursor, states: [OPEN], orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor } nodes { %s %s } } } }""" % (_ISSUE_FIELDS, _COMMENTS % "")
+SEARCH_PAGE = 100   # the most hits GitHub's search gives in one page
+SEARCH_LIMIT = 1000  # and the furthest it reads: hits past the 1000th are never served
 Q_NODE = """query TaskIssueNode($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { issue(number: $number) {
     id number state stateReason
@@ -153,6 +155,8 @@ class Client:
     def default_branch_file(self, repo, path):
         try:
             out = self.rest("GET", "repos/%s/contents/%s" % (repo, path))
+        except OutOfTime:
+            raise
         except GitHubError as e:
             if e.not_found:
                 return None
@@ -239,14 +243,27 @@ class Client:
             raise
 
     def search(self, repo, query, state):
+        """The board's hits, read a page at a time up to GitHub's search limit,
+        and what was not read: {"unread": hits the search counted past the
+        pages read, "incomplete": GitHub's search stopped short}."""
         q = "%s repo:%s is:issue" % (query, repo)
         if state in ("open", "closed"):
             q += " is:%s" % state
-        out = self.rest("GET", "search/issues", params={"q": q, "per_page": "100"})
+        items, counted, incomplete = {}, 0, False
+        for page in range(1, SEARCH_LIMIT // SEARCH_PAGE + 1):
+            out = self.rest("GET", "search/issues", params={"q": q, "per_page": str(SEARCH_PAGE), "page": str(page)})
+            got = out.get("items", [])
+            counted = max(counted, out.get("total_count", 0))
+            incomplete = incomplete or bool(out.get("incomplete_results"))
+            for h in got:  # a hit that moved between two pages is read once
+                items.setdefault(((h.get("repository_url") or "").lower(), h["number"]), h)
+            if len(got) < SEARCH_PAGE or len(items) >= counted:
+                break
         home = "https://api.github.com/repos/%s" % repo.lower()
         # A query may name another repository of its own (`repo:` twice is an OR): only this board's hits count.
-        return [h for h in out.get("items", [])
+        hits = [h for h in items.values()
                 if (h.get("repository_url") or "").lower() == home and "pull_request" not in h]
+        return hits, {"unread": max(counted - len(items), 0), "incomplete": incomplete}
 
     # ── labels ────────────────────────────────────────────────────────────
     def ensure_labels(self, repo, wanted):

@@ -1,14 +1,15 @@
-"""M3's review, fix waves 1 to 3: one test per behavior a wave changed (owed
+"""M3's review, fix waves 1 to 3 and the final one: one test per behavior a wave changed (owed
 rows, releases the confirming read does not show, pending rows, holder
 identity, the settle's deadline, housekeeping after preflight, a
 repository that cannot be read, close, the void claim's report, the board
-key, the label's 422)."""
+key, the label's 422, the outcome judged on the last read, the binding
+read before a settle writes, conditional index transitions)."""
 import json
 import time
 import unittest
 
-from harness import (ADDRESS, OTHER_ADDRESS, OTHER_SESSION, OTHER_THREAD, REPO, SESSION, THREAD, claim_body,
-                     takeover_body, thread_answer)
+from harness import (ADDRESS, OTHER_ADDRESS, OTHER_SESSION, OTHER_THREAD, REPO, SESSION, TASK, THREAD, board_file,
+                     claim_body, release_body, takeover_body, thread_answer)
 from test_settle import SettleCase
 
 COMMENTS = REPO + "/issues/5/comments"
@@ -441,6 +442,84 @@ class WaveThreeTest(SettleCase):
         self.assertEqual(code, 0, err)
         self.assertIn("task show 5 --repo acme/widgets", err)
         self.assertNotIn("next settle", err)
+
+
+class FinalWaveTest(SettleCase):
+    def test_a_takeover_landing_at_the_claims_label_write_refuses_the_claim(self):             # 1
+        self.ticket(5)
+        # Between the confirming read and the look: a forced takeover of the claim, its own record the latest comment.
+        body = takeover_body(0).replace("of: 0", "of: {last}")
+        self.hook(REPO + "/issues/5/labels", [{"comment": {"number": 5, "body": body}}])
+        code, out, err = self.task("claim", "5")
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("ended by", err)
+        [row] = self.rows()
+        self.assertEqual((row["state"], row["reason"]), ("lapsed", "taken-over"))
+        self.assertEqual(self.json("show", "5")["holder"]["address"], OTHER_ADDRESS)
+
+    def test_a_takeover_superseded_at_its_label_write_is_refused(self):                        # 1
+        self.claimed(5)
+        self.load()
+        self.state["repos"][REPO]["issues"]["5"]["labels"].remove("claimed")  # stale: the takeover writes it
+        self.save()
+        # The takeover's own record is the latest comment when its label is written: a forced release ends it there.
+        body = release_body(0, "forced: the owner said so").replace("of: 0", "of: {last}")
+        self.hook(REPO + "/issues/5/labels", [{"comment": {"number": 5, "body": body}}])
+        code, out, err = self.task("takeover", "5", "--force", "the owner moved it", session=OTHER_SESSION)
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("ended by", err)
+        self.assertIsNone(self.json("show", "5")["holder"])
+        rows = {r["session"]: r for r in self.rows()}
+        self.assertEqual(rows[OTHER_SESSION]["state"], "lapsed")
+
+    def test_a_board_no_longer_bound_to_task_is_not_settled(self):                            # 2
+        claim = self.claimed(5)
+        self.ended()
+        for name, files in (("says gh", {".doperpowers/board.json": board_file("gh")}), ("no file", {})):
+            with self.subTest(board=name):
+                self.load()
+                self.state["repos"][REPO]["files"] = files
+                self.save()
+                data = self.settle()
+                [u] = data["unreachable"]
+                self.assertEqual(u["repo"], REPO)
+                self.assertTrue(u["said"].startswith("not settled: "), u["said"])
+                self.assertEqual(data["released"], [])
+                self.assertEqual((self.row(5)["state"], self.row(5)["claim"]), ("held", claim))
+                self.assertEqual(self.releases(5), [])
+
+    def test_a_shut_out_retry_writes_its_row_again_when_it_was_removed(self):                 # 3
+        self.ticket(5)
+        self.state["repos"][REPO]["issues"]["5"]["reopened"] = ["2026-11-01T00:00:01Z"]
+        self.save()
+        # Another writer removes the row while the shut-out record is deleted.
+        drop = "import json, os; p = os.environ['TASK_HOME'] + '/claims.json'; d = json.load(open(p)); " \
+               "d['rows'] = []; json.dump(d, open(p, 'w'))"
+        self.hook("issues/comments/", [{"run": {"argv": ["python3", "-c", drop]}}], when="after")
+        code, out, err = self.task("claim", "5")
+        self.assertEqual(code, 0, err)
+        [rec] = self.records()
+        [row] = self.rows()
+        self.assertEqual((row["state"], row["claim"]), ("held", rec["id"]))
+        self.assertIn(row["attempt"], rec["body"])
+
+    def test_a_stale_settle_does_not_turn_a_takeovers_lapse_back_to_held(self):               # 4
+        self.claimed(5)
+        self.ended()
+        self.fail_on(COMMENTS, status=502, stdin="reason: ended")
+        self.settle()
+        self.assertEqual(self.row(5)["state"], "owed")
+        self.load()
+        self.sminos["threads"][THREAD] = thread_answer(THREAD, SESSION)  # back: the owed row would return to held
+        self.save()
+        # The settle's read is served; a forced takeover by another session runs to its end before the settle acts.
+        takeover = [str(TASK), "takeover", "5", "--force", "the owner moved it", "--repo", REPO]
+        self.hook("query TaskIssue", [{"run": {"argv": takeover, "env": {"CLAUDE_CODE_SESSION_ID": OTHER_SESSION}}}],
+                  when="after")
+        self.settle("--thread", THREAD)
+        self.assertEqual(self.json("show", "5")["holder"]["address"], OTHER_ADDRESS)
+        mine = [r for r in self.rows() if r["session"] == SESSION]
+        self.assertEqual([(r["state"], r["reason"]) for r in mine], [("lapsed", "taken-over")])
 
 
 if __name__ == "__main__":

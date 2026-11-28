@@ -17,7 +17,7 @@ import record
 import settle as S
 import sminos_client as sminos
 from common import failed, refused, usage
-from github import Client, GitHubError
+from github import Q_NODE, SEARCH_LIMIT, Client, GitHubError
 
 _REF = re.compile(r"(?:(?P<repo>[^#\s]+)#)?(?P<number>[1-9][0-9]*)")
 _BATCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,43}")
@@ -116,6 +116,10 @@ def check_record_values(args):
         value = getattr(args, flag, None)
         if value is not None and (not value.strip() or not record.one_line(value)):
             raise usage("--%s takes one non-empty line (no line break of any kind)" % flag)
+    spec = getattr(args, "spec", None)
+    if spec is not None and spec != spec.strip():
+        # A spec names a file: a space at either end is a typo, never part of the name it is read back as.
+        raise usage("--spec takes a path with no space at either end, not %r" % spec)
 
 
 def resolve_to(name):
@@ -348,9 +352,14 @@ def search(ctx):
     if not a.query.strip():
         raise usage("task search takes a query")
     try:
-        hits = ctx.client.search(ctx.repo, a.query, a.state)
+        hits, missed = ctx.client.search(ctx.repo, a.query, a.state)
     except GitHubError as e:
         raise failed(e.message)
+    if missed["unread"]:
+        sys.stderr.write("task: %d more hits were not read: GitHub's search serves its first %d at most (narrow the "
+                         "query to see the rest)\n" % (missed["unread"], SEARCH_LIMIT))
+    if missed["incomplete"]:
+        sys.stderr.write("task: GitHub's search stopped before it was complete: some hits may be missing\n")
     out = []
     for h in hits:
         hit = {"number": h["number"], "title": h["title"], "state": h["state"], "url": h["html_url"]}
@@ -589,9 +598,13 @@ def edge(ctx):
 def comment(ctx):
     text = read_body_file(ctx.args.body_file)
     claiming.retry_owed(ctx)
-    repo = ctx.repo
+    repo, n = ctx.repo, ctx.args.number
     try:
-        made = ctx.client.comment(repo, ctx.args.number, text)
+        # GitHub's issue-comment endpoint takes a pull request's number as well: the number is an issue first.
+        ctx.client.graphql_issue(Q_NODE, repo, n)
+        made = ctx.client.comment(repo, n, text)
     except GitHubError as e:
+        if e.not_found:
+            raise failed("%s (a pull request's number is no ticket): nothing was commented" % e.message)
         raise failed(e.message)
     print(made["html_url"])

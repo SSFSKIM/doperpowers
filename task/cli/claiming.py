@@ -173,7 +173,8 @@ def housekeep(ctx, regular):
     try:
         budget = float(os.environ.get("TASK_SETTLE_DEADLINE") or SETTLE_DEADLINE)
         states = (I.PENDING, I.HELD, I.OWED) if due else (I.OWED,)
-        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + budget, states=states)
+        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + budget, states=states,
+                                 verified=(repo,))  # the verb has read its board's configuration
         for u in report["unreachable"]:
             sys.stderr.write("task: the settle of %s's claims stopped: %s\n" % (u["repo"], u["said"]))
     except Exception as e:  # noqa: BLE001 — the verb goes on whatever the settle met
@@ -266,12 +267,14 @@ def _append_and_confirm(ctx, t, token, body):
 def _claim_one(ctx, number, address, thread):
     repo, session = ctx.repo, sminos.session_id()
     token = C.mint()
-    I.add(I.new_row(repo, number, "", "", token, session, thread, address))
+    template = I.new_row(repo, number, "", "", token, session, thread, address)
+    I.add(template)
     appended = False
     try:
         for attempt in range(TRIES):
             t = ctx.ticket(number)
             I.change(token, title=t.node["title"], url=t.node["url"])
+            template.update(title=t.node["title"], url=t.node["url"])
             _trace("first", t)
             if t.state != "open":
                 I.remove(token)
@@ -297,18 +300,26 @@ def _claim_one(ctx, number, address, thread):
             _trace("confirm", t2, own)
             _barrier(".confirmed")
             kind, other = t2.fold.outcome(own)
-            if kind == C.CURRENT:
-                S.converge(ctx.client, t.login, t2)
-                I.change(token, state=I.HELD, claim=own, since=t2.fold.by_id(own).created)
-                note = ("; it is not takeable on a session's own initiative (%s), so it was claimed on the owner's "
-                        "word" % ", ".join(unmet)) if unmet else ""
-                return Result(OK, "#%d: claimed (claim %d)%s" % (number, own, note))
-            if kind == C.SUPERSEDED:
-                S.converge(ctx.client, t.login, t2)
-                I.change(token, claim=own, since=t2.fold.by_id(own).created)
-                I.lapse(token, _lapse_reason(other))
-                return Result(REFUSED, "#%d: the claim (%d) took effect and was then ended by %s: it was taken on "
-                                       "purpose, so it is not claimed again" % (number, own, _ended_by(other)))
+            if kind in (C.CURRENT, C.SUPERSEDED):
+                # It took effect. The label and the look; then the outcome is judged on the last read, since a
+                # takeover or a release may have landed by then.
+                last = S.converge(ctx.client, t.login, t2)
+                kind, other = last.fold.outcome(own)
+                pending = (I.PENDING,)
+                if kind == C.CURRENT:
+                    I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
+                    note = ("; it is not takeable on a session's own initiative (%s), so it was claimed on the "
+                            "owner's word" % ", ".join(unmet)) if unmet else ""
+                    return Result(OK, "#%d: claimed (claim %d)%s" % (number, own, note))
+                if kind == C.SUPERSEDED:
+                    I.change(token, expect=pending, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
+                             since=last.fold.by_id(own).created)
+                    return Result(REFUSED, "#%d: the claim (%d) took effect and was then ended by %s: it was taken "
+                                           "on purpose, so it is not claimed again" % (number, own, _ended_by(other)))
+                if kind != C.MISSING:  # closed, or closed and reopened, since it took effect
+                    I.remove(token, expect=pending)
+                    return Result(REFUSED, "#%d: the claim (%d) took effect and the ticket was closed since"
+                                  % (number, own))
             if kind == C.MISSING:
                 return Result(FAILED, "#%d: the confirming read did not show this claim's own record (comment %d): "
                                       "the next settle settles it by its token" % (number, own))
@@ -316,7 +327,7 @@ def _claim_one(ctx, number, address, thread):
             if kind == C.SHUT_OUT and attempt + 1 < TRIES:
                 _wait_past(t2.fold.reopened)
                 new = C.mint()
-                I.change(token, attempt=new)
+                I.renew(token, new, template)  # the next try's pending row, written again if a settle removed it
                 token, appended = new, False
                 continue
             S.converge(ctx.client, t.login, t2)
@@ -437,14 +448,14 @@ def release(ctx):
                       "release record stays, of no effect" % (a.number, h.id))
     if kind != C.CURRENT:
         if row is not None:
-            I.lapse(row["attempt"], _lapse_reason(other))
+            I.lapse(row["attempt"], _lapse_reason(other), expect=(row["state"],))
         raise refused("#%d: claim %d was ended first (%s): this release was void and is deleted"
                       % (a.number, h.id, _ended_by(other)))
     if row is not None:
         if forced is None:
-            I.remove(row["attempt"])
+            I.remove(row["attempt"], expect=(row["state"],))
         else:
-            I.lapse(row["attempt"], "forced")
+            I.lapse(row["attempt"], "forced", expect=(row["state"],))
     print("#%d: released (claim %d%s)" % (a.number, h.id, ", " + forced if forced else ""))
 
 
@@ -482,19 +493,25 @@ def takeover(ctx):
         own, t2 = _append_and_confirm(ctx, t, token, C.compose(
             "takeover", holder=address, attempt=token, of=str(h.id), reason=forced or "cleared"))
         kind, other = t2.fold.outcome(own)
-        if kind == C.CURRENT:
-            S.converge(ctx.client, t.login, t2)
-            I.change(token, state=I.HELD, claim=own, since=t2.fold.by_id(own).created)
+        if kind in (C.CURRENT, C.SUPERSEDED):
+            # It took effect, ending the claim it named. The label and the look; then the outcome on the last read.
             if left is not None:
-                I.lapse(left["attempt"], "taken-over")
-            print("#%d: taken over (claim %d, of %d, %s)" % (number, own, h.id, forced or "cleared"))
-            return
-        if kind == C.SUPERSEDED:
-            S.converge(ctx.client, t.login, t2)
-            I.change(token, claim=own, since=t2.fold.by_id(own).created)
-            I.lapse(token, _lapse_reason(other))
-            raise refused("#%d: the takeover (%d) took effect and was then ended by %s" % (number, own,
-                                                                                        _ended_by(other)))
+                I.lapse(left["attempt"], "taken-over", expect=(I.HELD, I.OWED))
+            last = S.converge(ctx.client, t.login, t2)
+            kind, other = last.fold.outcome(own)
+            pending = (I.PENDING,)
+            if kind == C.CURRENT:
+                I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
+                print("#%d: taken over (claim %d, of %d, %s)" % (number, own, h.id, forced or "cleared"))
+                return
+            if kind == C.SUPERSEDED:
+                I.change(token, expect=pending, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
+                         since=last.fold.by_id(own).created)
+                raise refused("#%d: the takeover (%d) took effect and was then ended by %s" % (number, own,
+                                                                                            _ended_by(other)))
+            if kind != C.MISSING:
+                I.remove(token, expect=pending)
+                raise refused("#%d: the takeover (%d) took effect and the ticket was closed since" % (number, own))
         if kind == C.MISSING:
             raise failed("#%d: the confirming read did not show the takeover's own record (comment %d): the next "
                          "settle settles it by its token" % (number, own))
@@ -551,7 +568,7 @@ def close(ctx):
                          % (a.number, e.message, repair))
     else:
         if ended is not None:  # the claim the close ended; any other row on the ticket is settle's to judge
-            I.remove(ended["attempt"])
+            I.remove(ended["attempt"], expect=(ended["state"],))
     print("#%d closed, %s" % (a.number, reason.replace("_", " ")))
 
 

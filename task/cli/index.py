@@ -112,12 +112,16 @@ def add(row):
         data["rows"].append(row)
 
 
-def change(token, **fields):
+def change(token, expect=None, **fields):
     """Set fields of the row with this attempt token (`state` stamps `at`);
-    a row gone meanwhile is left gone. The row as it now is, or None."""
+    a row gone meanwhile is left gone. With `expect` (states), only a row
+    still in one of them is changed: a transition decided from a read made
+    before a network call applies only to the state it was decided from,
+    so a concurrent writer's later transition is never undone. The row as
+    it now is, or None when nothing was changed."""
     with locked() as data:
         row = find(data, token)
-        if row is None:
+        if row is None or (expect is not None and row["state"] not in expect):
             return None
         if "state" in fields and fields["state"] != row["state"]:
             row["at"] = now()
@@ -125,13 +129,34 @@ def change(token, **fields):
         return dict(row)
 
 
-def remove(attempt):
+def remove(token, expect=None):
+    """Remove the row with this token (with `expect`, only while it is in
+    one of those states). Whether a row was removed."""
     with locked() as data:
-        data["rows"] = [r for r in data["rows"] if r["attempt"] != attempt]
+        row = find(data, token)
+        if row is None or (expect is not None and row["state"] not in expect):
+            return False
+        data["rows"].remove(row)
+        return True
 
 
-def lapse(attempt, reason):
-    return change(attempt, state=LAPSED, reason=reason)
+def lapse(token, reason, expect=None):
+    return change(token, expect=expect, state=LAPSED, reason=reason)
+
+
+def renew(token, new, template):
+    """The pending row of a claim's next try: the row with `token` takes the
+    new token, pending again, or, when another writer removed it
+    meanwhile, `template` is written anew with the new token. Under the
+    lock, before the try's append, so that no append is made without its
+    row."""
+    with locked() as data:
+        row = find(data, token)
+        if row is None:
+            row = dict(template)
+            data["rows"].append(row)
+        row.update(attempt=new, state=PENDING, claim=None, reason="", at=now())
+        return dict(row)
 
 
 def prune(data):

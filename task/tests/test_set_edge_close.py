@@ -177,6 +177,16 @@ class CommentTest(BoardCase):
         self.assertEqual(self.gh_issue(5)["comments"][-1]["body"], "Where it stands.")
         self.assertIn("issuecomment-", out)
 
+    def test_a_pull_requests_number_is_no_ticket(self):
+        self.ticket(5)
+        self.state["repos"][REPO]["issues"]["5"]["pull"] = True
+        self.save()
+        code, _, err = self.task("comment", "5", "--body-file", self.body_file("Where it stands."))
+        self.assertEqual(code, 1, err)
+        self.assertIn("has no issue #5", err)
+        self.assertEqual(self.gh_issue(5)["comments"], [])
+        self.assertEqual(self.writes(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

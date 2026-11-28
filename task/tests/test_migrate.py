@@ -2,6 +2,7 @@
 (D6, Interfaces §8)."""
 import json
 import os
+import shutil
 import stat
 import sys
 import unittest
@@ -175,6 +176,28 @@ class PlanTest(MigrateCase):
         self.assertEqual(code, 2, err)
         self.assertIn("outside", err)
         self.assertFalse((clone / "plan.json").exists())
+
+    def test_a_plan_is_not_written_where_git_cannot_say_there_is_no_tree(self):
+        # No git on the PATH: nothing tells the directory is outside every tree.
+        nogit = self.tmp / "nogit"
+        nogit.mkdir()
+        for tool in ("gh", "python3", "bash", "dirname", "readlink"):
+            found = self.bin / tool if tool == "gh" else shutil.which(tool)
+            (nogit / tool).symlink_to(sys.executable if tool == "python3" else found)
+        code, _, err = self.task("migrate", "plan", "--out", str(self.plan_path), env={"PATH": str(nogit)})
+        self.assertEqual(code, 1, err)
+        self.assertIn("could not tell whether", err)
+        self.assertFalse(self.plan_path.exists())
+        # Inside a repository's git directory: git declines to answer for a work tree, which decides nothing either.
+        clone = self.clone()
+        code, _, err = self.task("migrate", "plan", "--out", str(clone / ".git" / "plan.json"))
+        self.assertEqual(code, 1, err)
+        self.assertIn("could not tell whether", err)
+        self.assertFalse((clone / ".git" / "plan.json").exists())
+        # Outside every tree in another language, git's answer is still read as no tree.
+        code, _, err = self.task("migrate", "plan", "--out", str(self.plan_path), env={"LANG": "ko_KR.UTF-8"})
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.plan_path.exists())
 
     def test_without_out_the_plan_goes_to_the_plugins_home(self):
         code, out, err = self.task("migrate", "plan")
