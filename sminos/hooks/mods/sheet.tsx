@@ -1091,10 +1091,15 @@ async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
  * time a main turn ended aborted, kept for the session in the state a reload
  * reads, until the next main turn starts (`endStop`). Set in the synchronous
  * stretch that reads the aborted end, from the mod's own clock, which is the
- * step's machine's (`acceptedAt` is written by the same clock).
+ * step's machine's (`acceptedAt` is written by the same clock). An idle
+ * reservation not yet handed to the engine is let go: its hop would submit
+ * what it reserved before the Stop, and the next delivery reserves from the
+ * view as it then is.
  */
 function stopAt() {
   keep({ stoppedAt: new Date(Date.now()).toISOString() })
+  const gen = current()
+  if (gen !== undefined) gen.flights = gen.flights.filter((flight) => flight.route !== 'idle' || flight.handed === true)
 }
 
 /**

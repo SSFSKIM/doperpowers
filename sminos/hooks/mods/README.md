@@ -412,7 +412,8 @@ pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
 dropped. In both runners a main turn that ends aborted (a Stop) sets
 `stoppedAt` in the kept choice, at once, from the mod's clock (not when a
 later main turn had already begun, running still or ended: a message
-preempted it); a reload of the
+preempted it), and lets go an idle reservation not yet handed to the
+engine, so the next delivery reserves from the view as it then is; a reload of the
 same session takes it up, a fork and a `/clear` start without it, and the
 next main turn's start clears it, whatever began that turn (the person's
 prompt, the mod's own idle prompt, a scheduled prompt, a task notification),
