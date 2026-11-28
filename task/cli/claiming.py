@@ -141,33 +141,39 @@ def _alive(run):
     return I.age(run.get("at")).total_seconds() < 600
 
 
-def auto_settle(ctx):
-    """Settle this machine's rows on the verb's board, and no other board's,
-    unless a pass over them completed within TASK_SETTLE_EVERY (ten
-    minutes) or another verb's pass is running. Bounded by its deadline,
-    every call included; its failure, the running mark's cleanup among
-    them, goes to stderr and fails nothing."""
+def housekeep(ctx, regular):
+    """This machine's housekeeping on the verb's board, and no other
+    board's: its owed releases first (each on sminos's word of this
+    moment), then, with `regular`, the settle of every row, unless a pass
+    over them completed within TASK_SETTLE_EVERY (ten minutes). One budget
+    (20 s; TASK_SETTLE_DEADLINE for tests) bounds every call of it, under
+    the board's running mark, so that two verbs started together run one.
+    Run once a verb's preflight has passed and before it reads what it acts
+    on. Its failure, its bookkeeping's among it, goes to stderr and fails
+    nothing. Whether a pass ran (and may have written)."""
     repo = ctx.repo
     key = I.board_key(repo)
     every = float(os.environ.get("TASK_SETTLE_EVERY") or SETTLE_EVERY)
     try:
         with I.locked() as data:
-            if not any(r["repo"].lower() == key and r["state"] != I.LAPSED for r in data["rows"]):
-                return
+            rows = [r for r in data["rows"] if r["repo"].lower() == key and r["state"] != I.LAPSED]
             last = data["settled"].get(key)
-            if last and I.age(last).total_seconds() < every:
-                return
+            due = regular and bool(rows) and not (last and I.age(last).total_seconds() < every)
+            owed = any(r["state"] == I.OWED for r in rows)
+            if not (due or owed):
+                return False
             running = data["running"].get(key)
             if running and _alive(running):
-                return
+                return False
             data["running"][key] = {"pid": os.getpid(), "at": I.now()}
     except Exception as e:  # noqa: BLE001 — an unreadable index fails no verb
         sys.stderr.write("task: the settle of %s's claims did not run: %s\n" % (repo, getattr(e, "message", e)))
-        return
+        return False
     complete = set()
     try:
-        budget = float(os.environ.get("TASK_SETTLE_DEADLINE") or SETTLE_DEADLINE)  # seconds; a test sets it short
-        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + budget)
+        budget = float(os.environ.get("TASK_SETTLE_DEADLINE") or SETTLE_DEADLINE)
+        states = (I.PENDING, I.HELD, I.OWED) if due else (I.OWED,)
+        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + budget, states=states)
         for u in report["unreachable"]:
             sys.stderr.write("task: the settle of %s's claims stopped: %s\n" % (u["repo"], u["said"]))
     except Exception as e:  # noqa: BLE001 — the verb goes on whatever the settle met
@@ -176,27 +182,24 @@ def auto_settle(ctx):
         with I.locked() as data:
             if (data["running"].get(key) or {}).get("pid") == os.getpid():
                 del data["running"][key]
-            if any(I.board_key(b) == key for b in complete):
+            if due and any(I.board_key(b) == key for b in complete):
                 data["settled"][key] = I.now()
     except Exception as e:  # noqa: BLE001
         sys.stderr.write("task: the settle of %s's claims could not be recorded: %s\n"
                          % (repo, getattr(e, "message", e)))
+    return True
+
+
+def auto_settle(ctx):
+    """The housekeeping of `list` and `claim`: owed releases, then the
+    board's settle when it is due."""
+    return housekeep(ctx, regular=True)
 
 
 def retry_owed(ctx):
-    """The releases this machine owes on the verb's board, tried again
-    (each on sminos's word of this moment, as settle does). Run by a verb
-    that writes to GitHub once its own preflight has passed, and before it
-    reads what it acts on. Silent when none is owed; it fails no verb."""
-    try:
-        rows = [r for r in I.read()["rows"] if r["state"] == I.OWED]
-        if not rows or not any(r["repo"].lower() == ctx.repo.lower() for r in rows):
-            return
-        report, _ = S.run(ctx.client, repo=ctx.repo, states=(I.OWED,))
-        for u in report["unreachable"]:
-            sys.stderr.write("task: a release owed on %s is still owed: %s\n" % (u["repo"], u["said"]))
-    except Exception as e:  # noqa: BLE001
-        sys.stderr.write("task: a release owed on %s is still owed: %s\n" % (ctx.repo, getattr(e, "message", e)))
+    """The housekeeping of every other verb that writes to GitHub: the
+    releases this machine owes on its board."""
+    return housekeep(ctx, regular=False)
 
 
 def report_lapsed():
@@ -336,7 +339,6 @@ def claim(ctx):
         raise usage("task claim takes ticket numbers, or --batch NAME")
     address = my_address(ctx)
     thread = my_thread(ctx)
-    retry_owed(ctx)
     auto_settle(ctx)
     numbers = list(a.numbers)
     if a.batch is not None:
@@ -379,19 +381,6 @@ def _stop(result):
 
 
 # ── release, takeover, close ──────────────────────────────────────────────
-def _identify_holder(ctx, number):
-    """Before any housekeeping writes: what `holds` will need to say whether
-    the calling session holds the ticket, asked now, so that a verb that
-    exits for want of it has written nothing. The thread where this
-    machine has a row on the ticket with one; else the address (whose lack
-    matters only if the ticket turns out held, and is said then)."""
-    rows = [r for r in I.read()["rows"] if I.same_ticket(r, ctx.repo, number) and r["state"] != I.LAPSED]
-    if any(r["thread"] for r in rows):
-        my_thread(ctx)
-    else:
-        ctx.address()
-
-
 def _force_reason(text, flag="--force"):
     if text is None:
         return None
@@ -400,16 +389,9 @@ def _force_reason(text, flag="--force"):
     return C.FORCED + text.strip()
 
 
-def release(ctx):
-    from verbs import read_body_file
-    a = ctx.args
-    if a.of is not None and a.force is None:
-        raise usage("--of binds a forced release to one claim: give it with --force")
-    forced = _force_reason(a.force)
-    prose = read_body_file(a.body_file) if a.body_file is not None else None
-    if forced is None:
-        _identify_holder(ctx, a.number)
-    retry_owed(ctx)
+def _release_check(ctx, a, forced):
+    """Read the ticket and judge the release: (the ticket, its holder), or
+    the refusal, with nothing written."""
     t = ctx.ticket(a.number)
     if t.state != "open":
         raise refused("#%d is closed: its close ended every claim, and there is nothing to release" % a.number)
@@ -423,6 +405,20 @@ def release(ctx):
         raise refused("#%d is held by %s, not by this session's thread: the holder releases its own claim, and "
                       "anyone else gives %s" % (a.number, holder_text(t), ctx.cmd(
                           'release %d --force "<reason>"' % a.number)))
+    return t, h
+
+
+def release(ctx):
+    from verbs import read_body_file
+    a = ctx.args
+    if a.of is not None and a.force is None:
+        raise usage("--of binds a forced release to one claim: give it with --force")
+    forced = _force_reason(a.force)
+    prose = read_body_file(a.body_file) if a.body_file is not None else None
+    # Judged before the housekeeping writes anything, and again after it if it ran: it can change the holder.
+    t, h = _release_check(ctx, a, forced)
+    if retry_owed(ctx):
+        t, h = _release_check(ctx, a, forced)
     row = I.row_of_holder(I.read(), t.repo, t.number, h)
     try:
         kind, other, _ = S.write_release(ctx.client, t.login, t.repo, t.number, h.id, forced or "released", prose)
@@ -431,6 +427,12 @@ def release(ctx):
     if kind == C.MISSING:
         raise failed("#%d: the release was written and the confirming read did not show it: read the ticket with "
                      "%s before writing again" % (a.number, ctx.cmd("show %d" % a.number)))
+    if kind == C.CLOSED:
+        raise refused("#%d was closed as the release landed: the close ended claim %d, and the release record "
+                      "stays, of no effect" % (a.number, h.id))
+    if kind == C.OUTSIDE:
+        raise refused("#%d was closed and reopened as the release landed: claim %d ended with the close, and the "
+                      "release record stays, of no effect" % (a.number, h.id))
     if kind != C.CURRENT:
         if row is not None:
             I.lapse(row["attempt"], _lapse_reason(other))
@@ -505,20 +507,27 @@ def takeover(ctx):
         raise
 
 
+def _close_check(ctx, a, forced):
+    """Read the ticket and judge the close: (the ticket, its holder or
+    None), or the refusal, with nothing written. An unheld ticket asks
+    nothing of sminos."""
+    t = ctx.ticket(a.number)
+    h = t.holder
+    if h is not None and forced is None and not holds(ctx, t, h):
+        raise refused("#%d is held by %s, another thread: it closes its own ticket, and anyone else gives %s"
+                      % (a.number, holder_text(t), ctx.cmd('close %d --force "<reason>"' % a.number)))
+    return t, h
+
+
 def close(ctx):
     from verbs import read_body_file
     a = ctx.args
     forced = _force_reason(a.force)
     text = read_body_file(a.body_file) if a.body_file is not None else None
     reason = "not_planned" if a.not_planned else "completed"
-    if forced is None:
-        _identify_holder(ctx, a.number)
-    retry_owed(ctx)
-    t = ctx.ticket(a.number)
-    h = t.holder
-    if h is not None and forced is None and not holds(ctx, t, h):
-        raise refused("#%d is held by %s, another thread: it closes its own ticket, and anyone else gives %s"
-                      % (a.number, holder_text(t), ctx.cmd('close %d --force "<reason>"' % a.number)))
+    t, h = _close_check(ctx, a, forced)
+    if retry_owed(ctx):
+        t, h = _close_check(ctx, a, forced)
     try:
         if text is not None:
             ctx.client.comment(ctx.repo, a.number, text)
@@ -528,14 +537,16 @@ def close(ctx):
         ctx.client.edit_issue(ctx.repo, a.number, state="closed", state_reason=reason)
     except GitHubError as e:
         raise failed(e.message)
-    ended = I.row_of_holder(I.read(), t.repo, t.number, h) if h is not None else None
-    if ended is not None:  # the claim the close ended; any other row on the ticket is settle's to judge
-        I.remove(ended["attempt"])
     try:
         S.converge(ctx.client, t.login, S.read(ctx.client, t.login, t.repo, t.number))
     except GitHubError as e:
-        sys.stderr.write("task: #%d is closed, and its claimed label could not be made to agree: %s\n"
-                         % (a.number, e.message))
+        # The row of the claim the close ended stays: settle finds the ticket closed and repairs its label.
+        sys.stderr.write("task: #%d is closed, and its claimed label could not be made to agree: %s (the next "
+                         "settle repairs it)\n" % (a.number, e.message))
+    else:
+        ended = I.row_of_holder(I.read(), t.repo, t.number, h) if h is not None else None
+        if ended is not None:  # the claim the close ended; any other row on the ticket is settle's to judge
+            I.remove(ended["attempt"])
     print("#%d closed, %s" % (a.number, reason.replace("_", " ")))
 
 

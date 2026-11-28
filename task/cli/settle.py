@@ -127,7 +127,7 @@ def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD
     with I.locked() as data:
         I.prune(data)
         rows = [dict(r) for r in data["rows"] if _selected(r, thread, repo, states)]
-    rows.sort(key=lambda r: r["visited"])
+    rows.sort(key=lambda r: (r["state"] != I.OWED, r["visited"]))  # owed releases first
     boards = []
     for r in rows:
         if r["repo"] not in boards:
@@ -138,6 +138,8 @@ def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD
     try:
         try:
             login = client.login()
+        except OutOfTime:
+            boards = []  # the budget was spent before the pass began: incomplete, not unreachable
         except Stop as e:
             report["unreachable"] = [{"repo": b, "said": e.message} for b in boards]
             boards = []
@@ -169,6 +171,8 @@ def _entry(row, **more):
 
 def _settle_row(client, login, repo, row, ask, report):
     token, number = row["attempt"], row["number"]
+    # Visited as it is reached, so that a pass whose budget runs out in this read resumes past it next time.
+    I.change(token, visited=I.now())
     try:
         t = read(client, login, repo, number)
     except GitHubError as e:
@@ -177,7 +181,7 @@ def _settle_row(client, login, repo, row, ask, report):
         I.remove(token)  # the repository answered, and the issue is gone: no claim on it can stand
         report["closed"].append(_entry(row))
         return
-    I.change(token, visited=I.now(), title=t.node["title"], url=t.node["url"])
+    I.change(token, title=t.node["title"], url=t.node["url"])
     if t.state != "open":
         converge(client, login, t)
         I.remove(token)

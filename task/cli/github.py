@@ -144,6 +144,8 @@ class Client:
         if self._login is None:
             try:
                 self._login = self.rest("GET", "user")["login"]
+            except OutOfTime:
+                raise  # a bounded pass that ran out, not an authentication failure
             except GitHubError as e:
                 raise failed("the GitHub client is not authenticated (gh api user: %s)" % e.message)
         return self._login
@@ -163,27 +165,51 @@ class Client:
     def issue(self, repo, number):
         """The issue with every comment, or GitHubError(not_found)."""
         owner, name = repo.split("/", 1)
+        node = self.graphql_issue(Q_ISSUE, repo, number)
+        self._read_on(owner, name, node, repo)
+        return node
+
+    @staticmethod
+    def _gone(repo, number):
+        return "%s has no issue #%d" % (repo, number)
+
+    def _issue_of(self, data, repo, number):
+        """The issue of an answer: one whose repository resolved and whose
+        issue did not is gone (not_found); a repository that did not resolve
+        is no such verdict."""
+        if (data or {}).get("repository") is None:
+            raise GitHubError("%s could not be read (no repository in GitHub's answer)" % repo)
+        node = data["repository"]["issue"]
+        if node is None:
+            raise GitHubError(self._gone(repo, number), not_found=True)
+        return node
+
+    def graphql_issue(self, query, repo, number, **variables):
+        """A query of one issue; GitHub's "Could not resolve to an Issue"
+        (the repository resolved, the issue did not) is the issue gone."""
+        owner, name = repo.split("/", 1)
         try:
-            node = self.graphql(Q_ISSUE, owner=owner, name=name, number=number)["repository"]["issue"]
+            return self._issue_of(self.graphql(query, owner=owner, name=name, number=number, **variables), repo,
+                                  number)
         except OutOfTime:
             raise
         except GitHubError as e:
+            if e.not_found and e.message == self._gone(repo, number):
+                raise
             if "Could not resolve to an Issue" in e.message:
-                raise GitHubError("%s has no issue #%d" % (repo, number), not_found=True)
-            # Anything else, a repository this credential cannot see included, is not the issue being gone.
+                raise GitHubError(self._gone(repo, number), not_found=True)
+            # Anything else, a repository this credential cannot see included, is not the issue gone.
             raise GitHubError(e.message, status=e.status, body=e.body)
-        if node is None:
-            raise GitHubError("%s has no issue #%d" % (repo, number), not_found=True)
-        self._read_on(owner, name, node)
-        return node
 
-    def _read_on(self, owner, name, node):
-        """Flatten the issue's first page of comments, reading on past it."""
+    def _read_on(self, owner, name, node, repo=None):
+        """Flatten the issue's first page of comments, reading on past it;
+        each later page is judged as the first (`graphql_issue`)."""
+        repo = repo or "%s/%s" % (owner, name)
         page = node["comments"]
         comments = list(page["nodes"])
         while page["pageInfo"]["hasNextPage"]:
-            page = self.graphql(Q_COMMENTS, owner=owner, name=name, number=node["number"],
-                                cursor=page["pageInfo"]["endCursor"])["repository"]["issue"]["comments"]
+            page = self.graphql_issue(Q_COMMENTS, repo, node["number"],
+                                      cursor=page["pageInfo"]["endCursor"])["comments"]
             comments += page["nodes"]
         node["comments"] = comments
 

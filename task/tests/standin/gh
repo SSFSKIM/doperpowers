@@ -21,7 +21,8 @@ State ($TASK_GH_STATE):
                 {reopen|close: {repo, number, at}}, {delete_comment: {repo,
                 id}}, {hide: {repo, number, editor}} (the latest comment, last
                 edited by another account), {define: {repo, name}} (a label
-                another writer creates), {sleep: seconds}, {kill: true} (the
+                another writer creates), {vanish: {repo}} (the repository gone from
+                the credential's sight), {sleep: seconds}, {kill: true} (the
                 calling process, killed as the call returns: a writer that
                 dies after a write)
   repos         {"owner/name": {default_branch, files: {path: text},
@@ -368,9 +369,14 @@ def act(action):
     if "kill" in action:
         os.kill(os.getppid(), signal.SIGKILL)
         sys.exit(1)  # before the call: it is never served
-    kind = next(k for k in ("comment", "label", "reopen", "close", "delete_comment", "hide", "define")
+    kind = next(k for k in ("comment", "label", "reopen", "close", "delete_comment", "hide", "define", "vanish")
                 if k in action)
     a = action[kind]
+    if kind == "vanish":
+        key, r = repo_of(s, a["repo"])
+        s["repos"]["gone:" + key] = s["repos"].pop(key)
+        save(s)
+        return
     _, r = repo_of(s, a.get("repo", next(iter(s["repos"]))))
     if kind == "define":
         r.setdefault("labels", {})[a["name"]] = {"color": "ededed", "description": ""}

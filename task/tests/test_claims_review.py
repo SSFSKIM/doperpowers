@@ -276,5 +276,121 @@ class SmallTest(SettleCase):
         self.assertEqual(self.records(6), [])
 
 
+# ── fix wave 2 ────────────────────────────────────────────────────────────
+class WaveTwoTest(SettleCase):
+    def owe(self, n):
+        claim = self.claimed(n)
+        self.ended()
+        self.fail_on(REPO + "/issues/%d/comments" % n, status=502, stdin="reason: ended")
+        self.settle()
+        self.assertEqual(self.row(n)["state"], "owed")
+        self.clear_log()
+        return claim
+
+    def test_a_stale_bound_release_writes_nothing_anywhere(self):                              # 1
+        self.owe(6)
+        claim = 9800
+        self.ticket(5, extra=["claimed"], comments=[{"id": claim, "author": "acme-owner", "editor": None,
+                                                     "createdAt": "2026-11-02T00:00:00Z",
+                                                     "body": claim_body(OTHER_ADDRESS)}])
+        self.clear_log()
+        code, _, err = self.task("release", "5", "--force", "stale", "--of", str(claim + 1))
+        self.assertEqual(code, 3, err)
+        self.assertIn("nothing was written", err)
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.row(6)["state"], "owed")
+        self.assertIn("claimed", self.gh_issue(6)["labels"])
+
+    def test_close_of_an_unheld_ticket_asks_no_identity(self):                                 # 2
+        self.claimed(5)
+        self.load()
+        self.state["repos"][REPO]["issues"]["5"]["reopened"] = ["2026-12-01T00:00:00Z"]  # after the claim: unheld
+        self.save()
+        self.clear_log()
+        code, _, err = self.task("close", "5", session=None)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gh_issue(5)["state"], "CLOSED")
+        self.assertEqual([c for c in self.sminos_calls() if c[:1] == ["who"]], [])
+
+    def test_close_keeps_the_row_when_the_label_is_not_repaired(self):                         # 3
+        self.claimed(5)
+        self.fail_on(REPO + "/issues/5/labels/claimed", status=502)
+        code, _, err = self.task("close", "5")
+        self.assertEqual(code, 0, err)
+        self.assertIn("next settle repairs it", err)
+        self.assertEqual(self.row(5)["state"], "held")
+        report = self.settle()
+        self.assertEqual(report["closed"], [{"repo": REPO, "number": 5}])
+        self.assertNotIn("claimed", self.gh_issue(5)["labels"])
+        self.assertIsNone(self.row(5))
+
+    def test_a_repository_gone_on_a_later_page_keeps_the_row(self):                            # 4
+        comments = [{"id": i, "author": "acme-owner", "editor": None, "createdAt": "2026-11-02T00:00:00Z",
+                     "body": "c%d" % i} for i in range(1, 151)]
+        self.ticket(5, comments=comments)
+        code, _, err = self.task("claim", "5")
+        self.assertEqual(code, 0, err)
+        self.ended()
+        self.hook("query TaskComments", [{"vanish": {"repo": REPO}}])
+        report = self.settle()
+        self.assertEqual([u["repo"] for u in report["unreachable"]], [REPO])
+        self.assertEqual(report["closed"], [])
+        self.assertEqual(self.row(5)["state"], "held")
+
+    def test_owed_rows_are_retried_when_the_regular_pass_is_throttled(self):                   # 5
+        self.owe(5)
+        self.set_rows(lambda d: d["settled"].update({"acme/widgets": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                                    time.gmtime())}))
+        code, _, err = self.task("list", env={"TASK_SETTLE_EVERY": "3600"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.releases(5)), 1)
+        self.assertEqual(self.row(5)["state"], "lapsed")
+
+    def test_claim_housekeeping_has_one_budget(self):                                          # 5
+        self.owe(5)
+        self.ticket(6)
+        self.hook("query TaskIssue", [{"sleep": 30}])  # the owed row's read
+        started = time.monotonic()
+        code, _, err = self.task("claim", "6", env={"TASK_SETTLE_DEADLINE": "2", "TASK_SETTLE_EVERY": "0"})
+        self.assertEqual(code, 0, err)
+        self.assertLess(time.monotonic() - started, 25)
+        self.assertEqual(self.row(5)["state"], "owed")
+        self.assertNotEqual(self.row(5)["visited"], "")  # advanced as it was reached
+        self.assertEqual(self.index()["running"], {})
+
+    def test_a_row_whose_read_ran_out_is_not_first_next_time(self):                            # 5
+        self.claimed(5)
+        self.claimed(6)
+        self.set_rows(lambda d: [r.update(visited="") for r in d["rows"]] and None)
+        self.hook("query TaskIssue", [{"sleep": 30}])
+        env = {"TASK_SETTLE_DEADLINE": "2", "TASK_SETTLE_EVERY": "0"}
+        self.task("list", env=env)
+        first = [r["number"] for r in self.rows() if r["visited"]]
+        self.assertEqual(len(first), 1)
+        self.clear_log()
+        self.task("list", env=env)
+        reads = [c for c in self.calls() if "query TaskIssue" in " ".join(c["argv"])]
+        number = next(a for a in reads[0]["argv"] if a.startswith("number=")).split("=")[1]
+        self.assertNotEqual(int(number), first[0])
+
+    def test_a_budget_spent_in_the_login_is_no_authentication_failure(self):                   # 6
+        self.claimed(5)
+        self.set_rows(lambda d: d["settled"].clear())
+        self.hook("api --hostname github.com user", [{"sleep": 30}])
+        code, _, err = self.task("list", env={"TASK_SETTLE_DEADLINE": "2", "TASK_SETTLE_EVERY": "0"})
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("not authenticated", err)
+        self.assertNotIn("acme/widgets", self.index()["settled"])
+
+    def test_a_release_that_meets_a_close_says_so(self):                                       # 6
+        self.claimed(5)
+        self.hook(COMMENTS, [{"close": {"number": 5}}], when="after", stdin="op: release")
+        code, _, err = self.task("release", "5")
+        self.assertEqual(code, 3, err)
+        self.assertIn("was closed as the release landed", err)
+        self.assertNotIn("deleted", err)
+        self.assertEqual(len(self.releases(5)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
