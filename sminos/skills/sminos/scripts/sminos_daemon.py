@@ -1493,8 +1493,12 @@ def sweep_threads():
     quiet tick's one look: a stat): a thread whose `stopped` is older than
     the period (thread_end_after) is due, and is ended by the rule only on
     devcloud's answer that it owns no host, taken from the census (end_due);
-    one the Task Board keeps (sminos_tasks.keeps, D7) is not asked about,
-    and is said once for each reason in daemon.log.
+    one the Task Board keeps (sminos_tasks.keeps, D7: the target of an
+    open blocking task, or of a wake-asked outcome not yet shown and younger
+    than the period) is not asked about, and is said once for each reason
+    in daemon.log (leaves, holding's line); the pass's due threads share one
+    reading of the store (sminos_tasks.Reading), and no store is no
+    exemption.
     The clock is the record's stop mark, not the transcript's last write: a
     session reopened in between has its mark removed by the stop pass, and
     its clock starts again at its next stop. Nothing else ends a thread by

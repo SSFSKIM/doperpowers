@@ -464,7 +464,9 @@ def keeps(thread, period, now=None, store=None):
     an outcome whose act asked for a wake, not yet shown and less than `period` old, read from the act's own replace
     on. No store is no exemption; a store that cannot be read, or one with a field read here that does not, keeps
     it. Read with no lock, writing nothing; the target is target_of's, without the state it describes. `store` is
-    a Reading a pass shares among its threads; none reads the store afresh."""
+    a Reading a pass shares among its threads; none reads the store afresh. Asked in sweep_threads's test of what
+    is due, before devcloud is asked, and again in sminos.end_by_rule's guard; one instant is left open by design,
+    a change that would protect the thread landing after the guard's look and before the end (D7)."""
     r = (Reading() if store is None else store).load()
     if r.error is not None:
         return "the Task Board's store could not be read (%s)" % r.error
