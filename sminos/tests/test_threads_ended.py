@@ -1384,8 +1384,10 @@ class TaskBoard(Ending):
 
         def replaced_then_swept(state):
             real(state)
-            if state["tasks"][task_id]["state"] == "done":
-                self.sweep()   # an ending pass in the instant after the act's replace, the store's lock still held
+            if state["tasks"][task_id]["state"] == "done" and not seen:
+                # An ending pass in the instant after the act's own replace, the store's lock still held (the
+                # sending's record, M2's, is a later replace of its own).
+                self.sweep()
                 seen.append(self.ended(tid))
         with mock.patch.object(tasks, "_replace", side_effect=replaced_then_swept):
             self.task("done", task_id)
