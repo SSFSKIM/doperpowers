@@ -2401,6 +2401,8 @@ class Link:
                         self.words_due = True   # its frame waits for lane capacity: asked once it is queued
                     continue   # a row not there yet, or under another project: asked after the plane's next read
                 ask = os.urandom(12).hex()
+                # Under the channel's id, never the thread's project: the log a request is in is the scope the
+                # endpoint verifies its signature under.
                 self.hold_asks([(ask, {"key": key, "project": channel, "event": r, "t": "reach?",
                                        "request": {"session": asked["session"], "reach": asked["reach"]}},
                                  {"t": "reach?", "id": ask, "project": pid, "session": asked["session"],

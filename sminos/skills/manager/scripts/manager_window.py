@@ -42,7 +42,8 @@ AGENT_STOP_RE = re.compile(r"Agent \S+ was stopped by the person (?:from the des
 BRIDGE_PLUGINS = ("sminos", "doperpowers")
 # Origins that affirmatively say the owner typed the row: the composer, or the owner's own Remote Control client.
 OWNER_ORIGINS = ("composer", "human", "bridge")
-# A MAWS launch (its entrypoint): the owner's words there come through MAWS's composer.
+# A MAWS launch (its entrypoint): the owner's words there come through MAWS's composer, the `human` stamp there being
+# only on composer submissions and MAWS ask steers (the latter `answered`).
 MAWS_ENTRYPOINT = "sdk-ts"
 AGENT_TOOLS = ("Agent", "Task", "Workflow")
 NATIVE_ASK = "AskUserQuestion"
@@ -206,7 +207,8 @@ def label(entry):
 
 
 def render(entry):
-    """One entry as the text output prints it: local time, its label, its text, continuation lines indented."""
+    """One entry as the text output prints it: local time, its label, its text, continuation lines indented
+    (`source` and `via` are the JSON's alone)."""
     head = "%s  %s " % (_local(entry["ts"]), label(entry).ljust(LABEL_WIDTH))
     return head + entry["text"].replace("\n", "\n" + " " * len(head))
 

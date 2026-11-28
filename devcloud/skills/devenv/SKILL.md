@@ -1,6 +1,6 @@
 ---
 name: devenv
-description: Use when a repository needs a devenv/ directory — asked to set up a repository's environment for devcloud hosts or the person's Macs, to make it work with `devenv up`, or when devenv reports "no devenv/" for it — or when an existing devenv/ needs a review.
+description: The `devenv/` contract and how to prove one, for a repository that needs a devenv/ directory — setting up its environment for devcloud hosts or the person's Macs, making it work with `devenv up`, devenv reporting "no devenv/" for it — or an existing devenv/ that needs a review.
 ---
 
 # Writing a repository's devenv/
@@ -77,8 +77,9 @@ Non-secret defaults become plain lines.
 
 ## Prove it
 
-Commit `devenv/` on a branch, then prove it against a fresh clone of that
-branch, never the person's own checkout or registry:
+Commit `devenv/` on a branch and prove it against a fresh clone of that
+branch: a scratch `DEVENV_GH` and `DEVENV_REGISTRY` test what was committed
+and leave the person's own checkout and registry alone.
 
     G=$(mktemp -d); export DEVENV_GH="$G" DEVENV_REGISTRY="$G/envs"
     devenv up <name> --url "$(git rev-parse --show-toplevel)" --ref <branch>
@@ -93,7 +94,4 @@ runner, run `setup.sh` twice and `validate.sh` in a fresh clone.
 
 ## An existing devenv/
 
-Review it against the same sources and the contract, and fix what is wrong
-or missing rather than rewriting what works.
-
-Report the files, what each proof printed, and the secret ids you asked for.
+Review it against the same sources and the contract.

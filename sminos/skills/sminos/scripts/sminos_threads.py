@@ -865,7 +865,9 @@ def set_channels(thread_id, decide, lock_until=None, wake_until=None):
     would refuse).
 
     Under the record's store lock, on a fresh read, when the record has
-    not ended and has no open entry: decide(record) answers None (nothing
+    not ended and has no open entry: decide(record), which reads files as
+    they are and takes no lock (never a view, which reconciles; a session's
+    events by literal paths, sminos._writer_events), answers None (nothing
     is written) or a Change {"project", "session", "channels", "answer"},
     which is written in one write with its entry. For each channel that
     enters the set `began` gains the positions of its log as read just

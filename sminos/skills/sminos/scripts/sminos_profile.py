@@ -16,7 +16,8 @@ STALE is another profile being asked for, and the verb refuses), taken once
 the file no longer holds that id, and withdrawn only while it still does, so
 two verbs never overwrite or withdraw each other's. A process on older code
 takes no request: the nudge gives it one tick, and the verb, which waits
-TAKE_WITHIN for the file to be taken, withdraws it and says so. The window
+TAKE_WITHIN for the file to be taken, withdraws it and says so. Never a
+signal: one an old process has no handler for ends it by default. The window
 begins after the pass the nudge brought (`after_pass`), so the profile is of
 the loop as it runs, not of the scan a nudge asks for, and ends on a timer
 thread of its own: on Python 3.12 and later cProfile, built on

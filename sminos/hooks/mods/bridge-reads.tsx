@@ -4,9 +4,11 @@ import type { ConfigRow, EngineInterface, ToolInfo } from 'claude-code'
  * The desk's reads of the session's own state (DX5 `read`, the desk control
  * surface spec's §5 and Interfaces; MW1): `usage`, `config`, `settings` and
  * `mcp`, each answered from `$` and cut to what the desk shows (§11). A read
- * leaves the machine uncoded, like a row, so nothing that could hold a
- * credential crosses: no `env`, no hook's command, no MCP server's
- * configuration, no plugin's free-text config value. The shapes are the lane
+ * leaves the machine uncoded, like a row, so the fields likeliest to hold a
+ * credential are left out: `env`, a hook's command, an MCP server's
+ * configuration, a plugin's free-text config value. What is kept (a
+ * permission rule's content, a hook's matcher, other strings) passes as
+ * written, uninspected. The shapes are the lane
  * map's, path-neutral: what lane A cannot know exactly says so
  * (`permissionsExact`, `exact`) rather than leaving the field out.
  */

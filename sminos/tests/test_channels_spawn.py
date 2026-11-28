@@ -27,9 +27,9 @@ docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, acceptance
   the budget's override a finite positive number or the default.
 - Nothing else changed: the merge base's parser and this one agree on every
   spelling of every flag of `spawn` but `--c`; a spawn without --channel
-  prints, launches and writes what the merge base's does, but for ids; its
-  preamble is the merge base's whatever the names hold (the order of
-  filling included).
+  prints, launches and writes what the merge base's does, but for ids; it
+  fills the preamble as the merge base's does whatever the names hold (the
+  order of filling included), both filling this tree's template.
 
 Hermetic: test_channels_requests.Requests (test_threads.Machine, cut over to
 an endpoint never run, its kept welcome listing `channels`); the launcher is
@@ -574,6 +574,12 @@ class SameAsBase(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(dir=BASE_DIR)
         cls.base = extracted(MERGE_BASE, cls.tmp)
+        # The template's words move on without the code; what is compared is the filling, so the merge base fills
+        # this tree's template, less the {{CHANNELS}} it predates and a spawn without --channel fills with nothing.
+        with open(sminos.PREAMBLE_PATH) as f:
+            template = f.read()
+        with open(os.path.join(os.path.dirname(cls.base), "..", "references", "spawn-preamble.md"), "w") as f:
+            f.write(template.replace("{{CHANNELS}}", ""))
 
     def parsed(self, launcher, argvs):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}

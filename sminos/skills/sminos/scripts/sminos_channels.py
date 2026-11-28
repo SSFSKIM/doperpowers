@@ -649,9 +649,10 @@ class _Facts:
 def appended_here(channel, request):
     """Whether this machine appended the request itself, the one test of a
     request being this machine's own (§6's rows 8 to 11; the holder's ruling
-    of 2026-11-22), never its writer's name: one of its own queued appends
-    (no position yet: the queue is this machine's alone, a former name's
-    included), or a logged one its append receipt names (sminos.receipted:
+    of 2026-11-22), never its writer's name, since an event under this
+    machine's name can come back from the hub after the name was reused:
+    one of its own queued appends (no position yet: the queue is this
+    machine's alone, a former name's included), or a logged one its append receipt names (sminos.receipted:
     the receipt is written under the writer file's lock before the event,
     outside log/, so nothing imported has one, and it stays under the name
     the append used)."""
@@ -1602,7 +1603,10 @@ def _said(e):
 def spawned_lines(alias, session, asked, placed):
     """What a spawn here prints of its placements (§1's lines): (lines for
     standard output, warnings). `asked` the channels with this machine's
-    names, `placed` place_spawned's entries."""
+    names, `placed` place_spawned's entries. A command printed names the
+    channel by its id and the thread by its session's whole id, since a
+    short is read as an alias first; a name and `alias#short` are for
+    reading."""
     label = "%s#%s" % (alias, session[:8])
     if placed and all(p["state"] == "failed" and p["why"] == "identity" for p in placed):
         return [], ["spawn completed, but none of the placements asked for was made: %s is no longer enrolled in "
