@@ -549,7 +549,7 @@ assert_contains "$tracker" 'refuses that default without a `--note` naming the' 
 assert_contains "$tracker" 'the epic is not closed: it returns to' \
     "board doctrine: a fully-terminal epic returns for recomposition instead of auto-closing"
 assert_contains "$tracker" "[board-epic]" "board doctrine names the bookkeeping marker"
-assert_contains "$tracker" "a return the escalation count ignores" \
+assert_contains "$tracker" "a return that resets the escalation count" \
     "board doctrine: [board-epic] is exempt from convergence counting (a return is not an escalation)"
 assert_contains "$tracker" '`in-design` from `ready-for-architect`' \
     "board doctrine: the epic pull is lane-dependent (PRE_PARK: architect queue -> in-design, not in-progress)"

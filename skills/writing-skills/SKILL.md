@@ -55,12 +55,15 @@ that entered it.
   taste, the reason behind a rule. Cut: generic procedure, a restated
   default, anything already said elsewhere. What a tool does is the
   first kind; how to use it is usually the second.
-- **Where a text loads decides what it costs.** A description, a
-  CLAUDE.md, a tool description or an output style is in context for
-  every session on every turn; a skill body once it is invoked; a
-  supporting file when it is read. A line goes in the cheapest place
-  that still reaches its reader: heavy reference in a supporting file,
-  flags behind `--help`, other skills named
+- **Where a text loads decides what it costs.** A skill's description,
+  a loaded tool's description and a root CLAUDE.md are in context for
+  every session on every turn. The rest is scoped: a nested CLAUDE.md
+  attaches the first time a session reads a file beneath it, an output
+  style when it is selected, a deferred tool's schema when it is loaded,
+  a skill body when invoked, a supporting file when read. A line goes in
+  the narrowest of these that still reaches its reader, which is often
+  the scoped file it is already in: heavy reference in a supporting
+  file, flags behind `--help`, other skills named
   (`doperpowers:test-driven-development`) and never `@`-linked, which
   loads the file at once.
 - **Text that should not bind is removed, or moved behind a read the

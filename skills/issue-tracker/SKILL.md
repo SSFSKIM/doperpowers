@@ -44,9 +44,10 @@ resolves the same board:
   (a worktree reads its main checkout's file): `BOARD_HUMAN_TOKEN`, under
   which a session's writes go out as your human partner, and
   `BOARD_AUTOMATION_TOKEN`, the dormant fleet's.
-- Reads and writes narrow to the bound repo. `board-list.sh` and
-  `board-search.sh` take `--all-repos`, which adds a repo column: ticket
-  numbers are repo-local, so `#12` from another board is another ticket.
+- Reads and writes narrow to the bound repo. On the api binding
+  `board-list.sh` and `board-search.sh` take `--all-repos`, which adds a
+  repo column: ticket numbers are repo-local, so `#12` from another board
+  is another ticket. On gh a board is one repo and the flag exits 2.
 
 The store is the single source of truth and the scripts reach it from any
 checkout; `doperpowers/issue-tracker/` in a consumer repo is only
@@ -89,15 +90,26 @@ agent can write is not a park: that ticket is `ready-for-architect`.
 
 What `board-transition.sh` requires beyond a legal edge:
 
-- **Into `in-review`**: `--pr <url>`.
-- **The build edge, `in-design → in-progress`**: a note, `--branch`, and
-  the pin of what will be built: `--plan <path>@<sha>` (a spec pushed on
-  that branch, verified on the remote) or `--plan pre-spec` (the body is
-  the plan). The gh binding refuses the edge without all three, and
-  refuses it to an epic.
+- **Into `in-review`**: `--pr <url>`. Two moves reuse the recorded PR
+  instead: a return from a park entered from `in-review`, and the re-pin
+  below.
+- **The build edge, `in-design → in-progress`**: a note, the pin of what
+  will be built, and `--branch` unless the ticket already records one. The
+  pin is `--plan <path>@<sha>` (a full sha; a spec pushed on that branch,
+  verified on the remote) or `--plan pre-spec` (the body is the plan). The
+  gh binding refuses the edge without all three, and refuses it to an
+  epic.
 - **Out of `in-design` otherwise**: `ready-for-implementer` takes a note,
-  and the pin when a design was written. No edge leads back to
-  `ready-for-architect`; `deferred` does.
+  and the pin when a design was written. A real pin needs a branch there
+  too, and a design claim records none, so that handoff fails on either
+  binding without `--branch`. No edge leads back to `ready-for-architect`;
+  `deferred` does. A leaf has no edge from `in-design` to `in-review` or
+  `done`.
+- **A plan repaired during review** is recorded by `in-review → in-review`
+  with a note and a real `--plan` pin (the re-pin; without `--plan` the
+  move is refused as a no-op), or by `in-review → in-progress` when the
+  build starts over (the rebuild). `pre-spec` is refused on both, and
+  `--plan` rides no other edge.
 - **Back toward design**: `ready-for-implementer`, `in-progress` or
   `in-review` `→ ready-for-architect`, and `in-review → in-progress`, each
   take a note. On the gh binding a second traversal of the same one of
@@ -109,6 +121,8 @@ What `board-transition.sh` requires beyond a legal edge:
   is already on record.
 - **Into either backlog state**: refused while the body is still the
   registration skeleton.
+- **Out of `deferred`**: through a backlog state or a park; no edge leads
+  straight to an in-flight state.
 
 **Waiting on other tickets is an edge, not a state**
 (`board-edge.sh <n> --block <m>`): the board re-surfaces the ticket when
@@ -125,11 +139,12 @@ is `wontfix`.
 `in-design` from `ready-for-architect`, `in-progress` from
 `ready-for-implementer` or `needs-info`. The other parks are never pulled.
 When the last child lands the epic is not closed: it returns to
-`ready-for-architect`, a return the escalation count ignores, and whoever
-takes it goes `in-design`, verifies the parent's own acceptance and closes
-it (doperpowers:decomposing): `done` for a non-code parent; for a
+`ready-for-architect`, a return that resets the escalation count, and
+whoever takes it goes `in-design`, verifies the parent's own acceptance and
+closes it (doperpowers:decomposing): `done` for a non-code parent; for a
 code-bearing one, `board-comment.sh <n> --kind closure-package` and
-`in-review` with the package's URL as `--pr`.
+`in-review` with the package's URL as `--pr`. Those two edges out of
+`in-design` are refused while any child is open.
 
 **Closing.** On the gh binding a PR body's `Closes #<n>` closes the ticket
 at the merge and leaves a stale label and unswept epics;
@@ -149,7 +164,8 @@ the image, a flaky registry, a broken fixture), filed so the report
 outlives the session that found it. It defaults to `needs-human`, since
 friction an agent could clear would usually be cleared already, and
 register refuses that default without a `--note` naming the intervention
-asked for. An explicit `--state` says an agent can repair it.
+asked for. An explicit `--state` says an agent can repair it; the api
+binding takes the repair as `--repair-path`, which gh refuses.
 
 ## Commands
 
@@ -157,21 +173,21 @@ In this skill's `scripts/`. A ticket id is its number (`42` or `#42`).
 
 | script | does |
 |---|---|
-| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | opens a ticket with its labels and edges and prints `<number> <url>`. Priority `P0`…`P3` (P0 = drop everything) is required. Without `--body-file` there is no statement of work (gh seeds a skeleton): an explicit backlog `--state` is refused, and the default birth becomes `needs-info` |
+| `board-register.sh <title> <category> <priority> [--state S] [--note N] [--parent N] [--blocked-by N,N] [--spawned-by N] [--body-file F]` | opens a ticket with its labels and edges and prints `<number> <url>`. Priority `P0`…`P3` (P0 = drop everything) is required. Without `--body-file` there is no statement of work (gh seeds a skeleton): an explicit backlog `--state` is refused, and an ordinary ticket's default birth becomes `needs-info` (an `env-issue` keeps its `needs-human` default) |
 | `board-body.sh <n> --body-file F` | rewrites the statement of work (`-` reads stdin; an empty file clears it), keeping the meta block that a bare `gh issue edit` clobbers |
 | `board-transition.sh <n> <state> [note] [--branch B] [--pr URL] [--plan PATH@SHA\|pre-spec]` | moves a ticket under the requirements in States, runs the epic bookkeeping, repairs an `untracked` or `conflict` issue; `<n> done` on an already closed ticket finalizes it |
 | `board-comment.sh <n> <text>` / `<n> --kind K [--text T] [--json P]` | appends a comment. Kinds: `comment`, `parent-impact`, `closure-package`, `parent-impact-consumed`, `review-trail` (reviewer, range, verdict). gh renders a kind as a `[K] …` marker comment; `--` goes ahead of text that starts with a dash |
-| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cuts one edge per call: a dependency, or the epic a ticket sits under. Rejects self-edges, cycles and ancestor-epic blockers |
+| `board-edge.sh <n> --block N \| --unblock N \| --parent N \| --orphan` | re-cuts one edge per call: a dependency, or the epic a ticket sits under. Rejects self-edges, cycles and ancestor-epic blockers, and runs the epic bookkeeping |
 | `board-relate.sh <a> <b> [--cut]` | a symmetric "relates" annotation, drawn on the map; no effect on eligibility |
 | `board-priority.sh <n> <P0..P3>` | swaps the `priority:*` label |
-| `board-surface.sh <n> --add NAME \| --remove NAME` | adds or removes a `surface:*` label (What may surprise you) |
-| `board-list.sh [--all-repos] [state]` | the backlog in priority order (api: the server's order). Tags: `ELIGIBLE` (gh: no unfinished blocker holds the row; on api read `blocked_by` in `board-show.sh`), `waiting:#n`, `STUCK`, `CLOSE?` |
-| `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search across all states. api: websearch syntax (terms AND, `or`, `-` negation, quoted phrases); `--states` narrows, `--bodies` prints the first ≤20 hits' bodies, a query that leads with `-` goes behind `--`. gh: `gh issue list --search` over 200 issues, bodies included; `--states` is refused |
-| `board-show.sh <n>` | one ticket in full: header, statement of work, timeline |
+| `board-surface.sh <n> --add NAME \| --remove NAME` | adds or removes a `surface:*` label (What may surprise you). `--add` takes only a name the registry declares; `--remove` is not validated |
+| `board-list.sh [--all-repos] [state]` | the backlog. gh: priority order, each row tagged `epic`, `ELIGIBLE` (a backlog state with every blocker done), `waiting:#n`, `STUCK` or `CLOSE?`. api: the server's order and no tags (`blocked_by` is in `board-show.sh`); `--all-repos` is api only |
+| `board-search.sh [--states s1,s2] [--bodies] [--all-repos] [--] <query>` | full-text search across all states. api: websearch syntax (terms AND, `or`, `-` negation, quoted phrases); `--states` narrows, `--bodies` prints the first ≤20 hits' bodies, a query that leads with `-` goes behind `--`. gh: `gh issue list --search` over 200 issues, bodies included; `--states` and `--all-repos` are refused |
+| `board-show.sh <n>` | api: one ticket in full (header with branch, plan, pr and edges; statement of work; timeline). gh: the ticket's node as JSON, without its body or comments, and the issue URL; `gh issue view <n> --comments -R <repo>` gives the full record |
 | `board-answer.sh <n> <answers> --to <state>` | api only: records your human partner's answers to a `needs-human` park and moves the ticket to a queue, another park or a close (an in-flight `<state>` is refused when no worker is bound). On gh an answer is a comment opening `[answers]`, then a transition |
-| `board-map.sh [--write\|--serve\|--stop]` | the board for your human partner to look at: `--write` renders `BOARD.html` and `BOARD.md` into the render cache, `--serve` also serves it on 127.0.0.1 with hot reload (`$BOARD_PORT`), no argument prints the table |
+| `board-map.sh [--write\|--serve\|--stop]` | the board for your human partner to look at: `--write` renders `BOARD.html` and `BOARD.md` into the render cache, `--serve` also serves it on 127.0.0.1 with hot reload (`$BOARD_PORT`) and opens a browser (`$BOARD_NO_OPEN=1` suppresses), no argument prints the table |
 | `board-reconcile.sh` | read-only catch-up: parked tickets with their notes, orphaned in-flight tickets, the backlog, a lint pass |
-| `board-lint.sh` | checks the schema over the live board; `FAIL … FIX: …` lines, exit 1 |
+| `board-lint.sh` | gh: checks the schema over the live board; `FAIL … FIX: …` lines, exit 1 on a FAIL. api: the server enforces the schema at the write, and lint checks only local worker bindings |
 
 A hosted, always-current map is a workflow in the consumer repo:
 `references/board-pages.yml` (GitHub Pages, which is public even for a
@@ -191,7 +207,8 @@ private repo below Enterprise) or `references/board-cloudflare-pages.yml`
   both succeed, and the later branch stands. `board-show.sh <n>` after the
   claim shows whose branch the ticket records.
 - **A surface can refuse the build edge** (gh). A repo may declare
-  contested code seams in `.doperpowers/surfaces.md`; tickets get
+  contested code seams in `.doperpowers/surfaces.md`, read from the remote
+  default branch, so an entry counts once its PR lands; tickets get
   `surface:<name>` labels at registration and on entry to a backlog state,
   by matching identifiers, and lint fails a label the file does not
   declare. While another open leaf with the same label is `in-design`,
@@ -232,9 +249,10 @@ private repo below Enterprise) or `references/board-cloudflare-pages.yml`
   comment instead of a duplicate ticket; a hit on the same seam gets
   related (`board-relate.sh`). Tickets that each rewrite one function or
   contract body revert each other silently (different files, no git
-  conflict), so a third open ticket on one body wants a consolidating
+  conflict), so a third live ticket on one body wants a consolidating
   `ready-for-architect` ticket that owns the unified contract and names its
-  members.
+  members. Parked tickets count as live; `deferred` and closed ones do
+  not.
 - **The body (the pre-spec) is written at registration**, when the
   registrar knows the most about the work, for a reader with no context who
   may come weeks later. Sections: Problem & intent / Constraints / Success
