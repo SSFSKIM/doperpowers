@@ -128,6 +128,17 @@ class OutsideTheTicketBoardTest(HumanBoardCase):
                 self.assertTrue(self.calls())
                 self.assertEqual(self.task_calls(), [])
 
+    def test_a_prefix_argparse_would_take_for_human_is_the_human_board(self):
+        self.ticket(7)
+        for flag in ("--hu", "--hum", "--huma"):
+            with self.subTest(flag=flag):
+                self.clear_log()
+                code, _, err = self.task("list", flag, "--json")
+                self.assertEqual(code, 0, err)
+                self.assertEqual([c["argv"] for c in self.task_calls()], [["task", "list", "--json", "--repo",
+                                                                           "acme/widgets"]])
+                self.assertEqual(self.calls(), [])
+
     def test_a_task_id_not_first_or_not_whole_is_no_human_form(self):
         for argv in (["show", "t07"], ["show", "t7x"], ["show", "T7"], ["comment", "--body-file", "f", "t7"]):
             with self.subTest(argv=argv):

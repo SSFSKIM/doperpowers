@@ -4,7 +4,9 @@ forms are its, and running each as the matching `sminos task` verb.
 
 A form is the human's board's when its verb is `assign-human`, `revise`,
 `withdraw` or `reopen`; `show` or `comment` with a first argument that is a
-whole task id (`t<n>`); or `list` with `--human`. `main` asks before anything
+whole task id (`t<n>`); or `list` with `--human`, or with a prefix of it that
+the ticket board's parser would take for it (`--hu` on: argparse resolves an
+unambiguous prefix, and `--h` is ambiguous there). `main` asks before anything
 of the ticket board (its configuration, `gh`) is read, so these forms work in
 any directory, with no ticket board configured: the human's board is the
 machine's. `revise`, `withdraw` and `reopen` given a ticket's number exit 2
@@ -29,6 +31,8 @@ from common import FAILED, USAGE
 TASK_ID = re.compile(r"t[1-9][0-9]*")
 TICKET_NUMBER = re.compile(r"[0-9]+")
 KEPT_EXITS = (0, 2, 3)
+# What the ticket board's `list` parser resolves to --human (allow_abbrev): `--h` is also --help and --horizon.
+HUMAN_FLAG = re.compile(r"--hu(?:m(?:an?)?)?")
 # `task`'s verb that exists only for the human's board -> sminos's verb.
 ONLY_HUMAN = {"assign-human": "assign", "revise": "revise", "withdraw": "withdraw", "reopen": "reopen"}
 
@@ -43,8 +47,8 @@ def form(argv):
         return [ONLY_HUMAN[verb]] + rest
     if verb in ("show", "comment") and rest and TASK_ID.fullmatch(rest[0]):
         return [verb] + rest
-    if verb == "list" and "--human" in rest:
-        return ["list"] + [a for a in rest if a != "--human"]
+    if verb == "list" and any(HUMAN_FLAG.fullmatch(a) for a in rest):
+        return ["list"] + [a for a in rest if not HUMAN_FLAG.fullmatch(a)]
     return None
 
 
