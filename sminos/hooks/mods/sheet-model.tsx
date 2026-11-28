@@ -476,6 +476,22 @@ export type Chosen = { choice: Choice; runner?: Runner; why: string; log?: strin
 const isSet = (value: string | undefined): value is string => value !== undefined && value !== ''
 
 /**
+ * The delivery's form MAWS names in `MAWS_QUESTION_SHEET`, `<form>:<session id>` (MAWS's C5, F32; the composite's
+ * §5.4, "The proof names the form"): in form 2 the tool delivers and MAWS only rings. A value of another form, or of
+ * none (the bare id a plugin before this one took), is no proof: its MAWS does not ring as this mod delivers.
+ */
+export const MAWS_FORM = 2
+
+/** Why a `MAWS_QUESTION_SHEET` is not this session's proof, or undefined when it is. */
+function proofRefusal(value: string, session: string): string | undefined {
+  const form = /^([0-9]+):/.exec(value)
+  if (form === null) return `names no form (${cut(value, 80)})`
+  if (form[1] !== String(MAWS_FORM)) return `names the form ${cut(form[1] as string, 10)}, not ${MAWS_FORM} (${cut(value, 80)})`
+  const id = value.slice(form[0].length)
+  return id === session ? undefined : `names another session (${cut(id, 80)}, not ${session})`
+}
+
+/**
  * I8's table, top row first: the choice is made at a process's first
  * `session.start` and kept, so a reload and a /clear keep the process's.
  */
@@ -492,10 +508,11 @@ export async function chooseStart(reads: ChoiceReads): Promise<Chosen> {
   }
   const maws = await reads.env.MAWS_QUESTION_SHEET()
   if (isSet(maws)) {
-    if (maws === reads.session) {
-      return { choice: 'sheet', runner: 'maws', why: 'MAWS_QUESTION_SHEET names this session' }
+    const refusal = proofRefusal(maws, reads.session)
+    if (refusal === undefined) {
+      return { choice: 'sheet', runner: 'maws', why: `MAWS_QUESTION_SHEET names this session in form ${MAWS_FORM}` }
     }
-    log.push(`sheet: MAWS_QUESTION_SHEET is set and names another session (${cut(maws, 80)}, not ${reads.session}): not taken as MAWS's proof`)
+    log.push(`sheet: MAWS_QUESTION_SHEET ${refusal}: not taken as MAWS's proof`)
   }
   const done = (chosen: Omit<Chosen, 'log'>): Chosen => (log.length > 0 ? { ...chosen, log } : chosen)
   if (isSet(await reads.env.MAWS_NATIVE_TO_HUMAN())) {
@@ -1111,81 +1128,18 @@ export function endedNotice(agent: { agentId: string; name: string }, questions:
   return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
 }
 
-/**
- * A pending outcome as `sminos sheet show --json --keys` prints it (I4), in
- * the fields a steer's context reads: the question is the snapshot the answer
- * was given to, its strings already cut by the reader.
- */
-export type ShownOutcome = {
-  key: string
-  kind: 'answer' | 'dismiss'
-  id: string
-  revision: number
-  question: { asker: Asker; header?: string; question: string; options: string[] }
-}
-
-/** The pending outcomes a `show --json --keys` printed; undefined for what is not its output. An outcome of another shape is passed over. */
-export function shownOutcomes(stdout: string): ShownOutcome[] | undefined {
-  let model: unknown
-  try {
-    model = JSON.parse(stdout)
-  } catch {
-    return undefined
-  }
-  if (!isRecord(model) || model.v !== 1 || !Array.isArray(model.pending)) return undefined
-  const out: ShownOutcome[] = []
-  for (const o of model.pending) {
-    if (!isRecord(o) || typeof o.key !== 'string' || (o.kind !== 'answer' && o.kind !== 'dismiss') || typeof o.id !== 'string' || typeof o.revision !== 'number') continue
-    const q = o.question
-    if (!isRecord(q) || typeof q.question !== 'string' || !Array.isArray(q.options) || !q.options.every((label) => typeof label === 'string')) continue
-    const asker = q.asker === 'main' ? 'main' : isRecord(q.asker) && typeof q.asker.agentId === 'string' && typeof q.asker.name === 'string' ? { agentId: q.asker.agentId, name: q.asker.name } : undefined
-    if (asker === undefined) continue
-    out.push({ key: o.key, kind: o.kind, id: o.id, revision: o.revision, question: { asker, ...(typeof q.header === 'string' && { header: q.header }), question: q.question, options: q.options as string[] } })
-  }
-  return out
-}
-
-/** A steer's context has the envelope's budget (I7), in UTF-16 code units; past it, each question is cut at 300 characters and each label at 80 (I10's cuts). */
-const STEER_CONTEXT_BUDGET = 60_000
-const STEER_CONTEXT_QUESTION = 300
-const STEER_CONTEXT_LABEL = 80
+/** MAWS's constant frame (MAWS's C5, F33; the composite's §5.4): its `SHEET_RING` is the same bytes. */
+export const RING = 'The human answered questions on your sheet.'
+/** The reason a ring is dropped with: MAWS's `SHEET_RING_DROP` is the same bytes, and it reads the drop by it (F39). */
+export const RING_DROP = 'nothing is ready on the sheet'
 
 /**
- * What a message that answers a subagent's question carries in a MAWS-run
- * session, as the tool's context (MAWS's C5, F9): MAWS's steer names a pick by
- * its place and never quotes a question, and the main conversation never held
- * a subagent's question. One line an answered outcome whose asker is a
- * subagent, by the id's number, in I10's line form; undefined when there is
- * none. Within the budget: whole, else cut, else as many cut lines as fit and
- * how many more.
+ * Whether an envelope fills a ring: its own block names an answer (F33). Its dismissals alone are no reason for a
+ * turn (§5.2), and the view's list of pending outcomes, the first 200 of every recipient's, cannot say what one
+ * envelope holds, so the block is what is read.
  */
-export function steerContext(pending: readonly ShownOutcome[]): string | undefined {
-  const asked = pending.filter((o) => o.kind === 'answer' && o.question.asker !== 'main').sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))
-  if (asked.length === 0) return undefined
-  const head = '[sheet v1] This message answers questions a subagent put on your sheet. What each asked:'
-  const line = (o: ShownOutcome, qcut?: number, lcut?: number) => {
-    const { asker, header, question, options } = o.question
-    const subagent = asker as { agentId: string; name: string }
-    return [
-      `${o.id} (revision ${o.revision}), asked by the subagent ${cut(subagent.name, 200)} (${subagent.agentId})`,
-      header === undefined ? '' : ` ${JSON.stringify(header)}`,
-      ` — ${JSON.stringify(qcut === undefined ? question : cut(question, qcut))}`,
-      options.length === 0 ? ' No options: answered in text.' : ` Options: ${options.map((label, i) => `${i + 1}. ${lcut === undefined ? label : cut(label, lcut)}`).join('; ')}.`,
-    ].join('')
-  }
-  const whole = [head, ...asked.map((o) => line(o))].join('\n')
-  if (whole.length <= STEER_CONTEXT_BUDGET) return whole
-  const lines = asked.map((o) => line(o, STEER_CONTEXT_QUESTION, STEER_CONTEXT_LABEL))
-  const cutWhole = [head, ...lines].join('\n')
-  if (cutWhole.length <= STEER_CONTEXT_BUDGET) return cutWhole
-  // The whole did not fit, so something is always left out: as many lines as fit beside the count of the rest.
-  let k = 0
-  let used = head.length
-  while (k < lines.length - 1 && used + 1 + (lines[k] as string).length + 1 + `and ${lines.length - k - 1} more.`.length <= STEER_CONTEXT_BUDGET) {
-    used += 1 + (lines[k] as string).length
-    k += 1
-  }
-  return [head, ...lines.slice(0, k), `and ${lines.length - k} more.`].join('\n')
+export function ringHasAnswer(envelope: View['ready'][number] | undefined): boolean {
+  return envelope !== undefined && blocksOf(envelope.text).some((block) => block.answered.length > 0)
 }
 
 // ------------------------------------------------------------------ the terminal's drawing (M5; §8.3, §8.1)

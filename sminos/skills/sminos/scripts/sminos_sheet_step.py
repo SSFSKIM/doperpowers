@@ -625,9 +625,13 @@ def wakes(o):
     return o["kind"] == "answer" and not o["acrossStop"]
 
 
-def batches(outs):
+def is_answer(o):
+    return o["kind"] == "answer"
+
+
+def batches(outs, answers_first=False):
     """What is pending for one recipient as batches (an outcome with no batch is one alone), those that hold an
-    outcome that wakes first, each group in the order accepted."""
+    outcome that wakes first, or with `answers_first` those that hold an answer, each group in the order accepted."""
     groups, order = {}, []
     for o in outs:
         b = o.get("batch") or ("\0" + o["key"])
@@ -636,7 +640,8 @@ def batches(outs):
             order.append(b)
         groups[b].append(o)
     out = [groups[b] for b in order]
-    return [g for g in out if any(wakes(o) for o in g)] + [g for g in out if not any(wakes(o) for o in g)]
+    leads = is_answer if answers_first else wakes
+    return [g for g in out if any(leads(o) for o in g)] + [g for g in out if not any(leads(o) for o in g)]
 
 
 def block(obj):
@@ -699,9 +704,12 @@ def envelope_text(outs, filed, recipient, more, where, tz, running):
     return "\n".join(lines)
 
 
-def envelope(st, recipient, where, tz=None, running=()):
+def envelope(st, recipient, where, tz=None, running=(), answers_first=False):
     """The next envelope for one recipient (I7), packed from what is pending for it, or None: {recipient, keys, text,
-    wakes, more}. `where` is the record's absolute path, which names its texts and images."""
+    wakes, more}. `where` is the record's absolute path, which names its texts and images. `answers_first` packs the
+    batches that hold an answer first, and a first batch that has to be cut its answers before its dismissals: what
+    a MAWS-run session's main conversation is given (MAWS's C5, F33), so its envelope names an answer while one is
+    pending, which is what fills MAWS's ring; nothing else asks for it."""
     outs = mine(st, recipient)
     if not outs:
         return None
@@ -714,7 +722,7 @@ def envelope(st, recipient, where, tz=None, running=()):
         return text if units(text) <= BUDGET and len(chosen) <= ENVELOPE_KEYS else None
 
     chosen, filed, text = [], set(), None
-    for i, b in enumerate(batches(outs)):
+    for i, b in enumerate(batches(outs, answers_first)):
         t = fits(chosen + b, filed)
         if t is not None:
             chosen, text = chosen + b, t
@@ -728,8 +736,9 @@ def envelope(st, recipient, where, tz=None, running=()):
                     chosen, text = b, t
                     break
             else:
-                # 3. still not: the batch's outcomes in order while they fit (one always does)
-                for o in b:
+                # 3. still not: the batch's outcomes in order while they fit (one always does), its answers first where
+                # they are to lead
+                for o in (sorted(b, key=lambda o: not is_answer(o)) if answers_first else b):
                     t = fits(chosen + [o], filed)
                     if t is None and chosen:
                         break
@@ -744,9 +753,10 @@ def envelope(st, recipient, where, tz=None, running=()):
 
 
 def ready(st, runner, where, tz=None, running=()):
-    """The ready envelopes: the main conversation's in a terminal session (MAWS delivers its own there), then each
-    subagent's that has outcomes taken; at most four recipients."""
-    recipients = ["main"] if runner == "terminal" else []
+    """The ready envelopes: the main conversation's, then each subagent's that has outcomes taken; at most four
+    recipients. In both runners the tool delivers (MAWS's C5, F8); under runner `maws` the main conversation's
+    envelope leads with its answers (F33)."""
+    recipients = ["main"]
     for o in st["pending"]:
         r = o["recipient"]
         if isinstance(r, dict) and o["taken"] and not any(same(r, x) for x in recipients):
@@ -755,7 +765,7 @@ def ready(st, runner, where, tz=None, running=()):
     for r in recipients:
         if len(out) == VIEW_READY:
             break
-        e = envelope(st, r, where, tz, running)
+        e = envelope(st, r, where, tz, running, answers_first=runner == "maws" and r == "main")
         if e is not None:
             out.append(e)
     return out

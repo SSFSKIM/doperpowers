@@ -265,11 +265,13 @@ process chooses how the session asks, and keeps the choice in `$.state`
 (`{plugin: 'sminos', key: 'sheet'}`, `SheetKept` in `types/sminos.d.ts`), so
 a reload and a `/clear` keep it: the choice is the process's, made once. In order: a kept choice; a kept `ask`
 snapshot and no kept choice (a module before this one served the ask) is
-today's tool; `SMNS_INTERNAL` is none; `MAWS_QUESTION_SHEET` equal to this
+today's tool; `SMNS_INTERNAL` is none; `MAWS_QUESTION_SHEET` of `2:` and this
 session's id is the sheet with MAWS as runner (the launch contract MAWS's
-C5 sets on the launches it gives the sheet; a value naming another session,
-as a `claude -p` started inside one inherits it, is ignored with a debug
-line); `MAWS_NATIVE_TO_HUMAN` is
+C5 sets on the launches it gives the sheet; 2 is the delivery's form,
+`MAWS_FORM`: the tool delivers and MAWS rings; any other value, another
+session's id as a `claude -p` started inside one inherits it, another form,
+or the bare id of no form, is ignored with a debug line saying which);
+`MAWS_NATIVE_TO_HUMAN` is
 none; a session that is not interactive is none; a record that holds an
 open question, a pending outcome (an answer or a dismissal) or a queued
 line is the sheet; then
@@ -380,15 +382,32 @@ made, or the step (a start's or a compaction's) gave it no context in time,
 the context goes instead on the next result or prompt route, once. When the floor can be read (the highest
 id the conversation holds, read by `floorSearchArgs`'s perl pass over a
 transcript past 4 MiB), a fork's or a lost record's first id is past it. A subagent that stops with questions open is
-named to the main conversation once, on the next route. In a MAWS-run
-session no envelope of the main conversation goes by a route, no idle route
-opens and no row lands: MAWS delivers there and says so by a `delivered`
-line; a running subagent's answer still goes by a send. The result and
-prompt routes there carry the notices and a context as in a terminal
-session, and a prompt that carries a block (MAWS's steer) also carries the
-words and labels of each subagent's question it answers, read from the
-record by `sminos sheet show --json --keys` (`steerContext`): MAWS's steer
-names a pick by its place and quotes no question.
+named to the main conversation once, on the next route.
+
+**A MAWS-run session** (runner `maws`; MAWS's question-sheet C5, F8, F33,
+F34). The tool delivers there as in a terminal session by every route but
+the idle one: the result and prompt routes carry the main conversation's
+envelope, the notices and a context, a route's row lands its keys, a start
+searches the transcript, and a running subagent's answer goes by a send.
+It submits no prompt of its own (a plugin's prompt carries no context of
+its own, and a Stop in MAWS does not withdraw it). When the session is idle
+and an answer is owed, MAWS writes its ring instead: a prompt of the
+composer's whose whole text is `The human answered questions on your
+sheet.` (`RING`). The prompt hook fills a ring with the ready envelope when
+that envelope's own block names an answer (`ringHasAnswer`), and otherwise
+drops it with `nothing is ready on the sheet` (`RING_DROP`, which MAWS reads)
+before taking anything, so a notice or a context that waits still waits; it
+awaits nothing first, the engine giving a prompt's hooks ten seconds in all.
+The same words under another origin, in a terminal session, or with one
+character more are a prompt like any other. The step packs that
+conversation's envelope with the batches that hold an answer first (in a
+cut batch its answers first), so a ring finds an answer while one is
+pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
+`sheet: a ring is dropped: …`). In both runners a main turn that ends
+aborted (a Stop) puts what was then pending for the main conversation in
+`noIdle`, and so does the view of a step ordered before that Stop that
+answers after it: none of it opens the idle route until a newer answer, and
+any prompt that enters carries it all.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
 registered outside the ask's band, draws one line above the to-human band in
