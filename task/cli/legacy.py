@@ -106,23 +106,34 @@ def _banner_span(text):
     return len(bare[2]) + sum(len(l) for l in lines[:2]), BANNER_LINE % one.group(1)
 
 
-def in_flight_line(state, branch=None, pr=None):
+def _plural(word, items):
+    return "%s%s %s" % (word, "" if len(items) == 1 else "es" if word.endswith("h") else "s", ", ".join(items))
+
+
+def in_flight_line(state, branch=None, pr=None, linked_branches=(), linked_prs=()):
     """The visible line a ticket of an in-flight state gets at the relabel
-    (D6): which state, branch and pull request it had."""
+    (D6): which state, branch and pull request it had. The old block's
+    branch and pull request, where it recorded them; else what GitHub links
+    to the issue, as links, without saying which one a session used; and
+    the state alone when neither holds one."""
     had = []
     if branch:
         had.append("on branch %s" % branch)
+    elif linked_branches:
+        had.append("with " + _plural("linked branch", list(linked_branches)))
     if pr:
         had.append("with pull request %s" % pr)
-    return "Board state before the relabel: %s, %s." % (
-        state, ", ".join(had) if had else "with no branch or pull request recorded")
+    elif linked_prs:
+        had.append("with " + _plural("linked pull request", list(linked_prs)))
+    return "Board state before the relabel: %s%s." % (state, ", " + ", ".join(had) if had else "")
 
 
-def rewrite(body, in_flight=None):
+def rewrite(body, in_flight=None, linked_branches=(), linked_prs=()):
     """The body the relabel writes, or None when there is nothing to
     rewrite: no `board:meta` block, no mirror header and no `in_flight`
     state (the old status of a ticket in flight, which gains a line saying
-    which state, branch and pull request it had). Only those spans change:
+    which state, branch and pull request it had: `linked_branches` and
+    `linked_prs` are the links GitHub holds for it). Only those spans change:
     every other byte of the body stays as it was, the record block stays
     last, and a pinned `plan:` becomes its `spec:` when it has none."""
     body = body or ""
@@ -140,13 +151,13 @@ def rewrite(body, in_flight=None):
         lines, spec, folded = _visible(m.group(1), "spec" not in parsed.fields,
                                        ("branch", "pr") if in_flight else ())
         if in_flight:
-            flight = in_flight_line(in_flight, folded.get("branch"), folded.get("pr"))
+            flight = in_flight_line(in_flight, folded.get("branch"), folded.get("pr"), linked_branches, linked_prs)
             lines.append(flight)
         # The span from the opener to its closer; the newlines around it are the prose's and stay.
         prose = prose[:m.start()] + "\n\n".join(lines) + prose[m.end(1) + len("\n-->"):]
         changed = True
     if in_flight and flight is None:
-        flight = in_flight_line(in_flight)
+        flight = in_flight_line(in_flight, linked_branches=linked_branches, linked_prs=linked_prs)
         cut = len(prose.rstrip("\r\n"))
         prose = prose[:cut] + (record.SEPARATOR if cut else "") + flight + prose[cut:]
         changed = True
@@ -156,4 +167,7 @@ def rewrite(body, in_flight=None):
         return prose + block
     if block:
         return record.with_keys(prose + block, {"spec": spec})
-    return record.with_keys(prose.rstrip("\r\n"), {"spec": spec})
+    # A new block after the line endings the prose has, with only the blank line it lacks added.
+    ending = prose[len(prose.rstrip("\r\n")):]
+    gap = "" if ending.count("\n") >= 2 or not prose else "\n" * (2 - ending.count("\n"))
+    return prose + gap + record.with_keys("", {"spec": spec})

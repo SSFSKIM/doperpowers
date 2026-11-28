@@ -109,7 +109,7 @@ def check(repo, task, seeded):
                                                or (t["record"] or {}).get("spec") != "docs/specs/scratch.md@0123abc"):
             bad.append("#%d's board:meta block is not visible: %r" % (n, t["body"]))
         if key == "in-progress" and not t["body"].endswith(
-                "Board state before the relabel: in-progress, with no branch or pull request recorded."):
+                "Board state before the relabel: in-progress."):
             bad.append("#%d's body does not say the state it had: %r" % (n, t["body"][-160:]))
         if key == "deferred" and (not t["body"].startswith("_Moved from board ticket 7 ") or "Read-only" in t["body"]):
             bad.append("#%d's banner is not replaced: %r" % (n, t["body"][:120]))

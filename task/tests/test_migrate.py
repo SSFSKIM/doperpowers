@@ -246,8 +246,7 @@ class BodyTest(MigrateCase):
         self.issue(26, title="theirs", labels=["status:in-review", "bug"], editor=OUTSIDER)
         rows = self.rows(self.plan()[0])
         for n, state in ((9, "in-design"), (10, "in-progress"), (11, "in-review"), (12, "confident-ready")):
-            self.assertEqual(rows[n]["body_after"], "Something to do.\n\nBoard state before the relabel: %s, with no "
-                             "branch or pull request recorded." % state)
+            self.assertEqual(rows[n]["body_after"], "Something to do.\n\nBoard state before the relabel: %s." % state)
         self.assertEqual(rows[25]["body_after"], "Work.\n\nBoard note: halfway\n\nBoard state before the relabel: "
                          "in-progress, on branch feat/x, with pull request https://github.com/acme/widgets/pull/9.\n")
         self.assertIsNone(rows[26]["body_after"])
@@ -259,6 +258,35 @@ class BodyTest(MigrateCase):
         for n in (9, 10, 11, 12, 25):
             self.assertEqual(self.gh_issue(n)["body"], rows[n]["body_after"], n)
         self.assertEqual(self.gh_issue(26)["body"], "Something to do.")
+
+    def test_an_in_flight_line_names_what_github_links_when_the_old_block_did_not(self):
+        pr = {"number": 41, "state": "OPEN", "updatedAt": "2026-11-20T00:00:00Z",
+              "url": "https://github.com/acme/widgets/pull/41"}
+        self.issue(31, title="linked", labels=["status:in-progress", "bug"], body="Plain.", prs=[pr],
+                   branches=[{"name": "feat/linked", "committedDate": "2026-11-20T00:00:00Z"}])
+        self.issue(32, title="both", labels=["status:in-review", "bug"], prs=[pr], body=(
+            "Old.\n\n<!-- board:meta\nbranch: feat/old\npr: https://github.com/acme/widgets/pull/7\n-->\n"))
+        self.issue(33, title="branch only in the block", labels=["status:in-design", "bug"], prs=[pr], body=(
+            "Half.\n\n<!-- board:meta\nbranch: feat/half\n-->\n"))
+        rows = self.rows(self.plan()[0])
+        self.assertEqual(rows[31]["body_after"], "Plain.\n\nBoard state before the relabel: in-progress, with "
+                         "linked branch https://github.com/acme/widgets/tree/feat/linked, with linked pull request "
+                         "https://github.com/acme/widgets/pull/41.")
+        self.assertEqual(rows[32]["body_after"], "Old.\n\nBoard state before the relabel: in-review, on branch "
+                         "feat/old, with pull request https://github.com/acme/widgets/pull/7.\n")
+        self.assertEqual(rows[33]["body_after"], "Half.\n\nBoard state before the relabel: in-design, on branch "
+                         "feat/half, with linked pull request https://github.com/acme/widgets/pull/41.\n")
+        self.assertEqual(rows[9]["body_after"], "Something to do.\n\nBoard state before the relabel: in-design.")
+
+    def test_a_pinned_plan_keeps_the_line_endings_before_its_new_record(self):
+        self.issue(34, title="pinned", labels=["status:needs-info"],
+                   body="Text.\n\n<!-- board:meta\nnote: n\nplan: docs/a.md@abc\n-->\n\n\n\n")
+        self.issue(35, title="tight", labels=["status:needs-info"],
+                   body="Text.\n\n<!-- board:meta\nnote: n\nplan: docs/a.md@abc\n-->")
+        rows = self.rows(self.plan()[0])
+        self.assertEqual(rows[34]["body_after"],
+                         "Text.\n\nBoard note: n\n\n\n\n```task-record\nspec: docs/a.md@abc\n```")
+        self.assertEqual(rows[35]["body_after"], "Text.\n\nBoard note: n\n\n```task-record\nspec: docs/a.md@abc\n```")
 
     def test_only_the_legacy_spans_change(self):
         banner = BANNER + "\n---\n\nLine one  \nline two\t \n\n\n```task-record\nregistered-by: someone\n```"
