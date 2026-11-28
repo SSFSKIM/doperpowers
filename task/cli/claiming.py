@@ -148,8 +148,13 @@ def housekeep(ctx, regular):
     over them completed within TASK_SETTLE_EVERY (ten minutes). One budget
     (20 s; TASK_SETTLE_DEADLINE for tests) bounds every call of it, under
     the board's running mark, so that two verbs started together run one.
-    Run once a verb's preflight has passed and before it reads what it acts
-    on. Its failure, its bookkeeping's among it, goes to stderr and fails
+    Run once a verb's preflight has passed (its arguments; for `claim` and
+    `takeover` the session's address and thread; for `release` and `close`
+    the holder judged on a read; for `migrate apply` the plan), so a verb
+    that refuses on that first judgment has written nothing, and before it
+    reads what it acts on. A verb whose judgment housekeeping can change
+    judges again after it ran: a refusal then has written no record of its
+    own, though housekeeping may have written an owed release. Its failure, its bookkeeping's among it, goes to stderr and fails
     nothing. Whether a pass ran (and may have written)."""
     repo = ctx.repo
     key = I.board_key(repo)
@@ -225,11 +230,6 @@ class Result:
         self.code, self.text = code, text
 
 
-def _for_another(t, address):
-    wanted = t.parsed.fields.get("for") if t.body_trusted and t.parsed.readable else None
-    return wanted if wanted and wanted != address else None
-
-
 def _wait_past(reopened):
     """Until the second of the reopening has passed on this machine's clock."""
     while datetime.datetime.now(datetime.timezone.utc) < reopened + datetime.timedelta(seconds=1.2):
@@ -286,12 +286,6 @@ def _claim_one(ctx, number, address, thread):
                     return Result(OK, "#%d: already yours (claim %d)" % (number, t.holder.id))
                 I.remove(token)
                 return Result(REFUSED, "#%d is held by %s" % (number, holder_text(t)))
-            other = _for_another(t, address)
-            if other:
-                I.remove(token)
-                return Result(REFUSED, "#%d is registered for %s: it is claimed by another thread only after its "
-                                       "record is changed (%s or --no-to, on the owner's word)"
-                              % (number, other, ctx.cmd("set %d --to <thread>" % number)))
             unmet = [r for r in t.not_takeable(lambda: address) if r not in ("closed", "held")]
             ctx.client.ensure_labels(repo, {B.CLAIMED: B.label_spec(B.CLAIMED)})
             _barrier("")
@@ -309,8 +303,7 @@ def _claim_one(ctx, number, address, thread):
                 pending = (I.PENDING,)
                 if kind == C.CURRENT:
                     I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
-                    note = ("; it is not takeable on a session's own initiative (%s), so it was claimed on the "
-                            "owner's word" % ", ".join(unmet)) if unmet else ""
+                    note = ("; it is not takeable on a session's own initiative (%s)" % ", ".join(unmet)) if unmet else ""
                     return Result(OK, "#%d: claimed (claim %d)%s" % (number, own, note))
                 if kind == C.SUPERSEDED:
                     I.change(token, expect=I.ACTIVE, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
@@ -579,6 +572,9 @@ def _brief(row, *keys):
 
 
 def held(ctx):
+    """`task held --session S [--thread T] [--cleared-from L] --json`,
+    sminos's call (§9, frozen at M3's review): the index only, from any
+    directory, exit 0 whenever it could answer."""
     a = ctx.args
     for flag in ("session", "thread", "cleared_from"):
         value = getattr(a, flag)
@@ -611,6 +607,10 @@ def held(ctx):
 
 
 def settle(ctx):
+    """`task settle [--thread T] --json`, sminos's call (§9, frozen at M3's
+    review): from any directory, exit 0 whenever it could answer. The call
+    states nothing about any thread: settle asks sminos about each itself,
+    and `--thread` only limits the run to that thread's rows."""
     a = ctx.args
     if a.thread is not None and not a.thread.strip():
         raise usage("--thread takes a thread id")
