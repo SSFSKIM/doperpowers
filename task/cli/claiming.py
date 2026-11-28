@@ -389,9 +389,11 @@ def _force_reason(text, flag="--force"):
     return C.FORCED + text.strip()
 
 
-def _release_check(ctx, a, forced):
+def _release_check(ctx, a, forced, again=False):
     """Read the ticket and judge the release: (the ticket, its holder), or
-    the refusal, with nothing written."""
+    the refusal. Before housekeeping a refusal has written nothing; `again`
+    (after housekeeping wrote) it has written no release of this one."""
+    unwritten = "no bound release was written" if again else "nothing was written"
     t = ctx.ticket(a.number)
     if t.state != "open":
         raise refused("#%d is closed: its close ended every claim, and there is nothing to release" % a.number)
@@ -399,8 +401,8 @@ def _release_check(ctx, a, forced):
     if h is None:
         raise refused("#%d is unheld: there is nothing to release" % a.number)
     if a.of is not None and h.id != a.of:
-        raise refused("claim %d does not hold #%d: it is held by %s; nothing was written" % (a.of, a.number,
-                                                                                          holder_text(t)))
+        raise refused("claim %d does not hold #%d: it is held by %s; %s" % (a.of, a.number, holder_text(t),
+                                                                          unwritten))
     if forced is None and not holds(ctx, t, h):
         raise refused("#%d is held by %s, not by this session's thread: the holder releases its own claim, and "
                       "anyone else gives %s" % (a.number, holder_text(t), ctx.cmd(
@@ -418,7 +420,7 @@ def release(ctx):
     # Judged before the housekeeping writes anything, and again after it if it ran: it can change the holder.
     t, h = _release_check(ctx, a, forced)
     if retry_owed(ctx):
-        t, h = _release_check(ctx, a, forced)
+        t, h = _release_check(ctx, a, forced, again=True)
     row = I.row_of_holder(I.read(), t.repo, t.number, h)
     try:
         kind, other, _ = S.write_release(ctx.client, t.login, t.repo, t.number, h.id, forced or "released", prose)
@@ -537,14 +539,17 @@ def close(ctx):
         ctx.client.edit_issue(ctx.repo, a.number, state="closed", state_reason=reason)
     except GitHubError as e:
         raise failed(e.message)
+    ended = I.row_of_holder(I.read(), t.repo, t.number, h) if h is not None else None
     try:
         S.converge(ctx.client, t.login, S.read(ctx.client, t.login, t.repo, t.number))
     except GitHubError as e:
-        # The row of the claim the close ended stays: settle finds the ticket closed and repairs its label.
-        sys.stderr.write("task: #%d is closed, and its claimed label could not be made to agree: %s (the next "
-                         "settle repairs it)\n" % (a.number, e.message))
+        # The row of the claim the close ended stays: settle finds the ticket closed and repairs its label. With no
+        # such row on this machine, nothing will visit it: the repair is the reader's.
+        repair = "the next settle repairs it" if ended is not None else "repair it with %s" % ctx.cmd(
+            "show %d" % a.number)
+        sys.stderr.write("task: #%d is closed, and its claimed label could not be made to agree: %s (%s)\n"
+                         % (a.number, e.message, repair))
     else:
-        ended = I.row_of_holder(I.read(), t.repo, t.number, h) if h is not None else None
         if ended is not None:  # the claim the close ended; any other row on the ticket is settle's to judge
             I.remove(ended["attempt"])
     print("#%d closed, %s" % (a.number, reason.replace("_", " ")))

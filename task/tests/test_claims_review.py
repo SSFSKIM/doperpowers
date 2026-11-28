@@ -1,4 +1,4 @@
-"""M3's review, fix wave 1: one test per behavior the wave changed (owed
+"""M3's review, fix waves 1 to 3: one test per behavior a wave changed (owed
 rows, releases the confirming read does not show, pending rows, holder
 identity, the settle's deadline, housekeeping after preflight, a
 repository that cannot be read, close, the void claim's report, the board
@@ -7,8 +7,8 @@ import json
 import time
 import unittest
 
-from harness import (ADDRESS, OTHER_ADDRESS, OTHER_SESSION, REPO, SESSION, THREAD, claim_body, takeover_body,
-                     thread_answer)
+from harness import (ADDRESS, OTHER_ADDRESS, OTHER_SESSION, OTHER_THREAD, REPO, SESSION, THREAD, claim_body,
+                     takeover_body, thread_answer)
 from test_settle import SettleCase
 
 COMMENTS = REPO + "/issues/5/comments"
@@ -390,6 +390,57 @@ class WaveTwoTest(SettleCase):
         self.assertIn("was closed as the release landed", err)
         self.assertNotIn("deleted", err)
         self.assertEqual(len(self.releases(5)), 1)
+
+
+# ── fix wave 3 ────────────────────────────────────────────────────────────
+class WaveThreeTest(SettleCase):
+    def test_a_pass_resumes_past_an_owed_row_that_ran_out(self):                               # 1
+        # #5 owed, its read slower than the budget each time; #6 held by a thread that has ended since.
+        self.claimed(5)
+        self.claimed(6, session=OTHER_SESSION)
+        self.ended()
+        self.fail_on(REPO + "/issues/5/comments", status=502, stdin="reason: ended")
+        self.settle("--thread", THREAD)
+        self.assertEqual(self.row(5)["state"], "owed")
+        self.ended(OTHER_THREAD, OTHER_SESSION)
+
+        def due(d):
+            d["settled"].clear()
+            for r in d["rows"]:
+                r["visited"] = {5: "2026-11-01T00:00:00Z", 6: "2026-11-01T00:00:01Z"}[r["number"]]
+        self.set_rows(due)
+        self.hook("-F number=5 ", [{"sleep": 30}], times=2)
+        env = {"TASK_SETTLE_DEADLINE": "2", "TASK_SETTLE_EVERY": "0"}
+        self.task("list", env=env)
+        self.assertEqual(self.row(6)["state"], "held")
+        self.task("list", env=env)
+        self.assertEqual((self.row(6)["state"], self.row(6)["reason"]), ("lapsed", "ended"))
+        self.assertEqual(len(self.releases(6)), 1)
+
+    def test_the_second_bound_check_says_what_was_written(self):                               # 2
+        # The bound claim is current at the first check; the owed release housekeeping writes moves it.
+        claim = self.claimed(5)
+        self.ended()
+        self.fail_on(REPO + "/issues/5/comments", status=502, stdin="reason: ended")
+        self.settle()
+        self.assertEqual(self.row(5)["state"], "owed")
+        # Another session claims the moment the owed release lands, so the second check finds another holder.
+        self.hook(COMMENTS, [{"comment": {"number": 5, "body": claim_body(OTHER_ADDRESS, "00000000000000ff")}}],
+                  when="after", stdin="reason: ended")
+        code, _, err = self.task("release", "5", "--force", "stale", "--of", str(claim), session=OTHER_SESSION)
+        self.assertEqual(code, 3, err)
+        self.assertIn("claim %d does not hold #5" % claim, err)
+        self.assertIn("no bound release was written", err)
+        self.assertNotIn("nothing was written", err)
+        self.assertEqual(len(self.releases(5)), 1)
+
+    def test_a_close_with_no_row_names_the_repair(self):                                       # 2
+        self.ticket(5, extra=["claimed"])  # unheld, a stale label, no row on this machine
+        self.fail_on(REPO + "/issues/5/labels/claimed", status=502)
+        code, _, err = self.task("close", "5")
+        self.assertEqual(code, 0, err)
+        self.assertIn("task show 5 --repo acme/widgets", err)
+        self.assertNotIn("next settle", err)
 
 
 if __name__ == "__main__":

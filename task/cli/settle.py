@@ -127,7 +127,9 @@ def run(client, thread=None, repo=None, deadline=None, states=(I.PENDING, I.HELD
     with I.locked() as data:
         I.prune(data)
         rows = [dict(r) for r in data["rows"] if _selected(r, thread, repo, states)]
-    rows.sort(key=lambda r: (r["state"] != I.OWED, r["visited"]))  # owed releases first
+    # Least recently visited first over every row, so that a pass resumes past a row whose read ran out of time;
+    # among rows equally due, owed releases first.
+    rows.sort(key=lambda r: (r["visited"], r["state"] != I.OWED))
     boards = []
     for r in rows:
         if r["repo"] not in boards:
