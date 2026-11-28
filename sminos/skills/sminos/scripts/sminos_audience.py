@@ -214,7 +214,10 @@ def widening_through_app():
     capabilities in it) counts as `record`: every welcome writes them, so
     the word is not known yet (fail closed). A machine not cut over has no endpoint to
     carry an act, so the operator's terminal stays its gate (one its
-    endpoint never welcomed)."""
+    endpoint never welcomed). This closes widening only to what goes
+    through sminos: a process of the same user that writes the record file
+    or audiences.json itself still widens, since neither the endpoint nor
+    the hub checks a widening against an act (DL 231)."""
     if not sminos.sibling_module("sminos_rl10").cut_over():
         return False
     return _kept_word("record")

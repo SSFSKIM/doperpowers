@@ -264,7 +264,8 @@ def lang_of(st):
 
 def _check_fields(obj, fields, where, problems):
     """The fields of `obj` checked against `fields` ({name: (kind, required)}): each problem appended, and the
-    fields whose value holds its kind returned, the only ones a caller's further checks read. Kinds: text, bool,
+    fields whose value holds its kind returned, the only ones a caller's further checks read (an emptiness test,
+    lookup or set operation on any other could raise, where malformed input must be a named problem). Kinds: text, bool,
     time, texts (a list of strings), and for a roadmap `parts` (a non-empty list of objects) and `changes` (a list
     of objects); `?` allows null."""
     good = {}

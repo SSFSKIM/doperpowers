@@ -2,6 +2,9 @@
 // kit loads sminos in): the real module, started as a session starts, with a
 // stand-in for devcloud's guard as a person installs it. Not a test file:
 // the kit takes `tier` once per file.
+// The tier is the engine's rule, not the harness's, so the kit's `prepend`
+// is the organization's: a person's own `prependPlugins` it cannot express,
+// and bridge.test.ts's harness cases carry that seat.
 import { mock } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'

@@ -7,9 +7,9 @@ runs, in §7's order: usage, this machine (a host, not enrolled, named
 itself), the caller's route back (an address, a project this enrollment
 carries, a reach that is this machine's default), devcloud's CLI, and for
 `new` the projects the VM checks out. Then `devcloud vm up --enroll --keep
---expect-creator <short>` for `new`, and the VM side over `devcloud vm ssh
-<vm> -- env -u CLAUDE_CODE_SESSION_ID sminos spawn <alias> - --asked-from
-<request> …`, the task on standard input. It prints a spawn only on one
+--expect-creator=<short>` for `new`, and the VM side over `devcloud vm ssh
+<vm> -- env -u CLAUDE_CODE_SESSION_ID sminos spawn --asked-from=<request> …
+-- <alias> -`, the task on standard input. It prints a spawn only on one
 whole outcome line from the VM that it can hold to its call; anything else
 is an outcome that is not known. It writes nothing in sminos's store.
 
@@ -407,7 +407,11 @@ def hold_to_spawner(req, cwd, alias, answer):
     Where the request asks for channels (EN.G2's §1), the tag asked is the
     one the preamble then gives, the spawner's qualified address
     (spawner_tag): read in the spawner's project alone, never through a
-    channel's roster, so no alias in another project can take it."""
+    channel's roster, so no alias in another project can take it.
+
+    The log is the one source of where a message goes: an address hint kept
+    beside it was withdrawn (the plan's decision log, 2026-11-22), since
+    every state the log can be in needed its own guard there."""
     by = req["by"]
     if by is None or "session" not in by:
         return

@@ -124,10 +124,14 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * - bridge-btw.tsx, bridge-agent-ops.tsx and bridge-media.tsx (which take
  *   `$`): the desk's side question, one subagent stopped or told, and the
  *   desk's images and PDFs read into the conversation;
+ * - bridge-ask.tsx (which takes `$`): the owner's manager's question, a
+ *   read-only fork agent;
+ * - bridge-receipts.tsx (which takes `$` only to read the conversation):
+ *   which receipts a lane B observer's main request carried;
  * - bridge-holder.tsx (which takes `$`): a lane B observer's part in MAWS's
  *   release fence (O12 M4a): the gate's arms installed and acknowledged,
- *   each main-loop request asked of the host before it goes, and the origin
- *   of each main turn.
+ *   each main-loop request asked of the host before it goes, the origin
+ *   of each main turn, and the receipts' reports and releases.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
  * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's

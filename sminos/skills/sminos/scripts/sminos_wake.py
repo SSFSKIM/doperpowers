@@ -18,7 +18,7 @@ Interfaces §1 and §2 of docs/doperpowers/plans/2026-11-20-sminos-threads-t2.md
   due again (wake_due), from the record's `waking` (sminos_threads, §7).
 
 Nothing here launches, signals, locks or writes; the wake itself is
-`sminos.resume_session`.
+`sminos.wake` (a seat's caller, `sminos.resume_session`).
 """
 import json
 import os
