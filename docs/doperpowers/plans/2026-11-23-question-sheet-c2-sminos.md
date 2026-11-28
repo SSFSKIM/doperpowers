@@ -1619,8 +1619,8 @@ subagents, and submits no prompt of its own: a plugin's prompt carries no
 context, and MAWS's Stop does not withdraw it. For a turn, MAWS writes its
 ring when the session is idle and an answer is owed: a prompt of origin
 `composer` whose whole text is `The human answered questions on your
-sheet.` (`RING`). The prompt hook, before taking anything and awaiting
-nothing, fills a ring when the block of the envelope ready for the main
+sheet.` (`RING`). The prompt hook, before taking anything, awaiting
+nothing and ordering no step, fills a ring when the block of the envelope ready for the main
 conversation names an answer (one owed across a stop included), and
 otherwise drops it, `{ drop: 'nothing is ready on the sheet' }`
 (`RING_DROP`): nothing ready, the envelope on another route, dismissals
@@ -1632,9 +1632,13 @@ Each ring's fate is a debug line.
 **A stopped turn** (MAWS's C5, F34, both runners). When a main turn ends
 aborted (the turn's end event's `isAborted`), every key the view held lists
 as pending for the main conversation and every key of its ready envelope
-join `noIdle`, and `idleFailedAt` takes the view's answered count; a step
-ordered before that end (`stops`, counted per generation) whose view is
-adopted after it does the same with its view. So nothing pending at a Stop
+join `noIdle`, and `idleFailedAt` takes the view's answered count. While
+a step ordered before that end is still outstanding (`stops`, counted per
+generation, and each step's count noted while it runs), any view adopted
+does the same with its own, whichever step it came from: a step's reply
+need not follow the order of the commits, so a later step's newer view can
+hold what the earlier one committed. An idle reservation made before the
+end is let go at its hop. A ring orders no step at all. So nothing pending at a Stop
 opens the idle route again, whatever step's view is adopted next (a
 dismissal, a reroute, a `landed` retry, a step the Stop overtook); a newer
 answer does and takes it along, and any prompt that enters carries it all.

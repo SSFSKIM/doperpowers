@@ -187,8 +187,9 @@ type Gen = {
   rerouteOwed: Set<string>
   /** Keys whose idle flight did not land: their envelope waits for a route that starts no turn, so no turn is started for it again and again. */
   noIdle: Set<string>
-  /** How many main turns ended aborted (a Stop): a step ordered before the last of them gives what it applied to `noIdle` (MAWS's C5, F34). */
+  /** How many main turns ended aborted (a Stop), and the count each step still outstanding was ordered under (MAWS's C5, F34). */
   stops: number
+  ordered: Set<{ stops: number }>
   /** I10's context the next result or prompt route carries, once: where no SessionStart could return it (M4's decisions). */
   context?: string
   /** A compaction's context is owed: its drain gave no answer, so the next check's drain composes it. */
@@ -247,6 +248,8 @@ type Flight = {
   handed?: boolean
   /** What opened an idle reservation: spent (`noIdle`, `idleFailedAt`) only if its submit fails. */
   wake?: Wake
+  /** The generation's Stop count when an idle reservation was made: a Stop before its hop lets it go (F34). */
+  stops?: number
 }
 
 /**
@@ -337,6 +340,7 @@ const newGen = (session: string): Gen => ({
   rerouteOwed: new Set(),
   noIdle: new Set(),
   stops: 0,
+  ordered: new Set(),
   isContextOwed: false,
   isStartRouted: false,
   named: new Set(),
@@ -403,7 +407,18 @@ function retire() {
  * the caller orders the event again, or settles a call.
  */
 async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
-  const stops = gen.stops
+  // Outstanding from here until its view is adopted or passed over: a Stop meanwhile holds what any view brings then.
+  const order = { stops: gen.stops }
+  gen.ordered.add(order)
+  try {
+    return await stepOnce(port, gen, event, agents)
+  } finally {
+    gen.ordered.delete(order)
+  }
+}
+
+/** The step itself (`step` holds it outstanding meanwhile). */
+async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
   const own = isRecord(event.call) ? event.call.callId : undefined
   const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
@@ -437,8 +452,9 @@ async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents
   if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
     const before = gen.held
     gen.held = answer.view
-    if (stops < gen.stops) {
-      // Ordered before a Stop it answers after: what it applied was pending at that Stop, and the Stop holds it too.
+    if ([...gen.ordered].some((other) => other.stops < gen.stops)) {
+      // A step ordered before a Stop is still outstanding, this one among them or not: what it committed may have
+      // been pending at that Stop and be in this view, whose reply came first (replies need not follow commits).
       holdStopped(gen)
     }
     // A view adopted opens the routes it holds envelopes for (I9).
@@ -782,7 +798,7 @@ function deliver(port: Port, gen: Gen) {
     const envelope = readyFor(gen, 'main')
     const wake = envelope !== undefined && envelope.wakes ? freshWake(gen, envelope) : undefined
     if (envelope !== undefined && wake !== undefined) {
-      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns, wake }
+      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns, wake, stops: gen.stops }
       gen.flights.push(flight)
       port.after(() => void submitIdle(port, gen, flight))
     }
@@ -848,7 +864,8 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   if (!gen.flights.includes(flight)) {
     return
   }
-  if (!isStarted(gen) || sheet.mainTurn !== undefined) {
+  if (!isStarted(gen) || sheet.mainTurn !== undefined || flight.stops !== gen.stops) {
+    // A turn runs, or one ended aborted since the reservation: what it held is the Stop's now.
     release(port, gen, flight)
     return
   }
@@ -1986,11 +2003,14 @@ export function registerSheet(on: On) {
   // ring (MAWS's C5, F33) is filled by the same route when the envelope it
   // would carry names an answer, and dropped otherwise, before anything is
   // taken: nothing then needs putting back. Nothing is awaited before
-  // `next`: the engine gives a prompt's hooks ten seconds in all.
+  // `next`, and a ring orders no step: the engine gives a prompt's hooks ten
+  // seconds in all.
   on('prompt.submit', { text: /^/ }, async (_, e, next) => {
-    triggerCheck()
+    // A ring orders no step (F33): only a prompt that is not one triggers the check.
+    const isRinging = isRing(e)
+    if (!isRinging) triggerCheck()
     const gen = routable()
-    if (isRing(e)) {
+    if (isRinging) {
       const why = ringDrop(gen)
       sheet.port?.log(why === undefined ? `sheet: a ring is filled: the main conversation's envelope, ${keysOf(readyFor(gen as Gen, 'main'))}` : `sheet: a ring is dropped: ${why}`)
       if (why !== undefined) {

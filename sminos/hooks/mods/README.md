@@ -396,7 +396,7 @@ composer's whose whole text is `The human answered questions on your
 sheet.` (`RING`). The prompt hook fills a ring with the ready envelope when
 that envelope's own block names an answer (`ringHasAnswer`), and otherwise
 drops it with `nothing is ready on the sheet` (`RING_DROP`, which MAWS reads)
-before taking anything, so a notice or a context that waits still waits; it
+before taking anything or ordering a step, so a notice or a context that waits still waits; it
 awaits nothing first, the engine giving a prompt's hooks ten seconds in all.
 The same words under another origin, in a terminal session, or with one
 character more are a prompt like any other. The step packs that
@@ -405,9 +405,11 @@ cut batch its answers first), so a ring finds an answer while one is
 pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
 `sheet: a ring is dropped: …`). In both runners a main turn that ends
 aborted (a Stop) puts what was then pending for the main conversation in
-`noIdle`, and so does the view of a step ordered before that Stop that
-answers after it: none of it opens the idle route until a newer answer, and
-any prompt that enters carries it all.
+`noIdle`; so does every view adopted while a step ordered before that Stop
+is still outstanding (a reply need not follow the order of the commits),
+and an idle reservation made before it is let go at its hop: none of it
+opens the idle route until a newer answer, and any prompt that enters
+carries it all. A ring orders no step.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
 registered outside the ask's band, draws one line above the to-human band in
