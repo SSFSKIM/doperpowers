@@ -301,6 +301,8 @@ type Sheet = {
   isDeliveryWanted: boolean
   /** A prompt entered before a reload's session.start restored the choice: the kept Stop is not taken up (F34). */
   isPromptEntered: boolean
+  /** The main turn the last prompt typed over a running turn was admitted over: its aborted end sets no Stop (F34). */
+  enteredOver?: string
   /** The ask snapshot last written or being written (I13), as its JSON: one that would say the same is not written again; forgotten when its write fails. */
   published?: string
   /** The snapshot writes, one after another, so the last asked for is the last to land. */
@@ -860,6 +862,9 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   }
   const text = entered.drop === undefined ? (entered.text ?? '') : ''
   gen.notices.unshift(...notices.filter((notice) => entered.drop !== undefined || (entered.text !== undefined && !entered.text.includes(notice))))
+  // The mod's own prompt entered the main conversation, its row landed first or not, the envelope in it or not: it
+  // ends a Stop's hold, as a prompt that enters does.
+  if (entered.drop === undefined) endStop(gen)
   if (!gen.flights.includes(flight)) {
     // Its row landed it already.
     return
@@ -869,8 +874,6 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   } else if (entered.text !== undefined && !keysIn([text]).some((key) => flight.keys.includes(key))) {
     failIdle(port, gen, flight, 'a hook took the envelope out of the prompt')
   } else {
-    // The mod's own prompt entered the main conversation: it ends a Stop's hold, as a prompt that enters does.
-    endStop()
     turnOf(flight)
   }
 }
@@ -1097,11 +1100,26 @@ function stopAt() {
   keep({ stoppedAt: new Date(Date.now()).toISOString() })
 }
 
-/** A prompt entered the main conversation: no Stop holds anything now. Before the choice is restored, remembered. */
-function endStop() {
+/**
+ * The session a prompt was admitted in, read as it came: its generation, if
+ * the current one; `'early'` before a reload's session.start restored the
+ * choice, the session then being the one that start restores.
+ */
+type Admission = Gen | undefined | 'early'
+
+const admission = (): Admission => (sheet.kept === undefined ? 'early' : current())
+
+/**
+ * A prompt entered the main conversation: no Stop of the session it entered
+ * holds anything now. Only while that session's generation is still the
+ * current one (a Stop of the session after a /clear is not its); one that
+ * came before the choice was restored ends the Stop the restore takes up,
+ * remembered until then.
+ */
+function endStop(at: Admission) {
   if (sheet.kept === undefined) {
-    sheet.isPromptEntered = true
-  } else if (sheet.kept.stoppedAt !== undefined) {
+    if (at === 'early') sheet.isPromptEntered = true
+  } else if ((at === 'early' ? current() !== undefined : at !== undefined && at === current()) && sheet.kept.stoppedAt !== undefined) {
     keep({ stoppedAt: undefined })
   }
 }
@@ -2005,6 +2023,7 @@ export function registerSheet(on: On) {
   // `next`, and a ring orders no step: the engine gives a prompt's hooks ten
   // seconds in all.
   on('prompt.submit', { text: /^/ }, async ($, e, next) => {
+    const at = admission()
     // A ring orders no step (F33): only a prompt that is not one triggers the check.
     const isRinging = isRing(e)
     if (!isRinging) triggerCheck()
@@ -2065,8 +2084,13 @@ export function registerSheet(on: On) {
       }
       return result
     })()
-    // A prompt that entered the main conversation ends a Stop's hold (F34); one dropped, or a slash command, does not.
-    if (admitted.drop === undefined && e.command === undefined) endStop()
+    // A prompt that entered the main conversation ends its session's Stop (F34); one dropped, or a slash command, does
+    // not. One typed over a running turn keeps that turn's aborted end, read after it (a message preempted the turn),
+    // from setting one.
+    if (admitted.drop === undefined && e.command === undefined) {
+      endStop(at)
+      if (e.turnId !== undefined) sheet.enteredOver = e.turnId
+    }
     return admitted
   }).catch((_, e, next) => next(e))
 
@@ -2094,8 +2118,10 @@ export function registerSheet(on: On) {
   on('turn.complete', { turnId: /./ }, (_, e, next) => {
     triggerCheck()
     if (e.agentId === undefined) {
-      // A Stop, read here and set before anything else; not when a later main turn has begun (a message preempted it).
-      if (e.isAborted === true && isSheetChosen() && (sheet.mainTurn === undefined || sheet.mainTurn === e.turnId)) stopAt()
+      // A Stop, read here and set before anything else; not when a message preempted the turn: a later main turn has
+      // begun, or a prompt typed over this one was admitted.
+      if (e.isAborted === true && isSheetChosen() && (sheet.mainTurn === undefined || sheet.mainTurn === e.turnId) && sheet.enteredOver !== e.turnId) stopAt()
+      if (sheet.enteredOver === e.turnId) sheet.enteredOver = undefined
       if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
       if (sheet.port !== undefined) publish(sheet.port)
       const gen = routable()

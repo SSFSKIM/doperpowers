@@ -411,12 +411,20 @@ pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
 `session.start` has not yet restored the choice is known by its mark and
 dropped. In both runners a main turn that ends aborted (a Stop) sets
 `stoppedAt` in the kept choice, at once, from the mod's clock (not when a
-later main turn had already begun); a reload of the same session takes it
-up, a fork and a `/clear` start without it, and a prompt that enters the
-main conversation (the mod's own idle prompt included) clears it. While it
-is set the idle route opens only when the view's `mainAcceptedAt`, the
-latest time the step accepted an answer still owed to the main
-conversation, is later than it; that envelope carries everything as ever.
+message preempted the turn: a later main turn had already begun, or a
+prompt typed over this one was admitted); a reload of the same session
+takes it up, a fork and a `/clear` start without it, and a prompt that
+enters the main conversation clears it: the mod's own idle prompt included,
+whether its row landed it first or it entered without the envelope, and only
+while the session it entered is still the current one (a prompt or idle
+submit still being admitted across a `/clear` clears nothing of the session
+after it); one entered while a reload restores the choice keeps the Stop
+from being taken up. While it is set the idle route opens only when the
+view's `mainAcceptedAt`, the latest time the step accepted an answer still
+owed to the main conversation, is later than it (the same millisecond is
+held); that envelope carries everything as ever. The step reads its clock
+once it holds the record's lock, so an answer it accepts after waiting on
+the lock is stamped after a Stop taken in the wait.
 A dismissal, a reroute or a `landed` retry changes no answer's time and
 opens nothing. A ring orders no step.
 
