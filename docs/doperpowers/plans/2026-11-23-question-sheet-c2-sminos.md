@@ -1641,7 +1641,9 @@ the same synchronous stretch, from its own clock, the machine's the step
 stamps `acceptedAt` with, which the step reads once it holds the record's
 lock (an answer appended while a step waited on the lock is accepted after
 a Stop taken in the wait). An aborted end read after a later main turn
-has begun (a message preempted it) sets nothing. A reload of the same
+has begun (a message preempted it) sets nothing, that turn running still
+or ended already: only the latest main turn to start, kept across its end,
+sets a Stop by its aborted end. A reload of the same
 session takes it up before its first drain; a fork and a `/clear` start
 without it. The next main turn's start clears it (`turn.start` without an
 `agentId`), whatever began the turn: the engine mints every turn's id at

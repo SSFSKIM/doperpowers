@@ -287,6 +287,8 @@ type Sheet = {
   early?: { source: StartSource; session: string; transcript: string }
   /** The main turn running, by its id (`turn.start` without an agentId), until it completes. */
   mainTurn?: string
+  /** The latest main turn that started, kept across its end: only its aborted end is a Stop (F34). */
+  lastMainTurn?: string
   /** How many main turns have started in this module. */
   turns: number
   /** Subagents that stopped and have not started again: never sent to, as a send resumes one (C0's P2). */
@@ -2077,6 +2079,7 @@ export function registerSheet(on: On) {
       // A main turn, whatever began it, ends a Stop's hold (F34); a subagent's does not.
       endStop()
       sheet.mainTurn = e.turnId
+      sheet.lastMainTurn = e.turnId
       sheet.turns += 1
       if (sheet.port !== undefined) publish(sheet.port)
       for (const flight of current()?.flights ?? []) {
@@ -2095,8 +2098,9 @@ export function registerSheet(on: On) {
   on('turn.complete', { turnId: /./ }, (_, e, next) => {
     triggerCheck()
     if (e.agentId === undefined) {
-      // A Stop, read here and set before anything else; not when a later main turn has begun (a message preempted it).
-      if (e.isAborted === true && isSheetChosen() && (sheet.mainTurn === undefined || sheet.mainTurn === e.turnId)) stopAt()
+      // A Stop, read here and set before anything else; not when a later main turn has begun (a message preempted it),
+      // running still or ended already.
+      if (e.isAborted === true && isSheetChosen() && (sheet.lastMainTurn === undefined || sheet.lastMainTurn === e.turnId)) stopAt()
       if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
       if (sheet.port !== undefined) publish(sheet.port)
       const gen = routable()
