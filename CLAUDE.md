@@ -74,7 +74,7 @@ A part's detail is in the `CLAUDE.md` nearest its code.
 | `application-agents/` | Deployed agent applications that are not skills. |
 | `infra/` | Hosts of the dormant board machinery (`worker-host/`, the `board-sweep` plist); none runs. |
 | `devenv/` | This repository's own development environment, for devcloud hosts and the Macs. |
-| `tests/`, `scripts/` | Per-area tests and runners; `bump-version.sh`, `lint-shell.sh`, `check-claudemd-budget.py`. |
+| `tests/`, `scripts/` | Per-area tests and runners; `bump-version.sh`, `lint-shell.sh`. |
 | `archive/` | Retired skills and agents, loaded by no harness. |
 | `docs/` | Install guide, `whats-inside.md` (the catalog of every skill, agent and hook), porting and upstream notes, `docs/doperpowers/{plans,specs}` design history. |
 | `teaching/` | The owner's study course on the cloud-scale reference architecture. |
@@ -136,6 +136,6 @@ it is present only once cloned into `evals/` (setup in its README), and
   docstring or test that states it exactly), not paraphrased: a shortened
   restatement drops the condition that made it true. A root map row stays a
   sentence or two; only a rule binding work anywhere belongs in the root. Before
-  cutting a passage, move a fact whose only copy it is to where it belongs. Each file stays under 1,500
-  words (the `claudemd-budget` gate). No `CLAUDE.md` where a loader reads
-  every `.md` (`agents/`, `output-styles/`, a `commands/` directory).
+  cutting a passage, move a fact whose only copy it is to where it belongs. No
+  `CLAUDE.md` where a loader reads every `.md` (`agents/`, `output-styles/`, a
+  `commands/` directory).
