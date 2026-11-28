@@ -132,8 +132,10 @@ it is present only once cloned into `evals/` (setup in its README), and
   and where, invariants and traps with a clause of reason each, commands that
   are not discoverable, conventions binding work there. How a feature works
   belongs in its code and docstrings, why in its spec, how it came to be and
-  what was measured in git. A root map row stays a sentence or two; only a rule
-  binding work anywhere belongs in the root. Before cutting a passage, move a
-  fact whose only copy it is to where it belongs. Each file stays under 1,500
+  what was measured in git. An intricate invariant is named and pointed at (the
+  docstring or test that states it exactly), not paraphrased: a shortened
+  restatement drops the condition that made it true. A root map row stays a
+  sentence or two; only a rule binding work anywhere belongs in the root. Before
+  cutting a passage, move a fact whose only copy it is to where it belongs. Each file stays under 1,500
   words (the `claudemd-budget` gate). No `CLAUDE.md` where a loader reads
   every `.md` (`agents/`, `output-styles/`, a `commands/` directory).
