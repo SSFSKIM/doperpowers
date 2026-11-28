@@ -9,20 +9,27 @@ shape, not a quota. A small repo may fold Layer Law into Boundaries.
   accepts, what it produces, the major runtime shape.
 - **Code Map** — coarse modules/directories and what each does, one
   heading per component. Answers "where is the thing that does X?" and
-  "what does this thing do?"
+  "what does this thing do?" Where the app has both, it says which state
+  is ground (stored inputs, config, external facts) and which is derived
+  (generated artifacts, caches, outputs), and which module owns each.
 - **Boundaries & API Surfaces** — where rules change or external callers
   enter: library entrypoints, server routes, CLI commands, public
   component boundaries, data schemas, plugin/extension seams,
   generated-vs-source and runtime-state boundaries. Write the boundary
   contract; it is never obvious from filenames.
-- **Layer Law** — the dependency direction and the forbidden edges.
+- **Layer Law** — the dependency direction and the forbidden edges, as
+  the code that exists has them.
 - **Architectural Invariants** — numbered rules (AI-1, AI-2, …), each
-  with one sentence of why, citable by reviews. Many are absences.
+  with one sentence of why, citable by reviews: positive rules ("all
+  schema parsing lives in X") and absences ("UI never imports repo")
+  alike. Many are absences.
 - **Cross-Cutting Concerns** — the sanctioned location/interface for
   config, path/env resolution, logging, auth, external clients,
   generated files, migrations, test fixtures.
 - **Data Flows** — the few end-to-end flows that explain how the system
-  actually works.
+  actually works, chosen from the ones a maintainer changes (request →
+  handler → domain → persistence; CLI command → parser → action →
+  output).
 
 ## Example shape
 

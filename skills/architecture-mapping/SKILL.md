@@ -1,6 +1,6 @@
 ---
 name: architecture-mapping
-description: Use when writing or revising a repo's ARCHITECTURE.md or codemap, including when none exists and sessions keep re-asking where things live.
+description: Verified guidance on writing or revising a repo's ARCHITECTURE.md or codemap, including when none exists and sessions keep re-asking where things live.
 ---
 
 # Architecture Mapping
@@ -11,45 +11,23 @@ codebase. The hard part of contributing is rarely making a change — it is
 finding where the change goes. A core developer carries that map in their
 head; this file transfers it to every future session and contributor.
 
-Do this work with full repo context — it is deep codebase reading, not
-delegable to an isolated subagent. The map is maintained, not generated
-once: revisit it when the architecture evolves or a domain is added.
+The map is only as good as the reading behind it: boundaries and absences
+show to a reader who has gone across the whole codebase, not to one who
+read a single area of it.
 
 ## Map, not atlas
 
 Keep it short and stable: facts unlikely to change per sprint, specific
 enough to name directories, key files, modules, types, commands, and
 entrypoints. Push algorithms and volatile detail down into design docs or
-inline comments. Name entities instead of deep-linking them — a link to an
-exact line goes stale; a stable name stays searchable.
+inline comments.
 
-The section contract, example shape, and anti-patterns live in
-[ARCHITECTURE-FORMAT.md](./ARCHITECTURE-FORMAT.md).
-
-## Exploration procedure
-
-Write the map from the real source, in this order:
-
-1. **Inventory the top level** — source roots, manifests, build/test
-   config, generated directories, entrypoints, CLI commands, routes,
-   jobs, migrations.
-2. **Trace two or three representative flows end to end** — the flows a
-   maintainer actually changes (request → handler → domain → persistence;
-   CLI command → parser → action → output).
-3. **Separate ground state from derived state** where the app has them —
-   stored inputs, config, external facts vs generated artifacts, caches,
-   outputs — and note which modules own each.
-4. **Derive the layer law from the code that exists.** Never import
-   another repo's law; if this repo doesn't have that shape, it doesn't
-   have that law.
-5. **Mark boundary surfaces** — where rules change or external callers
-   enter (the format doc's Boundaries section lists the kinds).
-6. **Collect invariants while reading** — positive rules ("all schema
-   parsing lives in X") and absences ("UI never imports repo") alike.
-
-Use the writing itself as inspection: if things adjacent in the map are
-far apart on disk, or unrelated concerns sit together, record the tension
-as a known limitation rather than silently normalizing it.
+What each section captures, the example shape, and the anti-patterns are
+in [ARCHITECTURE-FORMAT.md](./ARCHITECTURE-FORMAT.md). Write the map from
+the real source, and use the writing itself as inspection: if things
+adjacent in the map are far apart on disk, or unrelated concerns sit
+together, record the tension as a known limitation rather than silently
+normalizing it.
 
 ## Absences are the point
 
@@ -78,7 +56,6 @@ Two graduations beyond the doc, both earned rather than speculative:
 
 ## Maintenance
 
-Update when a real boundary changes: a new domain, a moved seam, a new
-public surface. Implementation churn inside a module is not an update
-trigger. Sprint state and active plans never live here — the repo's
-plans/specs documents own volatile work.
+The map is maintained, not generated once. Update it when a real boundary
+changes: a new domain, a moved seam, a new public surface. Implementation
+churn inside a module is not an update trigger.
