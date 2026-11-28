@@ -16,7 +16,8 @@ BUDGET = 1500
 
 # Files over budget when the check landed, each held at its count then so it
 # cannot grow while the branch that brings it under budget is in flight.
-# Remove an entry once its file is under budget (the check says when).
+# An entry whose file is at or under budget fails the check: remove it, or the
+# file could grow back to its old allowance unnoticed.
 ALLOWANCE_DATE = "2026-11-28"
 ALLOWANCE = {
     "sminos/hooks/mods/CLAUDE.md": 6045,
@@ -50,20 +51,19 @@ def main() -> int:
         words = len(path.read_text(encoding="utf-8", errors="replace").split())
         ceiling = ALLOWANCE.get(rel)
         if ceiling is not None and words <= BUDGET:
-            stale.append(f"{rel}: {words} words, under budget; remove its allowance")
+            stale.append(f"{rel}: {words} words, within the {BUDGET}-word budget; remove its entry from ALLOWANCE in scripts/check-claudemd-budget.py")
         elif ceiling is not None and words > ceiling:
             over.append(f"{rel}: {words} words, over its {ALLOWANCE_DATE} allowance of {ceiling} (budget {BUDGET})")
         elif ceiling is None and words > BUDGET:
             over.append(f"{rel}: {words} words, over the {BUDGET}-word budget")
-    for line in stale:
-        print(f"note: {line}")
-    if over:
-        for line in over:
+    if over or stale:
+        for line in over + stale:
             print(f"FAIL {line}")
-        print()
-        print(WHERE)
+        if over:
+            print()
+            print(WHERE)
         return 1
-    print(f"every tracked CLAUDE.md is within its budget ({BUDGET} words; {len(ALLOWANCE) - len(stale)} allowance(s) in force)")
+    print(f"every tracked CLAUDE.md is within its budget ({BUDGET} words; {len(ALLOWANCE)} allowance(s) in force)")
     return 0
 
 

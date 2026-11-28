@@ -84,8 +84,9 @@ A part's detail is in the `CLAUDE.md` nearest its code.
 
 CI is ci-kit: `.github/ci-kit.yml` defines the gates, which run on GitHub
 Actions; `ci-gate` verifies a commit. No gate calls a live model; those tests
-(the rest of `tests/claude-code/run-skill-tests.sh`'s list, the `live-*`
-checks) run by hand. Per-area runners are `tests/<area>/run-*.sh`; there is
+(the `live-*` checks in `tests/claude-code/run-skill-tests.sh`'s list) run by
+hand, as does the board API integration tier, which needs Docker and an Arkho
+checkout; its fixture tests run in the `board-api` gate. Per-area runners are `tests/<area>/run-*.sh`; there is
 no `npm test`. Skill-behavior evals:
 [superpowers-evals](https://github.com/prime-radiant-inc/superpowers-evals/)
 drives real tmux sessions and judges skill compliance with an LLM verifier;
