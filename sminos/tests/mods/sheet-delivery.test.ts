@@ -1,5 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
+import { RING, RING_DROP } from '../../hooks/mods/sheet-model'
 import type { Recipient } from '../../hooks/mods/sheet-model'
 import { sheetNudge } from '../../hooks/mods/sheet'
 import { HOME, MODEL, S1, S2, gated, ok, sheetOn } from './sheet-harness'
@@ -24,9 +25,8 @@ const RESULT_ROW = { kind: 'plugin', event: 'tool.call' }
 const PROMPT_ROW = { kind: 'plugin', event: 'prompt.submit' }
 /** A session MAWS launched with the sheet: the form and its id (MAWS's C5, F32). */
 const MAWS = { MAWS_QUESTION_SHEET: `2:${S1}` }
-/** MAWS's constant frame and the drop's reason, as both repositories hold them (F33). */
-const RING = 'The human answered questions on your sheet.'
-const RING_DROP = 'nothing is ready on the sheet'
+/** The sentence alone, without the ring's mark: a person's words, which the tool never drops. */
+const PLAIN = 'The human answered questions on your sheet.'
 
 type Out = { key: string; id: string; kind: 'answer' | 'dismiss'; recipient: Recipient; acrossStop: boolean }
 
@@ -1469,12 +1469,29 @@ describe("MAWS's ring in a MAWS-run session (MAWS's C5, F33)", () => {
     const h = await started(rec, { env: MAWS })
     await answered(h, rec, dismissal)
     expect(await h.prompt(`${RING}\n`)).toEqual({ text: `${RING}\n`, context: carried, origin: { kind: 'composer' } })
+    // The plain sentence, unmarked, as the engine may hand a person's message ending in it (trimmed), or beside a block.
+    for (const text of [PLAIN, `${PLAIN}\n`, `${PLAIN}\n${carried[0]}`]) {
+      const plain = record()
+      const p = await started(plain, { env: MAWS })
+      await answered(p, plain, dismissal)
+      expect(await p.prompt(text)).toEqual({ text, context: carried, origin: { kind: 'composer' } })
+    }
     for (const origin of [{ kind: 'composer' }, { kind: 'peer' }]) {
       const terminal = record()
       const t = await started(terminal)
       await answered(t, terminal, dismissal)
       expect(await ring(t, { origin })).toEqual({ text: RING, context: carried, origin })
     }
+  })
+
+  test("the plain sentence, without the ring's mark, from the composer: with an answer ready it enters carrying the envelope; with nothing ready it enters as any prompt, never dropped", async () => {
+    const rec = record()
+    const h = await started(rec, { env: MAWS })
+    await answered(h, rec, out('k1', 'q1'))
+    expect(await h.prompt(PLAIN)).toEqual({ text: PLAIN, context: [envelopeOf([out('k1', 'q1')], 'main')], origin: { kind: 'composer' } })
+    const empty = await started(record(), { env: MAWS })
+    expect(await empty.prompt(PLAIN)).toEqual({ text: PLAIN, context: undefined, origin: { kind: 'composer' } })
+    expect(empty.logs().filter((line) => line.startsWith('sheet: a ring '))).toEqual([])
   })
 
   test('a tool result carries the envelope while a turn runs, and a ring folded into that turn afterwards is dropped', async () => {

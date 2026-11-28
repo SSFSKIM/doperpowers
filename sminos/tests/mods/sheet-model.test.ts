@@ -767,8 +767,12 @@ describe("a ring: MAWS's constant frame, and what fills it (MAWS's C5, F33)", ()
     `<sheet-delivery>${JSON.stringify({ v: 1, keys: [...answered, ...dismissed].map((id) => `key-${id}-0001`), answered: answered.map((id) => ({ id, revision: 1, picks: [1], text: '', images: [] })), dismissed })}</sheet-delivery>`
   const ready = (text: string) => ({ recipient: 'main' as const, keys: ['key-q1-0001'], text, wakes: false, more: false })
 
-  test("the sentence and the drop's reason are MAWS's bytes (its SHEET_RING and SHEET_RING_DROP)", async () => {
-    expect(RING).toBe('The human answered questions on your sheet.')
+  test("the marked sentence and the drop's reason are MAWS's bytes (its SHEET_RING and SHEET_RING_DROP)", async () => {
+    // The sentence and one U+2060 WORD JOINER, the ring's mark: a person's message never carries it (the composite's
+    // writer's ruling on M2's stop S9: the engine trims a text block's `e.text`, so a line break could not tell them apart).
+    expect(RING).toBe('The human answered questions on your sheet.\u2060')
+    expect([...new TextEncoder().encode(RING).slice(-3)]).toEqual([0xe2, 0x81, 0xa0])
+    expect(RING.length).toBe(44)
     expect(RING_DROP).toBe('nothing is ready on the sheet')
   })
 
