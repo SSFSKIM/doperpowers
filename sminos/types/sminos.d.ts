@@ -83,6 +83,8 @@ export type SheetKept = {
   preparing?: { nonce: string; source: 'resume' | 'fork'; transcript: string }
   left?: string
   leftWitness?: string
+  /** When a main turn of `session` last ended aborted (a Stop), UTC to the millisecond, until a prompt enters: the idle route opens only for an answer the step accepted later (MAWS's C5, F34). */
+  stoppedAt?: string
 }
 
 /**

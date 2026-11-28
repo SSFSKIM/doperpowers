@@ -996,6 +996,37 @@ class MawsRunPacking(unittest.TestCase):
         self.assertEqual(v["ready"][0]["keys"], ["page-00000001"])
 
 
+
+class TheStopsTime(unittest.TestCase):
+    """The view tells the mod the latest `acceptedAt` among the main conversation's pending answers, past the first
+    200 it lists too, so a Stop can be told from an answer accepted after it (MAWS's C5, F34). A reroute and a start
+    move an outcome to the main conversation and keep when it was accepted."""
+
+    def test_the_latest_main_answer_past_the_listed_two_hundred(self):
+        st = built([{"question": "Keep %d?" % i} for i in range(1, 252)])
+        self.assertNotIn("mainAcceptedAt", step_module.view(st, "terminal", WHERE, None, 0, UTC))
+        st, _, _ = drained(st, dismissals(range(1, 201)), now="2026-11-24T10:00:00.000Z")
+        st, _, _ = drained(st, answers(range(201, 251), lambda i: "yes"), now="2026-11-24T10:00:01.000Z")
+        st, _, _ = drained(st, dismissals([251]), now="2026-11-24T10:00:09.000Z")
+        v = step_module.view(st, "terminal", WHERE, None, 0, UTC)
+        self.assertEqual(len(v["pending"]), 200, "the answers are past what the view lists")
+        self.assertEqual(v["mainAcceptedAt"], "2026-11-24T10:00:01.000Z", "a dismissal is no answer")
+
+    def test_a_subagents_answer_is_not_the_main_conversations_until_it_is_moved_there_keeping_its_time(self):
+        st = built([{"question": "Ship?"}])
+        st, _, _ = drained(st, answers([1], lambda i: "yes"), now="2026-11-24T10:00:01.000Z")
+        st["pending"][0].update(recipient={"agentId": "a1b2c3"}, taken=True)
+        self.assertNotIn("mainAcceptedAt", step_module.view(st, "terminal", WHERE, None, 0, UTC))
+        st, _, _ = step_module.apply(st, b"", {"event": "reroute", "keys": ["page-00000001"]},
+                                     "2026-11-24T10:05:00.000Z", SESSION)
+        self.assertEqual(st["pending"][0]["recipient"], "main")
+        self.assertEqual(step_module.view(st, "terminal", WHERE, None, 0, UTC)["mainAcceptedAt"],
+                         "2026-11-24T10:00:01.000Z")
+        st, _, _ = drained(st, [], "start", now="2026-11-24T11:00:00.000Z")
+        self.assertEqual(step_module.view(st, "maws", WHERE, None, 0, UTC)["mainAcceptedAt"],
+                         "2026-11-24T10:00:01.000Z", "a start keeps it too")
+
+
 class TheCap(unittest.TestCase):
     def test_the_sheet_holds_five_hundred_open(self):
         """U7: an add past 500 open questions is refused with the reason; a revise still applies."""
