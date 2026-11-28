@@ -5949,7 +5949,7 @@ def end_human_lane_b(project, sid, thread, gone):
         seat=seat_over(sid, "retired", thread["thread"]))
 
 
-def end_by_rule(thread, stopped, asked=None):
+def end_by_rule(thread, stopped, asked=None, *, period):
     """A thread stopped for more than the period ended by the rule (T1's M4,
     Interfaces §6 row 10), by the thread sweep alone (sminos_daemon's ending
     pass): the record first — `ended`, reason `ended` and no process, and
@@ -5962,7 +5962,9 @@ def end_by_rule(thread, stopped, asked=None):
     session it has had is among the short ids devcloud was asked about
     (`asked`, M5: its answer was none for them), and it is the session's
     canonical record (thread_of: never a seat an older copy made over a
-    thread its human opened). In the session's own
+    thread its human opened), and the Task Board does not keep it
+    (sminos_tasks.keeps over `period`, the rule's, read again here: D7). In
+    the session's own
     project: a seat's, else the one its membership in effect puts it in.
     The events appended."""
     threads = threads_module()
@@ -5981,7 +5983,8 @@ def end_by_rule(thread, stopped, asked=None):
         # opened is not ended for it, whose own record (and its owners) decide that thread's end.
         return r["current"] == cur and r.get("stopped") == stopped and not threads.record_ended(r) \
             and threads.asked_all(r, asked) and not running_now(cur) \
-            and (threads.thread_of(cur) or {}).get("thread") == tid
+            and (threads.thread_of(cur) or {}).get("thread") == tid \
+            and not sibling_module("sminos_tasks").keeps(tid, period)
 
     return thread_transition(project, tid, "end", [{"kind": "retired", "session": cur, "by": "", "reason": "ended"}],
                              fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None,

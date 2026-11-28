@@ -1006,3 +1006,7 @@ Logged by the holder's triage of CH2's final reading (2026-11-23, `final-triage.
 Found at the composite's closing (2026-11-27), not fixed:
 
 - **An ended thread's membership of a channel cannot be withdrawn.** Seen on a session its human opened that had ended by the three-day rule: `sminos channel remove <channel> <thread>` answered "no seat or member matching" for its name, its short and its thread id (a retired seat resolves, and is refused as ended). The membership stays with the thread and returned with one that was reopened, so an emptied channel would come back with that one member. T3. Trigger: a channel seen to return that way against its members' intent, or a request to clear a channel's ended members.
+
+Found in the Task Board's B1a review (2026-11-27), not fixed:
+
+- **A thread that only `end_by_rule`'s guard keeps is not said in `daemon.log`.** The guard's `sminos_tasks.keeps` is read under the record's lock and returns nothing to the sweep, so when the protection lands between the pass's test of what is due and the end (a task assigned or revised to blocking in those milliseconds), the thread is kept with no line and no `noted` entry. The next ending pass says it if the protection still holds. Nothing is lost: the thread stays, and only a line that is late or never written is affected. T3. Trigger: a kept thread seen with no line in `daemon.log`, or the next change to the sweep's bookkeeping of `noted`.

@@ -13,6 +13,7 @@ sminos/types/tasks/, written by sminos/tests/tasks-contract.gen.py and never by 
     asker_of(session, agent=None) -> {thread, session, alias, agent}
     target_of(store, task, memo=None) -> {session, thread, project, state, runner, wake, why, via}
     is_asker(store, task, session, memo=None) -> bool
+    keeps(thread, period, now=None, store=None) -> str | None     # why the three-day rule leaves a thread (D7; child B1a)
     cleared(left, begun, wait=LOCK_WAIT) -> None      # a witnessed /clear's pair, before the alias is released
     bind(store, session) -> bool                      # in place: binds the pairs naming this session to its thread
     bind_step(session, wait=LOCK_WAIT) -> None        # the same as a step of its own, when one waits
@@ -310,17 +311,22 @@ def target_of(store, task, memo=None):
 
 
 def _target(store, a):
+    return _describe(*_resolved(store, a))
+
+
+def _resolved(store, a):
+    """(session, thread id or None, via) of an asker's target: whom target_of describes, and what keeps() reads."""
     session, thread = a.get("session"), a.get("thread")
     if not thread:
-        return _describe(session, None, "self")
+        return session, None, "self"
     rec = threads().get(thread)
     first = rec["current"] if rec is not None and rec.get("current") else session
     pair = (store.get("successors") or {}).get(first)
     if isinstance(pair, dict) and not _opened_again(first, pair):
         last = _last_alive(store, first)
         if last is not None:
-            return _describe(last[0], last[1], "cleared")
-    return _describe(first, thread, "self")
+            return last[0], last[1], "cleared"
+    return first, thread, "self"
 
 
 def _opened_again(first, pair):
@@ -393,6 +399,95 @@ def _describe(session, tid, via):
     if out["state"] == "stopped":
         out["wake"], out["why"] = sminos.wake_here(session)
     return out
+
+
+class _Unread(Exception):
+    """A field keeps() reads that does not read: the store has given no answer."""
+
+
+class Reading:
+    """The store as keeps() reads it, taken at the first question and held: a sweep pass makes one and asks it for
+    every due thread, so the store is read at most once for the pass and not at all when none is due. read_state's
+    refusal, and a row or field of what keeps() reads that is damaged, are kept as `error`."""
+
+    def __init__(self):
+        self.done = False
+        self.store = None
+        self.error = None
+        self.ordered = []
+
+    def load(self):
+        if self.done:
+            return self
+        self.done = True
+        try:
+            self.store = read_state()
+        except Refused as e:
+            self.error = e.message
+            return self
+        rows = (self.store or {}).get("tasks", {}).values()
+        if not all(isinstance(t, dict) and isinstance(t.get("id"), str) for t in rows):
+            self.error = "a task of it is not a task's record"
+            return self
+        self.ordered = sorted(rows, key=lambda t: task_number(t["id"]))
+        return self
+
+
+def _holds(t, period, now):
+    """Why the task keeps its target (keeps' words), or None. _Unread when a field it reads is damaged."""
+    if t.get("state") == "open" and t.get("class") == "blocking":
+        return "it is the target of %s, a blocking task open on the Task Board" % t["id"]
+    outs = t.get("outcomes") or []
+    if not isinstance(outs, list) or not all(isinstance(o, dict) for o in outs):
+        raise _Unread("the outcomes of %s are not a list of records" % t["id"])
+    for o in outs:
+        if o.get("wake") is True and o.get("shown") is None:
+            at = epoch(o.get("at"))
+            if at is None:
+                raise _Unread("an outcome of %s has no time that reads" % t["id"])
+            if now - at < period:
+                return "it is the target of %s, an outcome of the Task Board that asked for a wake and is not " \
+                       "yet shown, until %s" % (o.get("key"), stamp(at + period))
+    return None
+
+
+def _asker(t):
+    askers = t.get("askers")
+    a = askers[0] if isinstance(askers, list) and askers else None
+    if not (isinstance(a, dict) and all(a.get(k) is None or isinstance(a.get(k), str) for k in ("thread", "session"))):
+        raise _Unread("%s has no asker that reads" % t["id"])
+    return a
+
+
+def keeps(thread, period, now=None, store=None):
+    """Why the three-day rule does not end `thread` (D7), or None: it is the target of an open blocking task, or of
+    an outcome whose act asked for a wake, not yet shown and less than `period` old, read from the act's own replace
+    on. No store is no exemption; a store that cannot be read, or one with a field read here that does not, keeps
+    it. Read with no lock, writing nothing; the target is target_of's, without the state it describes. `store` is
+    a Reading a pass shares among its threads; none reads the store afresh. Asked in sweep_threads's test of what
+    is due, before devcloud is asked, and again in sminos.end_by_rule's guard; one instant is left open by design,
+    a change that would protect the thread landing after the guard's look and before the end (D7)."""
+    r = (Reading() if store is None else store).load()
+    if r.error is not None:
+        return "the Task Board's store could not be read (%s)" % r.error
+    if r.store is None:
+        return None
+    now = clock() if now is None else now
+    resolved = {}
+    try:
+        for t in r.ordered:
+            why = _holds(t, period, now)
+            if why is None:
+                continue
+            a = _asker(t)
+            k = (a.get("thread"), a.get("session"))
+            if k not in resolved:
+                resolved[k] = _resolved(r.store, a)[1]
+            if resolved[k] == thread:
+                return why
+    except _Unread as e:
+        return "the Task Board's store could not be read (%s)" % e
+    return None
 
 
 def is_asker(store, task, session, memo=None):

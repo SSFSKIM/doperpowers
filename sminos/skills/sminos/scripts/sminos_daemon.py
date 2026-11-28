@@ -1492,7 +1492,13 @@ def sweep_threads():
     a thread due), and as soon as a census has landed (census_tick, the
     quiet tick's one look: a stat): a thread whose `stopped` is older than
     the period (thread_end_after) is due, and is ended by the rule only on
-    devcloud's answer that it owns no host, taken from the census (end_due).
+    devcloud's answer that it owns no host, taken from the census (end_due);
+    one the Task Board keeps (sminos_tasks.keeps, D7: the target of an
+    open blocking task, or of a wake-asked outcome not yet shown and younger
+    than the period) is not asked about, and is said once for each reason
+    in daemon.log (leaves, holding's line); the pass's due threads share one
+    reading of the store (sminos_tasks.Reading), and no store is no
+    exemption.
     The clock is the record's stop mark, not the transcript's last write: a
     session reopened in between has its mark removed by the stop pass, and
     its clock starts again at its next stop. Nothing else ends a thread by
@@ -1516,7 +1522,8 @@ def sweep_threads():
     spaced = now - max(_ENDING[0], ending) >= thread_end_every() and now >= _CENSUS_RETRY["at"]
     landed = census_tick()   # a quiet tick's one stat; a recorded run supervised, a landing taken once
     ending_pass = spaced or landed
-    candidates, due = {}, []
+    candidates, due, kept = {}, [], {}
+    board = sminos.sibling_module("sminos_tasks").Reading()   # read at the first due thread, once for the pass
     for t in threads.all_threads():
         tid, cur = t["thread"], t["current"]
         if not cur or t.get("pending") or threads.record_ended(t):
@@ -1547,7 +1554,13 @@ def sweep_threads():
                         sminos.wake_lapsed(tid, cur)
             if ending_pass and t.get("stopped") and now - (sminos._ts_epoch(t["stopped"]) or now) > after \
                     and (threads.thread_of(cur) or {}).get("thread") == tid:
-                due.append((tid, cur, t["stopped"]))   # the session's canonical record alone is ended (thread_of)
+                # The session's canonical record alone is ended (thread_of); one the Task Board keeps (D7) is said
+                # and never asked about.
+                why = sminos.sibling_module("sminos_tasks").keeps(tid, after, now, board)
+                if why:
+                    kept[tid] = leaves(t, cur, why, noted.get(tid))
+                else:
+                    due.append((tid, cur, t["stopped"]))
             if t.get("stopped") and t.get("swept") == t["stopped"]:
                 continue
             if not t.get("stopped") and before.get(tid) != cur:
@@ -1562,10 +1575,10 @@ def sweep_threads():
     said = noted
     if ending_pass:
         asked = True
+        said = dict(kept)
         if due:
-            said, asked = end_due(threads, due, noted, ask=spaced)
-        elif noted:
-            said = {}
+            by_census, asked = end_due(threads, due, noted, ask=spaced)
+            said.update(by_census)
         if spaced and asked:   # a census that could not be published spends no spacing: retried after a backoff
             _ENDING[0] = now
             if due:
@@ -1645,9 +1658,13 @@ def holding(threads, tid, cur, owned, before):
     """A due thread devcloud's answer keeps stopped, said in daemon.log once
     for each answer it has (`before`, what was said last, is not said
     again). What is kept to compare."""
-    words = threads.owned_words(owned)
+    return leaves(threads.get(tid) or {}, cur, threads.owned_words(owned), before)
+
+
+def leaves(t, cur, words, before):
+    """A due thread kept stopped, said in daemon.log when `words` are not
+    what was said last (`before`). The words, kept to compare."""
     if words != before:
-        t = threads.get(tid) or {}
         sminos.daemon_log("the thread sweep leaves %s (session %s) stopped and not ended: %s" % (
             t.get("alias") or cur[:8], cur[:8], words))
     return words
@@ -1668,7 +1685,7 @@ def end_stopped(threads, tid, cur, stopped, asked=None):
             or t.get("stopped") != stopped or not threads.asked_all(t, asked) or sminos.running_now(cur) \
             or (threads.thread_of(cur) or {}).get("thread") != tid or sminos.wake_module().starting(t, cur):
         return []
-    return sminos.end_by_rule(t, stopped, asked)
+    return sminos.end_by_rule(t, stopped, asked, period=thread_end_after())
 
 
 def stop_and_close(threads, tid, cur, stopped):
