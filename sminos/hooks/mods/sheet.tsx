@@ -187,9 +187,6 @@ type Gen = {
   rerouteOwed: Set<string>
   /** Keys whose idle flight did not land: their envelope waits for a route that starts no turn, so no turn is started for it again and again. */
   noIdle: Set<string>
-  /** How many main turns ended aborted (a Stop), and the count each step still outstanding was ordered under: while one ordered before the last Stop is, no idle wake (MAWS's C5, F34). */
-  stops: number
-  ordered: Set<{ stops: number }>
   /** I10's context the next result or prompt route carries, once: where no SessionStart could return it (M4's decisions). */
   context?: string
   /** A compaction's context is owed: its drain gave no answer, so the next check's drain composes it. */
@@ -248,8 +245,6 @@ type Flight = {
   handed?: boolean
   /** What opened an idle reservation: spent (`noIdle`, `idleFailedAt`) only if its submit fails. */
   wake?: Wake
-  /** The generation's Stop count when an idle reservation was made: a Stop before its hop lets it go (F34). */
-  stops?: number
 }
 
 /**
@@ -304,6 +299,8 @@ type Sheet = {
   surfaceViews: number
   /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
   isDeliveryWanted: boolean
+  /** A prompt entered before a reload's session.start restored the choice: the kept Stop is not taken up (F34). */
+  isPromptEntered: boolean
   /** The ask snapshot last written or being written (I13), as its JSON: one that would say the same is not written again; forgotten when its write fails. */
   published?: string
   /** The snapshot writes, one after another, so the last asked for is the last to land. */
@@ -324,6 +321,7 @@ function fresh(): Sheet {
     ticks: 0,
     surfaceViews: 0,
     isDeliveryWanted: false,
+    isPromptEntered: false,
   }
 }
 
@@ -339,8 +337,6 @@ const newGen = (session: string): Gen => ({
   landOwed: new Set(),
   rerouteOwed: new Set(),
   noIdle: new Set(),
-  stops: 0,
-  ordered: new Set(),
   isContextOwed: false,
   isStartRouted: false,
   named: new Set(),
@@ -407,29 +403,6 @@ function retire() {
  * the caller orders the event again, or settles a call.
  */
 async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
-  // Outstanding from here until its view is adopted or passed over. One ordered before a Stop holds what its own
-  // reply shows, and until it is done no idle wake is made (`isStopWindow`): a step's reply need not follow the order
-  // of the commits, so a newer view may hold what it committed while its own reply has not come.
-  const order = { stops: gen.stops }
-  gen.ordered.add(order)
-  try {
-    return await stepOnce(port, gen, event, agents, order)
-  } finally {
-    gen.ordered.delete(order)
-    if (order.stops < gen.stops && !isStopWindow(gen)) {
-      // The window closed: the latest view is considered again, for an answer no pre-Stop reply held.
-      deliver(port, gen)
-    }
-  }
-}
-
-/** Whether a step ordered before the generation's last Stop is still outstanding: the idle route waits for it. */
-function isStopWindow(gen: Gen): boolean {
-  return [...gen.ordered].some((order) => order.stops < gen.stops)
-}
-
-/** The step itself (`step` holds it outstanding meanwhile). */
-async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, agents: string[] | undefined, order: { stops: number }): Promise<Answer> {
   const own = isRecord(event.call) ? event.call.callId : undefined
   const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
@@ -457,10 +430,6 @@ async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, ag
     return answer
   }
   acked.forEach((id) => gen.toAck.delete(id))
-  if (order.stops < gen.stops) {
-    // Ordered before a Stop it answers after: what its own reply shows was pending at that Stop, adopted or not.
-    holdStopped(gen, answer.view)
-  }
   if (answer.effects.owed > 0) {
     projectLog(port, gen)
   }
@@ -804,11 +773,11 @@ function deliver(port: Port, gen: Gen) {
   if (!isStarted(gen)) {
     return
   }
-  if (isTerminal() && sheet.mainTurn === undefined && !isStopWindow(gen)) {
+  if (isTerminal() && sheet.mainTurn === undefined && !isStopHeld(gen)) {
     const envelope = readyFor(gen, 'main')
     const wake = envelope !== undefined && envelope.wakes ? freshWake(gen, envelope) : undefined
     if (envelope !== undefined && wake !== undefined) {
-      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns, wake, stops: gen.stops }
+      const flight: Flight = { route: 'idle', keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns, wake }
       gen.flights.push(flight)
       port.after(() => void submitIdle(port, gen, flight))
     }
@@ -874,8 +843,8 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   if (!gen.flights.includes(flight)) {
     return
   }
-  if (!isStarted(gen) || sheet.mainTurn !== undefined || flight.stops !== gen.stops) {
-    // A turn runs, or one ended aborted since the reservation: what it held is the Stop's now.
+  if (!isStarted(gen) || sheet.mainTurn !== undefined || isStopHeld(gen)) {
+    // A turn runs, or a Stop since the reservation holds what the view holds now (F34).
     release(port, gen, flight)
     return
   }
@@ -900,6 +869,8 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   } else if (entered.text !== undefined && !keysIn([text]).some((key) => flight.keys.includes(key))) {
     failIdle(port, gen, flight, 'a hook took the envelope out of the prompt')
   } else {
+    // The mod's own prompt entered the main conversation: it ends a Stop's hold, as a prompt that enters does.
+    endStop()
     turnOf(flight)
   }
 }
@@ -1081,13 +1052,9 @@ function routable(): Gen | undefined {
  * read is that one. A turn that ends while an idle flight's prompt has not
  * entered settles nothing of it. Then, a turn that ended with the model's
  * answer opens the idle route for what wakes. A turn that ended aborted (a
- * Stop) first holds what was pending then (`holdStopped`).
+ * Stop) set `stoppedAt` before this ran (`stopAt`).
  */
-async function endTurn(port: Port, gen: Gen, turnId: string, reason: string, isAborted: boolean) {
-  if (isAborted) {
-    gen.stops += 1
-    if (gen.held !== undefined) holdStopped(gen, gen.held)
-  }
+async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
   const due = gen.flights.filter((flight) => flight.isAdmitting !== true && (flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId))
   const typedOver = new Set(due.filter((flight) => flight.turnId === undefined && flight.tentative === turnId))
   typedOver.forEach((flight) => {
@@ -1120,20 +1087,37 @@ async function endTurn(port: Port, gen: Gen, turnId: string, reason: string, isA
 }
 
 /**
- * What a Stop holds (MAWS's C5, F34; the composite's Stop rule), in both
- * runners, from a view that shows what was pending at it (the view held at
- * the aborted end, or the reply of a step ordered before that end): every key
- * it lists as pending for the main conversation, and every key of its ready
- * envelope, joins `noIdle`, and the answered count is spent as a failed idle
- * submit spends it for a view that is cut. So none of it opens the idle route
- * again by itself, however the view is adopted next (a dismissal, a reroute,
- * a `landed` retry, a step the Stop overtook); a newer answer does and takes
- * it along, and any prompt that enters carries it.
+ * A Stop (MAWS's C5, F34; the composite's Stop rule), in both runners: the
+ * time a main turn ended aborted, kept for the session in the state a reload
+ * reads, until a prompt enters the main conversation. Set in the synchronous
+ * stretch that reads the aborted end, from the mod's own clock, which is the
+ * step's machine's (`acceptedAt` is written by the same clock).
  */
-function holdStopped(gen: Gen, view: View) {
-  for (const o of view.pending) if (o.recipient === 'main') gen.noIdle.add(o.key)
-  for (const key of view.ready.find((ready) => ready.recipient === 'main')?.keys ?? []) gen.noIdle.add(key)
-  gen.idleFailedAt = Math.max(gen.idleFailedAt ?? 0, view.answeredCount)
+function stopAt() {
+  keep({ stoppedAt: new Date(Date.now()).toISOString() })
+}
+
+/** A prompt entered the main conversation: no Stop holds anything now. Before the choice is restored, remembered. */
+function endStop() {
+  if (sheet.kept === undefined) {
+    sheet.isPromptEntered = true
+  } else if (sheet.kept.stoppedAt !== undefined) {
+    keep({ stoppedAt: undefined })
+  }
+}
+
+/**
+ * Whether a Stop holds the idle route (F34): `stoppedAt` is set and no answer
+ * owed to the main conversation was accepted after it, by the view held now
+ * (`mainAcceptedAt`, the latest over the whole of `pending`). The same
+ * millisecond is held. Under runner `maws` nothing reads it: there is no idle
+ * route there.
+ */
+function isStopHeld(gen: Gen): boolean {
+  const stoppedAt = sheet.kept?.stoppedAt
+  if (stoppedAt === undefined) return false
+  const accepted = gen.held?.mainAcceptedAt
+  return accepted === undefined || !(Date.parse(accepted) > Date.parse(stoppedAt))
 }
 
 /** A subagent stopped with questions open (E14): each question named to the main conversation once, from the view held. */
@@ -1655,7 +1639,9 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   // being made ready, also before anything is awaited, and made ready first.
   const isNew = source === 'startup' || source === 'clear'
   const nonce = newName('n')
-  keep({ session, started: undefined, ...(isNew ? { starting: { nonce, source, floor: 0, transcript }, preparing: undefined } : { starting: undefined, preparing: { nonce, source: source as 'resume' | 'fork', transcript } }) })
+  // Another session (a fork, a /clear) starts without the last one's Stop (F34).
+  const isOther = sheet.kept?.session !== session
+  keep({ session, started: undefined, ...(isOther && { stoppedAt: undefined }), ...(isNew ? { starting: { nonce, source, floor: 0, transcript }, preparing: undefined } : { starting: undefined, preparing: { nonce, source: source as 'resume' | 'fork', transcript } }) })
   // The SessionStart names only the new session (C0's P5): the session a
   // /clear left is the one the end hook kept. Its removal is ordered behind
   // that session's start still in flight, in the background: never a
@@ -1843,7 +1829,11 @@ export function registerSheet(on: On) {
       ...(owed.preparing !== undefined && { preparing: owed.preparing }),
       ...(kept?.left !== undefined && { left: kept.left }),
       ...(kept?.left !== undefined && typeof kept.leftWitness === 'string' && { leftWitness: kept.leftWitness }),
+      // A Stop is its session's: taken up by a reload of the same session, before its first drain, unless a prompt
+      // entered meanwhile (F34).
+      ...(kept?.session === session && typeof kept.stoppedAt === 'string' && !sheet.isPromptEntered && { stoppedAt: kept.stoppedAt }),
     }
+    sheet.isPromptEntered = false
     sheet.port = port
     if (sheet.gen?.session !== session) {
       sheet.gen = newGen(session)
@@ -1942,7 +1932,7 @@ export function registerSheet(on: On) {
       // The session's work retired, its start forgotten, so no trigger orders
       // it again; a start already in flight lands before the removal.
       retire()
-      keep({ left: e.sessionId, leftWitness: undefined, started: undefined, starting: undefined, preparing: undefined })
+      keep({ left: e.sessionId, leftWitness: undefined, started: undefined, starting: undefined, preparing: undefined, stoppedAt: undefined })
       removeLeftLater(port, e.sessionId, true)
     }
     return next(e)
@@ -2014,62 +2004,70 @@ export function registerSheet(on: On) {
   // taken: nothing then needs putting back. Nothing is awaited before
   // `next`, and a ring orders no step: the engine gives a prompt's hooks ten
   // seconds in all.
-  on('prompt.submit', { text: /^/ }, async (_, e, next) => {
+  on('prompt.submit', { text: /^/ }, async ($, e, next) => {
     // A ring orders no step (F33): only a prompt that is not one triggers the check.
     const isRinging = isRing(e)
     if (!isRinging) triggerCheck()
     const gen = routable()
     if (isRinging) {
       const why = ringDrop(gen)
-      sheet.port?.log(why === undefined ? `sheet: a ring is filled: the main conversation's envelope, ${keysOf(readyFor(gen as Gen, 'main'))}` : `sheet: a ring is dropped: ${why}`)
+      const line = why === undefined ? `sheet: a ring is filled: the main conversation's envelope, ${keysOf(readyFor(gen as Gen, 'main'))}` : `sheet: a ring is dropped: ${why}`
+      // While a reload restores the choice the port is not made yet.
+      if (sheet.port === undefined) $.ui.log(line, { to: 'debug' })
+      else sheet.port.log(line)
       if (why !== undefined) {
         return { drop: RING_DROP }
       }
     }
-    // A slash command's prompt is passed over: what it runs may never reach the model.
-    if (gen === undefined || e.command !== undefined) {
-      return next(e)
-    }
-    const port = sheet.port as Port
-    const taken = take(gen, 'prompt')
-    if (taken.entries.length === 0) {
-      return next(e)
-    }
-    const flight = taken.flight
-    // Until the hooks beneath resolve, the prompt can still enter with the envelope: no turn's end releases it.
-    if (flight !== undefined) flight.isAdmitting = true
-    let result: Awaited<ReturnType<typeof next>>
-    try {
-      result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
-    } catch (error) {
-      putBack(gen, taken, [])
-      if (flight !== undefined) failFlight(port, gen, flight, message(error))
-      throw error
-    }
-    const entered = result.drop === undefined ? [...(result.context ?? [])] : []
-    putBack(gen, taken, entered)
-    if (flight === undefined) {
-      return result
-    }
-    if (result.drop !== undefined) {
-      failFlight(port, gen, flight, result.drop)
-    } else if (!keysIn(entered).some((key) => flight.keys.includes(key))) {
-      failFlight(port, gen, flight, 'a hook took it out of the prompt')
-    } else if (gen.flights.includes(flight)) {
-      flight.isAdmitting = false
-      if (e.turnId === undefined) {
-        // Its prompt opened a turn, started by now.
-        turnOf(flight)
-      } else if (sheet.mainTurn !== undefined) {
-        // Typed over a running turn: it enters the turn running as it is admitted (the one it was typed over, or
-        // one that started while it was held), or the next.
-        flight.tentative = sheet.mainTurn
-      } else {
-        // The turn it was typed over ended while it was held: it enters the next turn, which it opens.
-        flight.awaitsTurn = true
+    const admitted = await (async (): Promise<Awaited<ReturnType<typeof next>>> => {
+      // A slash command's prompt is passed over: what it runs may never reach the model.
+      if (gen === undefined || e.command !== undefined) {
+        return next(e)
       }
-    }
-    return result
+      const port = sheet.port as Port
+      const taken = take(gen, 'prompt')
+      if (taken.entries.length === 0) {
+        return next(e)
+      }
+      const flight = taken.flight
+      // Until the hooks beneath resolve, the prompt can still enter with the envelope: no turn's end releases it.
+      if (flight !== undefined) flight.isAdmitting = true
+      let result: Awaited<ReturnType<typeof next>>
+      try {
+        result = await next({ ...e, context: [...(e.context ?? []), ...taken.entries] })
+      } catch (error) {
+        putBack(gen, taken, [])
+        if (flight !== undefined) failFlight(port, gen, flight, message(error))
+        throw error
+      }
+      const entered = result.drop === undefined ? [...(result.context ?? [])] : []
+      putBack(gen, taken, entered)
+      if (flight === undefined) {
+        return result
+      }
+      if (result.drop !== undefined) {
+        failFlight(port, gen, flight, result.drop)
+      } else if (!keysIn(entered).some((key) => flight.keys.includes(key))) {
+        failFlight(port, gen, flight, 'a hook took it out of the prompt')
+      } else if (gen.flights.includes(flight)) {
+        flight.isAdmitting = false
+        if (e.turnId === undefined) {
+          // Its prompt opened a turn, started by now.
+          turnOf(flight)
+        } else if (sheet.mainTurn !== undefined) {
+          // Typed over a running turn: it enters the turn running as it is admitted (the one it was typed over, or
+          // one that started while it was held), or the next.
+          flight.tentative = sheet.mainTurn
+        } else {
+          // The turn it was typed over ended while it was held: it enters the next turn, which it opens.
+          flight.awaitsTurn = true
+        }
+      }
+      return result
+    })()
+    // A prompt that entered the main conversation ends a Stop's hold (F34); one dropped, or a slash command, does not.
+    if (admitted.drop === undefined && e.command === undefined) endStop()
+    return admitted
   }).catch((_, e, next) => next(e))
 
   // The main turn: which runs (the idle route waits for none), and which
@@ -2096,11 +2094,13 @@ export function registerSheet(on: On) {
   on('turn.complete', { turnId: /./ }, (_, e, next) => {
     triggerCheck()
     if (e.agentId === undefined) {
+      // A Stop, read here and set before anything else; not when a later main turn has begun (a message preempted it).
+      if (e.isAborted === true && isSheetChosen() && (sheet.mainTurn === undefined || sheet.mainTurn === e.turnId)) stopAt()
       if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
       if (sheet.port !== undefined) publish(sheet.port)
       const gen = routable()
       if (gen !== undefined) {
-        void endTurn(sheet.port as Port, gen, e.turnId, e.reason, e.isAborted === true)
+        void endTurn(sheet.port as Port, gen, e.turnId, e.reason)
       }
     }
     return next(e)
@@ -2195,7 +2195,9 @@ export function registerSheet(on: On) {
  * text that differs by one character.
  */
 function isRing(e: { text: string; origin: { kind: string } }): boolean {
-  return sheet.runner === 'maws' && isSheetChosen() && e.origin.kind === 'composer' && e.text === RING
+  // A reloaded module has its choice only once its session.start has read it, and the engine does not hold prompts
+  // behind that hook: until then the mark alone, which only MAWS writes, says a composer's frame is a ring.
+  return (sheet.kept === undefined || (sheet.runner === 'maws' && isSheetChosen())) && e.origin.kind === 'composer' && e.text === RING
 }
 
 /**
@@ -2205,6 +2207,7 @@ function isRing(e: { text: string; origin: { kind: string } }): boolean {
  * is not ready yet: MAWS rings again.
  */
 function ringDrop(gen: Gen | undefined): string | undefined {
+  if (sheet.kept === undefined) return 'the choice is not restored yet'
   if (gen === undefined) return 'the sheet has not started in this session'
   const envelope = gen.held?.ready.find((ready) => ready.recipient === 'main')
   if (envelope === undefined) return 'no envelope is ready for the main conversation'

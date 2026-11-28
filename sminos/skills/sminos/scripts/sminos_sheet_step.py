@@ -802,7 +802,7 @@ def view(st, runner, where, surface, alive, tz=None, running=()):
         if "header" in c:
             v["header"] = c["header"][:CUT_VIEW_HEADER]
         answered.append(v)
-    return {"seq": st["seq"], "offset": st["inbox"]["offset"], "nextId": st["nextId"], "open": opened,
+    out = {"seq": st["seq"], "offset": st["inbox"]["offset"], "nextId": st["nextId"], "open": opened,
             "pending": [{"key": o["key"], "id": o["id"], "kind": o["kind"], "recipient": o["recipient"],
                          "taken": o["taken"], "acrossStop": o["acrossStop"]} for o in st["pending"][:VIEW_PENDING]],
             "pendingCount": len(st["pending"]),
@@ -812,6 +812,12 @@ def view(st, runner, where, surface, alive, tz=None, running=()):
             "ready": ready(st, runner, where, tz, running),
             "surface": None if surface is None else {f: surface[f] for f in ("name", "url", "reach")},
             "surfaces": alive}
+    # The latest time the step accepted an answer still owed to the main conversation, over the whole of `pending`:
+    # what the mod compares with the time of a Stop (MAWS's C5, F34). A reroute and a start keep an outcome's time.
+    times = [o["acceptedAt"] for o in st["pending"] if o["kind"] == "answer" and o["recipient"] == "main"]
+    if times:
+        out["mainAcceptedAt"] = max(times)
+    return out
 
 
 # ------------------------------------------------------------------ the context at a start (I10)

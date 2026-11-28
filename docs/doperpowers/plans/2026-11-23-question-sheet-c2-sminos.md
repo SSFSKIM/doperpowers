@@ -1634,21 +1634,27 @@ beside any block, the marked one under any other origin or in a terminal
 session, and any text one character off enter as any prompt does.
 Each ring's fate is a debug line.
 
-**A stopped turn** (MAWS's C5, F34, both runners). When a main turn ends
-aborted (the turn's end event's `isAborted`), every key the view held lists
-as pending for the main conversation and every key of its ready envelope
-join `noIdle`, and `idleFailedAt` takes the view's answered count. A step
-ordered before that end (`stops`, counted per generation, and each step's
-count noted while it runs) that answers after it does the same with its own
-reply's view, adopted or not. While such a step is outstanding no idle wake
-is made, since a step's reply need not follow the order of the commits and a
-later step's newer view can hold what the earlier one committed; when the
-last of them is done, the latest view is considered again, so an answer no
-such reply held (applied in that window) opens the idle route as any newer
-answer does. An idle reservation made before the end is let go at its hop. A ring orders no step at all. So nothing pending at a Stop
-opens the idle route again, whatever step's view is adopted next (a
-dismissal, a reroute, a `landed` retry, a step the Stop overtook); a newer
-answer does and takes it along, and any prompt that enters carries it all.
+**A stopped turn** (MAWS's C5, F34, both runners). The Stop is a time.
+When a main turn ends aborted (the turn's end event's `isAborted`), the mod
+sets `SheetKept.stoppedAt` (UTC to the millisecond, the step's own form) in
+the same synchronous stretch, from its own clock, the machine's the step
+stamps `acceptedAt` with; an aborted end read after a later main turn has
+begun sets nothing. A reload of the same session takes it up before its
+first drain; a fork and a `/clear` start without it. A prompt that enters
+the main conversation clears it: one the prompt hook lets in (not a slash
+command, not one dropped), and the mod's own idle prompt once it entered.
+While it is set the idle route opens only when the view's
+`mainAcceptedAt` (the step's: the latest `acceptedAt` among the pending
+answers for the main conversation, over the whole of `pending`; absent
+when there is none) is later than it, checked again at the reservation's
+hop; the same millisecond is held. The envelope is then the ordinary one
+and carries the stopped answers too. A dismissal, a reroute or a `landed`
+retry changes no answer's time, so nothing pending at a Stop opens the
+route by itself, whatever step's view comes when; an answer accepted after
+the Stop does. `noIdle` and `idleFailedAt` are a failed idle submit's alone.
+A ring orders no step at all; one that comes while a reload's
+`session.start` has not restored the choice is known by its mark and
+dropped.
 
 ### I10 · What the tool supplies at a start (§5.5)
 

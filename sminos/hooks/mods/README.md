@@ -407,16 +407,18 @@ character off are a prompt like any other. The step packs that
 conversation's envelope with the batches that hold an answer first (in a
 cut batch its answers first), so a ring finds an answer while one is
 pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
-`sheet: a ring is dropped: …`). In both runners a main turn that ends
-aborted (a Stop) puts what was then pending for the main conversation in
-`noIdle`, and so does the reply of each step ordered before that Stop that
-answers after it, adopted or not; until the last such step is done no idle
-wake is made (a reply need not follow the order of the commits), and then
-the latest view is considered again, so an answer no such reply held wakes
-as any newer answer does. An idle reservation made before the Stop is let
-go at its hop. None of what the Stop holds
-opens the idle route until a newer answer, and any prompt that enters
-carries it all. A ring orders no step.
+`sheet: a ring is dropped: …`). A marked ring that comes while a reload's
+`session.start` has not yet restored the choice is known by its mark and
+dropped. In both runners a main turn that ends aborted (a Stop) sets
+`stoppedAt` in the kept choice, at once, from the mod's clock (not when a
+later main turn had already begun); a reload of the same session takes it
+up, a fork and a `/clear` start without it, and a prompt that enters the
+main conversation (the mod's own idle prompt included) clears it. While it
+is set the idle route opens only when the view's `mainAcceptedAt`, the
+latest time the step accepted an answer still owed to the main
+conversation, is later than it; that envelope carries everything as ever.
+A dismissal, a reroute or a `landed` retry changes no answer's time and
+opens nothing. A ring orders no step.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
 registered outside the ask's band, draws one line above the to-human band in

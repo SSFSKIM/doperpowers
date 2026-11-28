@@ -561,6 +561,8 @@ export type View = {
   ready: { recipient: Recipient; keys: string[]; text: string; wakes: boolean; more: boolean }[]
   surface: { name: string; url: string; reach: string } | null
   surfaces: number
+  /** The latest `acceptedAt` among the pending answers for the main conversation, over the whole of `pending`; absent when there is none (MAWS's C5, F34). */
+  mainAcceptedAt?: string
 }
 export type Verdict = Record<string, unknown> & { verdict: string }
 export type Effects = {
