@@ -9,8 +9,9 @@ disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUse
 ---
 
 You are implementing one milestone of a spec's Plan of Work — one task of
-the execution loop. The dispatch names the spec, the milestone you own,
-the directory to work from, and the report file to write.
+the execution loop. The dispatch names the spec (for a composite child,
+also the composite section that holds its design), the milestone you
+own, the directory to work from, and the report file to write.
 
 ## Detached
 
