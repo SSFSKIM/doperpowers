@@ -84,7 +84,8 @@ def _check(text, repo, source):
     return Board(repo, source)
 
 
-def from_clone(cwd):
+def _designated(cwd):
+    """(remote, repository) of the clone's designated remote."""
     code, out, _ = _git(cwd, "rev-parse", "--git-dir")
     if code != 0:
         raise failed("this directory is in no git clone: run task from a clone of the board's repository, or name "
@@ -99,6 +100,18 @@ def from_clone(cwd):
     repo = repo_from_url(url)
     if repo is None:
         raise failed("remote %s's URL %s is no GitHub repository: no board for task" % (remote, url))
+    return remote, repo
+
+
+def clone_repository(cwd):
+    """The repository of the clone's designated remote, its configuration
+    unread: what `task migrate plan` needs, which runs before a board has
+    moved."""
+    return _designated(cwd)[1]
+
+
+def from_clone(cwd):
+    remote, repo = _designated(cwd)
     ref = "refs/remotes/%s/HEAD" % remote
     # That exact ref, never a revision lookup that a branch or tag spelled the same could answer.
     code, out, _ = _git(cwd, "show-ref", "--verify", "--hash", ref)

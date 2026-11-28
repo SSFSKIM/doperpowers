@@ -3,6 +3,7 @@
 #
 #   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh fork
 #   TASK_LIVE_REPO=<owner>/<scratch> TASK_LIVE_REPO2=<owner>/<scratch2> bash task/tests/live.sh edge
+#   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh migrate
 #
 # TASK_LIVE_REPO names a private scratch repository whose default branch
 # carries .doperpowers/board.json saying binding "task" and naming itself;
@@ -25,8 +26,8 @@ need() {
 }
 
 case "$case" in
-  fork|edge) ;;
-  *) echo "usage: live.sh fork|edge  (TASK_LIVE_REPO, and TASK_LIVE_REPO2 for edge)" >&2; exit 2 ;;
+  fork|edge|migrate) ;;
+  *) echo "usage: live.sh fork|edge|migrate  (TASK_LIVE_REPO, and TASK_LIVE_REPO2 for edge)" >&2; exit 2 ;;
 esac
 
 work="$(mktemp -d)"
@@ -110,5 +111,34 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     fi
     gh api "repos/$TASK_LIVE_REPO2/issues/$blocker" -X PATCH -f state=closed -f state_reason=not_planned > /dev/null
     echo "cross-repository blocked-by: $verdict"
+    ;;
+  migrate)
+    # Seeds one `live migrate: …` issue per row of D6's table, plans, settles the decisions (every row of an issue
+    # it did not make is "leave"), applies twice and lints; its issues are closed at the end, and at the start
+    # when an earlier run left them open. The fork case's standing ticket is on the board already: no row.
+    need TASK_LIVE_REPO
+    helper="$here/live_migrate.py"
+    python3 "$helper" clear "$TASK_LIVE_REPO"
+    trap 'python3 "$helper" clear "$TASK_LIVE_REPO" || true; rm -rf "$work"' EXIT
+    seeded="$(python3 "$helper" seed "$TASK_LIVE_REPO" "$task")"
+    count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$seeded")"
+    "$task" migrate plan --repo "$TASK_LIVE_REPO" --out "$work/plan.json" > "$work/plan.out"
+    sed -n 2p "$work/plan.out"
+    python3 "$helper" settle "$work/plan.json" "$seeded"
+    status=0
+    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply1.out" || status=1
+    tail -n 2 "$work/apply1.out"
+    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply2.out" || status=1
+    second="$(grep -o 'writes: [0-9]*' "$work/apply2.out" || echo 'writes: unknown')"
+    set +e
+    "$task" lint --repo "$TASK_LIVE_REPO" > "$work/lint.out"
+    set -e
+    fails="$(grep -c '^FAIL ' "$work/lint.out" || true)"
+    python3 "$helper" check "$TASK_LIVE_REPO" "$task" "$seeded" || status=1
+    echo "seeded $count issues, one per row of D6's table; applied; lint: $fails FAIL; second apply: $second"
+    if [ "$fails" != 0 ]; then grep '^FAIL ' "$work/lint.out" >&2; status=1; fi
+    if [ "$second" != "writes: 0" ]; then cat "$work/apply2.out" >&2; status=1; fi
+    if [ "$status" != 0 ]; then cat "$work/apply1.out" >&2; fi
+    exit "$status"
     ;;
 esac

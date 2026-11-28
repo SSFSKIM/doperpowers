@@ -95,9 +95,14 @@ class BoardCase(unittest.TestCase):
     def gh_issue(self, n, repo=REPO):
         return self.load()["repos"][repo]["issues"][str(n)]
 
-    def fail_on(self, match, times=1, status=422, message="stand-in refusal"):
+    def fail_on(self, match, times=1, status=422, message="stand-in refusal", stdin=None, after=False):
+        """The next `times` calls that match fail; `stdin` narrows the match to a call whose input holds it, and
+        `after` carries the call out before it fails (a write accepted whose answer was never heard)."""
         self.load()  # what earlier commands wrote stays
-        self.state["fail"].append({"match": match, "times": times, "status": status, "message": message})
+        rule = {"match": match, "times": times, "status": status, "message": message, "after": after}
+        if stdin is not None:
+            rule["stdin"] = stdin
+        self.state["fail"].append(rule)
         self.save()
 
     # ── running the CLI ───────────────────────────────────────────────────

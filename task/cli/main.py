@@ -9,6 +9,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import migrate  # noqa: E402
 import verbs  # noqa: E402
 from common import FAILED, USAGE, Stop  # noqa: E402
 from github import GitHubError  # noqa: E402
@@ -127,6 +128,20 @@ def parser():
     v.add_argument("--body-file", metavar="FILE", help="a comment written before the close")
 
     verb("lint", verbs.lint, "the board's invariants; exit 3 on a FAIL", (on_board, reading))
+
+    v = sub.add_parser("migrate", help="the one-time relabel from the old status labels, by a plan read first",
+                       description="the one-time relabel from the old status labels: a plan, read and settled, "
+                       "then applied")
+    steps = v.add_subparsers(dest="step", metavar="<step>", parser_class=Parser, required=True)
+    s = steps.add_parser("plan", parents=[on_board], help="read the open issues and write the plan (needs only a "
+                         "repository, not a board that has moved)")
+    s.add_argument("--out", metavar="FILE", help="where to write it, outside every repository's tree (by default "
+                   "the plugin's home)")
+    s.set_defaults(run=migrate.plan)
+    s = steps.add_parser("apply", parents=[on_board], help="write a settled plan onto the board, whose default "
+                         "branch says binding \"task\"")
+    s.add_argument("plan", metavar="PLAN")
+    s.set_defaults(run=migrate.apply)
 
     v = sub.add_parser("assign-human", help="(the human's Task Board: not built)", add_help=False)
     v.add_argument("rest", nargs=argparse.REMAINDER)

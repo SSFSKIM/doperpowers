@@ -8,8 +8,11 @@ State ($TASK_GH_STATE):
   next_id       the next comment id
   page_size     issues per page of the board query (default 50)
   cross_repo_edges  false to refuse a blocked-by edge between repositories
-  fail          [{match, times, status, message}]: a call whose argv (joined)
-                or GraphQL operation name contains `match` fails
+  fail          [{match, times, status, message, stdin, after}]: a call whose
+                argv (joined) or GraphQL operation name contains `match`, and
+                whose input contains `stdin` when that is given, fails; with
+                `after` it is carried out first and then fails, as a write
+                GitHub accepted whose answer was never heard
   repos         {"owner/name": {default_branch, files: {path: text},
                  labels: {name: {color, description}}, next,
                  issues: {"<n>": issue}}}
@@ -314,6 +317,14 @@ def rest(s, method, path, params, data):
     fail(404, "Not Found")
 
 
+def refuse(rule):
+    status = rule.get("status", 500)
+    # A rule with no status plays a failure no answer was heard for (a timeout, the transport).
+    sys.stderr.write("gh: %s%s\n" % (rule.get("message", "stand-in failure"),
+                                      " (HTTP %d)" % status if status is not None else ""))
+    return 1
+
+
 def main(argv):
     stdin = None
     if "--input" in argv:
@@ -367,15 +378,15 @@ def main(argv):
         mm = re.search(r"\b(query|mutation)\s+(\w+)", q)
         op = mm.group(2) if mm else None
     joined = " ".join(argv) + " " + (op or "")
+    after = None
     for rule in s.get("fail", []):
-        if rule.get("times", 1) > 0 and rule["match"] in joined:
+        if rule.get("times", 1) > 0 and rule["match"] in joined and rule.get("stdin", "") in (stdin or ""):
             rule["times"] = rule.get("times", 1) - 1
             save(s)
-            status = rule.get("status", 500)
-            # A rule with no status plays a failure no answer was heard for (a timeout, the transport).
-            sys.stderr.write("gh: %s%s\n" % (rule.get("message", "stand-in failure"),
-                                              " (HTTP %d)" % status if status is not None else ""))
-            return 1
+            if rule.get("after"):
+                after = rule
+                break
+            return refuse(rule)
     try:
         if path == "graphql":
             out = graphql(s, op, fields)
@@ -389,6 +400,8 @@ def main(argv):
         print(json.dumps({"message": e.message}))
         sys.stderr.write("gh: %s (HTTP %d)\n" % (e.message, e.status))
         return 1
+    if after is not None:
+        return refuse(after)
     print(json.dumps(out))
     if isinstance(out, dict) and out.get("errors"):
         sys.stderr.write("gh: %s\n" % out["errors"][0]["message"])
