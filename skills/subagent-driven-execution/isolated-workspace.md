@@ -13,8 +13,8 @@ for a submodule). Already isolated: use it, never nest another.
 a `--worktree` flag, a `/worktree` command — use it. Running
 `git worktree add` beside a native tool was the observed failure: it creates
 a workspace the harness cannot see, follow, or clean up (validated 50/50
-runs when the preference was stated explicitly). Ask before creating one
-unless the human partner's instructions already state a preference.
+runs when the preference was stated explicitly). Your human partner's
+instructions may say where checkouts go; follow them.
 
 **Manual fallback** (no native tool): `git worktree add
 .claude/worktrees/<branch> -b <branch>` at the project root, and confirm
