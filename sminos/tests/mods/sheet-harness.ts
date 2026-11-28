@@ -97,8 +97,6 @@ export function harness(
     refuseSet?: (key: string, n: number) => boolean
     /** What `sminos sheet log` (the projection) answers; exit 0 otherwise. */
     log?: (n: number) => { exitCode: number; stderr?: string } | Promise<{ exitCode: number; stderr?: string }>
-    /** What `sminos sheet show` answers the n-th time, given its arguments after `show`; unscripted (a rejection) otherwise. */
-    show?: (args: readonly string[], n: number) => { exitCode: number; stdout?: string } | Promise<{ exitCode: number; stdout?: string }>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -122,7 +120,6 @@ export function harness(
   let session = options.session ?? S1
   let projections = 0
   let witnesses = 0
-  let shows = 0
   const sets = new Map<string, number>()
   const env: Record<string, string> = { SMINOS_HOME: HOME, ...options.env }
   const $ = {
@@ -196,11 +193,6 @@ export function harness(
         if (verb === 'sheet' && op === 'witness') {
           witnesses += 1
           const out = options.witness === undefined ? { exitCode: 0, stdout: `${W1}\n` } : options.witness(witnesses)
-          return { stdout: '', stderr: '', ...out, isStdoutTruncated: false, isStderrTruncated: false }
-        }
-        if (verb === 'sheet' && op === 'show' && options.show !== undefined) {
-          shows += 1
-          const out = await options.show(argv.slice(3), shows)
           return { stdout: '', stderr: '', ...out, isStdoutTruncated: false, isStderrTruncated: false }
         }
         if (verb === 'sheet' && op === 'remove') {
