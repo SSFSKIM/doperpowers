@@ -408,38 +408,47 @@ case("seen-older", "a seen naming a snapshot older than a later revise: seenSeq 
      store(4, 3, [dict(T1_REV, seenSeq=2), T2_NEW], applied=applied(SEEN_LINE, "t1", at(3), SEEN_VERDICT)),
      jline(SEEN_VERDICT) + "\n", stdin=stdin)
 
-# The door's shown, over a store a session's steps reach: the human's comment (t1.1, the line above), shown at a
-# start to the task's target (its asker, S1: a task with no thread has no other); a second comment (t1.2) and a done
-# (t1.3) through the door, each kept by its key.
-COMMENT2_LINE = {"v": 1, "key": key(12), "act": "comment", "task": "t1", "text": "the one with the hardware key",
-                 "wake": None}
-COMMENT2_VERDICT = dict(COMMENT_VERDICT, key=key(12), outcome="t1.2")
-DONE3_LINE = {"v": 1, "key": key(13), "act": "done", "task": "t1", "revision": 2, "text": "", "wake": None}
-DONE3_VERDICT = dict(DONE_VERDICT, key=key(13), outcome="t1.3")
-T1_THREE = dict(T1_REV, acts=3, comments=[
-    {"n": 1, "seq": 4, "by": "human", "at": at(3), "text": "which account?", "outcome": "t1.1"},
-    {"n": 2, "seq": 6, "by": "human", "at": at(4), "text": "the one with the hardware key", "outcome": "t1.2"}],
-    state="done", closed={"how": "done", "seq": 7, "at": at(5), "text": ""},
-    outcomes=[outcome("t1.1", 4, "comment", at(3), 2, "which account?", True, shown={"at": at(4), "session": S1}),
-              outcome("t1.2", 6, "comment", at(4), 2, "the one with the hardware key", True),
-              outcome("t1.3", 7, "done", at(5), 2, "", True)])
-THREE_APPLIED = {**applied(COMMENT_LINE, "t1", at(3), COMMENT_VERDICT),
-                 **applied(COMMENT2_LINE, "t1", at(4), COMMENT2_VERDICT),
-                 **applied(DONE3_LINE, "t1", at(5), DONE3_VERDICT)}
-THREE = store(7, 3, [T1_THREE, T2_NEW], applied=THREE_APPLIED)
-SHOWN_LINE = {"v": 1, "key": key(6), "act": "shown", "task": "t1", "session": S1,
-              "keys": ["t1.1", "t1.2", "t1.3", "t2.1"]}
-SHOWN_VERDICT = {"v": 1, "key": key(6), "act": "shown", "verdict": "applied", "task": "t1", "revision": 2,
+# The door's shown across a real change of target, every step of the store reachable: t1 asked from the thread T1
+# (its current session S1); the human's comment t1.1 while S1 was the target, shown to S1 at its start; a witnessed
+# /clear of S1 into S2, whose pair is bound to S2's thread T2 in the same step; then a comment t1.2 and a done t1.3,
+# each kept by its key. A shown for S2 takes t1.2 and t1.3 and passes over t1.1, S1's.
+D_T1, D_T2 = thread_record(T1, S1, [S1]), thread_record(T2, S2, [S2])
+D_LINES = [{"v": 1, "key": key(20), "act": "comment", "task": "t1", "text": "which account?", "wake": None},
+           {"v": 1, "key": key(21), "act": "comment", "task": "t1", "text": "the one with the hardware key",
+            "wake": None},
+           {"v": 1, "key": key(22), "act": "done", "task": "t1", "revision": 1, "text": "", "wake": None}]
+D_VERDICTS = [{"v": 1, "key": key(20), "act": "comment", "verdict": "applied", "task": "t1", "revision": 1,
+               "state": "open", "outcome": "t1.1", "told": "next-start"},
+              {"v": 1, "key": key(21), "act": "comment", "verdict": "applied", "task": "t1", "revision": 1,
+               "state": "open", "outcome": "t1.2", "told": "next-start"},
+              {"v": 1, "key": key(22), "act": "done", "verdict": "applied", "task": "t1", "revision": 1,
+               "state": "done", "outcome": "t1.3", "told": "next-start"}]
+D_AT = [at(1), at(4), at(4)]
+D_APPLIED = {}
+for line_, v, when in zip(D_LINES, D_VERDICTS, D_AT):
+    D_APPLIED.update(applied(line_, "t1", when, v))
+D_TASK = task("t1", "blocking", TITLE1, 1, at(0), body=BODY1, askers=[asker(thread=T1)], acts=3, comments=[
+    {"n": 1, "seq": 2, "by": "human", "at": at(1), "text": "which account?", "outcome": "t1.1"},
+    {"n": 2, "seq": 5, "by": "human", "at": at(4), "text": "the one with the hardware key", "outcome": "t1.2"}],
+    state="done", closed={"how": "done", "seq": 6, "at": at(4), "text": ""},
+    outcomes=[outcome("t1.1", 2, "comment", at(1), 1, "which account?", True, shown={"at": at(2), "session": S1}),
+              outcome("t1.2", 5, "comment", at(4), 1, "the one with the hardware key", True),
+              outcome("t1.3", 6, "done", at(4), 1, "", True)])
+D_PAIR = {S1: {"session": S2, "thread": T2, "at": at(3)}}
+D_BEFORE = store(6, 2, [D_TASK], applied=D_APPLIED, successors=D_PAIR)
+SHOWN_LINE = {"v": 1, "key": key(6), "act": "shown", "task": "t1", "session": S2, "keys": ["t1.1", "t1.2", "t1.3"]}
+SHOWN_VERDICT = {"v": 1, "key": key(6), "act": "shown", "verdict": "applied", "task": "t1", "revision": 1,
                  "state": "done", "keys": ["t1.2", "t1.3"]}
-T1_THREE_SHOWN = copy.deepcopy(T1_THREE)
-for o in T1_THREE_SHOWN["outcomes"][1:]:
-    o["shown"] = {"at": at(6), "session": S1}
+D_TASK_SHOWN = copy.deepcopy(D_TASK)
+for o in D_TASK_SHOWN["outcomes"][1:]:
+    o["shown"] = {"at": at(5), "session": S2}
 argv, stdin = act(SHOWN_LINE)
-case("shown-by-a-deliverer", "the door's shown: the line's task's waiting keys whose target is the session told "
-     "are marked; one already shown (at a start) and one of another task are passed over", at(6), argv,
-     THREE, store(8, 3, [T1_THREE_SHOWN, T2_NEW], applied={**THREE_APPLIED, **applied(SHOWN_LINE, "t1", at(6),
-                                                                                       SHOWN_VERDICT)}),
-     jline(SHOWN_VERDICT) + "\n", stdin=stdin)
+case("shown-by-a-deliverer", "the door's shown after a /clear moved the task's target: the keys whose target is "
+     "the session told are marked, and one already shown to the session before the clear, another session's, is "
+     "passed over", at(5), argv, D_BEFORE,
+     store(7, 2, [D_TASK_SHOWN], applied={**D_APPLIED, **applied(SHOWN_LINE, "t1", at(5), SHOWN_VERDICT)},
+           successors=D_PAIR),
+     jline(SHOWN_VERDICT) + "\n", stdin=stdin, threads=[D_T1, D_T2])
 
 case("withdraw", "the asker withdraws: state withdrawn, closed with the reason", at(3),
      ["task", "withdraw", "t2", "--reason", "not needed after all"], REV,

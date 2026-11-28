@@ -1,24 +1,8 @@
 {
  "applied": {
-  "5eed0000-0000-4000-8000-00000000c004": {
-   "at": "2026-11-27T16:15:00.000Z",
-   "digest": "2a80296ec47ace5ce4c529f163a09dfbbe71b34a58cf8934e08f367a63d2f39a",
-   "task": "t1",
-   "verdict": {
-    "act": "comment",
-    "key": "5eed0000-0000-4000-8000-00000000c004",
-    "outcome": "t1.1",
-    "revision": 2,
-    "state": "open",
-    "task": "t1",
-    "told": "next-start",
-    "v": 1,
-    "verdict": "applied"
-   }
-  },
   "5eed0000-0000-4000-8000-00000000c006": {
-   "at": "2026-11-27T16:30:00.000Z",
-   "digest": "6d16e1465ae6f6ec7d9d2bdbe71bd226ad90a797243392b4037e2b1d5ddb2f4e",
+   "at": "2026-11-27T16:25:00.000Z",
+   "digest": "2c636ddaa7025220155232fa00b983f7148270ec7d1a761913a250e270fd3e46",
    "task": "t1",
    "verdict": {
     "act": "shown",
@@ -27,22 +11,22 @@
      "t1.2",
      "t1.3"
     ],
-    "revision": 2,
+    "revision": 1,
     "state": "done",
     "task": "t1",
     "v": 1,
     "verdict": "applied"
    }
   },
-  "5eed0000-0000-4000-8000-00000000c012": {
-   "at": "2026-11-27T16:20:00.000Z",
-   "digest": "b0d8a6e5327fb33bad7adc1d93807529c0a0be38e04e88adad68973a678a1097",
+  "5eed0000-0000-4000-8000-00000000c020": {
+   "at": "2026-11-27T16:05:00.000Z",
+   "digest": "dc2b6e1ec7f971edd4fcf859ef76c6bee7a4c9c1c877ae462b0bc5f064eb91d8",
    "task": "t1",
    "verdict": {
     "act": "comment",
-    "key": "5eed0000-0000-4000-8000-00000000c012",
-    "outcome": "t1.2",
-    "revision": 2,
+    "key": "5eed0000-0000-4000-8000-00000000c020",
+    "outcome": "t1.1",
+    "revision": 1,
     "state": "open",
     "task": "t1",
     "told": "next-start",
@@ -50,15 +34,31 @@
     "verdict": "applied"
    }
   },
-  "5eed0000-0000-4000-8000-00000000c013": {
-   "at": "2026-11-27T16:25:00.000Z",
-   "digest": "362a3b525d59854a47b379274a52196516f093633e95a6950545ea44348bfdc9",
+  "5eed0000-0000-4000-8000-00000000c021": {
+   "at": "2026-11-27T16:20:00.000Z",
+   "digest": "bf4656f005edae87b54f6cfef5aee4f52a1687e8b6b6c831f38a3b8bf423fb57",
+   "task": "t1",
+   "verdict": {
+    "act": "comment",
+    "key": "5eed0000-0000-4000-8000-00000000c021",
+    "outcome": "t1.2",
+    "revision": 1,
+    "state": "open",
+    "task": "t1",
+    "told": "next-start",
+    "v": 1,
+    "verdict": "applied"
+   }
+  },
+  "5eed0000-0000-4000-8000-00000000c022": {
+   "at": "2026-11-27T16:20:00.000Z",
+   "digest": "96303e12ab9c489ab19520d19db008f294dedd3998029a6be8fa8f694eb8bf59",
    "task": "t1",
    "verdict": {
     "act": "done",
-    "key": "5eed0000-0000-4000-8000-00000000c013",
+    "key": "5eed0000-0000-4000-8000-00000000c022",
     "outcome": "t1.3",
-    "revision": 2,
+    "revision": 1,
     "state": "done",
     "task": "t1",
     "told": "next-start",
@@ -67,37 +67,43 @@
    }
   }
  },
- "nextId": 3,
- "seq": 8,
- "successors": {},
+ "nextId": 2,
+ "seq": 7,
+ "successors": {
+  "5eed0000-0000-4000-8000-0000000000a1": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "session": "5eed0000-0000-4000-8000-0000000000a2",
+   "thread": "7d000000-0000-4000-8000-0000000000b2"
+  }
+ },
  "tasks": {
   "t1": {
    "acts": 3,
-   "agentSeq": 3,
+   "agentSeq": 1,
    "askers": [
     {
      "agent": null,
      "alias": null,
      "session": "5eed0000-0000-4000-8000-0000000000a1",
-     "thread": null
+     "thread": "7d000000-0000-4000-8000-0000000000b1"
     }
    ],
    "body": "Open the console and sign in. Done when the dashboard loads.",
    "born": 1,
    "class": "blocking",
    "closed": {
-    "at": "2026-11-27T16:25:00.000Z",
+    "at": "2026-11-27T16:20:00.000Z",
     "how": "done",
-    "seq": 7,
+    "seq": 6,
     "text": ""
    },
    "comments": [
     {
-     "at": "2026-11-27T16:15:00.000Z",
+     "at": "2026-11-27T16:05:00.000Z",
      "by": "human",
      "n": 1,
      "outcome": "t1.1",
-     "seq": 4,
+     "seq": 2,
      "text": "which account?"
     },
     {
@@ -105,7 +111,7 @@
      "by": "human",
      "n": 2,
      "outcome": "t1.2",
-     "seq": 6,
+     "seq": 5,
      "text": "the one with the hardware key"
     }
    ],
@@ -114,15 +120,15 @@
    "id": "t1",
    "outcomes": [
     {
-     "at": "2026-11-27T16:15:00.000Z",
+     "at": "2026-11-27T16:05:00.000Z",
      "endedLine": null,
      "key": "t1.1",
      "kind": "comment",
-     "revision": 2,
+     "revision": 1,
      "send": null,
-     "seq": 4,
+     "seq": 2,
      "shown": {
-      "at": "2026-11-27T16:20:00.000Z",
+      "at": "2026-11-27T16:10:00.000Z",
       "session": "5eed0000-0000-4000-8000-0000000000a1"
      },
      "text": "which account?",
@@ -133,67 +139,38 @@
      "endedLine": null,
      "key": "t1.2",
      "kind": "comment",
-     "revision": 2,
+     "revision": 1,
      "send": null,
-     "seq": 6,
+     "seq": 5,
      "shown": {
-      "at": "2026-11-27T16:30:00.000Z",
-      "session": "5eed0000-0000-4000-8000-0000000000a1"
+      "at": "2026-11-27T16:25:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a2"
      },
      "text": "the one with the hardware key",
      "wake": true
     },
     {
-     "at": "2026-11-27T16:25:00.000Z",
+     "at": "2026-11-27T16:20:00.000Z",
      "endedLine": null,
      "key": "t1.3",
      "kind": "done",
-     "revision": 2,
+     "revision": 1,
      "send": null,
-     "seq": 7,
+     "seq": 6,
      "shown": {
-      "at": "2026-11-27T16:30:00.000Z",
-      "session": "5eed0000-0000-4000-8000-0000000000a1"
+      "at": "2026-11-27T16:25:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a2"
      },
      "text": "",
      "wake": true
     }
    ],
    "project": null,
-   "revision": 2,
+   "revision": 1,
    "seenSeq": 1,
    "state": "done",
    "tags": [],
-   "title": "Log in to the cloud console"
-  },
-  "t2": {
-   "acts": 0,
-   "agentSeq": 2,
-   "askers": [
-    {
-     "agent": null,
-     "alias": null,
-     "session": "5eed0000-0000-4000-8000-0000000000a1",
-     "thread": null
-    }
-   ],
-   "body": "",
-   "born": 2,
-   "class": "needed",
-   "closed": null,
-   "comments": [],
-   "createdAt": "2026-11-27T16:05:00.000Z",
-   "due": "2027-01-05",
-   "id": "t2",
-   "outcomes": [],
-   "project": null,
-   "revision": 1,
-   "seenSeq": 2,
-   "state": "open",
-   "tags": [
-    "keys"
-   ],
-   "title": "Rotate the signing key"
+   "title": "Log in to the console"
   }
  },
  "v": 1,

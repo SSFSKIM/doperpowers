@@ -316,6 +316,27 @@ class Fixtures(unittest.TestCase):
                 self.assertEqual((code, out), (2, ""), err)
                 self.assertEqual(raw(path), before, "nothing applied")
 
+    def test_a_shown_fixture_takes_some_keys_and_passes_over_another_sessions(self):
+        """M1's list: a `shown` for a task, some of its keys taken and one passed over as another session's: an
+        outcome the store holds, shown to a session other than the line's, beside keys the line marks."""
+        found = []
+        for name in CASES:
+            d = os.path.join(SET, "fixtures", name)
+            case = load(os.path.join(d, "case.json"))
+            if case["argv"][:2] != ["task", "act"]:
+                continue
+            before = load(os.path.join(d, "before", "tasks", "state.json"))
+            for text, out in zip(case["stdin"].splitlines(), case["stdout"].splitlines()):
+                line, verdict = json.loads(text), json.loads(out)
+                if line["act"] != "shown" or not verdict.get("keys"):
+                    continue
+                held = {o["key"]: o for o in before["tasks"][line["task"]]["outcomes"]}
+                others = [k for k in line["keys"] if k not in verdict["keys"] and k in held
+                          and (held[k]["shown"] or {}).get("session") not in (None, line["session"])]
+                if others:
+                    found.append(name)
+        self.assertTrue(found, "no published shown passes over another session's key")
+
     def test_every_fixtures_store_is_one_steps_reach(self):
         """Every store a fixture or the examples publish could have been written by the steps: each outcome made by
         a door line kept under its key (an outcome is made nowhere else), each shown to a session that can have

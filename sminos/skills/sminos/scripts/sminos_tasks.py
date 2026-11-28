@@ -637,8 +637,10 @@ def apply_line(line, memo=None):
             t["seenSeq"] = max(t["seenSeq"], min(line["seq"], s["seq"]))
             verdict = dict(head, verdict="applied", **where)
         else:
+            # Whose an outcome is decides a mark: resolved afresh against this step's store and thread records, never
+            # from the call's memo, since a hand-off or a /clear between two lines moves it (§2).
             marked = []
-            target = target_of(s, t, memo)
+            target = target_of(s, t)
             for k in line["keys"]:
                 o = _outcome(t, k)
                 if (o is not None and o.get("shown") is None and k not in marked
@@ -1296,14 +1298,14 @@ def cmd_shown(a):
     def change(st):
         if st is None:
             return []
-        s, memo, marked = st.state, {}, []
+        s, marked = st.state, []
         if bind(s, session):
             st.changed = True
         for k in keys:
             t = s["tasks"].get(k.split(".")[0])
             o = _outcome(t, k) if isinstance(t, dict) else None
             if o is not None and o.get("shown") is None and k not in marked \
-                    and target_of(s, t, memo)["session"] == session:
+                    and target_of(s, t)["session"] == session:   # afresh, as the door's shown (§2)
                 o["shown"] = {"at": st.at, "session": session}
                 marked.append(k)
         if marked:

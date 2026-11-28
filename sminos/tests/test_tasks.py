@@ -765,6 +765,28 @@ class Targets(Board):
         self.assertEqual([v["keys"] for v in out], [["t1.1"], []], "the second marks against the new target")
         self.assertIsNone(self.state()["tasks"]["t2"]["outcomes"][0]["shown"])
 
+    def test_a_hand_off_between_two_shown_lines_is_read_by_the_second(self):
+        """A hand-off moves the thread's current session and leaves the pairs alone: the second `shown` resolves its
+        target afresh in its own step, and the session the outcome no longer belongs to marks nothing."""
+        s1, tid = self.asked()
+        self.assign(s1, title="second")
+        self.done("t1")
+        self.done("t2")
+        s3 = sid()
+        self.session(sid=s3)
+        lines = [self.line(act="shown", task=t, session=s1, keys=[t + ".1"]) for t in ("t1", "t2")]
+        real = tasks.apply_line
+
+        def between(line, memo=None):
+            got = real(line, memo)
+            if line["task"] == "t1":
+                self.thread(s3, sessions=[s1, s3], tid=tid)       # the thread went on in s3
+            return got
+        with mock.patch.object(tasks, "apply_line", side_effect=between):
+            out = [json.loads(x) for x in self.ok("act", stdin="\n".join(lines) + "\n").splitlines()]
+        self.assertEqual([v["keys"] for v in out], [["t1.1"], []])
+        self.assertIsNone(self.state()["tasks"]["t2"]["outcomes"][0]["shown"])
+
     def test_a_session_that_took_the_left_ones_alias_is_no_successor(self):
         s1, _ = self.asked(live=False)
         s2, s9 = sid(), sid()
