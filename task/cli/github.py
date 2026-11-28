@@ -4,7 +4,8 @@ that asks the client which repository a directory belongs to. It writes as
 the account the client is authenticated as (D8's trusted account).
 
 Label writes are single adds and removes, never a replacement of an issue's
-label set, which would drop a label another writer set a moment before."""
+label set, which would drop a label another writer set a moment before.
+GraphQL operations are named `Task…`."""
 import base64
 import json
 import re
@@ -29,6 +30,7 @@ _ISSUE_FIELDS = """
   linkedBranches(first: 20) { nodes { ref { name target { ... on Commit { committedDate } } } } }
   timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } }
 """
+# A comment's id is read as fullDatabaseId: comment ids pass 2^31, beyond GraphQL's Int (databaseId).
 _COMMENTS = """comments(first: 100%s) { pageInfo { hasNextPage endCursor }
   nodes { fullDatabaseId author { login } editor { login } createdAt body } }"""
 

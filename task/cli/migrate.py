@@ -174,6 +174,10 @@ def _write_private(path, text):
 
 
 def plan(ctx):
+    """Write the plan of a board's relabel to a new private file (by
+    default a unique name under $TASK_HOME/plans/). Only the repository is
+    resolved: no board file is read, since a plan is made before the board
+    moves. Decision rows carry a `question` beside §8's keys."""
     a = ctx.args
     if a.repo is not None:
         if not config.valid_repo(a.repo):
@@ -430,6 +434,10 @@ class Apply:
 
 
 def apply(ctx):
+    """Apply a reviewed plan. The whole plan is held to its form before any
+    write (exit 2), and refused while a decision row is undecided. A failed
+    write stops its row, not the apply, which then exits 1; the summary
+    counts the writes made (`writes: 0` on a rerun of a finished apply)."""
     a = ctx.args
     data = _load_plan(a.plan)
     repo = ctx.repo  # the board, binding "task" on its default branch, before anything else is read
