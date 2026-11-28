@@ -31,8 +31,8 @@ carry its sides.]
 ## Grounding Baseline *(optional — delete if not measured)*
 
 [The measured starting state the children's acceptances are relative to —
-counts, coverage, error rates. This is where the pipeline's grounding
-phase lands its numbers.]
+counts, coverage, error rates. This is where the run's grounding lands
+its numbers.]
 
 ## Design *(thin or absent for an uncoupled bundle)*
 
