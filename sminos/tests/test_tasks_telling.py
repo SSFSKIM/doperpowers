@@ -450,6 +450,78 @@ class Due(Board):
         self.assertEqual(self.notices(), [])
 
 
+    def test_a_late_resolution_to_a_thread_ended_since_sends_no_notice_and_writes_its_ended_line(self):
+        sid, received, line = self.killed()
+        first = self.ok("act", stdin=line)
+        self.edit(threads.current_record(sid)["thread"],
+                  ended={"at": sminos.now(), "reason": "ended", "by": "", "pid": None})   # its process still there
+        self.later(61)
+        self.assertEqual(tasks.hourly(), [])
+        send = self.outcome()["send"]
+        self.assertEqual((send["state"], send["why"]), ("none", "not-addressable"))
+        self.assertEqual(self.received(received), [], "nothing in the ended session's inbox")
+        [e] = self.notices()
+        self.assertEqual((e["to"], e["text"].split(";")[0]), ("*", "tasks: t1 was completed"))
+        self.assertIsNotNone(self.outcome()["endedLine"])
+        self.assertEqual(self.ok("act", stdin=line), first, "the verdict untouched")
+        self.assertEqual(len(self.notices()), 1)
+
+    def test_a_late_resolution_to_a_stopped_thread_whose_act_asked_no_wake_sends_nothing(self):
+        _, sid = self.human_thread()
+        sid, proc, _ = self.live(sid=sid)
+        self.assign(sid, "needed")
+        with mock.patch.object(tasks, "send", side_effect=Killed):
+            with self.assertRaises(Killed):
+                self.t("done", "t1")
+        self.end(proc)
+        self.later(61)
+        self.assertEqual(tasks.hourly(), [])
+        self.assertEqual(self.outcome()["send"]["why"], "not-addressable")
+        self.assertEqual((self.notices(), self.resumes(sid)), ([], []))
+
+    def test_the_acts_own_sending_reads_a_clear_written_since_its_step(self):
+        s1, _, got1 = self.asked()
+        s2, _, got2 = self.live(name="term-b")
+        real = tasks.send
+
+        def cleared_first(tid, key, memo=None):
+            st = self.store()
+            st["successors"][s1] = {"session": s2, "thread": threads.current_record(s2)["thread"],
+                                    "at": tasks.stamp(time.time())}
+            tasks._replace(st)
+            return real(tid, key, memo)
+        with mock.patch.object(tasks, "send", side_effect=cleared_first):
+            self.assertEqual(self.act("done", "t1")["told"], "now")
+        self.assertEqual(self.received(got1), [], "not the session left behind")
+        [frame] = self.received(got2)
+        self.assertIn(self.form("B", "marked t1 done"), frame)
+
+    def test_a_store_of_a_newer_version_is_sent_nothing_however_often_it_is_tried(self):
+        sid, received, line = self.killed()
+        st = self.store()
+        st["version"] = tasks.VERSION + 1
+        tasks._replace(st)
+        self.later(61)
+        for _ in range(2):
+            [why] = tasks.hourly()
+            self.assertIn("newer than this sminos writes", why)
+            code, _, err = self.t("act", stdin=line)
+            self.assertEqual(code, 1)
+            self.assertIn("nothing is sent", err)
+        self.assertEqual((self.notices(), self.received(received)), ([], []))
+        self.assertEqual(self.outcome()["send"]["state"], "due")
+
+    def test_a_delivery_that_fails_once_the_notice_is_appended_is_owed_never_appended_again(self):
+        sid, received = self.asked()[0], None
+        with mock.patch.object(sminos, "deliver_next", side_effect=OSError("the delivery record")):
+            self.assertEqual(self.act("done", "t1")["told"], "now")
+        send = self.outcome()["send"]
+        self.assertEqual((send["state"], send["answer"]), ("sent", "owed"))
+        self.later(61)
+        self.assertEqual(tasks.hourly(), [])
+        self.assertEqual(len(self.notices()), 1, "sminos retries what it holds")
+
+
 # ------------------------------------------------------------ the ended line
 
 
@@ -507,6 +579,37 @@ class Hourly(Board):
         s = self.store()
         self.assertEqual(sorted(s["tasks"]), ["t2"], "t2's outcome still waits")
         self.assertEqual([v["task"] for v in s["applied"].values()], ["t2"], "t1's keys, the shown's among them")
+
+    def closed_and_shown(self):
+        sid, _ = self.session()
+        self.assign(sid)
+        self.act("done", "t1")
+        shown = json.dumps({"v": 1, "key": str(uuidlib.uuid4()), "act": "shown", "task": "t1", "session": sid,
+                            "keys": ["t1.1"]})
+        self.ok("act", stdin=shown + "\n")
+        return sid
+
+    def test_a_closed_task_whose_outcomes_do_not_read_stays_and_keeps_its_exemption(self):
+        self.closed_and_shown()
+        st = self.store()
+        st["tasks"]["t1"]["outcomes"].append("not a record")
+        tasks._replace(st)
+        self.assertIn("could not be read", tasks.keeps("any", 3 * DAY))
+        self.later(31 * DAY)
+        tasks.hourly()
+        self.assertIn("t1", self.store()["tasks"])
+        self.assertIn("could not be read", tasks.keeps("any", 3 * DAY), "the exemption still holds")
+
+    def test_a_closed_task_with_a_sending_still_due_stays(self):
+        self.closed_and_shown()
+        st = self.store()
+        st["tasks"]["t1"]["outcomes"][0]["send"] = {"state": "due", "since": tasks.stamp(time.time())}
+        tasks._replace(st)
+        self.later(31 * DAY)
+        with mock.patch.object(tasks, "send", side_effect=OSError("the log")):
+            [why] = tasks.hourly()
+        self.assertIn("left due", why)
+        self.assertIn("t1", self.store()["tasks"])
 
     def test_an_unknown_ids_key_goes_after_30_days(self):
         sid, _ = self.session()

@@ -11114,7 +11114,8 @@ def board_notice(session, project, text, live_only):
         return "sent", "owed"
     try:
         result = deliver_next(dest, member, due=True)
-    except DeliveryUnreadable:
+    except Exception:   # noqa: BLE001 — appended: whatever the delivery met, it is sminos's to retry, never re-sent
+        nudge_daemon()
         return "sent", "owed"
     mine = [o for ev, o in result["outcomes"] if ev["writer"] == e["writer"] and ev["seq"] == e["seq"]]
     if not mine:
@@ -11124,12 +11125,15 @@ def board_notice(session, project, text, live_only):
 
 def broadcast(e):
     """Whether an event for the live alone (`wake`) is read as a broadcast:
-    every one but a machine's notice to one recipient with no scope
-    (board_notice's for the live alone), which is as addressed as any."""
+    every one but the Task Board's notice (its `notice` TASKS_NOTICE) to
+    one recipient with no scope (board_notice's for the live alone), which
+    is as addressed as any. Every other notice, `say --notice`'s @all
+    included, reads as it always has."""
     if not e.get("wake"):
         return False
     to = e.get("to")
-    return isinstance(e.get("scope"), dict) or not (notice_of(e) and isinstance(to, list) and len(to) == 1)
+    return isinstance(e.get("scope"), dict) or not (notice_of(e) == TASKS_NOTICE and isinstance(to, list)
+                                                    and len(to) == 1)
 
 
 def target_label(e):

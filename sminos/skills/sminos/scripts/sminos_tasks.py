@@ -864,12 +864,16 @@ def _tells(task, target):
 
 
 def _notice(task, o, target):
-    """The notice for the target as it stands, in §5's form for how it was reached: `send` as it then reads."""
+    """The sending as §3's table reads the target as it stands now: `send` as it then reads. A running target is
+    sent the notice (for the live alone unless the outcome's wake is true); a stopped one only when the outcome's
+    wake is true; every other (ended, gone, unknown, run by MAWS with its process gone, or stopped with no wake
+    asked) is `none`, `not-addressable`, as is a target with no project. The form is §5's for how it was reached."""
     agent = _agent_of(task)
     clause = "successor" if target["via"] == "cleared" else "subagent" if agent else "asker"
     text = notice_text(clause, o["kind"], task["id"], agent)
     live_only = o.get("wake") is not True
-    if target["project"] is None:
+    sendable = target["state"] == "running" or target["state"] == "stopped" and not live_only
+    if not sendable or target["project"] is None:
         return {"state": "none", "at": stamp(clock()), "why": "not-addressable"}
     how, answer = sminos.board_notice(target["session"], target["project"], text, live_only)
     if how != "sent":
@@ -884,20 +888,31 @@ def _found(state, task_id, key):
     return (t, o) if o is not None else (None, None)
 
 
+def _sendable_store(state):
+    """The snapshot a sending is made from, refused when it is of a newer version than this sminos writes: an older
+    copy never sends for a store it could not record the sending in (each try would append another notice)."""
+    if state is not None and newer(state):
+        raise Refused(EXIT_FAIL, "the store is of version %d, newer than this sminos writes (%d): nothing is sent; "
+                                 "update the sminos plugin" % (state["version"], VERSION))
+    return state
+
+
 def send(task_id, key, memo=None):
     """Resolve the outcome's sending while it is `due`, with the store's lock not held: the target read as it
     stands now (target_of), so a late resolution goes to whom the outcome belongs to then; first a tell where
     _tells, then, where the tell was refused or unanswered (the target read again), the notice in §5's form, for
     the live alone unless the outcome's wake is true; a target that is not addressable is `none`, nothing tried.
     What it sent, or the refusal, is recorded in a step that changes the outcome only while its `send` is still
-    `due`; a refusal is not tried again. `memo`: the door's call's targets, for the sending the call's own step made
-    due (one reading of the target a call); a later resolution reads it afresh. Whether this call recorded a
-    result."""
-    state = read_state()
+    `due`; a refusal is not tried again. How it is sent is §3's table against the target read now (_notice): a
+    target that has ended since gets no addressed notice, but its ended line when none was written. The verdict is
+    never touched. `memo`: the door's call's targets, for the sending the call's own step made due, held to the
+    store read here (_memo_for: a /clear's pair written since empties it); a later resolution reads afresh. A store
+    of a newer version is refused before anything is sent (_sendable_store). Whether this call recorded a result."""
+    state = _sendable_store(read_state())
     t, o = _found(state, task_id, key)
     if o is None or not _due(o):
         return False
-    target = target_of(state, t, memo)
+    target = target_of(state, t, _memo_for(state, memo) if memo is not None else None)
     result = None
     if _tells(t, target):
         agent = _agent_of(t)
@@ -907,7 +922,7 @@ def send(task_id, key, memo=None):
                       "agent": agent, "liveOnly": True, "project": target["project"], "answer": got}
         else:
             _fresh_engine()
-            state = read_state()
+            state = _sendable_store(read_state())
             t, o = _found(state, task_id, key)
             if o is None or not _due(o):
                 return False
@@ -922,7 +937,10 @@ def send(task_id, key, memo=None):
         o2["send"] = result
         st.changed = True
         return True
-    return step(change)
+    recorded = step(change)
+    if recorded and target["state"] == "ended":
+        write_ended_line(task_id, key)
+    return recorded
 
 
 def ended_project(target, task):
@@ -945,9 +963,10 @@ def ended_project(target, task):
 
 
 def write_ended_line(task_id, key):
-    """The ended line, once, by the call that applied the act: to nobody, in the log of the project the thread
-    ended in, naming the task and no session; `endedLine` set only when something was appended."""
-    state = read_state()
+    """The ended line, once: by the call that applied the act, or by a late resolution that found the target
+    ended (send). To nobody, in the log of the project the thread ended in, naming the task and no session;
+    `endedLine` set only when something was appended."""
+    state = _sendable_store(read_state())
     t, o = _found(state, task_id, key)
     if o is None or o.get("endedLine") is not None:
         return False
@@ -1045,14 +1064,27 @@ def _chains(state):
     return reach
 
 
+def _settled(t):
+    """Whether nothing of a closed task is still owed: its outcomes read as a list of records, each shown and none
+    with a sending still `due`. One that does not read stays, as keeps() reads it (no answer keeps a thread)."""
+    outs = t.get("outcomes")
+    return isinstance(outs, list) and all(isinstance(o, dict) and o.get("shown") is not None and not _due(o)
+                                          for o in outs)
+
+
 def hourly():
     """sminos_daemon's hourly duty (override_duty): each sending due for more than a minute resolved; then, in one
     step, each pair bound that can be (§2), each task removed whose state is not open, whose closing is more than
     30 days old and none of whose outcomes waits, with its `applied` keys; each `applied` key of an id that names
     no task (an `unknown` verdict) once 30 days old; and each successor pair in no task's chain. What keeps() reads
-    as holding a thread is never removed: an open task, an outcome not shown. The problems, one line each."""
+    as holding a thread is never removed: an open task, an outcome not shown, outcomes that do not read; nor a
+    task with a sending still due. The problems, one line each."""
     if not os.path.exists(state_path()):
         return []
+    try:
+        _sendable_store(read_state())
+    except Refused as e:
+        return [e.message]   # an older sminos sends nothing and prunes nothing of a newer store
     _fresh_engine()
     problems = resolve_due()
 
@@ -1065,8 +1097,7 @@ def hourly():
                 st.changed = True
         gone = [tid for tid, t in s["tasks"].items() if isinstance(t, dict) and t.get("state") != "open"
                 and isinstance(t.get("closed"), dict) and epoch(t["closed"].get("at")) is not None
-                and now - epoch(t["closed"]["at"]) > KEPT
-                and not any(isinstance(o, dict) and o.get("shown") is None for o in t.get("outcomes") or [])]
+                and now - epoch(t["closed"]["at"]) > KEPT and _settled(t)]
         for tid in gone:
             del s["tasks"][tid]
         for k, v in list(s["applied"].items()):
@@ -1082,7 +1113,10 @@ def hourly():
                 st.changed = True
         if gone:
             st.changed = True
-    step(change)
+    try:
+        step(change)
+    except Refused as e:
+        problems.append(e.message)
     return problems
 
 
