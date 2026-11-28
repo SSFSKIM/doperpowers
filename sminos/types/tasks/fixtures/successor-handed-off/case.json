@@ -1,0 +1,17 @@
+{
+ "argv": [
+  "task",
+  "revise",
+  "t1",
+  "--class",
+  "needed"
+ ],
+ "covers": "the successor's thread went on in a third session: that session is the target and may revise",
+ "exit": 0,
+ "name": "successor-handed-off",
+ "now": "2026-11-27T16:10:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a3",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1 revision 2\n"
+}

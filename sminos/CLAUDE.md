@@ -14,6 +14,8 @@ The channel family (`sminos channel create|add|remove|show|env|lead`, `list --ch
 
 The question sheet (the ask tool's second form, behind `SMINOS_QUESTION_SHEET`, off by default) is MAWS's composite `docs/doperpowers/specs/2026-11-23-question-sheet-design.md`, child C2, built from `docs/doperpowers/plans/2026-11-23-question-sheet-c2-sminos.md`; its mod is described in `hooks/mods/README.md` ("sheet"), its record and the `sminos sheet` verbs in `skills/sminos/scripts/CLAUDE.md`. `types/sheet/` is the set MAWS pins (schemas, examples, fixtures, with a manifest and digest): frozen, written by `tests/sheet-contract.gen.py` and never by the code it holds to account, and changed only by a ruling of the composite's writer and a new manifest `version`.
 
+The Task Board (`sminos task`: what sessions ask the human to do in the world, one store a machine, `$SMINOS_HOME/tasks/`) is child B1 of `docs/doperpowers/specs/2026-11-27-task-board-design.md`, built from `docs/doperpowers/plans/2026-11-27-task-board-b1.md`; the store, its verbs, the door and the start line are described in `skills/sminos/scripts/CLAUDE.md`, its hook in `hooks/CLAUDE.md`, and `types/tasks/` is the set MAWS pins, written by `tests/tasks-contract.gen.py` and frozen as the sheet's is.
+
 A second skill, `skills/manager/`, is the owner's read-only session manager (design `docs/doperpowers/specs/2026-10-31-session-manager-design.md`); its command, which imports the CLI's modules and adds no sminos verb, is described in `skills/manager/scripts/CLAUDE.md`.
 
 The skill's body is what a member acts on; machine setup (the project and its mirror, the machine's place at the hub, the daemon, the policy) is its `references/setup.md`.

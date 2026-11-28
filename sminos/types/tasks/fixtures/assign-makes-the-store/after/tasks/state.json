@@ -1,0 +1,37 @@
+{
+ "applied": {},
+ "nextId": 2,
+ "seq": 1,
+ "successors": {},
+ "tasks": {
+  "t1": {
+   "acts": 0,
+   "agentSeq": 1,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 1,
+   "state": "open",
+   "tags": [],
+   "title": "Log in to the console"
+  }
+ },
+ "v": 1,
+ "version": 1
+}

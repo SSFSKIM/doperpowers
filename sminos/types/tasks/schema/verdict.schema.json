@@ -1,0 +1,363 @@
+{
+ "$defs": {
+  "outcomeKey": {
+   "pattern": "^t[1-9][0-9]*\\.[1-9][0-9]*$",
+   "type": "string"
+  },
+  "taskId": {
+   "pattern": "^t[1-9][0-9]*$",
+   "type": "string"
+  },
+  "uuid": {
+   "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+   "type": "string"
+  },
+  "verdict": {
+   "oneOf": [
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "enum": [
+        "done",
+        "decline",
+        "comment"
+       ],
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "outcome": {
+       "$ref": "#/$defs/outcomeKey"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "state": {
+       "enum": [
+        "open",
+        "done",
+        "declined",
+        "withdrawn"
+       ],
+       "type": "string"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "told": {
+       "enum": [
+        "now",
+        "wake",
+        "next-start",
+        "ended",
+        "maws"
+       ],
+       "type": "string"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "applied",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task",
+      "revision",
+      "state",
+      "outcome",
+      "told"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "const": "seen",
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "state": {
+       "enum": [
+        "open",
+        "done",
+        "declined",
+        "withdrawn"
+       ],
+       "type": "string"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "applied",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task",
+      "revision",
+      "state"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "const": "shown",
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "keys": {
+       "items": {
+        "$ref": "#/$defs/outcomeKey"
+       },
+       "type": "array"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "state": {
+       "enum": [
+        "open",
+        "done",
+        "declined",
+        "withdrawn"
+       ],
+       "type": "string"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "applied",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task",
+      "revision",
+      "state",
+      "keys"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "enum": [
+        "done",
+        "decline"
+       ],
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "state": {
+       "enum": [
+        "open",
+        "done",
+        "declined",
+        "withdrawn"
+       ],
+       "type": "string"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "stale",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task",
+      "revision",
+      "state"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "enum": [
+        "done",
+        "decline",
+        "comment"
+       ],
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "revision": {
+       "minimum": 1,
+       "type": "integer"
+      },
+      "state": {
+       "enum": [
+        "open",
+        "done",
+        "declined",
+        "withdrawn"
+       ],
+       "type": "string"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "closed",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task",
+      "revision",
+      "state"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "enum": [
+        "done",
+        "decline",
+        "comment",
+        "seen",
+        "shown"
+       ],
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "task": {
+       "$ref": "#/$defs/taskId"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "unknown",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "task"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "act": {
+       "enum": [
+        "done",
+        "decline",
+        "comment",
+        "seen",
+        "shown"
+       ],
+       "type": "string"
+      },
+      "key": {
+       "$ref": "#/$defs/uuid"
+      },
+      "reason": {
+       "enum": [
+        "key-reused"
+       ],
+       "type": "string"
+      },
+      "v": {
+       "const": 1,
+       "type": "integer"
+      },
+      "verdict": {
+       "const": "refused",
+       "type": "string"
+      }
+     },
+     "required": [
+      "v",
+      "key",
+      "act",
+      "verdict",
+      "reason"
+     ],
+     "type": "object"
+    }
+   ]
+  }
+ },
+ "$ref": "#/$defs/verdict",
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "title": "One verdict the door prints (X2; §3)"
+}

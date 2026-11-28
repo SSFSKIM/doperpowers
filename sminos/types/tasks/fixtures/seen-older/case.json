@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "a seen naming a snapshot older than a later revise: seenSeq rises to it, and the task stays Updated (agentSeq 3 above seenSeq 2)",
+ "exit": 0,
+ "name": "seen-older",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c005\",\"act\":\"seen\",\"task\":\"t1\",\"seq\":2}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c005\",\"act\":\"seen\",\"verdict\":\"applied\",\"task\":\"t1\",\"revision\":2,\"state\":\"open\"}\n"
+}

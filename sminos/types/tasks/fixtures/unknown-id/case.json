@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "an act on an id the store does not hold: unknown, kept by its key under the id it named",
+ "exit": 0,
+ "name": "unknown-id",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c008\",\"act\":\"done\",\"task\":\"t99\",\"revision\":2,\"text\":\"logged in with account B\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c008\",\"act\":\"done\",\"verdict\":\"unknown\",\"task\":\"t99\"}\n"
+}

@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "the human's comment: a comment naming its outcome and the outcome, sharing one seq; the task stays open",
+ "exit": 0,
+ "name": "comment-by-the-human",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c004\",\"act\":\"comment\",\"task\":\"t1\",\"text\":\"which account?\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c004\",\"act\":\"comment\",\"verdict\":\"applied\",\"task\":\"t1\",\"revision\":2,\"state\":\"open\",\"outcome\":\"t1.1\",\"told\":\"next-start\"}\n"
+}

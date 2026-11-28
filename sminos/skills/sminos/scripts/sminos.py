@@ -161,6 +161,18 @@ back by a fill.
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
                    session told; prints each key's state, `queued` until a verdict comes (answer, dismiss and
                    retract print the same). Exit 2 a line refused, 3 no sheet, 75 busy
+    sminos task     assign --class blocking|needed|optional --title T [--body-file F|-] [--due D] [--tag x]...
+                   # from a session: a task for the human on this machine's board, which goes on at once; prints
+                   its id. You are told when the human acts: do not poll the list
+    sminos task     revise|withdraw|reopen <id> ...       # the asking session's: --title, --body-file, --class,
+                   --due|--no-due, --tag|--no-tags; withdraw [--reason R]; reopen a done task --comment C
+    sminos task     comment <id> (<text> | --body-file F|-)   # a session's comment; from a terminal, the human's
+    sminos task     list [--closed|--all] [--mine] [--json]   # the board: blocking first, each task's asker and
+                   whether it runs; show <id> [--json] a task whole, its history and the human's words;
+                   waiting [--mine] [--json] what the human did that no start has shown yet
+    sminos task     done <id>[@<rev>] [--note N] [--wake|--no-wake] | decline <id>[@<rev>] --reason R
+                   # the human's acts, from a terminal that is no session (refused in one, exit 3); prints the
+                   act's key on stderr, then the verdict; act: the door, one JSON line an act on stdin
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -12034,6 +12046,16 @@ def record_session(project, session, tpath, event, last_message="", source="", o
     if event == "SessionStart" and source == "clear" and seat is None:
         # At a `/clear` the alias goes with the process (M3): the session left gives it up first.
         left, given_up, where, clearing = cleared_witness(session, source)
+        if left and os.path.exists(os.path.join(root(), "tasks", "state.json")):
+            # The Task Board's pair, while the witness still answers: the release renames the session left.
+            try:
+                # The store's full wait, past the hook's own bound: a pair not written now may be written nowhere
+                # once the alias is released (remind's own write is the other chance). The record's timer is
+                # paused for it, so the release after it still runs whatever the wait took.
+                _timer_paused(tasks_module().cleared, left, session)
+            except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the release goes on
+                _logged("record: the Task Board's pair %s -> %s was not written: %s"
+                        % (left[:8], session[:8], getattr(e, "message", e)))
         if left:
             try:
                 # In the project the session left is a member of, against the process the /clear was witnessed in.
@@ -12050,6 +12072,8 @@ def record_session(project, session, tpath, event, last_message="", source="", o
             pass
     if event == "SessionStart" and source in ("startup", "resume") and alias is not None and seat is None:
         note_launch_of(session, peer)
+    if event == "SessionStart" and source == "clear" and alias is not None and seat is None:
+        _bind_successor(session)
     if event != "Stop" or alias is None:
         return
     until = time.time() + FLUSH_WAIT
@@ -12057,6 +12081,31 @@ def record_session(project, session, tpath, event, last_message="", source="", o
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def _bind_successor(session):
+    """A /clear's pair bound to the new session's thread once its join has made it: the task hook may have run
+    before the join, when there was no thread to bind to, and an unbound successor that stops is taken for dead
+    (sminos_tasks._link). Best-effort, after the release and never around it: a short wait for the store's lock,
+    within the record's deadline, and any failure a daemon.log line."""
+    if not os.path.exists(os.path.join(root(), "tasks", "state.json")):
+        return
+    tasks = tasks_module()
+    wait = tasks.HOOK_LOCK_WAIT
+    if _RECORD_DEADLINE is not None:
+        wait = max(0.0, min(wait, _RECORD_DEADLINE - time.time()))
+    try:
+        tasks.bind_step(session, wait=wait)
+    except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the session's next step binds it
+        _logged("record: the Task Board's pair to %s was not bound: %s" % (session[:8], getattr(e, "message", e)))
+
+
+def _logged(line):
+    """daemon_log, best-effort: a hook's diagnostic that cannot be written skips nothing after it."""
+    try:
+        daemon_log(line)
+    except OSError:
+        pass
 
 
 def entry_open(session):
@@ -12274,6 +12323,22 @@ def _record_expired(_signum, _frame):
     raise RecordTimeout()
 
 
+def _timer_paused(fn, *args):
+    """fn(*args) with the record's clock stopped: its interval timer (run_record's) paused and given back the time
+    it had left, and its deadline (_RECORD_DEADLINE, which the locks after it wait until) moved by the time paused,
+    so what follows keeps the budget it had before."""
+    global _RECORD_DEADLINE
+    left, _ = signal.setitimer(signal.ITIMER_REAL, 0)
+    began = time.time()
+    try:
+        return fn(*args)
+    finally:
+        if _RECORD_DEADLINE is not None:
+            _RECORD_DEADLINE += time.time() - began
+        if left:
+            signal.setitimer(signal.ITIMER_REAL, left)
+
+
 def _record_gave_up(seconds, behind):
     try:
         daemon_log("record: gave up after %gs, %s; the next Stop retries" % (seconds, behind))
@@ -12298,7 +12363,10 @@ def run_record():
     heals: the position moves only after the batch, so the next Stop retries,
     and a batch cut mid-write is completed then, since the batch drops what
     the file already holds and an append ends a torn line. Every other verb
-    keeps waiting on the same locks.
+    keeps waiting on the same locks. One wait runs past the deadline, with the
+    record's clock stopped (the timer paused, the deadline moved by as much):
+    a /clear's Task Board pair (the store's full 10 s), since the release
+    after it leaves no witness to write it from.
 
     Before all of it, a spawned session's SessionStart claims the provenance
     its launch left for it (claim_launch): it needs only the payload's
@@ -21694,6 +21762,15 @@ def cmd_sheet(a):
     sheet_module().cmd_sheet(a)
 
 
+def tasks_module():
+    """The Task Board's store, its commands and its door (sminos_tasks)."""
+    return sibling_module("sminos_tasks")
+
+
+def cmd_task(a):
+    tasks_module().cmd_task(a)
+
+
 def cmd_bridge(a):
     bridge_module().cmd_bridge(a)
 
@@ -22111,6 +22188,12 @@ def build_parser():
             so.add_argument("--remote", action="store_true")
         so.set_defaults(fn=cmd_sheet)
 
+    # The Task Board (sminos_tasks): the module parses its own verbs. `remind` and `shown` are the start hook's,
+    # dispatched ahead of the migration (main), as the sheet's --session verbs are.
+    tk = sub.add_parser("task", add_help=False)
+    tk.add_argument("argv", nargs=argparse.REMAINDER)
+    tk.set_defaults(fn=cmd_task)
+
     wa = sub.add_parser("watch", add_help=False)
     wa.add_argument("member")
     wa.add_argument("--json", action="store_true")
@@ -22329,6 +22412,12 @@ def main(argv=None):
         # The sheet's verbs given --session read no registry (the door, a reader, the tool's own step): no
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
+        return
+    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"], ["list"], ["show"], ["waiting"]):
+        # The start hook's two calls (smns-tasks.sh), so a start never waits on the registry's lock, and the readers,
+        # which a page runs on every change and on its interval: no migration, which takes a lock and writes. Their
+        # one write is the store's (text `show`'s `seen`, the hook's steps).
+        cmd_task(a)
         return
     if a.cmd == "guide":
         # A SessionStart hook's: the record hook beside it migrates, bounded;

@@ -1,0 +1,16 @@
+{
+ "argv": [
+  "task",
+  "comment",
+  "t1",
+  "checking the key too"
+ ],
+ "covers": "a field this version does not know, at the top and on a task, kept through a write (an agent's comment)",
+ "exit": 0,
+ "name": "unknown-fields-kept",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1 comment 1\n"
+}
