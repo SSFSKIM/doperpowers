@@ -197,6 +197,12 @@ The control run, which is also how wording is compared:
    shape; five interpretations across five reps means the wording isn't
    binding — tighten the form before adding words.
 
+A change to skill descriptions is compared in real sessions by the
+doperpowers repository's `tests/trigger-compare/run.py`: the same
+prompts, run headless against two checkouts of the plugins, counting
+which skills each session invoked; its docstring states its limits and
+cost.
+
 ## Last resort: enforcement machinery
 
 Rationalization tables, red-flags lists, "no exceptions" prohibitions —

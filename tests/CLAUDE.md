@@ -6,3 +6,4 @@ One subdir per area (`claude-code/`, `codex/`, `mods/`, `issue-tracker/`, …), 
 
 - `mods/`: the function-hook mods' TypeScript tests, run with `run-mods-tests.sh`, which stages a plugin folder because `claude plugin test` requires one. `typecheck.sh` is the `mods-types` gate.
 - `mods/interim-audit/run.sh <since>` audits the interim-notification filter against this machine's transcripts; rerun it when the Claude Code engine version changes, since the filter matches the engine's own wording.
+- `trigger-compare/run.py` compares which skills sessions invoke under two checkouts' skill descriptions. Each cell is a paid live session, so it runs by hand; its docstring holds what it measures and what it cannot.
