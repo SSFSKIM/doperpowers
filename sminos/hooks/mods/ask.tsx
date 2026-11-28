@@ -3,6 +3,9 @@ import type { EngineInterface, On, ToolDescribeResult } from 'claude-code'
 import type { AskSnapshot } from '../../types/sminos'
 import { isSheetCall } from './sheet-model'
 
+// The ask tool, `mcp__sminos__AskUserQuestion` (its manual: README.md, "ask";
+// design docs/doperpowers/specs/2026-10-13-ask-async-design.md).
+
 /**
  * The tool's names a transcript may hold, as each plugin that registered it
  * named it: sminos's, which registers it now, then doperpowers', where it was

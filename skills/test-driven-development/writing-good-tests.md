@@ -44,33 +44,15 @@ inputs still belong beside it, one per quirk, so a failure names its cause.
 need lives in test utilities, never as a `destroy()` on the production
 class. A method called only from test files is in the wrong place.
 
-## Quick reference
+## Also
 
-| When you... | Do |
-|-------------|-----|
-| Write any test | Name the break it catches — a bug, not a decision |
-| Build an expected value | Derive it by hand; never with the code under test |
-| Test a script or document | Run it / pressure-test its consumer; never grep its text |
-| Reach for a dependency test | Test your boundary contract, not their documented mechanics |
-| Want to assert on a mocked element | Test the real component, or unmock it |
-| Are about to mock a method | Learn its side effects; mock the slow/external level below them |
-| Build a mock response | Mirror the real structure completely |
-| Know the right answer by example, not by rule | Golden fixture: a real captured input, its complete output pinned, every line checked against the input before commit; read the diff before accepting a regeneration |
-| Need cleanup only tests use | Put it in test utilities |
-| Watch mock setup balloon | Switch to an integration test with real components |
-| Finish a test file | Mutate the production code in your head — wrong constant, wrong branch, missing side effect, empty return, missing validation — and confirm a test fails for each |
-
-## Warning signs
-
-- Setup and assertion share the same object, guaranteeing equality
-- The test can fail only through a panic, crash, or missing selector
-- The test fails on every intentional change, never on accidental breakage
-- Expected values are hidden behind loops, builders, or helpers
-- The test greps source text, or asserts a removed symbol stays removed
-- The test would still matter if only the framework remained
-- The test exists for coverage, checking no side effect or outcome
-- An assertion checks a `*-mock` test ID, or fails if you remove the mock
-- A method is called only from test files
-- A real sample exists and the test checks its row count or its first and last rows instead of pinning the whole output
-- A golden expectation was regenerated and committed without anyone reading the diff
-- Mock setup is more than half the test, or you can't explain why the mock is needed
+- Build an expected value by hand, never with the code under test or a
+  helper that shares its logic: a value derived from the code agrees with
+  it by construction.
+- Mock the slow or external level below a method, once you know the
+  method's side effects, rather than the method itself; an assertion on a
+  mocked element tests the mock. When mock setup outgrows the test, an
+  integration test with real components is the better test.
+- Finishing a test file, mutate the production code in your head — wrong
+  constant, wrong branch, missing side effect, empty return, missing
+  validation — and confirm a test fails for each.

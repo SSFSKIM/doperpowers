@@ -1,6 +1,6 @@
 ---
 name: query-transcript
-description: Use when investigating a past Claude Code session from its transcript — why it did something, what it knew and when, whether it followed a rule, what happened in a stretch too long to read whole — including a subagent's transcript.
+description: Questions put to a past Claude Code session's transcript, a subagent's included, and answered with quotes checked against the record — why it did something, what it knew and when, whether it followed a rule, what happened in a stretch too long to read whole.
 ---
 
 # query-transcript
@@ -24,7 +24,7 @@ speaking. The session's thinking is not in the transcript (a thinking block is
 an encrypted signature, readable only by the model family that wrote it), so a
 "why" answer is the answerer's inference from what the session said and did.
 Weigh it as an investigator's reading backed by quotes, never as recovered
-reasoning, and say so when you relay it.
+reasoning.
 
 Each blockquote in the answer is looked up in the record afterwards:
 

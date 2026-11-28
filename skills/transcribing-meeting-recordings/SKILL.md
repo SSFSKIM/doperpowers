@@ -82,8 +82,7 @@ data = json.loads(resp.text)
   reference clips, speaker labels agree across chunks by construction. This is
   what makes chunks fully independent and parallelizable.
 - One pool for all chunks across all parts; resume-safe (skip existing outputs).
-  Run it in the background (the harness blocks `sleep`; rely on the completion
-  notification).
+  It runs for minutes: a background job.
 
 ## Label QA — plan for two passes
 
@@ -154,5 +153,5 @@ meeting_<date>/
   work/              # 16k wavs, chunks, raw diarize JSON, refs, screen_index.json
 ```
 
-Hand off to doperpowers:organizing-sprints; its worker reads transcript + markers
-and pulls frames only where it needs visual confirmation.
+Hand off to doperpowers:organizing-sprints, which works from the transcript and
+its markers and pulls frames only where it needs visual confirmation.

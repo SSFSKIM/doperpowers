@@ -25,9 +25,9 @@
  * hear a person's devcloud answer its marker, since a person's hooks do not
  * hear an organization's mod's calls; the engine's tier order places it
  * instead. Not covered: a sminos the organization requires in `user` (taken
- * for a person's), a seat that changes while the module lives on (the seat is
- * read once per module instance), and guards the managed settings enable for
- * a person's sminos.
+ * for a person's), a copy whose hash does not match, a seat that changes
+ * while the module lives on (the seat is read once per module instance), and
+ * guards the managed settings enable for a person's sminos.
  */
 
 export type Place = 'safe' | 'off'

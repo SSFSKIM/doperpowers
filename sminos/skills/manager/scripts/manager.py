@@ -17,11 +17,12 @@ Every command takes --json and --name N (which manager's state: $SMINOS_HOME/man
 from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a failure, 2 usage (and a ledger
 change refused), 4 an unknown or ambiguous member.
 
-Nothing here writes to a session or a project log: it reads transcripts and host events, and writes only the
+No verb here writes to a session or a project log itself: it reads transcripts and host events, and writes only the
 manager's own state file and its archive (and, for `serve --install`, serve.json and the launchd agent); `query`
 asks a fork of the session, which the session never sees.
-Resolving a member may let sminos reconcile a project's membership, as any sminos read does. Detail: CLAUDE.md
-beside this file.
+Resolving a member goes through sminos's views, which may reconcile a project as any sminos read does: finish
+a journal entry, append a lifecycle event. `transcript`, `query` and a subscription take sessions of this machine only
+(refuse_remote).
 """
 
 import argparse
@@ -34,6 +35,8 @@ import time
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
+# sminos's modules are imported, never run: sminos.main() is not called, and a process makes one resolution pass, so
+# nothing here calls forget_caches() (a long-lived loop added here would have to).
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "sminos",
                                                  "scripts")))
 
@@ -123,7 +126,8 @@ def _project_by_id(pid):
 
 
 def historical(sid, project=None, alias=""):
-    """A session membership no longer holds (sminos retires a seat-less session once its process ends), read
+    """A session membership no longer holds (a retired one, or a lane B one, which sminos retires once its process
+    ends; a thread its human opened stays a member, stopped), read
     from what stays on disk: its own events in a project's log, its transcript, the sessions it continued in.
     None when nothing on this machine knows it."""
     events = S._own_events(project, sid) if project is not None else []
@@ -655,7 +659,8 @@ def _headless(t, session, question, timeout):
 def cmd_query(a):
     """A question put to a fork of the member's session: its fork agent through its bridge (`ask`) while it is
     live and its bridge can run one under the read-only guard, else a headless fork (a session not running, a
-    bridge with no `ask`, an `ask` refused `no-guard`). The session never sees the exchange."""
+    bridge with no `ask`, an `ask` refused `no-guard`). The session never sees the exchange (its human sees the
+    fork agent in its agent strip while it runs)."""
     if not a.question.strip():
         raise Usage("a query is its question")
     if a.timeout <= 0:

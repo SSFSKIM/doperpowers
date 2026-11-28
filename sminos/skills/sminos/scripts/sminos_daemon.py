@@ -871,9 +871,9 @@ def late_former_writers(events, former, since):
     return late
 
 
-# (project id, session) → what a delivery pass over a held session read (held_reads), when that pass found
-# every writer's head held for a fact (a reason its thread is not woken, or a failed wake not due yet) and settled
-# nothing: the tick passes the session by while it reads the same.
+# (project id, session), a channel's (channel id, thread) → what a delivery pass over a held session read
+# (held_reads), when that pass found every writer's head held for a fact (a reason its thread is not woken, or a
+# failed wake not due yet) and settled nothing: the tick passes the session by while it reads the same.
 _HELD_PASSES = {}
 # The holds a pass is remembered for (T2's M3): the reasons a thread is not woken, each a fact that stays until a
 # file the memory's key holds changes, and `failed`, remembered until its wake falls due. What passes on its own
@@ -2659,7 +2659,10 @@ class UplinkSupervisor(threading.Thread):
     From the cutover on the child speaks RL10 to the endpoint; while the
     endpoint is not running none does, said at once and every hour. Once
     identity.json is gone (the cutover undone) the child is stopped, and
-    the machine is as before the cutover. `stop` ends it (SIGTERM, then a
+    the machine is as before the cutover; undoing it takes the endpoint out
+    first (rl10.json and its socket gone), then identity.json, since one
+    removed while the endpoint serves is cut over again by the next probe.
+    `stop` ends it (SIGTERM, then a
     kill). The children's output goes to daemon.log, but for a probe's,
     whose outcome is said there once while it stays the same."""
 

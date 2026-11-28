@@ -45,7 +45,8 @@ export const meta = {
 }
 
 // ---------------------------------------------------------------- Ladder
-// Effort is the only routing input; the session never chooses models. Sol at
+// The level is the routing input and pins every lane; the per-lane overrides
+// in args are for the benchmark and for a pin change the human asked for. Sol at
 // xhigh is the rung the X1 baseline was scored on (17/17 seeded, FP 0 as the
 // codex engine's production default, on GPT-5.6 Sol); it was medium then, low
 // from 2026-09-25, and medium again since 2026-09-29, when sol became GPT-6.1
@@ -180,7 +181,7 @@ const DERIVER_SCHEMA = {
 
 const DERIVER_PROMPT = `${WHERE}You are preparing a multi-reviewer code-review panel for the diff between ${rangeOf()} and ${headCommit} (HEAD, resolved once at panel start) in this repository. Run \`${DIFF} --stat\` and skim the largest hunks with \`${DIFF}\`. Never modify the repository. ${SELF}
 
-Write between 0 and ${maxLenses} scalpel lens mandates. Each mandate is AT MOST TWO SIMPLE SENTENCES naming one structural risk surface of THIS diff (example of the calibre required: "Pay attention to authorization and actor-identity assumptions in the changed API routes."). A separate lens-free reviewer already sweeps everything, so a mandate must earn its slot: fewer, sharper mandates beat coverage padding — a small single-concern diff deserves zero or one. Consider, only where this diff actually raises them: changed-logic accuracy, cross-file contract impact, behavior lost with removed or moved code, security surface, performance and resources.`
+Write between 0 and ${maxLenses} scalpel lens mandates. Each mandate is at most two simple sentences naming one structural risk surface of this diff (example of the calibre required: "Pay attention to authorization and actor-identity assumptions in the changed API routes."). A separate lens-free reviewer already sweeps everything, so a mandate must earn its slot: fewer, sharper mandates beat coverage padding — a small single-concern diff deserves zero or one. Consider, only where this diff actually raises them: changed-logic accuracy, cross-file contract impact, behavior lost with removed or moved code, security surface, performance and resources.`
 
 phase('Derive')
 let lenses = args.lenses
@@ -277,7 +278,7 @@ const lensRoster = () => finders
   .join('\n')
 
 const VERIFIER_PROMPT = () =>
-  `${WHERE}You are the binding verifier of a multi-reviewer code-review panel. The candidate findings below came from independent reviewers of the diff against ${rangeOf()} at the reviewed head ${headCommit} — run \`${DIFF}\` and re-inspect the code yourself before judging; a candidate is confirmed only when you can name the concrete failure. Never modify the repository. ${SELF} For EVERY candidate id return exactly one verdict: CONFIRMED (name the concrete failure scenario) or REFUTED (state why it is wrong, intentional, pre-existing, or not a real defect — the code's own documentation and the change's stated intent count as evidence). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0–P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
+  `${WHERE}You are the binding verifier of a multi-reviewer code-review panel. The candidate findings below came from independent reviewers of the diff against ${rangeOf()} at the reviewed head ${headCommit} — run \`${DIFF}\` and re-inspect the code yourself before judging; a candidate is confirmed only when you can name the concrete failure. Never modify the repository. ${SELF} For every candidate id return exactly one verdict: CONFIRMED (name the concrete failure scenario) or REFUTED (state why it is wrong, intentional, pre-existing, or not a real defect — the code's own documentation and the change's stated intent count as evidence). Mark true duplicates with duplicateOf pointing at the strongest formulation (null when the finding is not a duplicate), assign priority P0–P3 to confirmed findings (null on a refuted one), and put your evidence in comment.
 
 The reviewers, and the lens each was given (a candidate id carries its reviewer's label):
 ${lensRoster()}
@@ -293,7 +294,7 @@ const REPAIR_PROMPT = (errs) =>
 
 ${VERIFIER_PROMPT()}
 
-Return the FULL corrected verdicts array covering every candidate id exactly once.`
+Return the full corrected verdicts array, covering every candidate id exactly once.`
 
 // `verified` is three-state: the verdicts, an empty array when there was nothing
 // to judge, or null when the verifier could not be made to honour its contract —

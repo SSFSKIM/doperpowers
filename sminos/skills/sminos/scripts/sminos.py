@@ -652,6 +652,8 @@ def meta_get(seat_id, field):
 
 
 def record_files():
+    # A `*.json` at the root, but a `*.reply.json`, is read as a seat here, and older sminos copies on the machine
+    # scan the same root: a new store goes in a directory of its own (as threads/ does).
     for p in sorted(glob.glob(os.path.join(glob.escape(root()), "*.json"))):
         if p.endswith(".reply.json"):
             continue
@@ -1510,7 +1512,10 @@ def register_declared():
     and one in this machine's own project registers nothing. Only where the
     folder resolves here to the entry's project as a hub project of this
     org; of several locations of one project the registered root stands
-    while it is still the project's (kept_root)."""
+    while it is still the project's (kept_root). Nothing undoes it: an
+    entry that leaves `locations` stops being a checkout at once, and the
+    project stays followed while its hub is this org's, until it leaves
+    (sminos_uplink.Leaving)."""
     e = enrollment()
     if e is None:
         return
@@ -3664,7 +3669,9 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     `lock_until`: LockBusy, nothing appended, for a lock not had by then.
     A log writer that waits for its head (waits_for_head) gets the events
     queued, or with `queue=False` HeadWaits, nothing queued: the one reading
-    of the wait, under the writer's lock, decides either way.
+    of the wait, under the writer's lock, decides either way (a re-enrolment
+    marks the wait under the credential lock, not the writer's, so a reading
+    taken anywhere else may disagree with this one).
     Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
@@ -6658,7 +6665,9 @@ def is_turn_record(r):
     one after a hand-off: a finished assistant message (not an API error), or
     a prompt the human typed. A slash command's echo or output is none: the
     engine (2.1.303) writes `/background`'s empty `<local-command-stdout>`
-    right after the hand-off record."""
+    right after the hand-off record. A row a hook answered without a request
+    (`answeredWithoutRequest`) records `stop_reason: end_turn` (2.1.312) and
+    counts: it does end the turn, though transcript_reply passes it over."""
     if r.get("type") == "assistant":
         msg = r.get("message") if isinstance(r.get("message"), dict) else {}
         return r.get("isApiErrorMessage") is not True and isinstance(msg.get("stop_reason"), str)
@@ -10910,7 +10919,8 @@ def cmd_say(a):
             "would be read as a person's words: nothing was recorded" % host_name(), 1)
     chans = channels_module()
     if a.pools:
-        # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read.
+        # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read. Exit 2 is these alone: the host
+        # reads it as a sminos that predates --pools (devcloudlib/notices.py), so every other failure is exit 1.
         if a.notice is None:
             die("--pools records a machine's own notice: give --notice <program>")
         given = getattr(a, "given", frozenset())   # by presence: an empty value is still the flag given
@@ -10931,7 +10941,7 @@ def cmd_say(a):
     if (q := shortened_channel_qualifier(a.text)):
         die(chans.OPENS_NO_TAG % (q[0], q[1]), 1)   # however the say is addressed, a selector's included (C7)
     tags = leading_tags(a.text)
-    if spoken is None:
+    if spoken is None:   # every tag's qualifier read before resolve_tags looks up a member: a lookup reconciles
         spoken = next((c for t in tags if t["project"] for c in [names_channel(t["project"])] if c is not None), None)
     if spoken is not None:
         chans.speak(spoken, a, sid, tags)
@@ -13357,8 +13367,10 @@ def project_init(a):
     committing the file moves no session and splits no history. Where a
     stored statement on this machine decides the folder over any file there
     (statement_over_file), the file takes the id in effect, the
-    statement's, as a hub project of this org, and init says the file is
-    not what decides; sminos never writes a statement."""
+    statement's, as a hub project of this org with or without --hub (a
+    file naming a hub project's id without its hub would cut every other
+    clone from it), and init says the file is not what decides; sminos
+    never writes a statement."""
     top = git_toplevel(os.getcwd())
     if not top:
         die("project init needs a git repository: .smns is committed at its root; "
@@ -13816,7 +13828,10 @@ def forget_caches():
     their views — so a long-lived process (the chart TUI, the daemon's loop)
     sees the fleet as it is now rather than as it was at launch. Nothing is
     read until asked. (A launch directory stays: it is checked against its
-    transcript's size on every read.)"""
+    transcript's size on every read.) A cache that outlives a generation is
+    keyed on what it is a function of (a file's stat identity, a name, its
+    other inputs), never on time, so a change is seen at the pass it would
+    have been seen at uncached."""
     global _AGENTS_LOADED, _PEERS, _SELF
     _AGENTS_LOADED = False
     _PEERS = None
@@ -15576,7 +15591,13 @@ def migration_skipped(step, lock):
 
 
 def migrate(quiet=False, lock_until=None):
-    """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
+    """Bring a pre-seat state root up to date. Idempotent; main runs it before
+    the verbs it does not dispatch first: `record` migrates bounded, in
+    run_record, and bridge, sheet --session (and surfaces), guide, rpc-query,
+    daemon owed and profile, and a who with no target skip it, so they never
+    wait on the registry's lock. A working copy's CLI run against the real root
+    migrates it, one way (the chats/ import among the steps): try one under a
+    temporary HOME and SMINOS_HOME, as tests/run-sminos-tests.sh does.
 
     The whole cutover is serialized by an exclusive flock on
     ~/.claude/.agora-migrate.lock — under the tool's former name on purpose, so

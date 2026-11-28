@@ -1,10 +1,9 @@
 # Setting up sminos on a machine and in a repository
 
 The one-time work: a project's `.smns` and its mirror, a machine's
-place at the desk hub, the daemon, and the machine's policy. The CLI
-is the sminos plugin's `skills/sminos/scripts/sminos`
-(`sminos/skills/sminos/scripts/sminos` in the doperpowers repository; not
-on PATH); `sminos help` describes
+place at the desk hub, the daemon, and the machine's policy. The CLI,
+`sminos`, is on every session's PATH through the sminos plugin's `bin/`
+(its program is `skills/sminos/scripts/sminos`); `sminos help` describes
 every verb, the operator's rare ones (`meta`, `seat add`, `sync`,
 `remove`, `migrate`, `chart`, `tui`) included. It runs on the first
 `python3` on PATH, which must be 3.10 or newer; an older one (macOS's

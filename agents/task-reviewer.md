@@ -92,23 +92,13 @@ broadening your search.
 
 ## Part 2: Code Quality
 
-**Code quality:**
-- Clean separation of concerns?
-- Proper error handling?
-- DRY without premature abstraction?
-- Edge cases handled?
-
-**Tests:**
-- Do the new and changed tests verify real behavior, not mocks?
-- Are the task's edge cases covered?
-
-**Structure:**
-- Does each file have one clear responsibility with a well-defined interface?
-- Are units decomposed so they can be understood and tested independently?
-- Is the implementation following the file structure from the spec?
-- Did this change create new files that are already large, or
-  significantly grow existing files? (Don't flag pre-existing file
-  sizes — focus on what this change contributed.)
+Judge whether the change is well-built as you would before blocking a
+merge: correctness, error handling, and tests that verify real behavior
+rather than mocks and cover the task's edge cases. Within this task's
+scope, also check that the implementation follows the spec's file
+structure, and whether this change created files that are already large
+or significantly grew existing ones (pre-existing file sizes are not this
+task's finding).
 
 Your report should point at evidence: file:line references for every
 finding and for any check you would otherwise answer with a bare
@@ -132,9 +122,7 @@ If the spec explicitly mandates something this rubric calls a
 defect (a test that asserts nothing, verbatim duplication of a logic
 block), that IS a finding — report it as Important, labeled
 spec-mandated. The spec's authorship does not grade its own work; the
-human decides.
-Acknowledge what was done well before listing issues — accurate praise
-helps the executor trust the rest of the feedback.
+controller adjudicates the finding against the spec's intent.
 
 ## Output Format
 
@@ -145,9 +133,6 @@ helps the executor trust the rest of the feedback.
 - ⚠️ Cannot verify from diff: [requirements you could not verify from the
   diff alone, and what the controller should check — report alongside the
   ✅/❌ verdict for everything you could verify]
-
-### Strengths
-[What's well done? Be specific.]
 
 ### Issues
 

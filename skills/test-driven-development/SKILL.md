@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Use when implementing any feature or bugfix with testable logic, before writing implementation code
+description: Verified guidance on test-first development, for implementing a feature or bugfix with testable logic, before the implementation is written.
 ---
 
 # Test-Driven Development (TDD)
@@ -22,11 +22,11 @@ this test, nothing speculative. When the test fails after implementation,
 the default suspect is the code: the test records intent you settled
 before implementing. Rewrite the test only if that intent was wrong.
 
-**Implementation already written?** Set it aside and let tests drive a
-fresh version. Tests written to fit existing code inherit its blind spots
-and pass immediately, so they never demonstrate they can catch anything.
-The time is spent either way; what you choose now is whether the tests
-can be trusted.
+**Implementation already written?** Tests written to fit existing code
+inherit its blind spots and pass at once, so they never show they can
+catch anything. Setting the code aside and letting tests drive a fresh
+version removes that; if you keep the code, prove each test by breaking
+the code it covers and watching it fail.
 
 **A bug fix starts with a test that reproduces the bug** — it proves the
 fix and pins it against regression.
