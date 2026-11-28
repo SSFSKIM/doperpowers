@@ -148,8 +148,13 @@ def housekeep(ctx, regular):
     over them completed within TASK_SETTLE_EVERY (ten minutes). One budget
     (20 s; TASK_SETTLE_DEADLINE for tests) bounds every call of it, under
     the board's running mark, so that two verbs started together run one.
-    Run once a verb's preflight has passed and before it reads what it acts
-    on. Its failure, its bookkeeping's among it, goes to stderr and fails
+    Run once a verb's preflight has passed (its arguments; for `claim` and
+    `takeover` the session's address and thread; for `release` and `close`
+    the holder judged on a read; for `migrate apply` the plan), so a verb
+    that refuses on that first judgment has written nothing, and before it
+    reads what it acts on. A verb whose judgment housekeeping can change
+    judges again after it ran: a refusal then has written no record of its
+    own, though housekeeping may have written an owed release. Its failure, its bookkeeping's among it, goes to stderr and fails
     nothing. Whether a pass ran (and may have written)."""
     repo = ctx.repo
     key = I.board_key(repo)
@@ -568,6 +573,9 @@ def _brief(row, *keys):
 
 
 def held(ctx):
+    """`task held --session S [--thread T] [--cleared-from L] --json`,
+    sminos's call (§9, frozen at M3's review): the index only, from any
+    directory, exit 0 whenever it could answer."""
     a = ctx.args
     for flag in ("session", "thread", "cleared_from"):
         value = getattr(a, flag)
@@ -600,6 +608,10 @@ def held(ctx):
 
 
 def settle(ctx):
+    """`task settle [--thread T] --json`, sminos's call (§9, frozen at M3's
+    review): from any directory, exit 0 whenever it could answer. The call
+    states nothing about any thread: settle asks sminos about each itself,
+    and `--thread` only limits the run to that thread's rows."""
     a = ctx.args
     if a.thread is not None and not a.thread.strip():
         raise usage("--thread takes a thread id")
