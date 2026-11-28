@@ -66,7 +66,7 @@ A part's detail is in the `CLAUDE.md` nearest its code.
 | `agents/` | Registered agents (`doperpowers:<name>`), each definition its own contract and model pin. No `CLAUDE.md` here: every `.md` in `agents/` registers as an agent. |
 | `hooks/` | The plugin's shell hooks and, under `mods/`, its function hooks (compact and appeal tools, kairos button, plugin reload, interim filter). |
 | `bin/` | On every session's Bash PATH: `query-transcript`, which runs its skill's program. |
-| `output-styles/` | Styles the harness loads from the plugin (no `CLAUDE.md` here: every `.md` loads as a style). `to-human.md`'s `maws-to-human-contract` is a number MAWS parses; 5 and 7 are MAWS's own. |
+| `output-styles/` | Styles the harness loads from the plugin (no `CLAUDE.md` here: every `.md` loads as a style). `to-human.md`'s `maws-to-human-contract: 6` is the message-tool shape MAWS parses; 7 is MAWS's own. |
 | `.claude-plugin/` | Manifest and dev marketplace. `workflows` registers review-code's workflow as `doperpowers:code-review`; callers pass that name, since the Workflow tool refuses a `scriptPath` into the plugin cache. |
 | `.codex-plugin/`, `.agents/` | Codex: the local plugin manifest and its dev marketplace. |
 | `codex/agents/` | Codex ports (TOML) of the review roles, installed into `~/.codex/agents/` by hand; outside `agents/` because every `.md` there registers. `tests/codex/test-native-agents.py` holds each port to its source. |
