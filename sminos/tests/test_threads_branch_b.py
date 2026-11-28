@@ -628,7 +628,7 @@ class Canonical(Rig):
         seat = threads.get(seat_id)
         asked = threads.shorts_of(threads.owner_sessions(seat))
         self.assertEqual(self.daemon.end_stopped(threads, seat_id, sid, at, asked), [])
-        self.assertEqual(sminos.end_by_rule(seat, at, asked), [], "nor through the end's own guard")
+        self.assertEqual(sminos.end_by_rule(seat, at, asked, period=7200), [], "nor through the end's own guard")
         sminos.forget_caches()
         self.assertFalse(threads.record_ended(threads.get(seat_id)))
         self.assertFalse(threads.record_ended(threads.get(human)))

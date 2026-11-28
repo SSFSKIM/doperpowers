@@ -138,12 +138,17 @@ class ClaimTest(ClaimCase):
         self.assertEqual([r["state"] for r in self.rows()], ["held"])
         self.assertNotIn("record", self.ops())
 
-    def test_registered_for_another_thread(self):
-        self.ticket(5, body="Body.\n\n```task-record\nfor: %s\n```" % OTHER_ADDRESS)
-        code, _, err = self.task("claim", "5")
-        self.assertEqual(code, 3)
-        self.assertIn("registered for %s" % OTHER_ADDRESS, err)
-        self.assertEqual((self.records(), self.rows()), ([], []))
+    def test_registered_for_another_thread_is_claimed_saying_so(self):
+        body = "Body.\n\n```task-record\nfor: %s\n```" % OTHER_ADDRESS
+        self.ticket(5, body=body)
+        code, out, err = self.task("claim", "5")
+        self.assertEqual(code, 0, err)
+        self.assertIn("not takeable", out)
+        self.assertIn("for-another", out)
+        [rec] = self.records()
+        self.assertEqual(self.holder()["claim"], rec["id"])
+        self.assertEqual([r["state"] for r in self.rows()], ["held"])
+        self.assertEqual(self.gh_issue(5)["body"], body)  # `for:` still names its addressee
 
     def test_a_ticket_that_is_not_takeable_is_claimed_saying_why(self):
         self.ticket(5, readiness="need-design", horizon="undecided")

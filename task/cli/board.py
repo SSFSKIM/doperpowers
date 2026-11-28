@@ -16,7 +16,7 @@ BATCH_PREFIX = "batch:"
 STATUS_PREFIX = "status:"
 
 # Whether a blocked-by edge may name an issue of another repository (`owner/name#n`). Delegated unknowns: settled
-# by `task/tests/live.sh edge`; if GitHub refuses such an edge, set this False and such a wait is prose in the body.
+# by `task/tests/live.sh edge`, which found GitHub keeps such an edge (2026-11-27); if GitHub refuses such an edge, set this False and such a wait is prose in the body.
 CROSS_REPOSITORY_BLOCKED_BY = True
 
 # What a label is created with at its first need: a color and a description that names its axis.

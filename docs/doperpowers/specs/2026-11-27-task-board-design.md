@@ -104,7 +104,7 @@ In the session manager's four types of what a session needs from the owner: an *
 | `revision` | 1 when added, +1 at each revise and each reopen |
 | `askers` | who is told: the thread that assigned it (none for a session that has no thread), the session that ran the command, its alias then, and for a subagent its agent id and name. A list, so that a later version can add a second waiter; this version writes one |
 | `project` | the asker's project when assigned |
-| `title`, `body` | one line (at most 200 characters); Markdown (at most 20,000), the task in the asker's words |
+| `title`, `body` | one line (at most 200 characters); Markdown (at most 20,000) saying what to do, why, and how the human knows it is done |
 | `class` | `blocking` (the asker cannot go on without it), `needed` (must be done at some point), `optional` |
 | `due` | optional date (`YYYY-MM-DD`) |
 | `tags` | optional short labels the board can filter by (at most eight, each `[a-z0-9-]{1,32}`) |
@@ -141,7 +141,7 @@ The verbs are a thin front over the store's commands in sminos (D3): each runs `
 - A permission rule or a classic `PreToolUse` check that depends on the arguments after the verb sees one more argument. U1 looks at what the engine does with each; no rule is promised to match.
 - Where the mod is not loaded the asker is the thread alone. An agent that writes the flag itself is believed: it is a delivery hint.
 
-**What agents are told.** In the plugin's skill (`task:human-tasks`), in one line of sminos's start guide, and in one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence). They describe the board and what its verbs do, and leave when and how to use them to the agent (R14). The definitions they carry: D1's line between a task, an act only the human can do in the world, and a question; what `blocking`, `needed` and `optional` mean; that the human's acts reach the asker as a notice naming the task and what the human did, and are named again at its next start, and that the human's words are read with `sminos task show`; that "done" is the human's word about their step, and a task can be reopened; that the door refuses any agent session, so the human's acts are the human's alone. What an agent does after assigning a task, or on being told of an act, is its own judgment, and nothing in them prescribes it. The words are B5's to settle before they ship (X7).
+**What agents are told.** In the plugin's skill (`task:human-tasks`), in one line of sminos's start guide, and in one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence). They describe the board and what its verbs do, and leave when and how to use them to the agent (R14). One direction they carry, the owner's (2026-11-27): the body says how the human knows the task is done. The definitions they carry: D1's line between a task, an act only the human can do in the world, and a question; what `blocking`, `needed` and `optional` mean; that the human's acts reach the asker as a notice naming the task and what the human did, and are named again at its next start, and that the human's words are read with `sminos task show`; that "done" is the human's word about their step, and a task can be reopened; that the door refuses any agent session, so the human's acts are the human's alone. What an agent does after assigning a task, or on being told of an act, is its own judgment, and nothing in them prescribes it. The words are B5's to settle before they ship (X7).
 
 ### D3. The store
 
@@ -305,7 +305,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** consumer of X3.
 - **Design inheritance:** D7, binding. Advisory: the predicate is one function of the tasks' module over the store and `target_of` (B1's), called with no lock from `sweep_threads`'s test of what is due and from `end_by_rule`'s guard; the line in `daemon.log` follows `holding`'s form.
 - **Required:** required.
-- **Status:** not-dispatched (dispatchable now: B1's M1 landed). One pull request, sminos's version raised, reviewed at the medium rung.
+- **Status:** built on branch `task-board-b1a`, one pull request, not merged; sminos 1.62.0. The predicate is `sminos_tasks.keeps(thread, period)`, over the store and `target_of`'s resolution without the state it describes; called from `sweep_threads`'s test of what is due and from `end_by_rule`'s guard, which now takes the rule's `period`; a kept thread said through `leaves`, `holding`'s line. The Acceptance's cases are `TaskBoard` in `sminos/tests/test_threads_ended.py`.
 
 ### B2: The board on the local page — plan (MAWS)
 
@@ -397,7 +397,7 @@ The owner approved the spec on 2026-11-27 (R11), as it read at `478da2969` with 
 | child | artifact | status |
 |---|---|---|
 | B1 | `docs/doperpowers/plans/2026-11-27-task-board-b1.md` | M1 landed, pull request #640: G1's set `sminos/types/tasks/` published at version 1, digest `9edb85d31c61efdaffa7ed4eff1b8bcfac9d6868a968d791bac8f061e82c21e6`; M2 next |
-| B1a | ledger at dispatch | not-dispatched (dispatchable now) |
+| B1a | its pull request (branch `task-board-b1a`) | built, in review: `sminos_tasks.keeps`, sminos 1.62.0; not merged |
 | B2 | MAWS's execution document | not-dispatched (B1.G1 met; its external edges) |
 | B3 | MAWS's execution document | not-dispatched (B1.G1 met) |
 | B4 | its own cut at dispatch | not-dispatched (deliberately late) |
