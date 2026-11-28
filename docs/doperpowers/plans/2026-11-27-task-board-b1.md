@@ -29,7 +29,7 @@ This document was reviewed by `doperpowers:adversarial-reviewer` in its first fo
 
 ## How it lands
 
-One pull request a milestone, each from a worktree of its own branched from `main`, each raising the version of every plugin whose shipped files it touched (`scripts/bump-version.sh --plugin sminos`, `--plugin task`; `scripts/bump-version.sh --since origin/main` before a push), each body ending with the session line.
+One pull request a milestone, each from a worktree of its own branched from `main` (M1 excepted: it is built on `task-board-spec` itself, whose pull request carries this document and the composite with it), each raising the version of every plugin whose shipped files it touched (`scripts/bump-version.sh --plugin sminos`, `--plugin task`; `scripts/bump-version.sh --since origin/main` before a push), each body ending with the session line.
 
 | landing | waits on | what a user has after it |
 |---|---|---|
