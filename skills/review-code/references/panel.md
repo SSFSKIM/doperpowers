@@ -81,11 +81,7 @@ verdict describes a diff that no longer exists — read it as `interrupted`.
 
 ## Working with findings
 
-A review is rigorous by design, so not every finding is action-worthy, and
-verifying one means more than checking whether it is real. A finding that is
-real but too small to act on now is logged as tech debt, not fixed inline. One
-that contradicts the design's intent is dismissed; one that fits the purpose
-but was deliberately scoped out is deferred to the backlog. What remains goes
-to a fix wave through a subagent, not your own edits, and a re-review follows a
-substantial wave. Several rounds are fine; a round that yields only logged debt
-and dismissals is the signal the review has converged — stop there.
+A reviewer finds something on every pass, so a clean verdict is not where
+the work stops: weigh each confirmed finding against the change's intent,
+fix what the change owes, and stop when a round leaves nothing worth fixing
+(doperpowers:subagent-driven-execution, step 6, states the triage).

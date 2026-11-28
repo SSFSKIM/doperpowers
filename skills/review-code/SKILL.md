@@ -1,6 +1,6 @@
 ---
 name: review-code
-description: Use when a committed change needs an independent code review — cross-model correctness review of a branch, routed by effort level to a registered reviewer or a multi-lens panel.
+description: The routing for an independent code review of a committed change — cross-model correctness review of a branch, by effort level, to a registered reviewer or a multi-lens panel.
 ---
 
 # Review Code
@@ -26,8 +26,9 @@ untracked against HEAD `<head>`), and don't edit under it.
 | max | the panel on frontier models | the largest or highest-stakes ranges |
 
 An explicitly named level always wins; with none named, medium, or xhigh once
-the diff is panel-sized. Models and efforts are pinned per level; you never
-choose them.
+the diff is panel-sized. Each level pins its models and efforts, benchmarked
+(the ladder in panel.md); a pin changes on your human partner's instruction,
+through the workflow's per-lane overrides.
 
 ## 2. Run it
 
@@ -56,5 +57,5 @@ flight, and when it returns, re-resolve `mb` and `head` and read a moved pin as
 `interrupted`.
 
 [references/panel.md](references/panel.md) has the result contract, the
-optional args (`repo` for a worktree, `lenses`), the isolation guarantee, and,
-for every level, how to work with the findings.
+optional args (`repo` for a worktree, `lenses`, the per-lane overrides), and
+the isolation guarantee.
