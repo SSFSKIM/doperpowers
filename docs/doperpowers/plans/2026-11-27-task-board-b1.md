@@ -451,9 +451,26 @@ By hand, with a scratch store and a stand-in session id:
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**M1 (2026-11-28).** Built as one milestone on `task-board-spec`. The work: the store, its commands, the door, the start line, and the published set `sminos/types/tasks/` at version 1 (23 fixtures, digest `9edb85d3…` in its `MANIFEST.json`); sminos 1.60.0. M1's gate line passed on every fix head. The task review took two fix rounds and the whole-branch review at the medium rung three, each finding a real defect.
+
+What the reviews changed, which a later milestone should know:
+- **The verdict kept by key.** §3's promise holds literally: every first verdict is kept, refusals included. The executor first kept only `applied` verdicts, on the reasoning that a reopen moves the revision. A keyed comment refused `closed`, and a `done` on an id not yet made, both broke that.
+- **The /clear pair.** It is bound after the record hook's join, and it is replaced when a session opened again is cleared again. The record hook's alarm and wall-clock deadline both move by the time the pair write took, so the alias release keeps its budget.
+- **The published examples and fixtures.** These are now built from reachable steps, and a contract check holds them to it. The first set taught combinations that §2 and §3 forbid.
+- **A `shown`.** It resolves its target in its own step.
+- **The door's wire rules beyond the schema.** These are published with rejection vectors.
+
+The lesson: a published set written by a generator can be schema-valid and still unreachable. Asserting reachability, and not only shape, is what made the set trustworthy for its consumers.
+
+Left for later, and carried to M1's pull request as review input:
+- `shown --keys` resolves the target once per outcome under the lock. That is a cost only with many waiting outcomes.
+- The illustrative history in `examples/state.json` counts no sequence slots for the sending's resolution.
+
+M2 consumes the "As built" paragraph under M1 and its own notes (`told_of` replaced, `send: due`, the prune of unknown ids' keys).
 
 ## For the composite's writer
 
 - **D5, a successor** ("A successor (R13)…"): a witnessed `/clear`'s pair has two writers, `sminos record`'s clear path before `release_alias` and `remind --source clear`, each waiting the store's full 10 s lock; when both fail (each past its wait, or each raising), the alias is released and no pair is written, so the outcomes and the revise rights stay with the conversation left, whose start line still names them. The alias release is deliberately not made to wait on the store (the composite's writer accepted the limit, 2026-11-27). D5 should state it as a limit, in D9's manner.
+- **The Tracking Map**: B1's M1 is built and reviewed, and its pull request is open; G1's set is `sminos/types/tasks/` at version 1, its digest in `MANIFEST.json` at the pull request's head (pin it from the merged commit).
+- **D4, an act is applied once**: B1's §3 now says it outright. The first verdict is kept by its key whatever it was, refusals included, so a surface that acts again after a refusal mints a new key.
 - **D9, a fork**: the fork's sentence at its start is frozen in the published set's grammar (`sminos/types/tasks/grammar/texts.md`), with its own fixed words; D9's wording describes it and no longer stands alone.
