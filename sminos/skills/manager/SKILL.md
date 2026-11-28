@@ -34,8 +34,7 @@ rest.
   suggestions to pick from (from in-charge lines in `sminos list --org`,
   sessions that message each other, share a channel or name the same work),
   and you subscribe
-  the ones they then pick. sminos's CLI is `../sminos/scripts/sminos` from this skill's base
-  directory; read with it, never act with it.
+  the ones they then pick. Read with the `sminos` CLI, never act with it.
 - **On demand only.** Nothing runs between the owner's asks: no schedules, no
   background reading.
 

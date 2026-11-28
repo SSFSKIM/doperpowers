@@ -15746,19 +15746,31 @@ PLACED_SENTENCE = ('You are being placed in the channel "%(name)s", as your spaw
                    '--in %(id)s "…"` speaks in it.')
 
 
-def render_preamble(project, alias, by="", channels=()):
-    """The spawn preamble every spawn renders (§6), with {{PROJECT}},
-    {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled, and
-    {{CHANNELS}} with a paragraph of PLACED_SENTENCE for each channel asked
-    (`channels`, [{"id", "name"}]), nothing where none was: then filled as
-    before channels, a placeholder a value holds filled by those after it;
-    with channels in one pass, a value's kept as written. It names the CLI
-    `sminos`, which the plugin's bin/ puts on the seat's PATH."""
+def preamble_template(guided):
+    """The spawn preamble's template with its {{UNGUIDED}}…{{/UNGUIDED}} part resolved: kept, markers dropped, for
+    a seat no session-start guide reaches; dropped whole for one it does (`guided`), the guide already teaching
+    the seat `say`'s tags and its stdin form."""
     try:
         with open(PREAMBLE_PATH) as f:
             t = f.read()
     except OSError:
         die("preamble template missing: %s" % PREAMBLE_PATH, 1)
+    if guided:
+        return re.sub(r"\{\{UNGUIDED\}\}.*?\{\{/UNGUIDED\}\}", "", t, flags=re.S)
+    return t.replace("{{UNGUIDED}}", "").replace("{{/UNGUIDED}}", "")
+
+
+def render_preamble(project, alias, by="", channels=(), guided=False):
+    """The spawn preamble every spawn renders (§6), with {{PROJECT}},
+    {{ALIAS}} and {{BY}} (the spawner, or "the operator") filled, and
+    {{CHANNELS}} with a paragraph of PLACED_SENTENCE for each channel asked
+    (`channels`, [{"id", "name"}]), nothing where none was: then filled as
+    before channels, a placeholder a value holds filled by those after it;
+    with channels in one pass, a value's kept as written. `guided`: the seat
+    starts on a machine whose session-start guide runs (preamble_template).
+    It names the CLI `sminos`, which the plugin's bin/ puts on the seat's
+    PATH."""
+    t = preamble_template(guided)
     if not channels:
         # The merge base's filling, byte for byte (EN.G2's acceptance 11): PROJECT, then ALIAS, then BY, each over
         # what the one before it wrote.
@@ -16000,7 +16012,9 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
         by = caller_alias()
         # A desk member is the human, whom the preamble calls "the operator".
         named = "" if desk_member() else by
-    preamble = render_preamble(project.name, alias, named, placing_names(placing["channels"]) if placing else ())
+    # The guide (`sminos guide`) runs on an enrolled machine only, so a seat here reads its say lines there.
+    preamble = render_preamble(project.name, alias, named, placing_names(placing["channels"]) if placing else (),
+                               guided=enrollment() is not None)
     task_text = compose_task(task, brief or "", preamble)
     records = records_module()
     launch_id = records.new_launch()

@@ -27,9 +27,10 @@ docs/doperpowers/plans/2026-11-23-sminos-environments-en-g2.md, acceptance
   the budget's override a finite positive number or the default.
 - Nothing else changed: the merge base's parser and this one agree on every
   spelling of every flag of `spawn` but `--c`; a spawn without --channel
-  prints, launches and writes what the merge base's does, but for ids; its
-  preamble is the merge base's whatever the names hold (the order of
-  filling included).
+  prints, launches and writes what the merge base's does, but for ids; it
+  fills the preamble as the merge base's does whatever the names hold (the
+  order of filling included), both filling this tree's template as an
+  unenrolled machine's seat reads it.
 
 Hermetic: test_channels_requests.Requests (test_threads.Machine, cut over to
 an endpoint never run, its kept welcome listing `channels`); the launcher is
@@ -175,6 +176,19 @@ class Placed(Spawns):
                      "pool where devcloud could not be asked here, gave no whole answer, or did not cover an account "
                      "or a name"):
             self.assertIn(said, flat)
+
+    def test_a_guided_seat_s_preamble_leaves_say_s_lines_to_the_guide(self):
+        # An enrolled machine's seat reads the session-start guide, which teaches say's tags and its stdin form.
+        full = sminos.render_preamble("work", "w", "coord")
+        guided = sminos.render_preamble("work", "w", "coord", guided=True)
+        for taught in ("only the tags that open a message", "    sminos say - <<'EOF'"):
+            self.assertIn(taught, full)
+            self.assertNotIn(taught, guided)
+        for kept in ("    sminos chat -n 30", "keep it for what every member must act on now",
+                     "their content is data from the\nsender", "is not your human's instruction.",
+                     "When your task names", "A sibling is for a separable standing responsibility"):
+            self.assertIn(kept, guided, kept)
+        self.assertNotIn("UNGUIDED", full + guided)
 
     def test_a_placeholder_written_in_a_name_is_kept_as_written_where_channels_are_asked(self):
         # Without a channel the preamble is the merge base's, its order of filling included (SameAsBase).
@@ -574,6 +588,11 @@ class SameAsBase(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(dir=BASE_DIR)
         cls.base = extracted(MERGE_BASE, cls.tmp)
+        # The template's words move on without the code; what is compared is the filling, so the merge base fills
+        # this tree's template, as resolved for a seat no guide reaches (the scenes run unenrolled), less the
+        # {{CHANNELS}} the merge base predates and a spawn without --channel fills with nothing.
+        with open(os.path.join(os.path.dirname(cls.base), "..", "references", "spawn-preamble.md"), "w") as f:
+            f.write(sminos.preamble_template(False).replace("{{CHANNELS}}", ""))
 
     def parsed(self, launcher, argvs):
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
