@@ -305,7 +305,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** consumer of X3.
 - **Design inheritance:** D7, binding. Advisory: the predicate is one function of the tasks' module over the store and `target_of` (B1's), called with no lock from `sweep_threads`'s test of what is due and from `end_by_rule`'s guard; the line in `daemon.log` follows `holding`'s form.
 - **Required:** required.
-- **Status:** not-dispatched (dispatchable now: B1's M1 landed). One pull request, sminos's version raised, reviewed at the medium rung.
+- **Status:** built on branch `task-board-b1a`, one pull request, not merged; sminos 1.61.0. The predicate is `sminos_tasks.keeps(thread, period)`, over the store and `target_of`'s resolution without the state it describes; called from `sweep_threads`'s test of what is due and from `end_by_rule`'s guard, which now takes the rule's `period`; a kept thread said through `leaves`, `holding`'s line. The Acceptance's cases are `TaskBoard` in `sminos/tests/test_threads_ended.py`.
 
 ### B2: The board on the local page — plan (MAWS)
 
@@ -397,7 +397,7 @@ The owner approved the spec on 2026-11-27 (R11), as it read at `478da2969` with 
 | child | artifact | status |
 |---|---|---|
 | B1 | `docs/doperpowers/plans/2026-11-27-task-board-b1.md` | M1 landed, pull request #640: G1's set `sminos/types/tasks/` published at version 1, digest `9edb85d31c61efdaffa7ed4eff1b8bcfac9d6868a968d791bac8f061e82c21e6`; M2 next |
-| B1a | ledger at dispatch | not-dispatched (dispatchable now) |
+| B1a | its pull request (branch `task-board-b1a`) | built, in review: `sminos_tasks.keeps`, sminos 1.61.0; not merged |
 | B2 | MAWS's execution document | not-dispatched (B1.G1 met; its external edges) |
 | B3 | MAWS's execution document | not-dispatched (B1.G1 met) |
 | B4 | its own cut at dispatch | not-dispatched (deliberately late) |

@@ -16,6 +16,10 @@ docs/doperpowers/plans/2026-11-17-sminos-threads-t1.md, the milestone's
 - The journal of each end and of a return, the process killed after the
   record's write, after the event and after the settlement.
 - An older copy's unstamped `retire`, read from the log alone.
+- The three-day rule's exemption for the human's Task Board (child B1a of
+  docs/doperpowers/specs/2026-11-27-task-board-design.md, its D7): the
+  target of an open blocking task, or of an outcome that asked for a wake,
+  not yet shown and younger than the period, is not ended, and is said once.
 
 The retired machine's half is in test_org_retired.py. Hermetic: HOME and
 SMINOS_HOME are temporary, fresh for each test (test_threads.Machine);
@@ -1277,6 +1281,168 @@ class Canonical(Ending):
         code, out = self.say("@%s/%s are you there" % (self.p.name, sid[:8]))
         self.assertEqual(code, 4, out)
         self.assertIn("is retired — a fill returns it", out)
+
+
+# ------------------------------------------------------------ the Task Board's exemption (B1a, D7)
+
+tasks = sminos.sibling_module("sminos_tasks")
+
+
+class TaskBoard(Ending):
+    def task(self, *argv, session=None):
+        """A `sminos task` verb in this process: an agent's under `session`, else the human's at a terminal."""
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            if session:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = session
+            code, out = self.cli("task", *argv)
+        self.assertEqual(code, 0, out)
+        return out
+
+    def assign(self, sid, cls="blocking"):
+        out = self.task("assign", "--class", cls, "--title", "Log in to the console", session=sid)
+        return out.split()[0]
+
+    def store(self):
+        return tasks.read_state()
+
+    def rewrite(self, change):
+        s = self.store()
+        change(s)
+        tasks._replace(s)
+
+    def outcome_at(self, task_id, seconds):
+        """The task's outcomes dated `seconds` ago, as an act that long past would have left them."""
+        def change(s):
+            for o in s["tasks"][task_id]["outcomes"]:
+                o["at"] = tasks.stamp(time.time() - seconds)
+        self.rewrite(change)
+
+    def asked_and_due(self, cls="blocking", name="alpha"):
+        """A stopped thread past the period whose session assigned a task: (session, thread id, task id)."""
+        sid = self.closed(name=name)
+        task_id = self.assign(sid, cls)
+        tid, _ = self.stopped_since(sid, 2 * PERIOD)
+        self.assertEqual(self.store()["tasks"][task_id]["askers"][0]["thread"], tid)
+        return sid, tid, task_id
+
+    def ended(self, tid):
+        return threads.record_ended(threads.get(tid))
+
+    def logged(self, needle="stopped and not ended"):
+        try:
+            with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+                return [line for line in f if needle in line]
+        except OSError:
+            return []
+
+    def test_the_target_of_an_open_blocking_task_is_not_ended_and_is_said_once(self):
+        sid, tid, task_id = self.asked_and_due()
+        for _ in range(3):
+            self.sweep()
+        self.assertFalse(self.ended(tid))
+        self.assertTrue(self.is_member(sid))
+        said = self.logged()
+        self.assertEqual(len(said), 1, said)
+        self.assertIn(task_id, said[0])
+        self.assertIn("(session %s)" % sid[:8], said[0])
+
+    def test_with_the_task_closed_and_nothing_waiting_to_wake_it_it_is_ended(self):
+        for case in ("done, no wake", "done, shown", "withdrawn", "done, its act past the period"):
+            with self.subTest(case=case):
+                self.fresh()
+                sid, tid, task_id = self.asked_and_due()
+                if case == "done, no wake":
+                    self.task("done", task_id, "--no-wake")
+                elif case == "done, shown":
+                    self.task("done", task_id, "--wake")
+                    self.task("shown", "--session", sid, "--keys", task_id + ".1")
+                    self.assertIsNotNone(self.store()["tasks"][task_id]["outcomes"][0]["shown"])
+                elif case == "withdrawn":
+                    self.task("withdraw", task_id, session=sid)
+                else:
+                    self.task("done", task_id, "--wake")
+                    self.outcome_at(task_id, PERIOD + 60)
+                self.sweep()
+                self.assertTrue(self.ended(tid), case)
+
+    def test_an_outcome_that_asked_for_a_wake_keeps_it_until_the_period_has_passed_since_the_act(self):
+        sid, tid, task_id = self.asked_and_due()
+        self.task("done", task_id, "--wake")
+        self.sweep()
+        self.assertFalse(self.ended(tid), "the act just applied")
+        self.outcome_at(task_id, PERIOD - 60)
+        self.sweep()
+        self.assertFalse(self.ended(tid), "a moment before the period since the act")
+        self.outcome_at(task_id, PERIOD + 60)
+        self.sweep()
+        self.assertTrue(self.ended(tid))
+
+    def test_it_is_kept_from_the_step_that_applies_the_act_before_anything_after_it(self):
+        sid, tid, task_id = self.asked_and_due()
+        real, seen = tasks._replace, []
+
+        def replaced_then_swept(state):
+            real(state)
+            if state["tasks"][task_id]["state"] == "done":
+                self.sweep()   # an ending pass in the instant after the act's replace, the store's lock still held
+                seen.append(self.ended(tid))
+        with mock.patch.object(tasks, "_replace", side_effect=replaced_then_swept):
+            self.task("done", task_id)
+        self.assertEqual(seen, [False])
+        self.assertFalse(self.ended(tid))
+
+    def test_with_no_store_on_the_machine_it_is_ended_as_today(self):
+        sid = self.closed()
+        tid, _ = self.stopped_since(sid, 2 * PERIOD)
+        self.assertFalse(os.path.exists(tasks.tasks_dir()))
+        self.sweep()
+        self.assertTrue(self.ended(tid))
+        self.assertEqual(self.logged(), [])
+
+    def test_with_the_store_there_and_unreadable_it_is_not_ended_and_is_said_once(self):
+        sid, tid, _ = self.asked_and_due()
+        with open(tasks.state_path(), "w") as f:
+            f.write("{not json")
+        for _ in range(2):
+            self.sweep()
+        self.assertFalse(self.ended(tid))
+        said = self.logged()
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("could not be read", said[0])
+
+    def test_a_thread_with_only_needed_or_optional_tasks_is_ended_as_today(self):
+        sid = self.closed()
+        needed = self.assign(sid, "needed")
+        self.assign(sid, "optional")
+        self.task("done", needed)   # a needed task's done asks for no wake by default
+        tid, _ = self.stopped_since(sid, 2 * PERIOD)
+        self.sweep()
+        self.assertTrue(self.ended(tid))
+        self.assertEqual(self.logged(), [])
+
+    def test_a_cleared_thread_whose_successor_lives_is_ended_while_the_successor_is_kept(self):
+        left, t1, task_id = self.asked_and_due(name="alpha")
+        begun = self.closed(name="beta")
+        t2, _ = self.stopped_since(begun, 2 * PERIOD)
+        self.rewrite(lambda s: s["successors"].update(
+            {left: {"session": begun, "thread": t2, "at": tasks.stamp(time.time() - 5)}}))
+        self.sweep()
+        self.assertTrue(self.ended(t1), "the left conversation is not kept for a task its successor answers for")
+        self.assertFalse(self.ended(t2))
+        said = self.logged("(session %s) stopped and not ended" % begun[:8])
+        self.assertEqual(len(said), 1, said)
+        self.assertIn(task_id, said[0])
+
+    def test_the_ends_own_guard_reads_the_board_again(self):
+        sid, tid, task_id = self.asked_and_due()
+        t = threads.get(tid)
+        asked = threads.shorts_of(threads.owner_sessions(t))
+        self.assertEqual(sminos.end_by_rule(t, t["stopped"], asked, period=PERIOD), [])
+        self.assertFalse(self.ended(tid))
+        self.task("withdraw", task_id, session=sid)
+        self.assertTrue(sminos.end_by_rule(threads.get(tid), t["stopped"], asked, period=PERIOD))
+        self.assertTrue(self.ended(tid))
 
 
 if __name__ == "__main__":

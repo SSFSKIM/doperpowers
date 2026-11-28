@@ -13,6 +13,7 @@ sminos/types/tasks/, written by sminos/tests/tasks-contract.gen.py and never by 
     asker_of(session, agent=None) -> {thread, session, alias, agent}
     target_of(store, task, memo=None) -> {session, thread, project, state, runner, wake, why, via}
     is_asker(store, task, session, memo=None) -> bool
+    keeps(thread, period, now=None) -> str | None     # why the three-day rule leaves a thread (D7; child B1a)
     cleared(left, begun, wait=LOCK_WAIT) -> None      # a witnessed /clear's pair, before the alias is released
     bind(store, session) -> bool                      # in place: binds the pairs naming this session to its thread
     bind_step(session, wait=LOCK_WAIT) -> None        # the same as a step of its own, when one waits
@@ -310,17 +311,22 @@ def target_of(store, task, memo=None):
 
 
 def _target(store, a):
+    return _describe(*_resolved(store, a))
+
+
+def _resolved(store, a):
+    """(session, thread id or None, via) of an asker's target: whom target_of describes, and what keeps() reads."""
     session, thread = a.get("session"), a.get("thread")
     if not thread:
-        return _describe(session, None, "self")
+        return session, None, "self"
     rec = threads().get(thread)
     first = rec["current"] if rec is not None and rec.get("current") else session
     pair = (store.get("successors") or {}).get(first)
     if isinstance(pair, dict) and not _opened_again(first, pair):
         last = _last_alive(store, first)
         if last is not None:
-            return _describe(last[0], last[1], "cleared")
-    return _describe(first, thread, "self")
+            return last[0], last[1], "cleared"
+    return first, thread, "self"
 
 
 def _opened_again(first, pair):
@@ -393,6 +399,41 @@ def _describe(session, tid, via):
     if out["state"] == "stopped":
         out["wake"], out["why"] = sminos.wake_here(session)
     return out
+
+
+def keeps(thread, period, now=None):
+    """Why the three-day rule does not end `thread` (D7), or None: it is the target of an open blocking task, or of
+    an outcome whose act asked for a wake, not yet shown and less than `period` old, read from the act's own replace
+    on. No store is no exemption; a store that cannot be read keeps it. Read with no lock, writing nothing; the
+    target is target_of's, without the state it describes."""
+    try:
+        store = read_state()
+    except Refused as e:
+        return "the Task Board's store could not be read (%s)" % e.message
+    if store is None:
+        return None
+    now = clock() if now is None else now
+    resolved = {}
+    for t in sorted(store["tasks"].values(), key=lambda t: task_number(t.get("id"))):
+        why = None
+        if t.get("state") == "open" and t.get("class") == "blocking":
+            why = "it is the target of %s, a blocking task open on the Task Board" % t["id"]
+        else:
+            for o in t.get("outcomes") or []:
+                at = epoch(o.get("at"))
+                if o.get("wake") is True and o.get("shown") is None and at is not None and now - at < period:
+                    why = "it is the target of %s, an outcome of the Task Board that asked for a wake and is not " \
+                          "yet shown, until %s" % (o.get("key"), stamp(at + period))
+                    break
+        if why is None:
+            continue
+        a = t["askers"][0]
+        k = (a.get("thread"), a.get("session"))
+        if k not in resolved:
+            resolved[k] = _resolved(store, a)[1]
+        if resolved[k] == thread:
+            return why
+    return None
 
 
 def is_asker(store, task, session, memo=None):
