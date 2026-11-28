@@ -303,8 +303,7 @@ def _claim_one(ctx, number, address, thread):
                 pending = (I.PENDING,)
                 if kind == C.CURRENT:
                     I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
-                    note = ("; it is not takeable on a session's own initiative (%s), so it was claimed on the "
-                            "owner's word" % ", ".join(unmet)) if unmet else ""
+                    note = ("; it is not takeable on a session's own initiative (%s)" % ", ".join(unmet)) if unmet else ""
                     return Result(OK, "#%d: claimed (claim %d)%s" % (number, own, note))
                 if kind == C.SUPERSEDED:
                     I.change(token, expect=I.ACTIVE, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
