@@ -85,17 +85,15 @@ describe('texts', () => {
 
   test('the guidance names the tool and how to load it, and the harness threshold, or its absence', async () => {
     const opening = compactGuidance(967_000).split('\n\n')[0]!.replace(/\n/g, ' ')
-    expect(opening).toBe('mcp__doperpowers__compact compacts your own context at a checkpoint of your choosing, in the main conversation only (a subagent or a fork cannot compact); if it is not loaded, ToolSearch with "select:mcp__doperpowers__compact" loads it.')
-    expect(compactGuidance(967_000)).toContain('compacts on its own at about 967,000')
+    expect(opening).toBe('mcp__doperpowers__compact compacts your own context, in the main conversation only (a subagent or a fork cannot); ToolSearch with "select:mcp__doperpowers__compact" loads it.')
+    const flat = (text: string) => text.replace(/\n/g, ' ')
+    expect(flat(compactGuidance(967_000))).toContain('compacts on its own at about 967,000: a backstop, not the plan')
     expect(compactGuidance(undefined)).toContain("compacts on its own near the window's end")
-    expect(compactGuidance(967_000)).toContain('300k–450k: at any reasonable checkpoint')
-    expect(compactGuidance(967_000)).toContain('Prefer not to pass 600k')
-    expect(compactGuidance(967_000)).toContain('a backstop, not the plan')
-    expect(compactGuidance(967_000)).toContain('never as a percentage of the window')
+    expect(flat(compactGuidance(967_000))).toContain('from 300k, at any reasonable checkpoint; past 600k only while the work needs what is in context verbatim')
+    expect(flat(compactGuidance(967_000))).toContain('both grow with tokens, not percent: 300k of a 1M window is 300k, not "only 30%"')
     // In the guidance, not only the description: the tool waits behind ToolSearch, and a note is written before it loads.
-    expect(compactGuidance(967_000)).toContain("nothing needs saving beforehand: no note to\nyourself on disk, no state restated in the call's arguments.")
-    expect(compactGuidance(967_000)).toContain('Not during a design discussion: its state is the conversation itself,')
-    expect(compactGuidance(967_000).endsWith('Nor while something is pending: an unanswered question to\nthe human, a decision you are still weighing, a subagent or job whose\nresult you will judge against what sent it; settling it takes the\ncontext that raised it.')).toBe(true)
+    expect(flat(compactGuidance(967_000))).toContain("nothing needs saving beforehand: no note to yourself on disk, no state restated in the call's arguments.")
+    expect(flat(compactGuidance(967_000)).endsWith('Not during a design discussion, whose state is the conversation itself (once the design is written down, that is the checkpoint), nor while something is pending: a question to the human, a decision you are weighing, a subagent or job whose result you will judge against what sent it.')).toBe(true)
   })
 
   test('the guidance tells the model when it is told its size, by the gate', async () => {

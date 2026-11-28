@@ -102,6 +102,12 @@ gates:
     timeout: 15
     paths: ["sminos/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # The task plugin: its CLI against a stand-in gh and sminos (task/tests/standin/), no network.
+  - name: task
+    run: bash task/tests/run.sh
+    timeout: 10
+    paths: ["task/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
   - name: issue-tracker
     run: |
       for f in tests/issue-tracker/test-*.sh; do echo "== $f"; bash "$f"; done
@@ -246,6 +252,15 @@ gates:
     run: python3 tests/query-transcript/test_query_transcript.py -v
     timeout: 5
     paths: ["skills/query-transcript/**", "bin/**", "tests/query-transcript/**", ".github/ci-kit.yml", ".github/workflows/**"]
+
+  # Every tracked CLAUDE.md under its word budget (1,500): each is read whole by
+  # every session and subagent working beneath it. The script carries a dated
+  # allowance for the files still over budget, emptied as they come under it.
+  - name: claudemd-budget
+    setup: false
+    run: python3 scripts/check-claudemd-budget.py
+    timeout: 2
+    paths: ["CLAUDE.md", "**/CLAUDE.md", "scripts/check-claudemd-budget.py", ".github/ci-kit.yml", ".github/workflows/**"]
 
   - name: repo-checks
     # Fast checks of the repo as a whole: the lint script's own test, doc

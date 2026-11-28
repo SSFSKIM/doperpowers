@@ -1,0 +1,84 @@
+{
+ "seq": 3,
+ "tasks": [
+  {
+   "acts": 0,
+   "agentSeq": 3,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [],
+   "project": null,
+   "revision": 2,
+   "seenSeq": 1,
+   "state": "open",
+   "tags": [],
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a1",
+    "state": "running",
+    "thread": null,
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "title": "Log in to the cloud console",
+   "updated": true
+  },
+  {
+   "acts": 0,
+   "agentSeq": 2,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a9",
+     "thread": "7d000000-0000-4000-8000-0000000000b9"
+    }
+   ],
+   "body": "",
+   "born": 2,
+   "class": "needed",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:05:00.000Z",
+   "due": "2027-01-05",
+   "id": "t2",
+   "outcomes": [],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 2,
+   "state": "open",
+   "tags": [
+    "keys"
+   ],
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a2",
+    "state": "stopped",
+    "thread": "7d000000-0000-4000-8000-0000000000b2",
+    "via": "cleared",
+    "wake": "held",
+    "why": "mode"
+   },
+   "title": "Rotate the signing key",
+   "updated": false
+  }
+ ],
+ "v": 1
+}

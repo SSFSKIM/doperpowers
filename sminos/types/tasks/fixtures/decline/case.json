@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "a decline: its reason kept, its wake false for a task that is not blocking",
+ "exit": 0,
+ "name": "decline",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c003\",\"act\":\"decline\",\"task\":\"t2\",\"revision\":1,\"text\":\"the key is not mine to rotate\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c003\",\"act\":\"decline\",\"verdict\":\"applied\",\"task\":\"t2\",\"revision\":1,\"state\":\"declined\",\"outcome\":\"t2.1\",\"told\":\"next-start\"}\n"
+}

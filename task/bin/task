@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# task on a session's PATH: the engine puts every plugin's bin/ there. It runs
+# the CLI beside it, found from this file's real path (a symlink to it works
+# too).
+exec python3 "$(dirname "$(readlink -f "$0")")/../cli/main.py" "$@"
