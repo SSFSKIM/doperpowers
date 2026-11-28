@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "the door's shown after a /clear moved the task's target: the keys whose target is the session told are marked, and one already shown to the session before the clear, another session's, is passed over",
+ "exit": 0,
+ "name": "shown-by-a-deliverer",
+ "now": "2026-11-27T16:25:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c006\",\"act\":\"shown\",\"task\":\"t1\",\"session\":\"5eed0000-0000-4000-8000-0000000000a2\",\"keys\":[\"t1.1\",\"t1.2\",\"t1.3\"]}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c006\",\"act\":\"shown\",\"verdict\":\"applied\",\"task\":\"t1\",\"revision\":1,\"state\":\"done\",\"keys\":[\"t1.2\",\"t1.3\"]}\n"
+}

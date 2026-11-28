@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "the same line again under its key: the first verdict, told included, and nothing changes",
+ "exit": 0,
+ "name": "same-line-twice",
+ "now": "2026-11-27T16:25:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2,\"text\":\"logged in with account B\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"done\",\"verdict\":\"applied\",\"task\":\"t1\",\"revision\":2,\"state\":\"done\",\"outcome\":\"t1.1\",\"told\":\"next-start\"}\n"
+}

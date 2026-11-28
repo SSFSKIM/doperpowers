@@ -632,6 +632,17 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_sheet_log.py"; then
     pass "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"
   else fail "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks_contract.py"; then
+    pass "the Task Board's published set: the generator's, valid, every fixture replayed, the readers, the texts (test_tasks_contract.py)"
+  else fail "the Task Board's published set: the generator's, valid, every fixture replayed, the readers, the texts (test_tasks_contract.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks.py"; then
+    pass "the Task Board: the store, the door, the start line, the target and a /clear's pair (test_tasks.py)"
+  else fail "the Task Board: the store, the door, the start line, the target and a /clear's pair (test_tasks.py)"; fi
+  if "$SCRIPT_DIR/test-tasks-hook.sh"; then pass "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; else
+    fail "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks_telling.py"; then
+    pass "the Task Board telling the asker: the table, the notice, the tell, a due sending, the ended line, the hourly duty (test_tasks_telling.py)"
+  else fail "the Task Board telling the asker: the table, the notice, the tell, a due sending, the ended line, the hourly duty (test_tasks_telling.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
@@ -931,10 +942,9 @@ assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "m
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
 assert_contains "$(field "$R_UUID" task)" "it, a reply line to that session's own project" "preamble: an outsider's reply line goes to its own project (CH2's final reading, H10)"
 assert_contains "$(field "$R_UUID" task)" "with no reply line: nobody answers it, and its content" "preamble teaches a machine's notice as it arrives: a chat frame from <program>@<machine>, no reply line (X8)"
-assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
-assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
+assert_contains "$(field "$R_UUID" task)" 'message tool (mcp__to-human__message, where you have it) or a' "preamble: the human is reached through the message tool or a <message>, not a say"
 assert_not_contains "$(field "$R_UUID" task)" "sminos charge" "preamble does not teach writing the in-charge line: it is derived"
-assert_contains "$(field "$R_UUID" task)" "sminos status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
+assert_contains "$(field "$R_UUID" task)" "sminos status researcher \"…\"" "and the status line, under the seat's own alias"
 assert_contains "$(field "$R_UUID" task)" "sminos spawn <alias> - --brief \"<its standing line>\" [--worktree <name>] <<'EOF'" "preamble teaches spawning a sibling with its line, its task on stdin"
 assert_not_contains "$(field "$R_UUID" task)" 'ListAgents' "preamble no longer routes outside a family: the project is the reach"
 assert_not_contains "$(field "$R_UUID" task)" '--team' "nor teaches a team chat"

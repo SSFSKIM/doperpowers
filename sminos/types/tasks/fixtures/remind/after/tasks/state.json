@@ -1,0 +1,101 @@
+{
+ "applied": {
+  "5eed0000-0000-4000-8000-00000000c014": {
+   "at": "2026-11-27T16:10:00.000Z",
+   "digest": "ebc56b4e39eff921e5ccae46f29a6d4e9a7943261a0a253bf4cce27a83bee9e2",
+   "task": "t1",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c014",
+    "outcome": "t1.1",
+    "revision": 1,
+    "state": "done",
+    "task": "t1",
+    "told": "next-start",
+    "v": 1,
+    "verdict": "applied"
+   }
+  }
+ },
+ "nextId": 3,
+ "seq": 3,
+ "successors": {},
+ "tasks": {
+  "t1": {
+   "acts": 1,
+   "agentSeq": 1,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:10:00.000Z",
+    "how": "done",
+    "seq": 3,
+    "text": "logged in"
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:10:00.000Z",
+     "endedLine": null,
+     "key": "t1.1",
+     "kind": "done",
+     "revision": 1,
+     "send": null,
+     "seq": 3,
+     "shown": null,
+     "text": "logged in",
+     "wake": true
+    }
+   ],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 1,
+   "state": "done",
+   "tags": [],
+   "title": "Log in to the console"
+  },
+  "t2": {
+   "acts": 0,
+   "agentSeq": 2,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "",
+   "born": 2,
+   "class": "needed",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:05:00.000Z",
+   "due": "2027-01-05",
+   "id": "t2",
+   "outcomes": [],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 2,
+   "state": "open",
+   "tags": [
+    "keys"
+   ],
+   "title": "Rotate the signing key"
+  }
+ },
+ "v": 1,
+ "version": 1
+}

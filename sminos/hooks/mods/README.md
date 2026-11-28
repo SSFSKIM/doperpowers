@@ -346,7 +346,7 @@ known, or either check not answered, the record stays. The daemon's sweep remove
 session's record only once its `state.json` has been unchanged for an hour
 and the transcript's own path is confirmed missing, checked again under the
 record's lock: any doubt keeps the record.
-The command's side is in `skills/sminos/scripts/CLAUDE.md`.
+The command's side is in `skills/sminos/scripts/sminos_sheet.py`'s docstrings.
 
 **Delivery** (I9). Each view holds the envelope ready for each recipient:
 `[sheet v1] The human answered questions on your sheet.`, a line an answer
@@ -493,7 +493,7 @@ there, at once, where a line `put` at an old revision is appended and reads
 `stale`), 3 for no sheet, 75 for a sheet busy past 10 s (try again), 1 for
 a write the file refused. `show` exits 3 for no sheet and 75 when the
 record kept changing under its three reads (read again). The exits are
-stated in `skills/sminos/scripts/CLAUDE.md`. A session cannot answer, dismiss or
+stated in `skills/sminos/scripts/sminos_sheet.py`'s docstring. A session cannot answer, dismiss or
 retract on its own sheet. `step`, `probe` and `log` are the tool's own.
 
 Known limits (`docs/doperpowers/TECH-DEBT.md`, rows 37 to 59): a door
@@ -609,7 +609,7 @@ rows read from the transcript, and the export to the host).
   organization anywhere else, it is inside every plugin a person installs
   and cannot read a person's devcloud, so it turns off at its first check
   unless both guards are beneath it. Either way its off line names the
-  managed settings' `prependPlugins`. `CLAUDE.md` beside this file lists
+  managed settings' `prependPlugins`. `bridge-place.tsx`'s header lists
   what this does not cover.
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and

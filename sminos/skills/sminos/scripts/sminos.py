@@ -161,6 +161,18 @@ back by a fill.
                    answer, a dismissal, a retract, a delivered line), appended whole or not at all, then the
                    session told; prints each key's state, `queued` until a verdict comes (answer, dismiss and
                    retract print the same). Exit 2 a line refused, 3 no sheet, 75 busy
+    sminos task     assign --class blocking|needed|optional --title T [--body-file F|-] [--due D] [--tag x]...
+                   # from a session: a task for the human on this machine's board, which goes on at once; prints
+                   its id. You are told when the human acts: do not poll the list
+    sminos task     revise|withdraw|reopen <id> ...       # the asking session's: --title, --body-file, --class,
+                   --due|--no-due, --tag|--no-tags; withdraw [--reason R]; reopen a done task --comment C
+    sminos task     comment <id> (<text> | --body-file F|-)   # a session's comment; from a terminal, the human's
+    sminos task     list [--closed|--all] [--mine] [--json]   # the board: blocking first, each task's asker and
+                   whether it runs; show <id> [--json] a task whole, its history and the human's words;
+                   waiting [--mine] [--json] what the human did that no start has shown yet
+    sminos task     done <id>[@<rev>] [--note N] [--wake|--no-wake] | decline <id>[@<rev>] --reason R
+                   # the human's acts, from a terminal that is no session (refused in one, exit 3); prints the
+                   act's key on stderr, then the verdict; act: the door, one JSON line an act on stdin
     sminos bridge   --session <id>                        # the bridge mod's child: serves the session's
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
@@ -640,6 +652,8 @@ def meta_get(seat_id, field):
 
 
 def record_files():
+    # A `*.json` at the root, but a `*.reply.json`, is read as a seat here, and older sminos copies on the machine
+    # scan the same root: a new store goes in a directory of its own (as threads/ does).
     for p in sorted(glob.glob(os.path.join(glob.escape(root()), "*.json"))):
         if p.endswith(".reply.json"):
             continue
@@ -1498,7 +1512,10 @@ def register_declared():
     and one in this machine's own project registers nothing. Only where the
     folder resolves here to the entry's project as a hub project of this
     org; of several locations of one project the registered root stands
-    while it is still the project's (kept_root)."""
+    while it is still the project's (kept_root). Nothing undoes it: an
+    entry that leaves `locations` stops being a checkout at once, and the
+    project stays followed while its hub is this org's, until it leaves
+    (sminos_uplink.Leaving)."""
     e = enrollment()
     if e is None:
         return
@@ -3652,7 +3669,9 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     `lock_until`: LockBusy, nothing appended, for a lock not had by then.
     A log writer that waits for its head (waits_for_head) gets the events
     queued, or with `queue=False` HeadWaits, nothing queued: the one reading
-    of the wait, under the writer's lock, decides either way.
+    of the wait, under the writer's lock, decides either way (a re-enrolment
+    marks the wait under the credential lock, not the writer's, so a reading
+    taken anywhere else may disagree with this one).
     Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
@@ -5930,7 +5949,7 @@ def end_human_lane_b(project, sid, thread, gone):
         seat=seat_over(sid, "retired", thread["thread"]))
 
 
-def end_by_rule(thread, stopped, asked=None):
+def end_by_rule(thread, stopped, asked=None, *, period):
     """A thread stopped for more than the period ended by the rule (T1's M4,
     Interfaces §6 row 10), by the thread sweep alone (sminos_daemon's ending
     pass): the record first — `ended`, reason `ended` and no process, and
@@ -5943,7 +5962,9 @@ def end_by_rule(thread, stopped, asked=None):
     session it has had is among the short ids devcloud was asked about
     (`asked`, M5: its answer was none for them), and it is the session's
     canonical record (thread_of: never a seat an older copy made over a
-    thread its human opened). In the session's own
+    thread its human opened), and the Task Board does not keep it
+    (sminos_tasks.keeps over `period`, the rule's, read again here: D7). In
+    the session's own
     project: a seat's, else the one its membership in effect puts it in.
     The events appended."""
     threads = threads_module()
@@ -5962,7 +5983,8 @@ def end_by_rule(thread, stopped, asked=None):
         # opened is not ended for it, whose own record (and its owners) decide that thread's end.
         return r["current"] == cur and r.get("stopped") == stopped and not threads.record_ended(r) \
             and threads.asked_all(r, asked) and not running_now(cur) \
-            and (threads.thread_of(cur) or {}).get("thread") == tid
+            and (threads.thread_of(cur) or {}).get("thread") == tid \
+            and not sibling_module("sminos_tasks").keeps(tid, period)
 
     return thread_transition(project, tid, "end", [{"kind": "retired", "session": cur, "by": "", "reason": "ended"}],
                              fields=fields, guard=guard, settle=cur, last="aside" if seat is None else None,
@@ -6646,7 +6668,9 @@ def is_turn_record(r):
     one after a hand-off: a finished assistant message (not an API error), or
     a prompt the human typed. A slash command's echo or output is none: the
     engine (2.1.303) writes `/background`'s empty `<local-command-stdout>`
-    right after the hand-off record."""
+    right after the hand-off record. A row a hook answered without a request
+    (`answeredWithoutRequest`) records `stop_reason: end_turn` (2.1.312) and
+    counts: it does end the turn, though transcript_reply passes it over."""
     if r.get("type") == "assistant":
         msg = r.get("message") if isinstance(r.get("message"), dict) else {}
         return r.get("isApiErrorMessage") is not True and isinstance(msg.get("stop_reason"), str)
@@ -9248,7 +9272,7 @@ def frame_of(project, e, events, session, cursor, thread=None):
     if e.get("from_project") and is_channel_id(project.id):
         label = " (not in %s)%s" % (project.name, label)
     return compose_chat_frame(project.name, event_ref(e), sender,
-                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""), label)
+                              target_label(e) if broadcast(e) else "@you", unread, str(e.get("text") or ""), label)
 
 
 def push_event(project, member, session, e, events, cursor, words=None, owing=None, looked=None):
@@ -10898,7 +10922,8 @@ def cmd_say(a):
             "would be read as a person's words: nothing was recorded" % host_name(), 1)
     chans = channels_module()
     if a.pools:
-        # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read.
+        # A host's form (EN.G2's M3): usage errors, exit 2, before anything is read. Exit 2 is these alone: the host
+        # reads it as a sminos that predates --pools (devcloudlib/notices.py), so every other failure is exit 1.
         if a.notice is None:
             die("--pools records a machine's own notice: give --notice <program>")
         given = getattr(a, "given", frozenset())   # by presence: an empty value is still the flag given
@@ -10919,7 +10944,7 @@ def cmd_say(a):
     if (q := shortened_channel_qualifier(a.text)):
         die(chans.OPENS_NO_TAG % (q[0], q[1]), 1)   # however the say is addressed, a selector's included (C7)
     tags = leading_tags(a.text)
-    if spoken is None:
+    if spoken is None:   # every tag's qualifier read before resolve_tags looks up a member: a lookup reconciles
         spoken = next((c for t in tags if t["project"] for c in [names_channel(t["project"])] if c is not None), None)
     if spoken is not None:
         chans.speak(spoken, a, sid, tags)
@@ -10954,6 +10979,36 @@ def cmd_say(a):
     say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws)
 
 
+def say_appends(dest, sid, kind, recipients, text, raws, sender, wake=False, notice=None, extra=None, each=None):
+    """The appends of one say, `say_into`'s and board_notice's: one event per
+    audience its recipients give (streams_for), each with only its own
+    recipients' tags (P5 O18 D4), refused whole before anything is written
+    when one of them is out of reach (Unreachable, StreamUnknown); each
+    recipient's transcript noted first (frame_landed); each stream's
+    audience kept before its event. An event's fields: `from`, `to` (its
+    recipients, or `*` for an untagged one that is not for the live alone),
+    `text`, the machine's `notice` when given, `wake` (for the live alone:
+    an @all, or board_notice's one recipient), then `extra`. `each(event,
+    its recipients)` after each append, the event as log_append answers it
+    (`seq` None: it waits for its writer's head). An append that fails
+    raises its OSError, those before it kept. [(event, recipients)]."""
+    splits = streams_for(dest, sid, recipients, text, raws)
+    note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
+    out = []
+    for split_writer, aud, rs, split in splits:
+        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": split,
+                  **({"notice": notice} if notice is not None else {})}
+        if wake:
+            fields["wake"] = True
+        fields.update(extra or {})
+        keep_stream(dest, split_writer, aud)
+        e = log_append(dest, split_writer, kind, **fields)
+        out.append((e, rs))
+        if each is not None:
+            each(e, rs)
+    return out
+
+
 def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None, told=()):
     """A tagged or untagged say's appends and deliveries, its destination
     and recipients resolved: one event per audience its recipients give
@@ -10974,39 +11029,29 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
             recipients = [r for r in recipients if r["session"] != sid]
         elif any(r["session"] == sid for r in recipients):
             die("you cannot tag yourself")
-    # One event per audience its recipients give, each with only its own recipients' tags (P5 O18 D4), refused
-    # whole before anything is written when one of them is out of reach.
-    au = audience_module()
-    try:
-        splits = streams_for(dest, sid, recipients, a.text, None if wake else raws)
-    except au.Unreachable as err:
-        die(str(err), EXIT_UNKNOWN)
-    except au.StreamUnknown as err:
-        die("say could not be recorded: %s" % err, 1)
     copied = said.copied if said is not None else bool(sid and home is not None and home.id != dest.id)
+    extra = dict(said.fields) if said is not None else {"from_project": home.id} if copied else {}
     recorded = []
-    note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
-    for split_writer, aud, rs, text in splits:
-        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
-        if wake:
-            fields["wake"] = True
-        if said is not None:
-            fields.update(said.fields)
-        elif copied:
-            fields["from_project"] = home.id  # the sender's own project, where a reply finds it
-        try:
-            keep_stream(dest, split_writer, aud)
-            e = log_append(dest, split_writer, kind, **fields)
-        except OSError as err:
-            die("say could not be recorded: %s" % err, 1)
+
+    def appended(e, rs):
         here = {r["session"] for r in rs}
         for line in [line for who, line in told if who in here]:
             print(line)
         if e["seq"] is None:
-            print(waits_line(dest, split_writer))
-            continue
+            print(waits_line(dest, e["writer"]))
+            return
         print("recorded %s in %s" % (event_ref(e), dest.name))
         recorded.append((e, rs))
+    au = audience_module()
+    try:
+        say_appends(dest, sid, kind, recipients, a.text, None if wake else raws, sender, wake, a.notice, extra,
+                    appended)
+    except au.Unreachable as err:
+        die(str(err), EXIT_UNKNOWN)
+    except au.StreamUnknown as err:
+        die("say could not be recorded: %s" % err, 1)
+    except OSError as err:
+        die("say could not be recorded: %s" % err, 1)
     if said is not None and said.after:
         print(said.after)
     if recorded and copied and said is None:
@@ -11022,11 +11067,83 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
         sys.exit(EXIT_HELD)
 
 
+TASKS_NOTICE = "tasks"   # the program the Task Board's notices name (sminos_tasks, X6)
+ADDRESSED = "addressed"  # board_notice's own mark: its notice for the live alone reads as addressed (broadcast)
+
+
+def board_notice(session, project, text, live_only):
+    """The Task Board's notice (sminos_tasks.send; the plan docs/doperpowers/
+    plans/2026-11-27-task-board-b1.md, §5): one `human` event of this
+    machine's own writer marked `notice: "tasks"` (X8), appended in the
+    project of id `project` as say_appends appends any. Addressed to
+    `session` as its own row there gives it ({session, alias}: member_row,
+    no alias resolved), for the live alone when `live_only` (the mark an
+    @all carries, with one recipient: deliver_next settles it `recorded`
+    for a session no process holds, so it never starts one; and its own
+    mark, `addressed`, so it reads as addressed: broadcast), then
+    delivered as a sender's own call delivers (deliver_next, due);
+    `session` None: to nobody, `to` `*`, delivered to no one. ("sent",
+    the delivery's outcome for the event, or `owed` when the call gave
+    none for it: it waits for its writer's head, a gate, an earlier
+    event, or another machine's daemon), or ("none", why) with nothing
+    appended: `not-addressable` (no such project here, or `session` no
+    member of it), `no-writer` (a machine name no notice is read under),
+    `log-refused` (the append refused or failed). It prints nothing,
+    never exits, and takes no lock of the store's; `cmd_say` is not its
+    caller and nothing of say's validation or output is here."""
+    writer = writer_id()
+    if not notice_of({"kind": "human", "writer": writer, "notice": TASKS_NOTICE}):
+        return "none", "no-writer"
+    dest = known_project(project) if isinstance(project, str) else None
+    if dest is None or is_channel_id(dest.id):
+        return "none", "not-addressable"
+    member = None
+    if session is not None:
+        member = member_row(dest, session)
+        if member is None:
+            return "none", "not-addressable"
+    recipients = [{"session": session, "alias": member.alias}] if member is not None else []
+    au = audience_module()
+    try:
+        live = bool(live_only and member)
+        [(e, _)] = say_appends(dest, "", "human", recipients, text, None, "human", wake=live, notice=TASKS_NOTICE,
+                               extra={ADDRESSED: True} if live else None)
+    except (au.Unreachable, au.StreamUnknown, OSError):
+        return "none", "log-refused"
+    if member is None:
+        return "sent", "recorded"
+    if e["seq"] is None or not member.local:
+        nudge_daemon()   # its writer's head first, or the member's own machine's daemon
+        return "sent", "owed"
+    try:
+        result = deliver_next(dest, member, due=True)
+    except Exception:   # noqa: BLE001 — appended: whatever the delivery met, it is sminos's to retry, never re-sent
+        nudge_daemon()
+        return "sent", "owed"
+    mine = [o for ev, o in result["outcomes"] if ev["writer"] == e["writer"] and ev["seq"] == e["seq"]]
+    if not mine:
+        nudge_daemon()
+    return "sent", str(mine[0]) if mine else "owed"
+
+
+def broadcast(e):
+    """Whether an event for the live alone (`wake`) is read as a broadcast:
+    every one but board_notice's, which carries its own mark (ADDRESSED,
+    a field no verb of say writes) on a machine's notice to one recipient
+    with no scope, and is as addressed as any. Every other event, any
+    `say --notice <program> '@all …'` included, reads as it always has."""
+    if not e.get("wake"):
+        return False
+    to = e.get("to")
+    return isinstance(e.get("scope"), dict) or not (e.get(ADDRESSED) is True and notice_of(e)
+                                                    and isinstance(to, list) and len(to) == 1)
+
+
 def target_label(e):
     to = e.get("to")
     if to == "*":
         return "*"
-    if e.get("wake"):
+    if broadcast(e):
         return scope_label(e["scope"]) if isinstance(e.get("scope"), dict) else "@all"
     if isinstance(to, list):
         return " ".join("@" + str(r.get("alias") or "?") for r in to if isinstance(r, dict)) or "-"
@@ -12034,6 +12151,16 @@ def record_session(project, session, tpath, event, last_message="", source="", o
     if event == "SessionStart" and source == "clear" and seat is None:
         # At a `/clear` the alias goes with the process (M3): the session left gives it up first.
         left, given_up, where, clearing = cleared_witness(session, source)
+        if left and os.path.exists(os.path.join(root(), "tasks", "state.json")):
+            # The Task Board's pair, while the witness still answers: the release renames the session left.
+            try:
+                # The store's full wait, past the hook's own bound: a pair not written now may be written nowhere
+                # once the alias is released (remind's own write is the other chance). The record's timer is
+                # paused for it, so the release after it still runs whatever the wait took.
+                _timer_paused(tasks_module().cleared, left, session)
+            except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the release goes on
+                _logged("record: the Task Board's pair %s -> %s was not written: %s"
+                        % (left[:8], session[:8], getattr(e, "message", e)))
         if left:
             try:
                 # In the project the session left is a member of, against the process the /clear was witnessed in.
@@ -12050,6 +12177,8 @@ def record_session(project, session, tpath, event, last_message="", source="", o
             pass
     if event == "SessionStart" and source in ("startup", "resume") and alias is not None and seat is None:
         note_launch_of(session, peer)
+    if event == "SessionStart" and source == "clear" and alias is not None and seat is None:
+        _bind_successor(session)
     if event != "Stop" or alias is None:
         return
     until = time.time() + FLUSH_WAIT
@@ -12057,6 +12186,31 @@ def record_session(project, session, tpath, event, last_message="", source="", o
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def _bind_successor(session):
+    """A /clear's pair bound to the new session's thread once its join has made it: the task hook may have run
+    before the join, when there was no thread to bind to, and an unbound successor that stops is taken for dead
+    (sminos_tasks._link). Best-effort, after the release and never around it: a short wait for the store's lock,
+    within the record's deadline, and any failure a daemon.log line."""
+    if not os.path.exists(os.path.join(root(), "tasks", "state.json")):
+        return
+    tasks = tasks_module()
+    wait = tasks.HOOK_LOCK_WAIT
+    if _RECORD_DEADLINE is not None:
+        wait = max(0.0, min(wait, _RECORD_DEADLINE - time.time()))
+    try:
+        tasks.bind_step(session, wait=wait)
+    except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the session's next step binds it
+        _logged("record: the Task Board's pair to %s was not bound: %s" % (session[:8], getattr(e, "message", e)))
+
+
+def _logged(line):
+    """daemon_log, best-effort: a hook's diagnostic that cannot be written skips nothing after it."""
+    try:
+        daemon_log(line)
+    except OSError:
+        pass
 
 
 def entry_open(session):
@@ -12274,6 +12428,22 @@ def _record_expired(_signum, _frame):
     raise RecordTimeout()
 
 
+def _timer_paused(fn, *args):
+    """fn(*args) with the record's clock stopped: its interval timer (run_record's) paused and given back the time
+    it had left, and its deadline (_RECORD_DEADLINE, which the locks after it wait until) moved by the time paused,
+    so what follows keeps the budget it had before."""
+    global _RECORD_DEADLINE
+    left, _ = signal.setitimer(signal.ITIMER_REAL, 0)
+    began = time.time()
+    try:
+        return fn(*args)
+    finally:
+        if _RECORD_DEADLINE is not None:
+            _RECORD_DEADLINE += time.time() - began
+        if left:
+            signal.setitimer(signal.ITIMER_REAL, left)
+
+
 def _record_gave_up(seconds, behind):
     try:
         daemon_log("record: gave up after %gs, %s; the next Stop retries" % (seconds, behind))
@@ -12298,7 +12468,10 @@ def run_record():
     heals: the position moves only after the batch, so the next Stop retries,
     and a batch cut mid-write is completed then, since the batch drops what
     the file already holds and an append ends a torn line. Every other verb
-    keeps waiting on the same locks.
+    keeps waiting on the same locks. One wait runs past the deadline, with the
+    record's clock stopped (the timer paused, the deadline moved by as much):
+    a /clear's Task Board pair (the store's full 10 s), since the release
+    after it leaves no witness to write it from.
 
     Before all of it, a spawned session's SessionStart claims the provenance
     its launch left for it (claim_launch): it needs only the payload's
@@ -13289,8 +13462,10 @@ def project_init(a):
     committing the file moves no session and splits no history. Where a
     stored statement on this machine decides the folder over any file there
     (statement_over_file), the file takes the id in effect, the
-    statement's, as a hub project of this org, and init says the file is
-    not what decides; sminos never writes a statement."""
+    statement's, as a hub project of this org with or without --hub (a
+    file naming a hub project's id without its hub would cut every other
+    clone from it), and init says the file is not what decides; sminos
+    never writes a statement."""
     top = git_toplevel(os.getcwd())
     if not top:
         die("project init needs a git repository: .smns is committed at its root; "
@@ -13748,7 +13923,10 @@ def forget_caches():
     their views — so a long-lived process (the chart TUI, the daemon's loop)
     sees the fleet as it is now rather than as it was at launch. Nothing is
     read until asked. (A launch directory stays: it is checked against its
-    transcript's size on every read.)"""
+    transcript's size on every read.) A cache that outlives a generation is
+    keyed on what it is a function of (a file's stat identity, a name, its
+    other inputs), never on time, so a change is seen at the pass it would
+    have been seen at uncached."""
     global _AGENTS_LOADED, _PEERS, _SELF
     _AGENTS_LOADED = False
     _PEERS = None
@@ -15508,7 +15686,13 @@ def migration_skipped(step, lock):
 
 
 def migrate(quiet=False, lock_until=None):
-    """Bring a pre-seat state root up to date. Idempotent; runs before every verb.
+    """Bring a pre-seat state root up to date. Idempotent; main runs it before
+    the verbs it does not dispatch first: `record` migrates bounded, in
+    run_record, and bridge, sheet --session (and surfaces), guide, rpc-query,
+    daemon owed and profile, and a who with no target skip it, so they never
+    wait on the registry's lock. A working copy's CLI run against the real root
+    migrates it, one way (the chats/ import among the steps): try one under a
+    temporary HOME and SMINOS_HOME, as tests/run-sminos-tests.sh does.
 
     The whole cutover is serialized by an exclusive flock on
     ~/.claude/.agora-migrate.lock — under the tool's former name on purpose, so
@@ -21694,6 +21878,15 @@ def cmd_sheet(a):
     sheet_module().cmd_sheet(a)
 
 
+def tasks_module():
+    """The Task Board's store, its commands and its door (sminos_tasks)."""
+    return sibling_module("sminos_tasks")
+
+
+def cmd_task(a):
+    tasks_module().cmd_task(a)
+
+
 def cmd_bridge(a):
     bridge_module().cmd_bridge(a)
 
@@ -22111,6 +22304,12 @@ def build_parser():
             so.add_argument("--remote", action="store_true")
         so.set_defaults(fn=cmd_sheet)
 
+    # The Task Board (sminos_tasks): the module parses its own verbs. `remind` and `shown` are the start hook's,
+    # dispatched ahead of the migration (main), as the sheet's --session verbs are.
+    tk = sub.add_parser("task", add_help=False)
+    tk.add_argument("argv", nargs=argparse.REMAINDER)
+    tk.set_defaults(fn=cmd_task)
+
     wa = sub.add_parser("watch", add_help=False)
     wa.add_argument("member")
     wa.add_argument("--json", action="store_true")
@@ -22304,6 +22503,12 @@ def stdin_body(a):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    head = argv[:argv.index("--")] if "--" in argv else argv
+    if argv[:1] == ["task"] and ("-h" in head or "--help" in head):
+        # A Task Board verb's help, ahead of the parser (argparse's REMAINDER takes no leading option) and of the
+        # migration: help reads and writes nothing.
+        cmd_task(argparse.Namespace(argv=argv[1:]))
+        return
     if not argv or argv[0] in ("-h", "--help", "help"):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)
@@ -22329,6 +22534,12 @@ def main(argv=None):
         # The sheet's verbs given --session read no registry (the door, a reader, the tool's own step): no
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
+        return
+    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"], ["list"], ["show"], ["waiting"]):
+        # The start hook's two calls (smns-tasks.sh), so a start never waits on the registry's lock, and the readers,
+        # which a page runs on every change and on its interval: no migration, which takes a lock and writes. Their
+        # one write is the store's (text `show`'s `seen`, the hook's steps).
+        cmd_task(a)
         return
     if a.cmd == "guide":
         # A SessionStart hook's: the record hook beside it migrates, bounded;

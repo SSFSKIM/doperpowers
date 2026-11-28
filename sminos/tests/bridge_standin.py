@@ -11,13 +11,16 @@ capabilities list the ops it is given, so `bridge_offers` reads them as a
 loaded module's. `cwd` is the session's as its start says it (where the
 child's export finds its project); `env`, the child's environment. Given
 `results` ({op: result}), each such op is answered at once with that result
-and nothing on the stream, as the sheet mod answers `sheet`.
+and nothing on the stream, as the sheet mod answers `sheet`. Given `answers`
+({op: how}), another op is answered as `how` says: `refuse` as below, or
+`unanswered`, never answered at all.
 
 How each op is answered, `btw` and `ask` alike:
     {"text": "...", "usage": {...}}   an answer (usage defaults to USAGE)
     {"refuse": ["code", "why"]}       refused at the op
     {"end": {"reason": "...", ...}}   started, then ended with no answer
     {"silent": true}                  started, never ended
+    {"unanswered": true}              never answered, not even at the op
     {"reload": true, ...}             the child replaced before the end is posted (to the new child)
 
 As a module: StandIn(cli, session, ops=[...], btw={...}, ask={...}); its
@@ -54,10 +57,10 @@ class _Unix(http.client.HTTPConnection):
 
 class StandIn:
     def __init__(self, cli, session, ops=("btw", "ask"), btw=None, ask=None, log=None, cwd="/", env=None,
-                 results=None):
+                 results=None, answers=None):
         self.session, self.ops, self.log, self.results = session, list(ops), log, dict(results or {})
         self.answers = {"btw": btw or {"text": "Keeps the stand-in's tool working."},
-                        "ask": ask or {"text": "Nothing blocking."}}
+                        "ask": ask or {"text": "Nothing blocking."}, **(answers or {})}
         self.cli, self.commands, self.delivered, self.cwd, self.env = cli, [], [], cwd, env
         self.start_child()
 
@@ -110,6 +113,8 @@ class StandIn:
         how = self.answers.get(op) if op in self.ops else None
         if how is None:
             self.post({"type": "result", "id": oid, "op": op, "ok": False, "error": "unknown op: %s" % op})
+            return
+        if how.get("unanswered"):
             return
         if "refuse" in how:
             code, why = how["refuse"]

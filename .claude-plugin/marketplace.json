@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
-      "version": "7.225.1",
+      "version": "7.229.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -33,7 +33,7 @@
     {
       "name": "devcloud",
       "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write. And the host image and boot program that make any Linux userland work like your Mac. And the devenv skill, which writes a repository's devenv/ (its setup, services and checks) from its CI, manifests and README. And `devcloud vm`, which creates cloud machines (Hetzner Cloud, Google Compute Engine, or a provider you add) that boot into such hosts within your caps and delete themselves when their lease ends, and the vm skill that tells a session when and how",
-      "version": "0.19.0",
+      "version": "0.20.0",
       "source": "./devcloud",
       "author": {
         "name": "SSFSKIM",
@@ -44,7 +44,7 @@
     {
       "name": "to-human",
       "description": "Read a session as a report, not a transcript: under the to-human output style the session sends you messages through its message tool (mcp__to-human__message), the terminal folds its working record (tool calls, scratch notes, other sessions' messages) behind buttons, and each message raises a notification",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",
@@ -55,7 +55,7 @@
     {
       "name": "sminos",
       "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
-      "version": "1.60.0",
+      "version": "1.64.0",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",
@@ -73,6 +73,17 @@
         "email": "supremekim17@gmail.com"
       },
       "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/web"
+    },
+    {
+      "name": "task",
+      "description": "The ticket board: a repository's GitHub issues as the agents' backlog, worked through one command, task, which reads what a ticket needs before work can start, how far off it is and whether a thread has it",
+      "version": "0.3.2",
+      "source": "./task",
+      "author": {
+        "name": "SSFSKIM",
+        "email": "supremekim17@gmail.com"
+      },
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/task"
     }
   ]
 }

@@ -17,9 +17,6 @@ digraph STYLE_GUIDE {
         // States are ellipses
         "Current state" [shape=ellipse];
 
-        // Warnings are octagons
-        "STOP: Critical warning" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
-
         // Entry/exit are double circles
         "Process starts" [shape=doublecircle];
         "Process complete" [shape=doublecircle];
@@ -29,7 +26,6 @@ digraph STYLE_GUIDE {
         "Write test first" [shape=box];
         "npm test" [shape=plaintext];
         "I am stuck" [shape=ellipse];
-        "NEVER use git add -A" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
     }
 
     // Edge naming conventions
@@ -95,7 +91,6 @@ digraph STYLE_GUIDE {
         "git status" [shape=plaintext];
         "Another check?" [shape=diamond];
         "Alternative action" [shape=box];
-        "STOP: Don't do this" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
         "Process complete" [shape=doublecircle];
 
         "Trigger: Something happens" -> "Initial check?";
@@ -104,7 +99,7 @@ digraph STYLE_GUIDE {
         "Main action" -> "git status";
         "git status" -> "Another check?";
         "Another check?" -> "Process complete" [label="ok"];
-        "Another check?" -> "STOP: Don't do this" [label="problem"];
+        "Another check?" -> "Main action" [label="problem"];
         "Alternative action" -> "Process complete";
     }
 
@@ -120,9 +115,6 @@ digraph STYLE_GUIDE {
         "Is it a command?" [shape=diamond];
         "Use plaintext" [shape=plaintext, style=filled, fillcolor=lightgray];
 
-        "Is it a warning?" [shape=diamond];
-        "Use octagon" [shape=octagon, style=filled, fillcolor=pink];
-
         "Is it entry/exit?" [shape=diamond];
         "Use doublecircle" [shape=doublecircle, style=filled, fillcolor=lightgreen];
 
@@ -135,9 +127,7 @@ digraph STYLE_GUIDE {
         "Is it a decision?" -> "Use diamond" [label="yes"];
         "Is it a decision?" -> "Is it a command?" [label="no"];
         "Is it a command?" -> "Use plaintext" [label="yes"];
-        "Is it a command?" -> "Is it a warning?" [label="no"];
-        "Is it a warning?" -> "Use octagon" [label="yes"];
-        "Is it a warning?" -> "Is it entry/exit?" [label="no"];
+        "Is it a command?" -> "Is it entry/exit?" [label="no"];
         "Is it entry/exit?" -> "Use doublecircle" [label="yes"];
         "Is it entry/exit?" -> "Is it a state?" [label="no"];
         "Is it a state?" -> "Use ellipse" [label="yes"];
@@ -153,7 +143,6 @@ digraph STYLE_GUIDE {
         "Read error message" [shape=box];
         "Can reproduce?" [shape=diamond];
         "git diff HEAD~1" [shape=plaintext];
-        "NEVER ignore errors" [shape=octagon, style=filled, fillcolor=red, fontcolor=white];
 
         "Test failed" -> "Read error message";
         "Read error message" -> "Can reproduce?";

@@ -1,0 +1,22 @@
+{
+ "argv": [
+  "task",
+  "assign",
+  "--class",
+  "needed",
+  "--title",
+  "Rotate the signing key",
+  "--due",
+  "2027-01-05",
+  "--tag",
+  "keys"
+ ],
+ "covers": "a second assign: the next id, a due date and a tag",
+ "exit": 0,
+ "name": "assign-a-second",
+ "now": "2026-11-27T16:05:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t2 needed \"Rotate the signing key\"\n"
+}

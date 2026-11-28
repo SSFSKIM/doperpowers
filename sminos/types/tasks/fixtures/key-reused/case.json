@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "another line under a key already used: refused, key-reused, and nothing changes",
+ "exit": 0,
+ "name": "key-reused",
+ "now": "2026-11-27T16:25:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"decline\",\"task\":\"t2\",\"revision\":1,\"text\":\"the key is not mine to rotate\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c001\",\"act\":\"decline\",\"verdict\":\"refused\",\"reason\":\"key-reused\"}\n"
+}

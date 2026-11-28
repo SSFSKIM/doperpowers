@@ -77,7 +77,5 @@ provably never captured (e.g. a second simultaneous share).
 
 ## Environment gotchas hit during real runs
 
-- The harness blocks foreground `sleep` — run diarize/scene-detect as background
-  tasks and act on completion notifications.
 - Persistent-shell cwd drifts between calls — the scripts take the workspace as
   an argument and resolve paths absolutely for this reason.
