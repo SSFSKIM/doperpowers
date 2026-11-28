@@ -36,7 +36,7 @@ Paths are named from `sminos/`. A module's docstring states how it works and the
 - `sminos_sheet.py` — the question sheet's record: its door, reader, step shell and `sheet` verbs.
 - `sminos_sheet_step.py` — the question sheet's state machine as a pure function.
 - `sminos_subagents.py` — `list --subagents`: each subagent's lifecycle from the bridge, else from disk.
-- `sminos_tasks.py` — the Task Board (`sminos task`): one store a machine under `$SMINOS_HOME/tasks/`, its door, its verbs and the start line. Its module docstring states the store's step and lock rules; read it before adding a writer.
+- `sminos_tasks.py` — the Task Board (`sminos task`): one store a machine under `$SMINOS_HOME/tasks/`, its door, its verbs and the start line. Its module docstring states the store's step and lock rules; read it before adding a writer. Its `keeps` is the three-day rule's exemption (D7), asked by `sweep_threads` and `end_by_rule`.
 - `sminos_threads.py` — lane A thread records, the lifecycle stamp, the membership reducer and its journal.
 - `sminos_tui.py` — the org chart as a terminal screen.
 - `sminos_uplink.py` — `daemon uplink`: the endpoint connection, its writer lanes, the main-thread pump.
