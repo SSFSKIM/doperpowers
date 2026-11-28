@@ -589,8 +589,7 @@ pexec="$(cat "$PLAN_EXECUTOR")"
 assert_contains "$pexec" "model: opus" "the plan-executor is pinned to opus"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
-assert_contains "$pexec" "pins its Model selection gives, whatever model
-wrote the spec" "...and it dispatches its workers at their pins whatever model wrote the spec"
+assert_contains "$pexec" "pins its Model selection gives, whatever model" "...and it dispatches its workers at their pins whatever model wrote the spec"
 sde="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
 assert_contains "$sde" "opus at high effort" "subagent-driven-execution: the task-executor's pin, the home of the workers' pins"
 assert_contains "$sde" "whatever model wrote the spec" "...kept whatever model wrote the spec: execution is close-frontier work"
@@ -608,10 +607,10 @@ assert_not_contains "$pexec" "final review is clean" "...closing no longer presu
 # Review input and follow-up work are different channels: Residue is the list
 # the dispatching session registers tickets from, so an unfixed Minor routed
 # there becomes a ticket (or a fix made to avoid writing one).
-assert_contains "$pexec" "recorded rather than fixed, each with
-where it is and why it was left" "...and unfixed review findings ride their own PR-body section, with the reason each was left"
+assert_contains "$pexec" '## Unresolved Review Findings`' "...and the PR body has a section for unfixed review findings"
+assert_contains "$pexec" "recorded rather than fixed, each with" "...and unfixed review findings ride their own PR-body section, with the reason each was left"
 assert_contains "$pexec" "deserves its own ticket" "...while Residue keeps its meaning: work for another ticket"
-assert_contains "$pexec" 'carries `Closes #<n>` when the brief names a GitHub issue' "...and writes the Closes link only for a GitHub issue the brief names"
+assert_contains "$pexec" 'carries `Closes #<n>` when the brief names the GitHub issue this work resolves' "...and writes the Closes link only for a GitHub issue the brief names"
 assert_not_contains "$pexec" 'into the PR body'"'"'s `## Residue`' "...and review findings are not routed into Residue (that list mints tickets)"
 
 echo "task-executor agent (subagent-driven-execution's hands):"

@@ -29,8 +29,9 @@ Read the whole spec — it is your requirements. Your milestone's entry says
 where your work begins and ends; the rest of the spec says what it is for,
 the decisions already made and why, and the contracts your neighbors rely
 on. If something blocks you from starting — a missing prerequisite, a
-contradiction you cannot resolve from the spec's intent — return
-NEEDS_CONTEXT now rather than build on a guess.
+contradiction you cannot resolve from the spec's intent — return now
+(NEEDS_CONTEXT for information the dispatch left out, BLOCKED otherwise)
+rather than build on a guess.
 
 Build what the milestone's entry and the spec's design call for, within
 the milestone's stated edge, test-first for testable logic
@@ -45,8 +46,9 @@ the reasons behind its nearby decisions point, and record what you chose
 and why in your report. That is the job, not a deviation. Escalate only
 when the choice is a product, taste, or substantive design call the spec
 leaves open and other milestones or the product would feel, when
-following the spec as written would defeat what it is for, or when the
-work needs restructuring well beyond your milestone's area. The spec
+following the spec as written would defeat what it is for, when the
+work needs restructuring well beyond your milestone's area, or when you
+have read file after file without making progress. The spec
 itself is the controller's to edit; your decisions reach it through your
 report.
 
@@ -72,7 +74,7 @@ Write your full report to the report file the dispatch names:
 - What you implemented (or what you attempted, if blocked)
 - What you tested and test results
 - **TDD Evidence** (for testable logic) — the reviewer reads it:
-  - RED: command run, relevant failing output before implementation, and why the failure was expected
+  - RED: command run, relevant failing output before implementation (for code you kept, with the code it covers broken), and why the failure was expected
   - GREEN: command run and relevant passing output after implementation
 - Files changed
 - **Decisions made:** each gap you resolved — what the spec left open,

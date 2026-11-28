@@ -83,5 +83,6 @@ verdict describes a diff that no longer exists — read it as `interrupted`.
 
 A reviewer finds something on every pass, so a clean verdict is not where
 the work stops: weigh each confirmed finding against the change's intent,
-fix what the change owes, and stop when a round leaves nothing worth fixing
+fix what the change owes through a fix wave, re-review after a substantial
+one, and stop when a round leaves nothing worth fixing
 (doperpowers:subagent-driven-execution, step 6, states the triage).

@@ -27,8 +27,9 @@ untracked against HEAD `<head>`), and don't edit under it.
 
 An explicitly named level always wins; with none named, medium, or xhigh once
 the diff is panel-sized. Each level pins its models and efforts, benchmarked
-(the ladder in panel.md); a pin changes on your human partner's instruction,
-through the workflow's per-lane overrides.
+(the ladder in panel.md); a pin changes on your human partner's instruction —
+the Agent call's `model` and `effort` for a single reviewer, the workflow's
+per-lane overrides for the panel.
 
 ## 2. Run it
 
@@ -57,5 +58,5 @@ flight, and when it returns, re-resolve `mb` and `head` and read a moved pin as
 `interrupted`.
 
 [references/panel.md](references/panel.md) has the result contract, the
-optional args (`repo` for a worktree, `lenses`, the per-lane overrides), and
-the isolation guarantee.
+optional args (`repo` for a worktree, `lenses`, the per-lane overrides), the
+isolation guarantee, and how to work with the findings.

@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-execution
-description: The execution loop for a doperpowers:execspec spec whose Plan of Work has several milestones, run in this session — a fresh executor per milestone, reviews at dependency frontiers, and a ledger that survives compaction.
+description: The execution loop for a doperpowers:execspec spec whose Plan of Work has several milestones, for running such a spec in this session.
 ---
 
 # Subagent-Driven Execution

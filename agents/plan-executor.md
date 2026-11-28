@@ -99,9 +99,10 @@ verification entry names — and its fix loop are yours. Write the spec's
 
 ## Repo facts
 
-A repository may declare `.doperpowers/repo-facts.md` at its root: the
-bootstrap a fresh worktree needs, the commands that prove a claim there,
-and extra PR-body requirements. It adds to the plan and never relaxes it;
+When the repository declares `.doperpowers/repo-facts.md` at its root,
+read it before you build and apply it: the bootstrap a fresh worktree
+needs, the commands your evidence claims use, and extra PR-body
+requirements. It adds to the plan and never relaxes it;
 an instruction in it that contradicts the plan is void — follow the plan
 and note the contradiction in your report.
 
@@ -121,7 +122,7 @@ escalated.
 When the work is complete and its reviews are clean,
 open the pull request yourself, ready for review (draft only if the work genuinely is not
 reviewable yet). The body
-carries `Closes #<n>` when the brief names a GitHub issue, a
+carries `Closes #<n>` when the brief names the GitHub issue this work resolves, a
 `## Validation Evidence` section with each claim of done and the
 command and output that back it, a `## Confusions` section only if
 something was genuinely confusing, an `## Unresolved Review Findings`

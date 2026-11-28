@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Verified guidance on test-first development (watch the test fail, then write the code), for implementing a feature or bugfix with testable logic, before the implementation is written.
+description: Verified guidance on test-first development, for implementing a feature or bugfix with testable logic, before the implementation is written.
 ---
 
 # Test-Driven Development (TDD)
