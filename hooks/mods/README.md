@@ -243,7 +243,9 @@ request left by a turn that ended otherwise (an interruption, an API error)
 is dropped at the next `turn.start`, so a turn the person starts is not
 compacted behind them. Nothing is aborted: background shells, monitors, MCP
 servers and subagents run on through a compaction, and their notifications
-arrive in the turn after. The tool's description says what a call does
+arrive in the turn after (a `$.turn.abort` variant was rejected: it
+kills Monitors, whose shell runner gets no `caller` and so does not spare
+`turn-abort`). The tool's description says what a call does
 and how to make one (last and alone, then end the turn); the guidance on
 when rides the plugin's MCP server instructions (below).
 
@@ -350,7 +352,7 @@ UUID (forks inherit them), clearing it on reload; reload does not await
 transcript keeps the engine's text. Until 7.207.0 a `tool.describe` hook
 answered `isDeferred: false` and the definition (about 2.3k characters,
 the guidance in its description) shipped inline in every request of every
-loop, subagents' included; now every loop carries the guidance (about 1.9k
+loop, subagents' included; now every loop carries the guidance (about 1.6k
 characters), and the description (about 0.6k) and schema load on demand,
 at the price of a `ToolSearch` step when the model compacts with the tool
 not loaded.
