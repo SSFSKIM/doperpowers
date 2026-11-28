@@ -154,6 +154,27 @@ class Board(Rig):
 
 
 class Store(Board):
+    def test_each_verb_answers_help_with_its_flags_and_changes_nothing(self):
+        def home():
+            root = os.environ["SMINOS_HOME"]
+            return sorted((os.path.relpath(os.path.join(d, n), root), os.stat(os.path.join(d, n)).st_mode)
+                          for d, dirs, files in os.walk(root) for n in dirs + files) + [("", os.stat(root).st_mode)]
+        os.chmod(os.environ["SMINOS_HOME"], 0o755)   # a root the migration would tighten: help must not migrate
+        before = home()
+        for verb, flag in (("assign", "--body-file"), ("revise", "--no-tags"), ("comment", "--key"),
+                           ("withdraw", "--reason"), ("reopen", "--comment"), ("show", "--json"),
+                           ("list", "--closed"), ("waiting", "--mine"), ("done", "--note"), ("decline", "--wake")):
+            with self.subTest(verb=verb):
+                code, out, err = self.t(verb, "--help", session=sid())
+                self.assertEqual((code, err), (0, ""))
+                self.assertIn("usage: sminos task %s" % verb, out)
+                self.assertIn(flag, out)
+        code, out, _ = self.t("--help")
+        self.assertEqual(code, 0)
+        self.assertIn("sminos task <verb> --help", out)
+        self.assertEqual(home(), before, "help touched the home (a migration, the store)")
+        self.assertIn("(not empty)", self.t("decline", "-h")[1])
+
     def test_two_assigns_at_once_from_two_processes_get_two_ids_and_neither_is_lost(self):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=sid())
         loop = 'for i in $(seq 15); do "$0" task assign --class optional --title "t $i" >/dev/null || exit 1; done'

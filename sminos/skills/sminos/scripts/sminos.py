@@ -22411,6 +22411,12 @@ def stdin_body(a):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    head = argv[:argv.index("--")] if "--" in argv else argv
+    if argv[:1] == ["task"] and ("-h" in head or "--help" in head):
+        # A Task Board verb's help, ahead of the parser (argparse's REMAINDER takes no leading option) and of the
+        # migration: help reads and writes nothing.
+        cmd_task(argparse.Namespace(argv=argv[1:]))
+        return
     if not argv or argv[0] in ("-h", "--help", "help"):
         usage()
         sys.exit(0 if argv else EXIT_USAGE)

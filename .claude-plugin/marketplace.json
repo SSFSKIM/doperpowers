@@ -55,7 +55,7 @@
     {
       "name": "sminos",
       "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
-      "version": "1.62.0",
+      "version": "1.62.1",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",
@@ -77,7 +77,7 @@
     {
       "name": "task",
       "description": "The ticket board: a repository's GitHub issues as the agents' backlog, worked through one command, task, which reads what a ticket needs before work can start, how far off it is and whether a thread has it",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "source": "./task",
       "author": {
         "name": "SSFSKIM",

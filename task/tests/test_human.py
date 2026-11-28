@@ -156,12 +156,27 @@ class OutsideTheTicketBoardTest(HumanBoardCase):
                 self.assertEqual(self.sminos_calls(), [])
                 self.assertEqual(self.calls(), [])
 
+    def test_a_human_verbs_help_is_sminos_tasks_named_for_the_verb_task_runs(self):
+        self.answer(stdout="usage: sminos task assign [-h] --class ...\n")
+        code, out, _ = self.task("assign-human", "--help", repo=False)
+        self.assertEqual(code, 0)
+        self.assertEqual([c["argv"] for c in self.task_calls()], [["task", "assign", "--help"]])
+        self.assertEqual(out, "task assign-human runs sminos task assign, whose help this is:\n"
+                              "usage: sminos task assign [-h] --class ...\n")
+        for argv in (["show", "t7", "--help"], ["revise", "-h"], ["assign-human", "--title", "x", "--", "--help"]):
+            with self.subTest(argv=argv):
+                self.clear_log()
+                self.answer(stdout="usage\n")
+                code, out, _ = self.task(*argv, repo=False)
+                self.assertEqual((code, out), (0, "usage\n"))
+
     def test_help_lists_the_human_board_verbs_as_built(self):
         code, out, _ = self.task("--help", repo=False)
         self.assertEqual(code, 0)
         for verb in ("assign-human", "revise", "withdraw", "reopen"):
             self.assertIn(verb, out)
         self.assertNotIn("not built", out)
+        self.assertIn("task <verb> --help", out)
 
 
 if __name__ == "__main__":

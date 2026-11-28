@@ -909,65 +909,93 @@ USAGE = ("usage: sminos task assign|revise|comment|withdraw|reopen|show|list|wai
 
 
 def parser():
-    p = _Parser(prog="sminos task", add_help=False)
-    sub = p.add_subparsers(dest="op")
+    """The verbs' parser. Each verb answers `-h`/`--help` with its usage and what each flag gives (argparse's help,
+    on standard output, exit 0), so `task <verb> --help`, which hands its arguments to these verbs, answers it too;
+    an `id` is a task's (`t<n>`)."""
+    p = _Parser(prog="sminos task", description="The Task Board: tasks agents give the human, kept on this "
+                "machine. A verb's flags: sminos task <verb> --help.")
+    sub = p.add_subparsers(dest="op", metavar="<verb>", parser_class=_Parser)
 
-    def wake(o):
-        o.add_argument("--wake", dest="wake", action="store_const", const=True, default=None)
-        o.add_argument("--no-wake", dest="wake", action="store_const", const=False)
+    def verb(name, help):
+        return sub.add_parser(name, help=help, description=help)
 
-    o = sub.add_parser("assign", add_help=False)
-    o.add_argument("--class", dest="cls", required=True, choices=CLASSES)
-    o.add_argument("--title", required=True)
-    o.add_argument("--body-file", default=None)
-    o.add_argument("--due", default=None)
-    o.add_argument("--no-due", action="store_true")
-    o.add_argument("--tag", action="append", default=[])
-    o.add_argument("--asker-agent", default=None)
-    o.add_argument("--asker-name", default=None)
-    o = sub.add_parser("revise", add_help=False)
+    def wake(o, whose=""):
+        o.add_argument("--wake", dest="wake", action="store_const", const=True, default=None,
+                       help=whose + "the human's choice: wake the asker's conversation for this act if it "
+                       "has stopped (a blocking task's default)")
+        o.add_argument("--no-wake", dest="wake", action="store_const", const=False,
+                       help=whose + "the human's choice: do not wake it; it reads the act at its next start (any other "
+                       "task's default)")
+
+    def body(o, what="the body"):
+        o.add_argument("--body-file", default=None, metavar="F|-", help="%s, read from the file F, or from "
+                       "standard input for -" % what)
+
+    def due(o):
+        o.add_argument("--due", default=None, metavar="YYYY-MM-DD", help="the date it is needed by")
+        o.add_argument("--no-due", action="store_true", help="no date")
+
+    def key(o, whose=""):
+        o.add_argument("--key", default=None, metavar="UUID", help=whose + "the act's key: the same command again "
+                       "with it answers the first verdict and applies nothing (minted and printed on standard error "
+                       "when not given)")
+
+    o = verb("assign", "give the human a task, from a session; prints its id and its line")
+    o.add_argument("--class", dest="cls", required=True, choices=CLASSES,
+                   help="blocking: the asker is held up until it is done; needed: it is to be done at some point; "
+                   "optional")
+    o.add_argument("--title", required=True, help="one line the human reads first")
+    body(o, "what the human is to do and how the asker will know it is done")
+    due(o)
+    o.add_argument("--tag", action="append", default=[], help="a tag (repeatable)")
+    o.add_argument("--asker-agent", default=None, metavar="ID", help="the subagent that assigns it")
+    o.add_argument("--asker-name", default=None, metavar="N", help="that subagent's name")
+    o = verb("revise", "change an open task this session is the asker of (it assigned it, or took its asker's "
+             "place at a /clear); the fields given are replaced")
     o.add_argument("id")
-    o.add_argument("--title", default=None)
-    o.add_argument("--body-file", default=None)
-    o.add_argument("--class", dest="cls", default=None, choices=CLASSES)
-    o.add_argument("--due", default=None)
-    o.add_argument("--no-due", action="store_true")
-    o.add_argument("--tag", action="append", default=[])
-    o.add_argument("--no-tags", action="store_true")
-    o = sub.add_parser("comment", add_help=False)
+    o.add_argument("--title", default=None, help="a new title")
+    body(o, "a new body")
+    o.add_argument("--class", dest="cls", default=None, choices=CLASSES, help="a new class")
+    due(o)
+    o.add_argument("--tag", action="append", default=[], help="the tags, replacing them (repeatable)")
+    o.add_argument("--no-tags", action="store_true", help="no tags")
+    o = verb("comment", "add a comment to an open task; from a terminal that is no session, the human's comment")
     o.add_argument("id")
-    o.add_argument("text", nargs="?", default=None)
-    o.add_argument("--body-file", default=None)
-    o.add_argument("--key", default=None)
-    wake(o)
-    o = sub.add_parser("withdraw", add_help=False)
+    o.add_argument("text", nargs="?", default=None, help="the comment, or give --body-file")
+    body(o, "the comment")
+    key(o, "the human's comment only: ")
+    wake(o, "the human's comment only: ")
+    o = verb("withdraw", "close an open task this session is the asker of, as no longer needed")
     o.add_argument("id")
-    o.add_argument("--reason", default="")
-    o = sub.add_parser("reopen", add_help=False)
+    o.add_argument("--reason", default="", help="why, shown to the human")
+    o = verb("reopen", "open again a task the human marked done, saying why")
     o.add_argument("id")
-    o.add_argument("--comment", required=True)
-    o = sub.add_parser("show", add_help=False)
+    o.add_argument("--comment", required=True, help="what is still missing")
+    o = verb("show", "a task whole: its body and its history, the human's words included")
     o.add_argument("id")
-    o.add_argument("--json", action="store_true")
-    o = sub.add_parser("list", add_help=False)
-    o.add_argument("--closed", action="store_true")
-    o.add_argument("--all", action="store_true")
-    o.add_argument("--mine", action="store_true")
-    o.add_argument("--json", action="store_true")
-    o = sub.add_parser("waiting", add_help=False)
-    o.add_argument("--mine", action="store_true")
-    o.add_argument("--json", action="store_true")
+    o.add_argument("--json", action="store_true", help="the task as stored, with its target")
+    o = verb("list", "the open tasks, one line each")
+    o.add_argument("--closed", action="store_true", help="the closed ones of the last 30 days instead")
+    o.add_argument("--all", action="store_true", help="the open ones and those closed in the last 30 days")
+    o.add_argument("--mine", action="store_true", help="only those that answer to this session")
+    o.add_argument("--json", action="store_true", help="as JSON")
+    o = verb("waiting", "the human's acts that no start of their asker has shown yet")
+    o.add_argument("--mine", action="store_true", help="only those of this session's tasks")
+    o.add_argument("--json", action="store_true", help="as JSON")
     for op in ("done", "decline"):
-        o = sub.add_parser(op, add_help=False)
-        o.add_argument("handle")
-        o.add_argument("--note" if op == "done" else "--reason", dest="text", default=None)
-        o.add_argument("--key", default=None)
+        o = verb(op, "the human marks a task done" if op == "done" else "the human declines a task, saying why")
+        o.add_argument("handle", metavar="id[@revision]", help="the task, at the revision read (1 when not given)")
+        if op == "done":
+            o.add_argument("--note", dest="text", default=None, help="a note for the asker")
+        else:
+            o.add_argument("--reason", dest="text", required=True, help="why, for the asker (not empty)")
+        key(o)
         wake(o)
-    sub.add_parser("act", add_help=False)
-    o = sub.add_parser("remind", add_help=False)
+    verb("act", "the door: the human's acts as JSON lines on standard input, a verdict a line on standard output")
+    o = verb("remind", "the start hook's: the keys it is about to name, then the session's start line")
     o.add_argument("--session", required=True)
     o.add_argument("--source", default="")
-    o = sub.add_parser("shown", add_help=False)
+    o = verb("shown", "the start hook's: marks the keys named as shown to the session")
     o.add_argument("--session", required=True)
     o.add_argument("--keys", default="")
     return p
