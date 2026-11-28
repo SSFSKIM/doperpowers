@@ -1,6 +1,6 @@
 # Tasks for the human: the Task Board (2026-11-27)
 
-> **Parent:** root — the project's standing purpose (`CLAUDE.md`: a software-development methodology for coding agents, with sminos as the family that lets many sessions work for one owner). **Consumes:** sminos's threads, wake, delivery and machine notices (`docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`, closed, read and not amended; `sminos/skills/sminos/scripts/`); the ticket board's `task` plugin (`docs/doperpowers/specs/2026-11-24-ticket-board-design.md` on branch `ticket-board-spec`, not built). The question sheet (MAWS's composite `docs/doperpowers/specs/2026-11-23-question-sheet-design.md`) is this unit's sibling and model for its surfaces; nothing of its code is used or changed. Children dispatch per their grain hint, each carrying its section as its spec; each child's artifact opens by citing this document (path, child id, parent pin). B1 and B1a are built in this repository; B2, B3 and B4 are MAWS's, and their execution documents are written on MAWS's side by MAWS's holders.
+> **Parent:** root — the project's standing purpose (`CLAUDE.md`: a software-development methodology for coding agents, with sminos as the family that lets many sessions work for one owner). **Consumes:** sminos's threads, wake, delivery and machine notices (`docs/doperpowers/specs/2026-11-17-sminos-channels-and-threads-design.md`, closed, read and not amended; `sminos/skills/sminos/scripts/`); the ticket board's `task` plugin (`docs/doperpowers/specs/2026-11-24-ticket-board-design.md`; its M1 to M3, the plugin's first release, merged in pull request #639). The question sheet (MAWS's composite `docs/doperpowers/specs/2026-11-23-question-sheet-design.md`) is this unit's sibling and model for its surfaces; nothing of its code is used or changed. Children dispatch per their grain hint, each carrying its section as its spec; each child's artifact opens by citing this document (path, child id, parent pin). B1 and B1a are built in this repository; B2, B3 and B4 are MAWS's, and their execution documents are written on MAWS's side by MAWS's holders.
 
 ## Purpose
 
@@ -57,6 +57,7 @@ Each row is the owner's own wording, with the time the answer reached the design
 | R11 | The spec is approved and building starts, its open decisions as recommended | "승인한다, 구현 시작" (2026-11-27T23:39Z) |
 | R12 | In an idle session a done, a comment and a decline of a blocking task start the agent's turn | "완료, 댓글, blocking 거절 (Recommended)" (2026-11-27T23:39Z) |
 | R13 | After a `/clear`, the conversation that follows becomes the task's asker | "된다 (Recommended)" (2026-11-27T23:39Z) |
+| R14 | What agents are given about the board describes what it is and what its verbs do, and leaves when and how to use them to the agent: direction at a high level, guidance only for failure modes observed or explicitly expected, no forced process | "when giving agent with tool, skills, whatever, we need to keep it lean. Avoid explaining how agents should use the tool, but instead, just describe to them what the tool does and let it figure out and judge how to use it. … At most we only need to provide high-level direction, add guidance to observed or explicitly expected failure modes … Nothing should be forced, and even doctrines like writing spec and registering tickets should be one existing conventions, not a forced process … so when we give agent task tool we have no forced process, just explain what the tool does and let it figure out what to do with it." (2026-11-27) |
 
 Events and subscriptions are out of this scope ("이번에는 뺀다 (Recommended)", 2026-11-24T12:17Z). The triage of blocking, must be done at some point, optional is the owner's first brief (2026-11-19); it is a deliberate difference from the sheet, where no question marks a session as stopped on the human.
 
@@ -103,7 +104,7 @@ In the session manager's four types of what a session needs from the owner: an *
 | `revision` | 1 when added, +1 at each revise and each reopen |
 | `askers` | who is told: the thread that assigned it (none for a session that has no thread), the session that ran the command, its alias then, and for a subagent its agent id and name. A list, so that a later version can add a second waiter; this version writes one |
 | `project` | the asker's project when assigned |
-| `title`, `body` | one line (at most 200 characters); Markdown (at most 20,000) saying what to do, why, and how the human knows it is done |
+| `title`, `body` | one line (at most 200 characters); Markdown (at most 20,000), the task in the asker's words |
 | `class` | `blocking` (the asker cannot go on without it), `needed` (must be done at some point), `optional` |
 | `due` | optional date (`YYYY-MM-DD`) |
 | `tags` | optional short labels the board can filter by (at most eight, each `[a-z0-9-]{1,32}`) |
@@ -140,7 +141,7 @@ The verbs are a thin front over the store's commands in sminos (D3): each runs `
 - A permission rule or a classic `PreToolUse` check that depends on the arguments after the verb sees one more argument. U1 looks at what the engine does with each; no rule is promised to match.
 - Where the mod is not loaded the asker is the thread alone. An agent that writes the flag itself is believed: it is a delivery hint.
 
-**What agents are told.** In the plugin's skill (`task:human-tasks`), in one line of sminos's start guide, and in one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence): D1's line between a task and a question; say in the body how the human knows it is done; mark `blocking` only what the work cannot continue without; you are told when the human acts, so do not poll the list; the notice names the task and what the human did, and their words are read with `task show`; a subagent that is blocked returns to its caller with the task's id; check the result yourself, and reopen with a comment when it fails; the human's acts are the human's, so never complete or decline a task yourself. The words are B5's to settle before they ship (X7).
+**What agents are told.** In the plugin's skill (`task:human-tasks`), in one line of sminos's start guide, and in one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence). They describe the board and what its verbs do, and leave when and how to use them to the agent (R14). The definitions they carry: D1's line between a task, an act only the human can do in the world, and a question; what `blocking`, `needed` and `optional` mean; that the human's acts reach the asker as a notice naming the task and what the human did, and are named again at its next start, and that the human's words are read with `sminos task show`; that "done" is the human's word about their step, and a task can be reopened; that the door refuses any agent session, so the human's acts are the human's alone. What an agent does after assigning a task, or on being told of an act, is its own judgment, and nothing in them prescribes it. The words are B5's to settle before they ship (X7).
 
 ### D3. The store
 
@@ -162,7 +163,7 @@ On a task: **comment** (it stays open), **done** with an optional note, **declin
 - `act` is `done`, `decline`, `comment`, `seen` (the human opened the card: it clears the row's "Updated" up to the store's `seq` the card was drawn from, which the line names), or `shown` (a deliverer other than the start line says it told a session of a task's outcomes: the line names the task, the session that was told and the keys; MAWS, where its launch does not run sminos's start hook).
 - A `done` or a `decline` names the revision the human read and is refused `stale` when the task was revised since, with the current revision, so the card can say so; a comment is never refused as stale. An act on a task no longer open answers `closed`; an unknown id, `unknown`.
 - `wake` is the human's choice for a stopped asker (R5): `true`, `false`, or `null` for the default (D5).
-- **An act is applied once.** A key is a UUID, so two surfaces never mint the same one. The door keeps each applied act's verdict, and a digest of its line, by its `key` for as long as the task is kept; the same line again answers the first verdict and changes nothing, and a different line under a key already used is refused (`key-reused`) and changes nothing. A surface that did not hear the verdict sends the act again.
+- **An act is applied once.** A key is a UUID, so two surfaces never mint the same one. The door keeps every act's first verdict, whatever it was (`applied`, `stale`, `closed`, `unknown`), and a digest of its line, by its `key` for as long as the task is kept; the same line again answers the first verdict and changes nothing, and a different line under a key already used is refused (`key-reused`) and changes nothing. A surface that did not hear the verdict sends the same line again; an act tried again after a refusal (a `done` refused `stale`, made again at the current revision) is a new act under a new key, since the old key answers its first verdict for good.
 - **The verdict is what the door decided, and does not change.** `{"v":1,"key":…,"task":"t7","verdict":"applied|stale|closed|unknown|refused","revision":2,"state":"done","outcome":"t7.3","told":"now|wake|next-start|ended|maws"}`: `told` is how the door, in the step that applied the act, decided the asker is to be told (D5); a refusal says why (`reason`). What then became of the telling is not the verdict's to say: the task shows what was sent and what sminos answered at that moment (`show --json`), which is a report of the sending and no proof of reading. A sending the door decided and did not finish is a state of its own beside the verdict, resolved by the next call of the door or by the daemon's hourly duty (D5).
 - **The door refuses a caller that is a session** (`CLAUDE_CODE_SESSION_ID` set; exit 3): an agent does not complete the human's task. This guards a mistake, not an adversary (baseline 12); D9 says what is trusted. A surface that has authenticated its human runs the door with that variable removed from the child's environment, since a surface's daemon may have been started from a session's shell.
 
@@ -187,7 +188,7 @@ Why both. sminos's record cannot say an agent read a message, and can settle one
 **Who it goes to: the target.** The store decides, from the task's asker, whom its outcomes go to now.
 
 - **The asker's thread's current session**, unless a `/clear` gave it a successor.
-- **A successor** (R13). At a `/clear` sminos witnesses the session left and the session begun (baseline 8); when the store exists, that pair is written into it before the left session's alias is released, by whichever of the new session's two start hooks runs first, and is bound to the successor's thread as soon as that thread has a record. The target is then the last link of that chain that is alive, running or stopped or only just begun, each link followed by its thread: where a successor went on in another session, that session; never a later process that merely reuses the successor's old id. The left thread is not woken while one exists. A successor that was retired or purged is not alive, and the outcome falls back to the one before it. A left session is the target again only when its human opened it after the clear (a process holds it that started after the pair was written). The link is the witnessed pair and never the alias, which another session can come to hold. A clear nobody witnessed (a seat's; a session that is no member) leaves the outcome with the conversation that was left. **[binding — the same answer decides who is told, who may revise the task, and whom D7 keeps from ending]**
+- **A successor** (R13). At a `/clear` sminos witnesses the session left and the session begun (baseline 8); when the store exists, that pair is written into it before the left session's alias is released, by whichever of the new session's two start hooks runs first, and is bound to the successor's thread as soon as that thread has a record. The target is then the last link of that chain that is alive, running or stopped or only just begun, each link followed by its thread: where a successor went on in another session, that session; never a later process that merely reuses the successor's old id. The left thread is not woken while one exists. A successor that was retired or purged is not alive, and the outcome falls back to the one before it. A left session is the target again only when its human opened it after the clear (a process holds it that started after the pair was written). The link is the witnessed pair and never the alias, which another session can come to hold. A clear nobody witnessed (a seat's; a session that is no member) leaves the outcome with the conversation that was left, and so does a witnessed one whose pair neither writer could write (D9). **[binding — the same answer decides who is told, who may revise the task, and whom D7 keeps from ending]**
 - **A session with no thread** when it assigned is its own asker by its session id, and only that session, whatever it later becomes: no successor is followed for it.
 - **A subagent** (R2). When the task names a subagent, the target's process runs and the outcome is one that is sent now (below), and the target is the very session that assigned the task, the door first tells the subagent itself, through the bridge's message to a running agent (baseline 6), with the notice's text; the bridge's yes means the message was queued for it. A subagent's id means something only in the session that dispatched it, so a successor is never asked to tell one: it is sent the successor's notice. Where the bridge refuses, is not there, or does not answer, the outcome goes to the thread by the rules here, its clause naming the subagent by its id and claiming nothing about whether it still runs.
 
@@ -247,12 +248,13 @@ A thread is not ended by the three-day rule while it is the target of an open bl
 
 ### D9. What is trusted, and the limits
 
-- **Trust.** Every session on the machine runs as the owner and can write the store's file; the store's rules (who revises, the door refusing a session) keep agents that mean well from stepping on each other and are not a defence against one that does not. An agent that strips its environment to complete the human's task is misbehaving in the way one that edits the file is; B5's login-wall scenario records the door and fails if an agent calls it.
+- **Trust.** Every session on the machine runs as the owner and can write the store's file; the store's rules (who revises, the door refusing a session) keep agents that mean well from stepping on each other and are not a defence against one that does not. An agent that strips its environment to complete the human's task is misbehaving in the way one that edits the file is.
 - **Nothing proves an agent read a notice.** sminos writes it to the session's inbox, and the engine can hold or drop a peer's frame without saying so (baseline 5); a thread woken for one can die before reading it. Nothing sends a notice a second time. The start line is what stands behind it, and it is the engine's start context, not a reading either.
 - **An act is named twice** to a session that was told by a notice: once then, once at its next start or compaction.
 - **A wake that was asked can be late**, by up to the daemon's hour, when the door dies between applying the act and sending; and **one act can be named by two notices** when two callers finish that sending at once.
 - A machine that is off shows nothing elsewhere until B4. A machine that is deleted takes its open tasks with it; `devcloud vm down` naming them first is deferred work (Deferred).
-- A fork's history says it assigned tasks that belong to the conversation it was forked from; its start line says so, and their outcomes go to that conversation.
+- **A witnessed `/clear` can leave no pair.** The pair has two writers, `sminos record`'s clear path before the alias is released and the new session's `remind`, each waiting the store's lock its full 10 s. When both fail (each past its wait, or each raising), the alias is released and no pair is written: the outcomes, and the right to revise, stay with the conversation that was left, whose start line still names them. The alias release does not wait on the store, so that a start never hangs on the board.
+- A fork's history says it assigned tasks that belong to the conversation it was forked from; at its start, when the store holds any open task, a sentence of its own in the published set's grammar (`sminos/types/tasks/grammar/texts.md`, `fork`) says so, and their outcomes go to that conversation.
 - The human completes from a terminal, a page or the app, not from a session's own shell escape, which carries the session's id.
 - A notice needs what any message needs: a project the target is a member of. A session that is in none is told at its next start.
 - The session manager's ledger reads the store when the whole picture is built; until then it lists a task only where a session wrote about it.
@@ -263,7 +265,7 @@ A thread is not ended by the three-day rule while it is the target of an open bl
 |---|---|---|---|
 | U1 | With the hook's changed command: what does the permission dialog show; which allow rules still match (a prefix rule for the verb; a rule that names arguments); what does a classic `PreToolUse` check receive; does a secret's handle in the same command still restore | B1, M4 (one live check, each case observed and none asserted beforehand) | A prefix rule that stops matching moves the flag's place before M4 lands; the rest is written beside D2 as found |
 | U2 | sminos's own suite shows an addressed notice waking a thread its human opened, and its live check an idle peer starting a turn. Not shown: a notice alone waking a spawned seat; a notice for the live alone to one recipient, and how its frame reads; a machine cut over to the reach and words gates, where a notice can be gated or wait behind another event; what the engine does with a `tasks` frame in a session that bypasses permission prompts, which sminos's own account says it may hold | B1, M2 (one live check, each case observed and written down) | R12 is the result required for a frame the engine admits. A seat that a notice alone does not wake, or an engine that holds the frame where the owner's sessions run, goes to whoever holds sminos before M2 lands; the start line tells the asker in every case |
-| U3 | How often do agents file an act as a question, or a decision as a task; does a blocked agent mark `blocking` and go on; does a blocked subagent return to its caller with the id; does an agent read the task when told; does any agent complete a task itself | B5 | B5's thresholds, set in its ledger before its runs |
+| U3 | How often do agents file an act as a question, or a decision as a task; do they flood the board with small wants | B5 | B5's thresholds, set in its ledger before its runs |
 | U4 | Another `task` on the PATH (Taskwarrior, go-task) | the ticket board's M1 | its answer binds both destinations |
 
 ## Parent-Level Acceptance
@@ -273,7 +275,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 1. **Assign and go on.** In a terminal session, one Bash call runs `task assign-human --class blocking --title "Log in to the console" …` and `task assign-human --class needed --due <date> --title "Rotate the key" …`. Both print an id; each returns within a second, measured; the session's turn continues.
 2. **The board lists both**, from a terminal that is no session: `sminos task list` prints the blocking one first, each with its project, its asker's alias and state, and the due date; the session's own terminal shows `2 tasks for the human (1 blocking) · …` above the prompt, and the machine raised one notification, for the blocking task.
 3. **The terminal is closed.** Within two passes of the daemon, `sminos task list` shows the blocking task's asker as stopped and to be woken.
-4. **Done, with a note, wakes it.** `sminos task done t1 --note "logged in with account B"` prints a verdict whose `told` is `wake`. The session starts in the background; its first message is the `tasks` notice, naming `t1` and done and nothing an agent wrote; its start context names the act too; it runs `sminos task show t1` and reads the note. `sminos task show t1 --json` shows the notice sent, able to wake, with sminos's answer, and the outcome shown at that start. The project's log holds one notice and not the note.
+4. **Done, with a note, wakes it.** `sminos task done t1 --note "logged in with account B"` prints a verdict whose `told` is `wake`. The session starts in the background; its first message is the `tasks` notice, naming `t1` and done and nothing an agent wrote; its start context names the act too; `sminos task show t1`, run in it, prints the note. `sminos task show t1 --json` shows the notice sent, able to wake, with sminos's answer, and the outcome shown at that start. The project's log holds one notice and not the note.
 5. **A check that fails reopens.** In that session `task reopen t1 --comment "the console still asks for a login"`; `sminos task list` shows `t1` open again, Updated, at revision 2. `sminos task done t1` (revision 1) is refused as stale, saying the current revision.
 6. **A cleared session's task reaches its successor.** A second session assigns a needed task, is cleared, and its successor works in the same terminal. `sminos task show` names the successor as the task's target. `sminos task done --wake` of that task: the successor receives the notice, saying the task was assigned by the conversation it replaced; the cleared conversation is not started; a third session that takes the cleared one's old alias receives nothing.
 7. **A subagent's task.** A subagent assigns a task; `sminos task show` names the subagent. Completed while the subagent runs, the notice is in the subagent's conversation and absent from the main one; completed after it ended, in the main conversation, naming the subagent by its id.
@@ -281,7 +283,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 9. **The local page** (B2): the board at the page server's origin, paired as the sheet's page is, lists what `sminos task list` lists, updates within two seconds of a change, and a card's Done with a note produces A4's effect.
 10. **The MAWS app** (B3): its board lists the same tasks; a task assigned by a MAWS-run session, completed there while that session runs, reaches it as the notice; completed with a wake while its process is gone, a closed task among them, MAWS brings the session up and it is told at its start, once.
 11. **Another machine** (B4): a task on a second machine is listed and completed from the phone, and applied once when the act is sent twice.
-12. **Behaviour** (B5): its four scenarios pass their thresholds with the wording that ships.
+12. **Behaviour** (B5): its scenarios pass their thresholds with the wording that ships.
 
 ## Children
 
@@ -293,7 +295,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** owner of X1, X2, X3, X5, X6; reader of X4; ships X7.
 - **Design inheritance:** D1 to D5, D8 (the command line, the terminal, the notice to the human), D9; U1, U2.
 - **Required:** required.
-- **Status:** dispatchable now: its M1 is built first (R11). Its execution document is `docs/doperpowers/plans/2026-11-27-task-board-b1.md`.
+- **Status:** M1 landed (G1 published); M2 dispatchable now. Its execution document is `docs/doperpowers/plans/2026-11-27-task-board-b1.md`.
 
 ### B1a: The three-day exemption — brief (this repository; whoever holds sminos)
 
@@ -303,7 +305,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** consumer of X3.
 - **Design inheritance:** D7, binding. Advisory: the predicate is one function of the tasks' module over the store and `target_of` (B1's), called with no lock from `sweep_threads`'s test of what is due and from `end_by_rule`'s guard; the line in `daemon.log` follows `holding`'s form.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by B1's M1). One pull request, sminos's version raised, reviewed at the medium rung.
+- **Status:** not-dispatched (dispatchable now: B1's M1 landed). One pull request, sminos's version raised, reviewed at the medium rung.
 
 ### B2: The board on the local page — plan (MAWS)
 
@@ -313,7 +315,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** consumer of X1, X2, X3; writer of X4.
 - **Design inheritance:** D4, D8, D9. Advisory: the page draws from `sminos task list --json` and `show --json`, which carry each asker's state as computed then, and not from the store's file, which does not hold it; it reads again when the file's `seq` moves and on its own interval; it writes only through the door.
 - **Required:** required.
-- **Status:** not-dispatched (blocked-by B1.G1). Its execution document is MAWS's.
+- **Status:** not-dispatched (B1.G1 met; its external edges). Its execution document is MAWS's.
 
 ### B3: The MAWS app's board, and sessions MAWS runs — plan (MAWS)
 
@@ -337,8 +339,8 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 
 ### B5: Behaviour, before the wording ships — brief (this repository)
 
-- **Purpose:** The words agents are told (D2) are tested before they ship: that an agent files an act as a task and a decision as a question, reads and checks a completion itself, and does not flood the board.
-- **Acceptance:** With the sheet's eval harness (`tests/output-styles/`, the sheet's C1), a stand-in `task` that records its calls, and the skill not preloaded (only the start guide's line and the command's help in context), four scenarios meet thresholds B5's ledger sets before its first run: a login wall, met by a subagent, with a door that records its calls (a blocking task is assigned; the subagent returns to its caller with the task's id; the agent goes on with other work or stops cleanly, does not poll, and never calls the door); a decision the agent is blocked on (a question, not a task); a completion told by the notice whose check fails (the agent reads the task, checks, and reopens with a comment); a long job with many small wants (the board is not flooded: needs are batched or not filed). Its result is the wording of X7, and one sentence for the question tool's description with its evidence, handed to the sheet's holder.
+- **Purpose:** The words agents are told (D2) are tested before they ship, against the failure modes the design expects of them: an act filed as a question or a decision filed as a task, and a board flooded with small wants.
+- **Acceptance:** With the sheet's eval harness (`tests/output-styles/`, the sheet's C1), a stand-in `task` that records its calls, and the skill not preloaded (only the start guide's line and the command's help in context), three scenarios meet thresholds B5's ledger sets before its first run, each judged by what ends on the board and the sheet: a login wall, met by a subagent (a task, not a question); a decision the agent is blocked on (a question, not a task); a long job with many small wants (the board is not flooded). What an agent does around them, where it goes next, what it reads and when, is not judged. Its result is the wording of X7, and one sentence for the question tool's description with its evidence, handed to the sheet's holder.
 - **Edges:** blocks: B1's M5.
 - **Contracts:** owner of X7; consumer of X5, X6.
 - **Design inheritance:** D1, D2 ("What agents are told"), D5's notice; U3.
@@ -353,7 +355,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **X4 — The board's address.** A surface that shows the board registers under `$SMINOS_HOME/tasks/surfaces/<name>.json` with the fields of the sheet's surface schema (`v`, `name`, `url`, `reach`, `pid`, `heartbeatAt`), where `url` is the board's own complete address and not the origin it shares with the sheet's page. It is alive while its heartbeat is at most 30 s old and its pid runs, as the command judges it. Writer B2; reader B1.
 - **X5 — The agents' verbs.** D2's names, flags and exits, in `task` and in `sminos task`. Owner B1. The three dispatch branches in the `task` plugin (`show` and `comment` by the id's form, `list --human`), taken before the ticket board's own preflight, and the sentence of the ticket board's D4 they replace ("with those names unused") go to the ticket board's writer before B1's M3.
 - **X6 — The notice.** The program's name `tasks`; D5's texts, for the three outcomes, their clauses, the ended thread's line and the start line, as B1's execution document's §5 fixes them word for word; that a notice whose act asked for no wake is for the live alone; and the rule that none carries text an agent wrote. Owner B1; B3 keeps to it, and a reader of project logs may recognize it.
-- **X7 — What agents are told.** The skill's body, the start guide's line, and the proposed sentence for the question tool's description. Owner B5; B1's M5 ships what B5 passed.
+- **X7 — What agents are told.** The skill's body, the start guide's line, and the proposed sentence for the question tool's description: D2's definitions, and no prescribed act or sequence (R14). Owner B5; B1's M5 ships what B5 passed, and the sentence goes to the sheet's holder with its evidence.
 
 ## Ordering & Dependency Map
 
@@ -377,14 +379,14 @@ B1's M1 waits on nothing: the store, its commands and the door, with every outco
 ## Risks & Mitigations
 
 - **A wake that sminos does not perform.** The wake rests on sminos's notice, which its own suite shows for a thread its human opened and nothing shows for a seat or behind the gates (U2). Mitigation: U2 is checked live in M2; the door never says a wake happened, only that one was asked; and the start line names the act whenever the session next starts.
-- **A notice the agent does not act on.** The notice points and does not carry: an agent that does not read the task misses the human's note. Mitigation: B5's third scenario is exactly this, and the wording ships only once it passes.
-- **The board floods.** An agent that files every want as a task makes the board useless. Mitigation: B5's fourth scenario gates the wording; the store's cap of 500 open tasks is the backstop.
+- **A notice the agent does not act on.** The notice points and does not carry: an agent that does not read the task misses the human's note. Mitigation: the notice names the task and says the human acted, the start line names it again, and what agents are told says that the human's words are read with `sminos task show` (D2); the note inline is Deferred, should reading it by command prove a cost in use.
+- **The board floods.** An agent that files every want as a task makes the board useless. Mitigation: B5's scenario of many small wants gates the wording; the store's cap of 500 open tasks is the backstop.
 - **A changed command surprises the person.** The hook adds text to a command the model wrote. Mitigation: the flag reads plainly, goes only on the two assigning commands, and U1's live check looks at the dialog.
 - **Turns started in many sessions at once.** One human clearing a backlog starts a turn in every idle asker. Each is one notice and one read; the non-blocking declines among them start none.
 
 ## Deferred / Out of Scope
 
-**Deferred (may return):** a notice sent again when one is known not to have been pushed (sminos would have to say so; today the start line covers it). `devcloud vm down` naming the open tasks of the machine it removes (a third plugin; a ticket at materialization). The human's note inline in the notice, should reading it by command prove a cost in B5. A second asker joining a task (the schema allows it). The human re-classing a task. Adoption of a task by another session. A board across machines on the local page. Captured file references in a task's body. The session manager's ledger reading the store.
+**Deferred (may return):** a notice sent again when one is known not to have been pushed (sminos would have to say so; today the start line covers it). `devcloud vm down` naming the open tasks of the machine it removes (a third plugin; a ticket at materialization). The human's note inline in the notice, should reading it by command prove a cost in use. A second asker joining a task (the schema allows it). The human re-classing a task. Adoption of a task by another session. A board across machines on the local page. Captured file references in a task's body. The session manager's ledger reading the store.
 
 **Explicitly out of scope:** the human adding tasks of their own; sync with GitHub issues (R6); events and subscriptions (the owner, 2026-11-24); merging a task's outcome into the sheet's delivery or the sheet's page (R8); any change to the question sheet's code or contract.
 
@@ -394,10 +396,10 @@ The owner approved the spec on 2026-11-27 (R11), as it read at `478da2969` with 
 
 | child | artifact | status |
 |---|---|---|
-| B1 | `docs/doperpowers/plans/2026-11-27-task-board-b1.md` | M1 dispatched next |
-| B1a | ledger at dispatch | not-dispatched (B1's M1) |
-| B2 | MAWS's execution document | not-dispatched (B1.G1) |
-| B3 | MAWS's execution document | not-dispatched (B1.G1) |
+| B1 | `docs/doperpowers/plans/2026-11-27-task-board-b1.md` | M1 landed, pull request #640: G1's set `sminos/types/tasks/` published at version 1, digest `9edb85d31c61efdaffa7ed4eff1b8bcfac9d6868a968d791bac8f061e82c21e6`; M2 next |
+| B1a | ledger at dispatch | not-dispatched (dispatchable now) |
+| B2 | MAWS's execution document | not-dispatched (B1.G1 met; its external edges) |
+| B3 | MAWS's execution document | not-dispatched (B1.G1 met) |
 | B4 | its own cut at dispatch | not-dispatched (deliberately late) |
 | B5 | ledger at dispatch | not-dispatched (dispatchable now) |
 
