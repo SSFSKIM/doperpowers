@@ -121,24 +121,25 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     need TASK_LIVE_REPO
     helper="$here/live_migrate.py"
     python3 "$helper" clear "$TASK_LIVE_REPO"
-    trap 'python3 "$helper" clear "$TASK_LIVE_REPO" || true; rm -rf "$work"' EXIT
+    # On a failure the work directory (the plan, each step's output) is kept and named.
+    status=0 rc=0
+    trap 'rc=$?; python3 "$helper" clear "$TASK_LIVE_REPO" || true
+          if [ "$rc" = 0 ]; then rm -rf "$work"; else echo "migrate: its outputs are kept in $work" >&2; fi' EXIT
     seeded="$(python3 "$helper" seed "$TASK_LIVE_REPO" "$task")"
     count="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$seeded")"
     "$task" migrate plan --repo "$TASK_LIVE_REPO" --out "$work/plan.json" > "$work/plan.out"
     sed -n 2p "$work/plan.out"
     python3 "$helper" settle "$work/plan.json" "$seeded"
-    status=0
-    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply1.out" || status=1
+    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply1.out" 2>&1 || status=1
     tail -n 2 "$work/apply1.out"
-    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply2.out" || status=1
+    "$task" migrate apply "$work/plan.json" --repo "$TASK_LIVE_REPO" > "$work/apply2.out" 2>&1 || status=1
     second="$(grep -o 'writes: [0-9]*' "$work/apply2.out" || echo 'writes: unknown')"
-    set +e
-    "$task" lint --repo "$TASK_LIVE_REPO" > "$work/lint.out"
-    set -e
+    lint_code=0
+    "$task" lint --repo "$TASK_LIVE_REPO" > "$work/lint.out" 2>&1 || lint_code=$?
     fails="$(grep -c '^FAIL ' "$work/lint.out" || true)"
     python3 "$helper" check "$TASK_LIVE_REPO" "$task" "$seeded" || status=1
-    echo "seeded $count issues, one per row of D6's table; applied; lint: $fails FAIL; second apply: $second"
-    if [ "$fails" != 0 ]; then grep '^FAIL ' "$work/lint.out" >&2; status=1; fi
+    echo "seeded $count issues, one per row of D6's table; applied; lint: $fails FAIL, exit $lint_code; second apply: $second"
+    if [ "$lint_code" != 0 ] || [ "$fails" != 0 ]; then cat "$work/lint.out" >&2; status=1; fi
     if [ "$second" != "writes: 0" ]; then cat "$work/apply2.out" >&2; status=1; fi
     if [ "$status" != 0 ]; then cat "$work/apply1.out" >&2; fi
     exit "$status"

@@ -70,6 +70,9 @@ class MigrateCase(BoardCase):
         self.plan_path = self.tmp / "plans" / "plan.json"
 
     # ── helpers ──────────────────────────────────────────────────────────
+    def load_plan(self):
+        return json.loads(self.plan_path.read_text())
+
     def plan(self, *extra):
         code, out, err = self.task("migrate", "plan", "--out", str(self.plan_path), *extra)
         self.assertEqual(code, 0, err)
@@ -178,12 +181,32 @@ class PlanTest(MigrateCase):
         self.assertEqual(code, 0, err)
         path = out.splitlines()[0].split("plan: ", 1)[1]
         self.assertTrue(path.startswith(str((self.tmp / "task-home").resolve())), path)
-        self.assertEqual(json.loads(open(path).read())["repo"], REPO)
+        with open(path) as f:
+            self.assertEqual(json.load(f)["repo"], REPO)
+        code, out2, err = self.task("migrate", "plan")
+        self.assertEqual(code, 0, err)
+        self.assertNotEqual(out2.splitlines()[0], out.splitlines()[0])
+
+    def test_a_plan_never_overwrites_a_file_or_follows_a_link(self):
+        self.plan_path.parent.mkdir()
+        self.plan_path.write_text("someone's file\n")
+        target = self.tmp / "elsewhere.txt"
+        target.write_text("another file\n")
+        link = self.tmp / "plans" / "link.json"
+        link.symlink_to(target)
+        for path in (self.plan_path, link):
+            with self.subTest(path=path.name):
+                code, _, err = self.task("migrate", "plan", "--out", str(path))
+                self.assertEqual(code, 2, err)
+                self.assertIn("exists", err)
+        self.assertEqual(self.plan_path.read_text(), "someone's file\n")
+        self.assertEqual(target.read_text(), "another file\n")
 
     def test_plan_needs_only_a_repository(self):
         self.state["repos"][REPO]["files"] = {}
         self.save()
         self.assertEqual(len(self.plan()[0]["rows"]), 16)
+        self.plan_path.unlink()
         clone = self.clone(defaults={"origin": self.NOREF})
         code, _, err = self.task("migrate", "plan", "--out", str(self.plan_path), cwd=clone, repo=False)
         self.assertEqual(code, 0, err)
@@ -213,6 +236,61 @@ class PlanTest(MigrateCase):
         rows = self.rows(self.plan()[0])
         self.assertEqual(rows[23]["body_after"], "Moved early.\n\nPlan: docs/b.md@abc\n\n```task-record\n"
                          "registered-by: someone\nspec: docs/a.md\n```")
+
+
+class BodyTest(MigrateCase):
+    def test_an_in_flight_ticket_says_which_state_branch_and_pull_request_it_had(self):
+        self.issue(25, title="halfway", labels=["status:in-progress", "bug"], body=(
+            "Work.\n\n<!-- board:meta\nbranch: feat/x\npr: https://github.com/acme/widgets/pull/9\nnote: halfway\n"
+            "-->\n"))
+        self.issue(26, title="theirs", labels=["status:in-review", "bug"], editor=OUTSIDER)
+        rows = self.rows(self.plan()[0])
+        for n, state in ((9, "in-design"), (10, "in-progress"), (11, "in-review"), (12, "confident-ready")):
+            self.assertEqual(rows[n]["body_after"], "Something to do.\n\nBoard state before the relabel: %s, with no "
+                             "branch or pull request recorded." % state)
+        self.assertEqual(rows[25]["body_after"], "Work.\n\nBoard note: halfway\n\nBoard state before the relabel: "
+                         "in-progress, on branch feat/x, with pull request https://github.com/acme/widgets/pull/9.\n")
+        self.assertIsNone(rows[26]["body_after"])
+        self.assertEqual(rows[9]["basis"], "decision")
+        self.decide(self.load_plan())
+        self.flip()
+        code, out, err = self.apply()
+        self.assertEqual(code, 0, out + err)
+        for n in (9, 10, 11, 12, 25):
+            self.assertEqual(self.gh_issue(n)["body"], rows[n]["body_after"], n)
+        self.assertEqual(self.gh_issue(26)["body"], "Something to do.")
+
+    def test_only_the_legacy_spans_change(self):
+        banner = BANNER + "\n---\n\nLine one  \nline two\t \n\n\n```task-record\nregistered-by: someone\n```"
+        meta = ("Text  \nmore\t\n\n<!-- board:meta\nnote: n\n-->\n\n\n```task-record\nspec: a.md\n```")
+        crlf = "Windows text  \r\nhere\r\n\r\n<!-- board:meta\nnote: n\n-->\n"
+        self.ticket(27, body=banner)
+        self.issue(28, title="meta", labels=["status:needs-info"], body=meta)
+        self.issue(29, title="crlf", labels=["status:needs-info"], body=crlf)
+        rows = self.rows(self.plan()[0])
+        self.assertEqual(rows[27]["body_after"], "_Moved from board ticket 66 on the retired board service._\n\n---\n\n"
+                         "Line one  \nline two\t \n\n\n```task-record\nregistered-by: someone\n```")
+        self.assertEqual(rows[28]["body_after"], "Text  \nmore\t\n\nBoard note: n\n\n\n```task-record\nspec: a.md\n```")
+        self.assertEqual(rows[29]["body_after"], "Windows text  \r\nhere\r\n\r\nBoard note: n\n")
+
+    def test_an_outsiders_issue_with_an_old_label_is_relabelled_and_never_takeable(self):
+        self.issue(24, title="a visitor's, enrolled", labels=["status:ready-for-implementer", "priority:P3", "bug"],
+                   author=OUTSIDER, body=META_BODY)
+        rows = self.rows(self.plan()[0])
+        self.assertNotIn(24, self.load_plan()["incoming"])
+        r = rows[24]
+        self.assertEqual((r["action"], r["readiness"], r["horizon"], r["basis"]),
+                         ("relabel", "ready-to-work", "expected", "mechanical"))
+        self.assertFalse(r["seen"]["body_trusted"])
+        self.assertIsNone(r["body_after"])
+        self.decide(self.load_plan())
+        self.flip()
+        self.assertEqual(self.apply()[0], 0)
+        self.assertEqual(self.board_labels(24), ["expected", "ready-to-work"])
+        self.assertEqual(self.gh_issue(24)["body"], META_BODY)
+        self.assertNotIn(24, [t["number"] for t in self.json("list", "--takeable")["tickets"]])
+        listed = next(t for t in self.json("list")["tickets"] if t["number"] == 24)
+        self.assertIn("untrusted-body", listed["not_takeable"])
 
 
 class ApplyRefusalTest(MigrateCase):
@@ -246,6 +324,33 @@ class ApplyRefusalTest(MigrateCase):
         for n in (8, 9, 10, 11, 12, 13, 14):
             self.assertIn("#%d" % n, err)
         self.assertEqual(self.writes(), [])
+
+    def test_a_bad_row_anywhere_stops_the_apply_before_any_write(self):
+        good, _ = self.plan()
+        self.decide(good)
+        self.flip()
+        last = max(r["number"] for r in good["rows"])
+        breaks = (("decided", lambda r: r.update(decided="yes")),
+                  ("why", lambda r: r.update(basis="decision", why=" ")),
+                  ("labels", lambda r: r["seen"].update(labels="status:deferred")),
+                  ("blockers", lambda r: r["seen"].update(blockers=[{"repo": REPO, "number": "3", "state": "open"}])),
+                  ("body", lambda r: r["seen"].update(body="sha256:abc")),
+                  ("state", lambda r: r["seen"].update(state="closed")),
+                  ("twice", None))
+        for name, spoil in breaks:
+            with self.subTest(spoil=name):
+                plan = json.loads(json.dumps(good))
+                row = next(r for r in plan["rows"] if r["number"] == last)
+                if spoil is None:
+                    plan["rows"].append(json.loads(json.dumps(plan["rows"][0])))
+                else:
+                    spoil(row)
+                self.plan_path.write_text(json.dumps(plan))
+                self.clear_log()
+                code, _, err = self.apply()
+                self.assertEqual(code, 2, err)
+                self.assertIn("nothing was written", err)
+                self.assertEqual(self.writes(), [])
 
     def test_a_plan_that_is_no_plan_is_usage(self):
         self.flip()

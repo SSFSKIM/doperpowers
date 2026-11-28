@@ -69,10 +69,11 @@ def _mentions(value):
     return " ".join("#" + t if t.isdigit() else t for t in value.split())
 
 
-def _visible(interior, keep_plan):
-    """The block's lines as the body's (each its own paragraph), and the
-    pinned plan when it is to become the record's `spec:`."""
-    lines, spec = [], None
+def _visible(interior, keep_plan, fold):
+    """The block's lines as the body's, the pinned plan when it is to become
+    the record's `spec:`, and the keys of `fold` set aside (the in-flight
+    line states the branch and pull request itself)."""
+    lines, spec, folded = [], None, {}
     for raw in interior.splitlines():
         if not raw.strip():
             continue
@@ -80,18 +81,21 @@ def _visible(interior, keep_plan):
         key, value = key.strip(), value.strip()
         if not colon or not value:
             lines.append(raw.strip())
+        elif key in fold and key not in folded:
+            folded[key] = value
         elif key == "plan" and "@" in value and keep_plan and spec is None:
             spec = value
         elif key in _LINE_OF:
             lines.append("%s: %s" % (_LINE_OF[key], _mentions(value) if key in _MENTIONS else value))
         else:
             lines.append("Board %s: %s" % (key, value))
-    return lines, spec
+    return lines, spec, folded
 
 
-def _without_banner(text):
-    """The text with the mirror header that opens it replaced, or None when
-    it opens with no such header."""
+def _banner_span(text):
+    """(end, replacement) of the mirror header that opens the text, or None.
+    The header's three lines are replaced by one, which keeps the third's
+    line ending; nothing after it is touched."""
     lines = record.lines_of(text)
     if len(lines) < 3:
         return None
@@ -99,35 +103,57 @@ def _without_banner(text):
     one, three = _BANNER_1.fullmatch(bare[0]), _BANNER_3.fullmatch(bare[2])
     if not (one and three and bare[1] == _BANNER_2 and one.group(1) == three.group(1)):
         return None
-    eol = lines[2][len(bare[2]):]
-    return BANNER_LINE % one.group(1) + eol + "".join(lines[3:])
+    return len(bare[2]) + sum(len(l) for l in lines[:2]), BANNER_LINE % one.group(1)
 
 
-def rewrite(body):
-    """The body the relabel writes, or None when it holds neither a
-    `board:meta` block nor the mirror header. Everything else stays byte
-    for byte; a record block stays last, and a pinned `plan:` becomes its
-    `spec:` when it has none."""
+def in_flight_line(state, branch=None, pr=None):
+    """The visible line a ticket of an in-flight state gets at the relabel
+    (D6): which state, branch and pull request it had."""
+    had = []
+    if branch:
+        had.append("on branch %s" % branch)
+    if pr:
+        had.append("with pull request %s" % pr)
+    return "Board state before the relabel: %s, %s." % (
+        state, ", ".join(had) if had else "with no branch or pull request recorded")
+
+
+def rewrite(body, in_flight=None):
+    """The body the relabel writes, or None when there is nothing to
+    rewrite: no `board:meta` block, no mirror header and no `in_flight`
+    state (the old status of a ticket in flight, which gains a line saying
+    which state, branch and pull request it had). Only those spans change:
+    every other byte of the body stays as it was, the record block stays
+    last, and a pinned `plan:` becomes its `spec:` when it has none."""
     body = body or ""
     parsed = record.parse(body)
     if parsed.misplaced or not parsed.readable:
         return None  # a record the CLI cannot read is not rewritten around
-    prose = parsed.text[:-len(record.SEPARATOR)] if parsed.block and parsed.text.endswith(record.SEPARATOR) \
-        else parsed.text
+    prose, block = parsed.text, body[len(parsed.text):]
     changed, spec = False, None
-    banner = _without_banner(prose)
+    banner = _banner_span(prose)
     if banner is not None:
-        prose, changed = banner, True
+        prose, changed = banner[1] + prose[banner[0]:], True
+    flight = None
     m = meta_match(prose)
     if m:
-        lines, spec = _visible(m.group(1), keep_plan="spec" not in parsed.fields)
-        above = prose[:m.start()].rstrip("\n")
-        shown = "\n\n".join(lines)
-        prose = (above + "\n\n" + shown if above and shown else above or shown) + "\n"
+        lines, spec, folded = _visible(m.group(1), "spec" not in parsed.fields,
+                                       ("branch", "pr") if in_flight else ())
+        if in_flight:
+            flight = in_flight_line(in_flight, folded.get("branch"), folded.get("pr"))
+            lines.append(flight)
+        # The span from the opener to its closer; the newlines around it are the prose's and stay.
+        prose = prose[:m.start()] + "\n\n".join(lines) + prose[m.end(1) + len("\n-->"):]
+        changed = True
+    if in_flight and flight is None:
+        flight = in_flight_line(in_flight)
+        cut = len(prose.rstrip("\r\n"))
+        prose = prose[:cut] + (record.SEPARATOR if cut else "") + flight + prose[cut:]
         changed = True
     if not changed:
         return None
-    if parsed.block is not None:
-        out = record.with_text(body, prose)
-        return record.with_keys(out, {"spec": spec}) if spec else out
-    return record.compose(prose, {"spec": spec}) if spec else prose
+    if not spec:
+        return prose + block
+    if block:
+        return record.with_keys(prose + block, {"spec": spec})
+    return record.with_keys(prose.rstrip("\r\n"), {"spec": spec})

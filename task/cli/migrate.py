@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 import board as B
@@ -48,6 +49,8 @@ TWO_STATUSES = "two status labels: read it for its readiness and horizon"
 UNKNOWN_STATUS = "a status label the mapping does not know: read it for its readiness and horizon"
 NO_STATUS = ("no status label: read it for its readiness and horizon, or leave it untracked (action \"leave\")")
 ACTIONS = ("relabel", "body", "leave")
+# The states a session held a ticket in: such a ticket's body says which it had, and its branch and pull request.
+IN_FLIGHT = ("status:in-design", "status:in-progress", "status:in-review", "status:confident-ready")
 BOARD_AXES = B.READINESS + B.HORIZONS
 
 
@@ -81,7 +84,8 @@ def _row(ticket, login):
     author = (ticket.node.get("author") or {}).get("login")
     seen = {"state": "open", "labels": labels, "body": record.digest(ticket.body),
             "body_trusted": ticket.body_trusted, "blockers": _blockers(ticket)}
-    body_after = legacy.rewrite(ticket.body) if ticket.body_trusted else None
+    flight = [l[len(B.STATUS_PREFIX):] for l in statuses if l in IN_FLIGHT]
+    body_after = legacy.rewrite(ticket.body, ", ".join(flight) or None) if ticket.body_trusted else None
     row = {"number": ticket.number, "title": ticket.node["title"], "seen": seen, "action": "relabel",
            "readiness": None, "horizon": None, "basis": "mechanical", "decided": True, "why": "",
            "body_after": body_after}
@@ -118,11 +122,12 @@ def _inside_a_work_tree(directory):
 
 def _plan_path(out, repo):
     if out is not None:
-        path = pathlib.Path(out).expanduser().resolve()
+        given = pathlib.Path(out).expanduser()
+        path = given.parent.resolve() / given.name  # the file itself is never a link followed
     else:
         home = pathlib.Path(os.environ.get("TASK_HOME") or pathlib.Path.home() / ".claude" / "task")
-        stamp = _now().replace(":", "").replace("-", "")
-        path = home.resolve() / "plans" / ("%s-%s.json" % (repo.replace("/", "-"), stamp))
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        path = home.resolve() / "plans" / ("%s-%s-%s.json" % (repo.replace("/", "-"), stamp, os.urandom(4).hex()))
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tree = _inside_a_work_tree(path.parent)
     if tree is not None:
@@ -132,9 +137,14 @@ def _plan_path(out, repo):
 
 
 def _write_private(path, text):
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """A new file, the owner's alone: an existing file or link at the path is never followed or truncated."""
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        raise usage("%s exists: a plan is written to a new file (give --out another path)" % path)
+    except OSError as e:
+        raise failed("the plan %s cannot be written: %s" % (path, e.strerror))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        os.fchmod(f.fileno(), 0o600)
         f.write(text)
 
 
@@ -190,22 +200,55 @@ def _load_plan(path):
     if not isinstance(data, dict) or data.get("v") != 1 or not isinstance(data.get("rows"), list) \
             or not isinstance(data.get("repo"), str):
         raise usage("%s is no plan of task migrate plan (v 1, a repo and rows)" % path)
+    numbers = set()
     for r in data["rows"]:
         problem = _row_problem(r)
+        if problem is None and r["number"] in numbers:
+            problem = "is given twice"
         if problem:
-            raise usage("the plan's row %s %s" % (r.get("number", "?") if isinstance(r, dict) else "?", problem))
+            raise usage("the plan's row %s %s: nothing was written" % (
+                r.get("number", "?") if isinstance(r, dict) else "?", problem))
+        numbers.add(r["number"])
     return data
 
 
+def _seen_problem(seen):
+    """What apply reads of `seen`, held to its form: the state, the labels,
+    the body's digest and the blockers."""
+    if not isinstance(seen, dict):
+        return "has no seen"
+    if seen.get("state") != "open":
+        return "has a seen state %r (a plan reads open issues only)" % (seen.get("state"),)
+    labels = seen.get("labels")
+    if not isinstance(labels, list) or not all(isinstance(l, str) for l in labels):
+        return "has seen labels that are no list of names"
+    if not isinstance(seen.get("body"), str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", seen["body"]):
+        return "has a seen body that is no digest (sha256: and 64 hex digits)"
+    blockers = seen.get("blockers")
+    if not isinstance(blockers, list) or not all(
+            isinstance(b, dict) and isinstance(b.get("repo"), str) and type(b.get("number")) is int
+            and isinstance(b.get("state"), str) for b in blockers):
+        return "has seen blockers that are no list of {repo, number, state}"
+    return None
+
+
 def _row_problem(r):
-    if not isinstance(r, dict) or not isinstance(r.get("number"), int):
+    """Why a row is no row apply can act on, or None. A row the plan left
+    undecided is held to its form too: it is refused as undecided only once
+    the whole plan is known to be well-formed."""
+    if not isinstance(r, dict) or type(r.get("number")) is not int:
         return "is no row (a number is required)"
-    if not r.get("decided"):
-        return None  # refused as undecided, after the plan is known to be this board's
+    if not isinstance(r.get("decided"), bool):
+        return "has decided %r: true or false" % (r.get("decided"),)
     if r.get("action") not in ACTIONS:
         return "has the action %r: one of %s" % (r.get("action"), ", ".join(ACTIONS))
-    if not isinstance(r.get("seen"), dict) and r["action"] != "leave":
-        return "has no seen"
+    if r["decided"] and r.get("basis") == "decision" and not (isinstance(r.get("why"), str) and r["why"].strip()):
+        return "is a decision settled with no why: the one-line reason the owner reads"
+    if r["action"] == "leave":
+        return None
+    problem = _seen_problem(r.get("seen"))
+    if problem:
+        return problem
     if r["action"] == "relabel" and (r.get("readiness") not in B.READINESS or r.get("horizon") not in B.HORIZONS):
         return "relabels to %r and %r: a readiness (%s) and a horizon (%s)" % (
             r.get("readiness"), r.get("horizon"), ", ".join(B.READINESS), ", ".join(B.HORIZONS))
