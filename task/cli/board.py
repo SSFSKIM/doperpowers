@@ -1,10 +1,9 @@
 """The board's vocabulary (D1, Interfaces §2) and a ticket as the reading
 verbs give it (Interfaces §5): its axes read from its labels, its record
 read from a trusted body (D8), and whether a session may take it on its own
-initiative.
-
-Nothing here reads who holds a ticket: `holder` is null and `held` is never
-a reason until the fold is built (M3)."""
+initiative, the first condition being that the fold of its claim records
+(claims.py) names no holder."""
+import claims
 import record
 
 READINESS = ("ready-to-work", "need-design", "need-input")
@@ -27,6 +26,7 @@ _AXIS = {
     "priority": ("d93f0b", "task board priority"),
     "category": ("1d76db", "task board category"),
     "batch": ("fbca04", "task board batch: a named set one agent takes whole"),
+    "claim": ("c5def5", "task board claim: a thread holds it (its claim records decide; the label shows them)"),
 }
 
 
@@ -42,6 +42,8 @@ def label_spec(name):
         return _AXIS["category"]
     if name.startswith(BATCH_PREFIX):
         return _AXIS["batch"]
+    if name == CLAIMED:
+        return _AXIS["claim"]
     raise KeyError(name)
 
 
@@ -128,6 +130,19 @@ class Ticket:
         self.parsed = record.parse(self.body)
         self.blockers = [{"repo": _repo_of(b), "number": b["number"], "state": ref_state(b)}
                          for b in node["blockedBy"]["nodes"]]
+        reopened = ((node.get("timelineItems") or {}).get("nodes") or [{}])[-1].get("createdAt")
+        self.fold = claims.Fold(claims.records(node.get("comments") or [], lambda c: trusted(c, login)),
+                                self.state == "open", reopened)
+
+    @property
+    def holder(self):
+        """The record that holds the ticket, by the fold; None when unheld."""
+        return self.fold.holder
+
+    @property
+    def label_agrees(self):
+        """Whether `claimed` shows what the fold says (off a closed ticket)."""
+        return (CLAIMED in self.labels) == (self.holder is not None)
 
     @property
     def on_board(self):
@@ -148,6 +163,8 @@ class Ticket:
         reasons = []
         if self.state != "open":
             reasons.append("closed")
+        if self.holder is not None:
+            reasons.append("held")
         if readiness_of(self.labels) != ["ready-to-work"]:
             reasons.append("readiness")
         horizons = horizons_of(self.labels)
@@ -170,17 +187,25 @@ class Ticket:
                 reasons.append("for-another")
         return reasons
 
+    @property
+    def linked(self):
+        """The pull requests and branches GitHub links to the ticket, with
+        their last activity: what lets a reader judge a quiet claim."""
+        n = self.node
+        out = [{"kind": "pr", "number": p["number"], "state": p["state"].lower(), "updated": p["updatedAt"],
+                "url": p["url"]} for p in n["closedByPullRequestsReferences"]["nodes"]]
+        for b in n["linkedBranches"]["nodes"]:
+            ref = b.get("ref")
+            if ref:
+                out.append({"kind": "branch", "name": ref["name"],
+                            "updated": (ref.get("target") or {}).get("committedDate")})
+        return out
+
     def view(self, caller_address, full=True):
         """The object of Interfaces §5 (`list` drops `body` and `comments`)."""
         n = self.node
         reasons = self.not_takeable(caller_address)
-        linked = [{"kind": "pr", "number": p["number"], "state": p["state"].lower(), "updated": p["updatedAt"],
-                   "url": p["url"]} for p in n["closedByPullRequestsReferences"]["nodes"]]
-        for b in n["linkedBranches"]["nodes"]:
-            ref = b.get("ref")
-            if ref:
-                linked.append({"kind": "branch", "name": ref["name"],
-                               "updated": (ref.get("target") or {}).get("committedDate")})
+        linked = self.linked
         priority = _one(priorities_of(self.labels))
         batch = _one(batches_of(self.labels))
         out = {
@@ -198,7 +223,8 @@ class Ticket:
             "parent": {"repo": _repo_of(n["parent"]), "number": n["parent"]["number"]} if n.get("parent") else None,
             "children": [{"repo": _repo_of(c), "number": c["number"], "state": ref_state(c)}
                          for c in n["subIssues"]["nodes"]],
-            "holder": None,
+            "holder": ({"address": self.holder.holder, "claim": self.holder.id, "since": self.holder.created}
+                       if self.holder else None),
             "linked": linked,
             "takeable": not reasons, "not_takeable": reasons,
         }

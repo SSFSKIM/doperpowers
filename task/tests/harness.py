@@ -26,6 +26,28 @@ REVIEWER = {"thread": "44444444-aaaa-4bbb-8ccc-000000000004", "session": "222222
             "ended": False, "local": True, "machine": "laptop", "project": {"id": "p-1", "name": "widgets"},
             "not_carried": ""}
 REVIEWER_ADDRESS = "reviewer#22222222 (widgets on laptop)"
+THREAD = "55555555-aaaa-4bbb-8ccc-000000000005"        # SESSION's thread
+OTHER_THREAD = "66666666-aaaa-4bbb-8ccc-000000000006"  # OTHER_SESSION's thread
+
+
+def thread_answer(thread, session, alias="builder", ended=False, local=True):
+    """What `sminos who --thread=<name>` prints for a thread of this machine."""
+    return {"thread": thread, "session": session, "short": session[:8], "alias": alias,
+            "opened": "2026-11-20T00:00:00Z", "state": "idle", "ended": ended, "local": local, "machine": "laptop",
+            "project": {"id": "p-1", "name": "widgets"}, "not_carried": ""}
+
+
+def claim_body(holder=ADDRESS, attempt="0123456789abcdef"):
+    return "```task-claim\nop: claim\nholder: %s\nattempt: %s\n```" % (holder, attempt)
+
+
+def release_body(of, reason="released"):
+    return "```task-claim\nop: release\nof: %d\nreason: %s\n```" % (of, reason)
+
+
+def takeover_body(of, holder=OTHER_ADDRESS, attempt="fedcba9876543210", reason="forced: the owner said so"):
+    return "```task-claim\nop: takeover\nholder: %s\nattempt: %s\nof: %d\nreason: %s\n```" % (
+        holder, attempt, of, reason)
 
 
 def board_file(binding="task", repo=REPO, **extra):
@@ -53,8 +75,12 @@ class BoardCase(unittest.TestCase):
         self.sm_log = self.tmp / "sminos.log"
         self.state = {"login": ME, "clock": 0, "next_id": 9000, "fail": [], "repos": {}}
         self.add_repo(REPO)
+        mine = thread_answer(THREAD, SESSION)
+        other = thread_answer(OTHER_THREAD, OTHER_SESSION, alias="fixer")
         self.sminos = {"addresses": {SESSION: ADDRESS, OTHER_SESSION: OTHER_ADDRESS},
-                       "threads": {"reviewer": REVIEWER}, "say": {"exit": 0}}
+                       "threads": {"reviewer": REVIEWER, SESSION: mine, THREAD: mine, OTHER_SESSION: other,
+                                   OTHER_THREAD: other},
+                       "say": {"exit": 0}}
         self.save()
 
     # ── the GitHub state ──────────────────────────────────────────────────
@@ -91,6 +117,29 @@ class BoardCase(unittest.TestCase):
         labels = [l for l in (readiness, horizon, priority and "priority:" + priority, category) if l]
         labels += list(kw.pop("extra", ()))
         self.issue(n, labels=labels, **kw)
+
+    def comment(self, n, body, cid, created="2026-11-02T00:00:00Z", author=ME, editor=None, repo=REPO):
+        """A comment seeded on issue n."""
+        self.state["repos"][repo]["issues"][str(n)]["comments"].append(
+            {"id": cid, "author": author, "editor": editor, "createdAt": created, "body": body})
+        self.save()
+
+    def hook(self, match, do, when="before", stdin=None, times=1):
+        """At the next `times` calls that match, the stand-in does `do` (its actions) before the call is served,
+        or after."""
+        self.load()
+        h = {"match": match, "do": do, "when": when, "times": times}
+        if stdin is not None:
+            h["stdin"] = stdin
+        self.state.setdefault("hooks", []).append(h)
+        self.save()
+
+    def index(self):
+        p = self.tmp / "task-home" / "claims.json"
+        return json.loads(p.read_text()) if p.exists() else {"v": 1, "settled": {}, "rows": []}
+
+    def rows(self):
+        return self.index()["rows"]
 
     def gh_issue(self, n, repo=REPO):
         return self.load()["repos"][repo]["issues"][str(n)]

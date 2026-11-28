@@ -13,13 +13,22 @@ State ($TASK_GH_STATE):
                 whose input contains `stdin` when that is given, fails; with
                 `after` it is carried out first and then fails, as a write
                 GitHub accepted whose answer was never heard
+  hooks         [{match, stdin, times, when: before|after, do: [action]}]: a
+                matching call runs its actions before it is served, or after
+                (the call's own write done). An action: {comment: {repo,
+                number, body, author, createdAt}} (`{last}` in the body is the
+                issue's latest comment id), {label: {repo, number, add|remove}},
+                {reopen|close: {repo, number, at}}, {delete_comment: {repo,
+                id}}, {sleep: seconds}, {kill: true} (the calling process,
+                killed as the call returns: a writer that dies after a write)
   repos         {"owner/name": {default_branch, files: {path: text},
                  labels: {name: {color, description}}, next,
                  issues: {"<n>": issue}}}
 An issue: number, title, body, state (OPEN|CLOSED), stateReason, author,
 editor (null), createdAt, labels [names], blocked_by [[repo, n]], parent
 [repo, n] | null, comments [{id, author, editor, createdAt, body}],
-prs [{number, state, updatedAt, url}], branches [{name, committedDate}].
+prs [{number, state, updatedAt, url}], branches [{name, committedDate}],
+reopened [createdAt]: when it was reopened, oldest first.
 
 Each call is appended to $TASK_GH_LOG as {"argv": [...], "stdin": ...}.
 """
@@ -27,7 +36,9 @@ import base64
 import json
 import os
 import re
+import signal
 import sys
+import time
 import urllib.parse
 
 STATE = os.environ["TASK_GH_STATE"]
@@ -137,6 +148,7 @@ def issue_node(s, repo, it):
         "closedByPullRequestsReferences": {"nodes": it.get("prs", [])},
         "linkedBranches": {"nodes": [{"ref": {"name": b["name"], "target": {"committedDate": b["committedDate"]}}}
                                      for b in it.get("branches", [])]},
+        "timelineItems": {"nodes": [{"createdAt": t} for t in it.get("reopened", [])[-1:]]},
     }
 
 
@@ -177,7 +189,7 @@ def graphql(s, op, v):
         more = start + size < len(open_)
         return {"data": {"repository": {"issues": {
             "pageInfo": {"hasNextPage": more, "endCursor": str(start + size) if more else None},
-            "nodes": [issue_node(s, key, it) for it in page]}}}}
+            "nodes": [dict(issue_node(s, key, it), comments=comments_page(it, None)) for it in page]}}}}
     if op in ("TaskAddBlockedBy", "TaskRemoveBlockedBy"):
         key, _, it = parse_node(s, v["issue"])
         bkey, _, blocker = parse_node(s, v["blocker"])
@@ -287,6 +299,11 @@ def rest(s, method, path, params, data):
             it["state"] = "CLOSED"
             it["stateReason"] = {"completed": "COMPLETED", "not_planned": "NOT_PLANNED"}[
                 data.get("state_reason", "completed")]
+        if data.get("state") == "open" and it["state"] != "OPEN":
+            it["state"], it["stateReason"] = "OPEN", "REOPENED"
+            it.setdefault("reopened", []).append(stamp(s))
+            save(s)
+            return {"number": it["number"]}
         stamp(s)
         save(s)
         return {"number": it["number"]}
@@ -315,6 +332,76 @@ def rest(s, method, path, params, data):
         save(s)
         return {"id": cid, "html_url": "https://github.com/%s/issues/%d#issuecomment-%d" % (key, it["number"], cid)}
     fail(404, "Not Found")
+
+
+def delete_comment(s, path):
+    m = re.fullmatch(r"repos/([^/]+/[^/]+)/issues/comments/(\d+)", path.lstrip("/"))
+    if not m:
+        return False
+    _, r = repo_of(s, m.group(1))
+    for it in r["issues"].values():
+        kept = [c for c in it["comments"] if int(c["id"]) != int(m.group(2))]
+        if len(kept) != len(it["comments"]):
+            it["comments"] = kept
+            stamp(s)
+            save(s)
+            return True
+    fail(404, "Not Found")
+
+
+# ── hooks: what another writer does at a chosen moment ─────────────────────
+def act(action):
+    s = load()
+    if "sleep" in action:
+        time.sleep(float(action["sleep"]))
+        return
+    if "kill" in action:
+        os.kill(os.getppid(), signal.SIGKILL)
+        sys.exit(1)  # before the call: it is never served
+    kind = next(k for k in ("comment", "label", "reopen", "close", "delete_comment") if k in action)
+    a = action[kind]
+    _, r = repo_of(s, a.get("repo", next(iter(s["repos"]))))
+    if kind == "delete_comment":
+        for it in r["issues"].values():
+            it["comments"] = [c for c in it["comments"] if int(c["id"]) != int(a["id"])]
+        save(s)
+        return
+    it = issue_of(r, a["number"])
+    if kind == "comment":
+        last = it["comments"][-1]["id"] if it["comments"] else 0
+        cid = int(s.get("next_id", 5000))
+        s["next_id"] = cid + 1
+        at = stamp(s)
+        it["comments"].append({"id": cid, "author": a.get("author", s["login"]), "editor": a.get("editor"),
+                               "createdAt": a.get("createdAt", at), "body": a["body"].replace("{last}", str(last))})
+    elif kind == "label":
+        if a.get("add") and a["add"] not in it["labels"]:
+            it["labels"].append(a["add"])
+        if a.get("remove") in it["labels"]:
+            it["labels"].remove(a["remove"])
+        stamp(s)
+    elif kind == "reopen":
+        it["state"], it["stateReason"] = "OPEN", "REOPENED"
+        it.setdefault("reopened", []).append(a.get("at") or stamp(s))
+    elif kind == "close":
+        it["state"], it["stateReason"] = "CLOSED", a.get("reason", "COMPLETED")
+        stamp(s)
+    save(s)
+
+
+def hooks(when, joined, stdin):
+    s = load()
+    due = []
+    for h in s.get("hooks", []):
+        if (h.get("when", "before") == when and h.get("times", 1) > 0 and h["match"] in joined
+                and h.get("stdin", "") in (stdin or "")):
+            h["times"] = h.get("times", 1) - 1
+            due.append(h)
+    if due:
+        save(s)
+    for h in due:
+        for action in h["do"]:
+            act(action)
 
 
 def refuse(rule):
@@ -371,13 +458,14 @@ def main(argv):
     if path is None or "{owner}" in path or "{repo}" in path:
         sys.stderr.write("stand-in gh: a path that asks the client to resolve a repository: %r\n" % path)
         return 1
-    s = load()
     op = None
     if path == "graphql":
         q = fields.pop("query", "")
         mm = re.search(r"\b(query|mutation)\s+(\w+)", q)
         op = mm.group(2) if mm else None
     joined = " ".join(argv) + " " + (op or "")
+    hooks("before", joined, stdin)
+    s = load()
     after = None
     for rule in s.get("fail", []):
         if rule.get("times", 1) > 0 and rule["match"] in joined and rule.get("stdin", "") in (stdin or ""):
@@ -393,15 +481,18 @@ def main(argv):
         else:
             data = json.loads(stdin) if stdin else {}
             m = method or ("POST" if (stdin or (fields and path != "search/issues")) else "GET")
-            out = rest(s, m, path, fields, data)
+            out = None if m == "DELETE" and delete_comment(s, path) else rest(s, m, path, fields, data)
             if paginate and slurp:
                 out = [out]
     except HTTPError as e:
         print(json.dumps({"message": e.message}))
         sys.stderr.write("gh: %s (HTTP %d)\n" % (e.message, e.status))
         return 1
+    hooks("after", joined, stdin)
     if after is not None:
         return refuse(after)
+    if out is None:
+        return 0
     print(json.dumps(out))
     if isinstance(out, dict) and out.get("errors"):
         sys.stderr.write("gh: %s\n" % out["errors"][0]["message"])

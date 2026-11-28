@@ -1,5 +1,6 @@
-"""`task lint` (Interfaces §6) over a board's open issues: the FAILs, and the
-WARNs that need no fold. It writes nothing."""
+"""`task lint` (Interfaces §6) over a board's open issues: the FAILs and the
+WARNs, the `claimed` label against the fold among them. It writes
+nothing."""
 import shlex
 
 import board as B
@@ -107,6 +108,10 @@ def lint(repo, nodes, login):
             _find(out, "FAIL", n, "a malformed record block (%s)" % "; ".join(t.parsed.problems),
                   "%s, which drops the unreadable block; then set its keys again with --due, --spec and --to"
                   % cmd("set %d --body-file <the prose>" % n))
+        if not t.label_agrees:
+            what = ("`claimed`, and its claims leave it unheld" if B.CLAIMED in labels else
+                    "held by %s (claim %d) without `claimed`" % (t.holder.holder, t.holder.id))
+            _find(out, "WARN", n, what, "%s, which writes the label to agree" % cmd("show %d" % n))
         if horizons == ["planned"] and not t.blockers:
             _find(out, "WARN", n, "planned with no blocker: its order is decided and nothing says after what",
                   "%s, or %s" % (cmd("edge %d --block <N>" % n), cmd("set %d --horizon expected" % n)))

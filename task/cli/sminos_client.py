@@ -36,14 +36,21 @@ def find():
     return str(clone) if clone.exists() else None
 
 
-def _run(args):
+def _call(args):
+    """(the finished process, "") or (None, why: `no sminos`, `timeout`)."""
     cli = find()
     if not cli:
-        return None
+        return None, "no sminos"
     try:
-        return subprocess.run([cli] + args, capture_output=True, text=True, timeout=TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+        return subprocess.run([cli] + args, capture_output=True, text=True, timeout=TIMEOUT), ""
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except OSError:
+        return None, "no sminos"
+
+
+def _run(args):
+    return _call(args)[0]
 
 
 def session_id():
@@ -64,19 +71,21 @@ def address():
 
 
 def thread(name):
-    """`sminos who --thread=<name>`'s answer as a dict, or (None, why)."""
-    done = _run(["who", "--thread=%s" % name])
+    """(`sminos who --thread=<name>`'s answer as a dict, "") or (None, why),
+    `why` opening with what settle reports (`no sminos`, `timeout`, `exit
+    N`, `unreadable answer`)."""
+    done, why = _call(["who", "--thread=%s" % name])
     if done is None:
-        return None, "no sminos answered" if find() else "no sminos CLI was found"
+        return None, why
     if done.returncode != 0:
         said = done.stderr.strip().splitlines()
         return None, "exit %d%s" % (done.returncode, (": " + said[-1]) if said else "")
     try:
         data = json.loads(done.stdout)
     except ValueError:
-        return None, "an answer that is not JSON"
+        return None, "unreadable answer: not JSON"
     if not isinstance(data, dict) or not all(isinstance(data.get(k), t) for k, t in _THREAD_KEYS.items()):
-        return None, "an answer of another shape"
+        return None, "unreadable answer: of another shape"
     return data, ""
 
 

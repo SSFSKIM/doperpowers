@@ -26,6 +26,7 @@ _ISSUE_FIELDS = """
   subIssues(first: 50) { nodes { number state stateReason repository { nameWithOwner } } }
   closedByPullRequestsReferences(first: 20, includeClosedPrs: true) { nodes { number state updatedAt url } }
   linkedBranches(first: 20) { nodes { ref { name target { ... on Commit { committedDate } } } } }
+  timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } }
 """
 _COMMENTS = """comments(first: 100%s) { pageInfo { hasNextPage endCursor }
   nodes { fullDatabaseId author { login } editor { login } createdAt body } }"""
@@ -37,7 +38,7 @@ Q_COMMENTS = """query TaskComments($owner: String!, $name: String!, $number: Int
 Q_BOARD = """query TaskBoard($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     issues(first: 50, after: $cursor, states: [OPEN], orderBy: {field: CREATED_AT, direction: ASC}) {
-      pageInfo { hasNextPage endCursor } nodes { %s } } } }""" % _ISSUE_FIELDS
+      pageInfo { hasNextPage endCursor } nodes { %s %s } } } }""" % (_ISSUE_FIELDS, _COMMENTS % "")
 Q_NODE = """query TaskIssueNode($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { issue(number: $number) {
     id number state stateReason
@@ -152,20 +153,28 @@ class Client:
             raise
         if node is None:
             raise GitHubError("%s has no issue #%d" % (repo, number), not_found=True)
+        self._read_on(owner, name, node)
+        return node
+
+    def _read_on(self, owner, name, node):
+        """Flatten the issue's first page of comments, reading on past it."""
         page = node["comments"]
         comments = list(page["nodes"])
         while page["pageInfo"]["hasNextPage"]:
-            page = self.graphql(Q_COMMENTS, owner=owner, name=name, number=number,
+            page = self.graphql(Q_COMMENTS, owner=owner, name=name, number=node["number"],
                                 cursor=page["pageInfo"]["endCursor"])["repository"]["issue"]["comments"]
             comments += page["nodes"]
         node["comments"] = comments
-        return node
 
     def open_issues(self, repo):
+        """The open issues, each with every comment: one paged query, and a
+        read on for an issue with more comments than its page holds."""
         owner, name = repo.split("/", 1)
         nodes, cursor = [], None
         while True:
             page = self.graphql(Q_BOARD, owner=owner, name=name, cursor=cursor)["repository"]["issues"]
+            for node in page["nodes"]:
+                self._read_on(owner, name, node)
             nodes += page["nodes"]
             if not page["pageInfo"]["hasNextPage"]:
                 return nodes
@@ -202,8 +211,12 @@ class Client:
             self._labels[repo] = {l["name"] for page in pages or [] for l in page or []}
         for name, (color, description) in wanted.items():
             if name not in self._labels[repo]:
-                self.rest("POST", "repos/%s/labels" % repo,
-                          {"name": name, "color": color, "description": description})
+                try:
+                    self.rest("POST", "repos/%s/labels" % repo,
+                              {"name": name, "color": color, "description": description})
+                except GitHubError as e:
+                    if e.status != 422:  # 422: another writer made it a moment ago (several claim at once)
+                        raise
                 self._labels[repo].add(name)
 
     def add_label(self, repo, number, label):
@@ -225,6 +238,14 @@ class Client:
 
     def comment(self, repo, number, body):
         return self.rest("POST", "repos/%s/issues/%d/comments" % (repo, number), {"body": body})
+
+    def delete_comment(self, repo, comment_id):
+        """Delete a comment; one already gone is no failure."""
+        try:
+            self.rest("DELETE", "repos/%s/issues/comments/%d" % (repo, comment_id))
+        except GitHubError as e:
+            if not e.not_found:
+                raise
 
     def add_blocked_by(self, issue_id, blocker_id):
         self.graphql(M_ADD_BLOCKED_BY, issue=issue_id, blocker=blocker_id)

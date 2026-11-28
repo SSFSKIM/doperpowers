@@ -9,6 +9,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import claiming  # noqa: E402
 import migrate  # noqa: E402
 import verbs  # noqa: E402
 from common import FAILED, USAGE, Stop  # noqa: E402
@@ -122,10 +123,38 @@ def parser():
     v.add_argument("number", type=issue_number)
     v.add_argument("--body-file", required=True, metavar="FILE")
 
-    v = verb("close", verbs.close, "close a ticket, completed unless --not-planned")
+    v = verb("close", claiming.close, "close a ticket, completed unless --not-planned; not one another thread "
+             "holds, without --force")
     v.add_argument("number", type=issue_number)
     v.add_argument("--not-planned", action="store_true")
     v.add_argument("--body-file", metavar="FILE", help="a comment written before the close")
+    v.add_argument("--force", metavar="REASON", help="close a ticket another thread holds, saying why")
+
+    v = verb("claim", claiming.claim, "take tickets for this session's thread, one by one; prints which were won")
+    v.add_argument("numbers", type=issue_number, nargs="*", metavar="N")
+    v.add_argument("--batch", metavar="NAME", help="the open tickets of batch:NAME")
+
+    v = verb("release", claiming.release, "set a claimed ticket down")
+    v.add_argument("number", type=issue_number)
+    v.add_argument("--body-file", metavar="FILE", help="prose after the record: where the work stands")
+    v.add_argument("--force", metavar="REASON", help="release another thread's claim, saying why")
+    v.add_argument("--of", type=issue_number, metavar="CLAIM", help="with --force: only while that claim holds")
+
+    v = verb("takeover", claiming.takeover, "take over the current claim: along a /clear's grant, or --force")
+    v.add_argument("number", type=issue_number)
+    v.add_argument("--force", metavar="REASON", help="take over a live thread's claim, saying why")
+
+    machine = Parser(add_help=False)
+    machine.add_argument("--json", action="store_true", help="print JSON")
+    v = verb("held", claiming.held, "what this machine's index says a thread holds, lapsed or is offered; no "
+             "network", (machine,))
+    v.add_argument("--session", required=True, metavar="ID")
+    v.add_argument("--thread", metavar="ID")
+    v.add_argument("--cleared-from", metavar="ID", help="first grant --session the takeover of that thread's "
+                   "claims (a /clear left it)")
+    v = verb("settle", claiming.settle, "make this machine's claims true: each row read again, each thread asked "
+             "whether it has ended", (machine,))
+    v.add_argument("--thread", metavar="ID", help="only that thread's rows")
 
     verb("lint", verbs.lint, "the board's invariants; exit 3 on a FAIL", (on_board, reading))
 
@@ -149,6 +178,10 @@ def parser():
     return p
 
 
+# The verbs that write to GitHub: each first tries again the releases this machine owes on its board.
+WRITERS = ("create", "set", "adopt", "edge", "comment", "close", "claim", "release", "takeover")
+
+
 def main(argv):
     p = parser()
     args = p.parse_args(argv)
@@ -160,7 +193,10 @@ def main(argv):
                          "human's to-dos, are a unit of their own); task works tickets on GitHub boards only\n")
         return USAGE
     try:
-        args.run(verbs.Context(args))
+        ctx = verbs.Context(args)
+        if args.verb in WRITERS or getattr(args, "step", None) == "apply":
+            claiming.retry_owed(ctx)
+        args.run(ctx)
     except Stop as stop:
         if stop.message:
             sys.stderr.write("error: %s\n" % stop.message)

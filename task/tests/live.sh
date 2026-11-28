@@ -4,6 +4,8 @@
 #   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh fork
 #   TASK_LIVE_REPO=<owner>/<scratch> TASK_LIVE_REPO2=<owner>/<scratch2> bash task/tests/live.sh edge
 #   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh migrate
+#   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh race
+#   TASK_LIVE_REPO=<owner>/<scratch> bash task/tests/live.sh lapse
 #
 # TASK_LIVE_REPO names a private scratch repository whose default branch
 # carries .doperpowers/board.json saying binding "task" and naming itself;
@@ -26,8 +28,8 @@ need() {
 }
 
 case "$case" in
-  fork|edge|migrate) ;;
-  *) echo "usage: live.sh fork|edge|migrate  (TASK_LIVE_REPO, and TASK_LIVE_REPO2 for edge)" >&2; exit 2 ;;
+  fork|edge|migrate|race|lapse) ;;
+  *) echo "usage: live.sh fork|edge|migrate|race|lapse  (TASK_LIVE_REPO, and TASK_LIVE_REPO2 for edge)" >&2; exit 2 ;;
 esac
 
 work="$(mktemp -d)"
@@ -140,5 +142,69 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     if [ "$second" != "writes: 0" ]; then cat "$work/apply2.out" >&2; status=1; fi
     if [ "$status" != 0 ]; then cat "$work/apply1.out" >&2; fi
     exit "$status"
+    ;;
+  race)
+    # Twenty rounds of five claimants on fresh tickets (live_race.py says how); each ticket is closed at its
+    # round's end. Any count but one winner a round and no missed claim stops M3 (the spec's Delegated unknowns).
+    need TASK_LIVE_REPO
+    python3 "$here/live_race.py" "$TASK_LIVE_REPO" "$task" "${TASK_LIVE_ROUNDS:-20}"
+    ;;
+  lapse)
+    # A spawned thread claims a fresh scratch ticket with this launcher and is retired; nothing in sminos calls
+    # the plugin, so the release comes from the settle a later `task list` of that board runs on this machine. The
+    # real sminos is used (TASK_LIVE_SMINOS, else PATH, else the marketplace clone), with this case's TASK_HOME.
+    need TASK_LIVE_REPO
+    sm="${TASK_LIVE_SMINOS:-$(command -v sminos || echo "$HOME/.claude/plugins/marketplaces/doperpowers/sminos/skills/sminos/scripts/sminos")}"
+    if [ ! -x "$sm" ]; then echo "live.sh lapse: no sminos CLI found (set TASK_LIVE_SMINOS)" >&2; exit 2; fi
+    printf 'A scratch ticket of task/tests/live.sh lapse: a spawned thread claims it and is retired; closed by it.\n' \
+      > "$work/body.md"
+    made="$("$task" create "live lapse check" --repo "$TASK_LIVE_REPO" --category spike --priority P3 \
+      --readiness ready-to-work --horizon expected --body-file "$work/body.md")"
+    number="${made%% *}"
+    trap '"$task" close "$number" --repo "$TASK_LIVE_REPO" --not-planned --force "live lapse check done" \
+      > /dev/null 2>&1 || true; rm -rf "$work"' EXIT
+    alias="task-lapse-$(date +%s)"
+    "$sm" spawn "$alias" "Run exactly this one command with your Bash tool and reply with its output and nothing \
+else: TASK_HOME='$TASK_HOME' TASK_SMINOS='$sm' '$task' claim $number --repo '$TASK_LIVE_REPO'" \
+      > "$work/spawn.txt" 2>&1 || true
+    # The seat works in the background: its claim is seen in this case's index, within ten minutes.
+    held="$(python3 - "$TASK_HOME/claims.json" "$number" <<'PY'
+import json, sys, time
+deadline = time.time() + 600
+while True:
+    try:
+        rows = json.load(open(sys.argv[1]))["rows"]
+    except (OSError, ValueError):
+        rows = []
+    mine = [r for r in rows if r["number"] == int(sys.argv[2]) and r["state"] == "held" and r["thread"]]
+    if mine or time.time() > deadline:
+        break
+    time.sleep(5)
+print(mine[0]["thread"] if mine else "")
+PY
+)"
+    if [ -z "$held" ]; then
+      echo "lapse: the spawned thread did not hold #$number within ten minutes; its spawn and reply:" >&2
+      cat "$work/spawn.txt" >&2
+      "$sm" reply "$alias" >&2 || true
+      "$sm" retire "$alias" > /dev/null 2>&1 || true
+      exit 1
+    fi
+    "$sm" retire "$alias" > "$work/retire.txt" 2>&1
+    TASK_SMINOS="$sm" TASK_SETTLE_EVERY=1 "$task" list --repo "$TASK_LIVE_REPO" --json > "$work/list.json"
+    "$task" show "$number" --repo "$TASK_LIVE_REPO" --json > "$work/show.json"
+    verdict="$(python3 - "$work/list.json" "$work/show.json" "$number" <<'PY'
+import json, sys
+listed = [t for t in json.load(open(sys.argv[1]))["tickets"] if t["number"] == int(sys.argv[3])]
+show = json.load(open(sys.argv[2]))
+ended = [c for c in show["comments"] if c["trusted"] and c["body"].startswith("```task-claim\nop: release\n")
+         and "\nreason: ended\n" in c["body"]]
+ok = listed and listed[0]["holder"] is None and show["holder"] is None and "claimed" not in show["labels"] and ended
+print("%s listed unheld: %s; release reason ended: %d; label off: %s" % (
+    "ok" if ok else "FAIL", bool(listed) and listed[0]["holder"] is None, len(ended), "claimed" not in show["labels"]))
+PY
+)"
+    echo "a spawned thread ($alias) claimed $TASK_LIVE_REPO#$number and was retired; task list: $verdict"
+    case "$verdict" in ok*) ;; *) exit 1 ;; esac
     ;;
 esac

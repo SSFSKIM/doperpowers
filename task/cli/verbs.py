@@ -1,16 +1,20 @@
 """The ticket verbs (D4): create, show, list, search, set, adopt, edge,
-comment, close and lint. Each works one board, resolved before any call to
-GitHub (config.py), through the one GitHub module (github.py)."""
+comment and lint (the claim verbs and close are claiming.py's). Each works
+one board, resolved before any call to GitHub (config.py), through the one
+GitHub module (github.py)."""
 import datetime
 import json
 import os
 import re
 import shlex
+import sys
 
 import board as B
+import claiming
 import config
 import lint as L
 import record
+import settle as S
 import sminos_client as sminos
 from common import failed, refused, usage
 from github import Client, GitHubError
@@ -224,7 +228,9 @@ def _show_text(v):
     lines.append("on the board: %s  takeable: %s" % (
         "yes" if v["on_board"] else "no (untracked)",
         "yes" if v["takeable"] else "no (%s)" % ", ".join(v["not_takeable"])))
-    lines.append("holder: -")
+    h = v["holder"]
+    lines.append("holder: %s" % ("%s (claim %d, since %s, %s)" % (h["address"], h["claim"], h["since"],
+                                                                   claiming.ago(h["since"])) if h else "-"))
     home = v["repo"]
     lines.append("blocked by: %s" % (", ".join("%s (%s)" % (ref_text(b["repo"], b["number"], home), b["state"])
                                                for b in v["blocked_by"]) or "-"))
@@ -257,8 +263,22 @@ def _show_text(v):
 
 
 def show(ctx):
-    v = ctx.ticket(ctx.args.number).view(ctx.address)
+    t = ctx.ticket(ctx.args.number)
+    if not t.label_agrees:
+        t = _corrected(ctx, t)
+    v = t.view(ctx.address)
     emit(ctx, v, _show_text(v))
+
+
+def _corrected(ctx, t):
+    """`claimed` made to agree with the fold (D3, The label); a write that
+    fails is said and leaves the read as it was."""
+    try:
+        return S.converge(ctx.client, t.login, t)
+    except GitHubError as e:
+        sys.stderr.write("task: #%d's claimed label disagrees with its claims and could not be corrected: %s\n"
+                         % (t.number, e.message))
+        return t
 
 
 def _priority_rank(v):
@@ -271,7 +291,8 @@ def _list_line(v):
     waits += ["%s(stuck)" % ref_text(b["repo"], b["number"], home) for b in v["blocked_by"] if b["state"] in B.STUCK]
     rec = v["record"] or {}
     return "#%-5d %-13s %-9s %-2s holder:%s blocked-by:%s for:%s due:%s  %s" % (
-        v["number"], v["readiness"] or "-", v["horizon"] or "-", v["priority"] or "-", "-", ",".join(waits) or "-",
+        v["number"], v["readiness"] or "-", v["horizon"] or "-", v["priority"] or "-",
+        v["holder"]["address"] if v["holder"] else "-", ",".join(waits) or "-",
         rec.get("for") or "-", rec.get("due") or "-", v["title"])
 
 
@@ -284,6 +305,7 @@ def list_(ctx):
     if a.untracked and (a.takeable or a.readiness is not None or a.horizon is not None or a.claimed or a.unclaimed
                         or a.batch is not None):
         raise usage("--untracked lists the open issues that are not on the board, and takes no other filter")
+    claiming.auto_settle(ctx)
     try:
         nodes = ctx.client.open_issues(ctx.repo)
     except GitHubError as e:
@@ -294,6 +316,8 @@ def list_(ctx):
         t = B.Ticket(ctx.repo, node, login)
         if t.on_board == bool(a.untracked):
             continue
+        if not a.untracked and not t.label_agrees:
+            t = _corrected(ctx, t)
         v = t.view(ctx.address, full=False)
         if a.takeable and not v["takeable"]:
             continue
@@ -315,6 +339,7 @@ def list_(ctx):
     else:
         text = "\n".join(_list_line(v) for v in views)
     emit(ctx, {"repo": ctx.repo, "tickets": views}, text or "(none)")
+    claiming.report_lapsed()
 
 
 def search(ctx):
@@ -563,16 +588,3 @@ def comment(ctx):
     except GitHubError as e:
         raise failed(e.message)
     print(made["html_url"])
-
-
-def close(ctx):
-    a = ctx.args
-    text = read_body_file(a.body_file) if a.body_file is not None else None
-    reason = "not_planned" if a.not_planned else "completed"
-    try:
-        if text is not None:
-            ctx.client.comment(ctx.repo, a.number, text)
-        ctx.client.edit_issue(ctx.repo, a.number, state="closed", state_reason=reason)
-    except GitHubError as e:
-        raise failed(e.message)
-    print("#%d closed, %s" % (a.number, reason.replace("_", " ")))
