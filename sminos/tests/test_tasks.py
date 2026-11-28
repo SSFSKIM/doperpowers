@@ -13,6 +13,9 @@ docs/doperpowers/plans/2026-11-27-task-board-b1.md, M1's Proves; §1 to §3 and 
   no thread; MAWS's lane; records that cannot be read.
 - A real /clear: the pair written before the alias is released, once whichever hook runs first, and by `remind`
   alone when the record hook was cut short.
+- What the tasks' mod reads (M4, `status`): the target's open tasks counted, the session's own open blocking ones
+  newest first and at most fifty, the board's address by the sheet's rule for a registration; no write, no
+  migration.
 
 Hermetic: HOME and SMINOS_HOME are temporary, fresh for each test (test_threads.Machine); sessions are `sleep`
 processes with engine records the test writes, thread records written as sminos_threads keeps them.
@@ -613,6 +616,95 @@ class StartLine(Board):
         self.assertEqual(v["keys"], [])
         self.assertIsNone(self.state()["tasks"]["t1"]["outcomes"][0]["shown"])
         self.assertTrue(tid)
+
+
+# ------------------------------------------------------------ what the mod reads (M4, §4)
+
+
+class Status(Board):
+    def status(self, session):
+        return json.loads(self.ok("status", "--session", session, "--json"))
+
+    def register(self, name="mawsd", url="http://tasks.localhost:47590/board/", reach="local", age=0, pid=None):
+        d = os.path.join(tasks.tasks_dir(), "surfaces")
+        os.makedirs(d, exist_ok=True)
+        sminos.write_json(os.path.join(d, name + ".json"), {"v": 1, "name": name, "url": url, "reach": reach,
+                                                            "pid": pid or os.getpid(),
+                                                            "heartbeatAt": tasks.stamp(time.time() - age)})
+
+    def test_no_store_answers_nothing_open_and_makes_nothing(self):
+        s1 = sid()
+        self.assertEqual(self.status(s1), {"v": 1, "seq": 0, "open": {"count": 0, "blocking": 0}, "mine": [],
+                                           "board": None})
+        self.assertFalse(os.path.exists(tasks.tasks_dir()))
+
+    def test_open_counts_the_targets_tasks_and_mine_its_own_open_blocking_ones_newest_first(self):
+        s1, s2 = sid(), sid()
+        self.assign(s1, title="first")
+        self.assign(s1, cls="needed")
+        self.assign(s2)
+        self.assign(s1, title="third")
+        self.assign(s1, title="closed")
+        self.done("t5")
+        got = self.status(s1)
+        self.assertEqual(got["open"], {"count": 3, "blocking": 2})
+        self.assertEqual([(m["id"], m["title"]) for m in got["mine"]], [("t4", "third"), ("t1", "first")])
+        self.assertEqual(got["mine"][0]["born"], self.state()["tasks"]["t4"]["born"])
+        self.assertEqual(got["seq"], self.state()["seq"])
+        self.assertEqual(self.status(s2)["open"], {"count": 1, "blocking": 1})
+
+    def test_mine_is_the_newest_fifty(self):
+        s1 = sid()
+        for n in range(55):
+            self.assign(s1, title="t%d" % n)
+        got = self.status(s1)
+        self.assertEqual(got["open"], {"count": 55, "blocking": 55})
+        self.assertEqual([m["id"] for m in got["mine"]], ["t%d" % n for n in range(55, 5, -1)])
+
+    def test_a_successor_counts_the_tasks_it_answers_for_and_notifies_none_of_them(self):
+        s1, s2 = sid(), sid()
+        self.thread(s1)
+        self.assign(s1)
+        self.session(sid=s2)
+        self.pair(s1, s2, thread=self.thread(s2))
+        got = self.status(s2)
+        self.assertEqual((got["open"], got["mine"]), ({"count": 1, "blocking": 1}, []))
+        self.assertEqual(self.status(s1)["open"], {"count": 0, "blocking": 0})
+        self.assertEqual([m["id"] for m in self.status(s1)["mine"]], ["t1"], "it assigned it all the same")
+
+    def test_the_board_is_a_live_registration_by_the_sheets_rule(self):
+        s1 = sid()
+        self.register()
+        self.assertEqual(self.status(s1)["board"], {"url": "http://tasks.localhost:47590/board"})
+        for case, kw in (("an old heartbeat", {"age": 31}), ("a process gone", {"pid": 2 ** 22 + 12345})):
+            with self.subTest(case=case):
+                self.register(**kw)
+                self.assertIsNone(self.status(s1)["board"])
+        self.register(reach="local")
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "a b c d"}):
+            self.assertIsNone(self.status(s1)["board"], "a local page does not suit a session over SSH")
+            self.register("other", url="https://board.example/t", reach="remote")
+            self.assertEqual(self.status(s1)["board"], {"url": "https://board.example/t"})
+        self.register("other", url="https://board.example/t", reach="remote")
+        self.assertEqual(self.status(s1)["board"], {"url": "http://tasks.localhost:47590/board"}, "mawsd first")
+        with open(os.path.join(tasks.tasks_dir(), "surfaces", "torn.json"), "w") as f:
+            f.write("{")
+        self.assertEqual(self.status(s1)["board"], {"url": "http://tasks.localhost:47590/board"})
+
+    def test_it_answers_json_alone_and_needs_a_session(self):
+        self.assertEqual(self.t("status", "--session", sid())[0], 2)
+        self.assertEqual(self.t("status", "--json")[0], 2)
+        self.assertEqual(self.t("status", "--session", "nope", "--json")[0], 2)
+        self.assertNotIn("status", self.ok("--help"))
+
+    def test_it_writes_nothing_and_runs_no_migration(self):
+        s1 = sid()
+        self.assign(s1)
+        before = self.raw()
+        with mock.patch.object(sminos, "migrate", side_effect=AssertionError("migrated")):
+            self.status(s1)
+            self.status(s1)
+        self.assertEqual(self.raw(), before)
 
 
 # ------------------------------------------------------------ the target and the asker's rights

@@ -6,11 +6,12 @@ The plugin's one hooks module, `register.tsx` (named by `hooks/hooks.json` under
 
 ## Modules
 
-- `register.tsx`: registers, in this order, the bridge, the backtick guard, the sheet's band, the ask's band, the question sheet, the ask, the address, the name.
+- `register.tsx`: registers, in this order, the tasks' attribution, the bridge, the backtick guard, the sheet's band, the tasks' band, the ask's band, the question sheet, the tasks' reads, the ask, the address, the name.
 - `ask.tsx`: `mcp__sminos__AskUserQuestion`, blocking (the engine's dialog via `$.ui.ask`, widened by its own `tool.call` hook) or async (`[ answer ]`/`[ dismiss ]`, the `N open questions` band, delivery by result, idle prompt or next prompt); withdraws the built-in.
 - `sheet.tsx`: the question sheet, the ask's second form: the start choice, the tool under the sheet's schema, a call staged and ordered as one `sminos sheet step`, the delivery routes, the band and a call's row, the `ask` snapshot and the project-log projection.
 - `sheet-model.tsx`: the sheet's parts that take no `$` (description, schema, the start-choice table, validation, result texts, views' order).
 - `backticks.tsx`: refuses a Bash call that hands `sminos` a backtick the shell would run, by lexing the command; gives up (lets it run) on syntax it does not model.
+- `tasks.tsx`, `tasks-model.tsx`: the Task Board's side: a subagent's `task assign-human` attributed (the flag put after the verb, through the backtick guard's lexer), the open tasks' line above the prompt, a new blocking task's notification; reads `sminos task status`.
 - `address.tsx`: appends `Sminos-Session: …` to the engine's attribution text, from `sminos who --session <id>`, kept with a TTL.
 - `name.tsx`: applies a pending charge name from `$SMINOS_HOME/names/<session>.json` with the engine's `/rename`, on a 15 s idle tick, after `sminos name-due`.
 - `bridge.tsx`: the hooks and the bridge's own code that takes `$`: the session start, the child (`sminos bridge --session <id>`), control ops, the wait for a decision, the guard reads, lane B, launch id.
@@ -46,7 +47,7 @@ Each entry names an area where a plausible change breaks something across module
 - **The mod–child protocol**: `sminos_bridge.py`, `sminos_holder.py` and `CONTROL_OPS` in `bridge.tsx` (lane B refusals); a change on one side needs the other and both gates.
 - **Generated fixtures**: `bridge-routes.tsx` and `tests/mods/gate-fixture.ts` are written from JSON by the commands below; a check fails while they differ.
 - **Engine behavior**: comments say on which engine a behavior was measured (`measured on 2.1.3xx`); a new claim of that kind gets a live check (`tests/mods/live-*-check.py`).
-- **Internal forks** (`SMNS_INTERNAL`): `bridge.tsx`, `address.tsx`, `name.tsx` and `sheet-model.tsx`'s start choice read the marker; `backticks.tsx` does not.
+- **Internal forks** (`SMNS_INTERNAL`): `bridge.tsx`, `address.tsx`, `name.tsx`, `tasks.tsx` and `sheet-model.tsx`'s start choice read the marker; `backticks.tsx` does not.
 
 ## Commands and tests
 

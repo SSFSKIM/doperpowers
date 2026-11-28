@@ -30,6 +30,13 @@ import type { On } from 'claude-code'
  * command's length, it gives up and the call runs: a miss leaves today's
  * behaviour, a wrong refusal stops a session. A hook that throws is skipped
  * and the call runs too.
+ *
+ * The lexer is also the tasks' attribution's (`simpleCommands`, tasks-model.tsx):
+ * a word literal in the command (no quote, escape, expansion or continuation in
+ * it) keeps where it starts and ends in the command's text, in the outer command
+ * and in a list, so a flag can be put after it; a word inside a substitution or
+ * a heredoc's body keeps no place, since what runs there is not the command's
+ * own text at that place.
  */
 
 /** The CLI's verbs (its parser's), which mark a sminos word that is no command word as a call. */
@@ -40,8 +47,12 @@ export const VERBS = new Set([
   'list', 'find', 'who', 'projects', 'machines', 'chart', 'tui', 'attach', 'migrate', 'meta', 'help',
 ])
 
-/** A word as the lexer read it: its text with every expansion as NUL, and the first live backtick span in it. */
-type Word = { text: string; pure: boolean; quoted: boolean; live?: string; redirect?: boolean }
+/**
+ * A word as the lexer read it: its text with every expansion as NUL, and the
+ * first live backtick span in it; for a literal word of the outer command, its
+ * place in the command (`span`, start and end).
+ */
+type Word = { text: string; pure: boolean; quoted: boolean; live?: string; redirect?: boolean; span?: [number, number] }
 /** A simple command: its words in order, the live span of each body it is fed (heredoc, here-string), its pipeline. */
 type Simple = { words: Word[]; bodies: (string | undefined)[]; pipe: number }
 
@@ -63,11 +74,14 @@ class Lexer {
   /**
    * `shared` is every lexer's this one starts (a heredoc body's): the steps
    * left of the whole command's bound, and the pipeline numbers handed out,
-   * so a body's commands never share a pipeline with the command's.
+   * so a body's commands never share a pipeline with the command's. `depth`
+   * counts the substitutions and bodies the lexer is inside: a word keeps its
+   * place only at 0, where `src` is the command itself.
    */
   constructor(
     private readonly src: string,
     private readonly shared: { left: number; pipes: number },
+    private depth = 0,
   ) {}
 
   /**
@@ -239,7 +253,10 @@ class Lexer {
    * backticks no word's here. One that never closes is not judged.
    */
   private substitution() {
-    if (!this.script(true)) throw new GiveUp()
+    this.depth++
+    const closed = this.script(true)
+    this.depth--
+    if (!closed) throw new GiveUp()
   }
 
   /** A backtick span from the opening backtick at `i`: its text, to the matching unescaped backtick or the end. */
@@ -352,6 +369,7 @@ class Lexer {
   /** One word from `i`, to the first blank or operator outside quotes. */
   private word(): Word {
     const src = this.src
+    const start = this.i
     const w: Word = { text: '', pure: true, quoted: false }
     while (this.i < src.length) {
       this.tick()
@@ -390,6 +408,8 @@ class Lexer {
         this.i++
       }
     }
+    // Every expansion is a NUL in the text; a quote, an escape or a continuation marks it quoted.
+    if (this.depth === 0 && !w.quoted && !w.text.includes('\0')) w.span = [start, this.i]
     return w
   }
 
@@ -433,7 +453,7 @@ class Lexer {
     }
     if (quoted) return undefined
     this.tick(end - start + 1)
-    const body = new Lexer(src.slice(start, end), this.shared)
+    const body = new Lexer(src.slice(start, end), this.shared, this.depth + 1)
     const live = body.bodyLive()
     for (const command of body.commands) this.commands.push(command)
     return live
@@ -497,6 +517,27 @@ export function liveBacktick(command: string, steps = STEPS_FLOOR + STEPS_PER_CH
     if (body !== undefined && !fed.has(s.pipe)) fed.set(s.pipe, body)
   }
   return undefined
+}
+
+/** A word of a simple command as `simpleCommands` gives it: `span` only where it is literal in the outer command. */
+export type LexedWord = { text: string; quoted: boolean; redirect: boolean; span?: [number, number] }
+
+/**
+ * The simple commands of `command` as the guard reads them, in the order the
+ * lexer met them (a substitution's after the words before it), each with its
+ * words (a redirect's target marked); undefined where the lexer gives up.
+ */
+export function simpleCommands(command: string, steps = STEPS_FLOOR + STEPS_PER_CHAR * command.length): { words: LexedWord[] }[] | undefined {
+  const lexer = new Lexer(command, { left: steps, pipes: 0 })
+  try {
+    lexer.script(false)
+  } catch (error) {
+    if (error instanceof GiveUp) return undefined
+    throw error
+  }
+  return lexer.commands.map((s) => ({
+    words: s.words.map((w) => ({ text: w.text, quoted: w.quoted, redirect: w.redirect === true, ...(w.span !== undefined && { span: w.span }) })),
+  }))
 }
 
 /**

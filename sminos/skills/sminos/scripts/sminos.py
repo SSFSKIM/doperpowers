@@ -22304,8 +22304,8 @@ def build_parser():
             so.add_argument("--remote", action="store_true")
         so.set_defaults(fn=cmd_sheet)
 
-    # The Task Board (sminos_tasks): the module parses its own verbs. `remind` and `shown` are the start hook's,
-    # dispatched ahead of the migration (main), as the sheet's --session verbs are.
+    # The Task Board (sminos_tasks): the module parses its own verbs. `remind` and `shown` are the start hook's and
+    # `status` the tasks' mod's, dispatched ahead of the migration (main), as the sheet's --session verbs are.
     tk = sub.add_parser("task", add_help=False)
     tk.add_argument("argv", nargs=argparse.REMAINDER)
     tk.set_defaults(fn=cmd_task)
@@ -22535,10 +22535,11 @@ def main(argv=None):
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
         return
-    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"], ["list"], ["show"], ["waiting"]):
+    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"], ["list"], ["show"], ["waiting"], ["status"]):
         # The start hook's two calls (smns-tasks.sh), so a start never waits on the registry's lock, and the readers,
-        # which a page runs on every change and on its interval: no migration, which takes a lock and writes. Their
-        # one write is the store's (text `show`'s `seen`, the hook's steps).
+        # which a page runs on every change and on its interval (and the tasks' mod, `status`, on its own): no
+        # migration, which takes a lock and writes. Their one write is the store's (text `show`'s `seen`, the hook's
+        # steps).
         cmd_task(a)
         return
     if a.cmd == "guide":

@@ -11,7 +11,7 @@ Paths below are named from `sminos/`; `docs/` paths are the repository's.
 | `skills/sminos/scripts/` | The CLI (`sminos.py`), the daemon and its uplink, channels, threads, the sheet's record; its `CLAUDE.md` maps the modules |
 | `bin/sminos` | Runs the CLI; the engine puts a plugin's `bin/` on a session's Bash PATH (`bin/sminos`'s header), so what a session is told names it `sminos` |
 | `hooks/` | Shell hooks (`smns-*.sh`): record, derive on compaction, `/clear` witness, the session-start guide; `hooks/CLAUDE.md` |
-| `hooks/mods/` | Function hooks: bridge, backtick guard, ask tool, question sheet, address, naming; `hooks/mods/CLAUDE.md` |
+| `hooks/mods/` | Function hooks: bridge, backtick guard, ask tool, question sheet, the Task Board's side, address, naming; `hooks/mods/CLAUDE.md` |
 | `skills/sminos/SKILL.md`, `skills/sminos/references/setup.md` | What a member acts on; machine setup (mirror, hub enrollment, daemon, policy) |
 | `skills/manager/` | The owner's read-only session manager (`docs/doperpowers/specs/2026-10-31-session-manager-design.md`); its command imports the CLI's modules and adds no verb |
 | `types/sheet/` | The question sheet's published contract, which MAWS pins; see below |

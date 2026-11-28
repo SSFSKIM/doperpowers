@@ -816,6 +816,57 @@ one that throws is skipped and the call runs too. Registered right after the bri
 bridge reports the refusal as the session saw it (a denied call's trace
 gives the bridge's place rule no verdict). Tests `tests/mods/backticks.test.ts`.
 
+## tasks (`tasks.tsx`, `tasks-model.tsx`)
+
+The Task Board's side in a session (the board itself, its store, door and
+notice, is `sminos task`'s: `skills/sminos/scripts/sminos_tasks.py`; design
+`docs/doperpowers/specs/2026-11-27-task-board-design.md`, child B1, its plan's
+§6 and M4). Three things, none of which writes the store:
+
+- **A subagent's task names the subagent.** A subagent's shell carries its
+  parent's session id and no agent id, so the store alone records the
+  session's thread as the asker. A `tool.call` hook on Bash, registered first
+  in `register.tsx` so every hook after it (the bridge's included) and the
+  person approving the call see the command as it will run, puts
+  `--asker-agent <id> --asker-name <word>` directly after the verb of each
+  simple command that is `task assign-human` or `sminos task assign`, when
+  the call carries an `agentId` whole by `[A-Za-z0-9_.@-]{1,128}` (not
+  beginning with `-`). The command is read with the backtick guard's lexer,
+  which keeps where a literal word stands: the verb must be a literal word of
+  the command itself, so a verb with a quote, escape, expansion or
+  continuation in it, one inside `$( … )` or a heredoc body, a command reached
+  through another (`env task …`, `ssh host task …`), a command the lexer gives
+  up on, one with a numbered redirect before the verb (`task 2>x assign-human`,
+  whose `2` the lexer reads as a word), and one that already carries `--asker-agent` (or a prefix the
+  command's parser takes for it) are left as written. Reserved words that
+  begin a command (`if`, `then`, `do`, `time`, `!`, …) and assignments may
+  stand before the command word. The name is the agent's description, else
+  its type, from `$.agent.list()` at the call, reduced to `[A-Za-z0-9_.-]`
+  (any other run a `-`, none at either end, at most 64), the id alone when
+  nothing remains or the list cannot be read. The hook's `.catch` passes the
+  call on unchanged: a failure never stops a command. What a permission rule,
+  a classic `PreToolUse` hook and the dialog make of the changed command is
+  the live check's (`live-tasks-check.py attributed`), not promised here.
+- **The line above the prompt**, beneath the sheet's: `2 tasks for the human
+  (1 blocking) · <the board>`, counting the open tasks whose target is this
+  session (the blocking part left out at none), the board a live surface's
+  address (`tasks/surfaces/`, X4) or `sminos task list`; nothing with none
+  open, nor while a survey holds the band.
+- **A notification on the machine** (`$.ui.notify`, to the human and no
+  agent) for each blocking task this session assigned after the process's
+  first answer, once a task: `A blocking task for you: <title>`.
+
+All three read `sminos task status --session <id> --json` (a reader: no lock,
+no write, no migration): at the start, then at each tool call, prompt and
+turn's end and on a 5 s timer when one `$.fs.stat` of `tasks/state.json` (or
+the session id, after a `/clear`) differs from the last read that answered,
+and every twelfth tick regardless, since a registration changes without the
+store changing. One read at a time; a failed one is tried again at the next
+look. Where function hooks are off none of this runs, and a session marked
+`SMNS_INTERNAL` registers none of it. Tests `tests/mods/tasks-model.test.ts`,
+`tasks-attribution.test.ts`, `tasks.test.ts`; `test_tasks.py`'s `Status` for
+the command.
+
 ## Developing
 
 ```

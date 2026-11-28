@@ -23,6 +23,7 @@ sminos/types/tasks/, written by sminos/tests/tasks-contract.gen.py and never by 
     tell_agent(session, agent id, text) -> "queued" | "refused:<why>" | "unanswered"
     resolve_due(older=DUE_AFTER) -> [problem]         # every sending due longer than that, as any door call begins
     hourly() -> [problem]                             # the daemon's hourly duty: due sendings, pairs, the prune
+    board_of(now=None) -> {"url"} | None              # the board's address, from tasks/surfaces/ (X4; M4)
 
 Telling the asker (M2). The door decides in the step that applies an act (told, §3's table): where a sending is
 decided the outcome's `send` is `due` in that same replace; then, with the lock let go, `send` tells a running
@@ -1357,6 +1358,9 @@ def parser():
     o = verb("shown", "the start hook's: marks the keys named as shown to the session")
     o.add_argument("--session", required=True)
     o.add_argument("--keys", default="")
+    o = sub.add_parser("status", add_help=False)    # the tasks' mod's own (§4), in no usage text
+    o.add_argument("--session", required=True)
+    o.add_argument("--json", action="store_true")
     return p
 
 
@@ -1798,10 +1802,65 @@ def cmd_shown(a):
     return 0
 
 
+MINE_MAX = 50      # the open blocking tasks `status` names a session as having assigned, newest first
+
+
+def board_of(now=None):
+    """The board's address for a session's line (X4): the registrations under tasks/surfaces/ read by the rule the
+    sheet's command reads its own by (sminos_sheet.surfaces, suiting): only names ending in `.json`, the sheet's
+    fields and bounds, alive while the heartbeat is at most 30 s old and the pid runs; `mawsd` first, then by name;
+    a `local` one does not suit a session over SSH. `{"url"}` with one trailing slash taken off, or None."""
+    sheet, now = sminos.sheet_module(), clock() if now is None else now
+    d = os.path.join(tasks_dir(), "surfaces")
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        return None
+    regs = []
+    for n in names:
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                r = json.load(f)
+        except (OSError, ValueError):        # gone since the listing, half-written, not JSON
+            continue
+        if not (isinstance(r, dict) and r.get("v") == 1 and isinstance(r.get("name"), str)
+                and sheet.SURFACE_NAME_RE.fullmatch(r["name"]) and type(r.get("pid")) is int and r["pid"] >= 1
+                and isinstance(r.get("url"), str) and 0 < len(r["url"]) <= sheet.SURFACE_URL_MAX
+                and r.get("reach") in ("local", "remote") and isinstance(r.get("heartbeatAt"), str)
+                and sheet.TIME_RE.fullmatch(r["heartbeatAt"])):
+            continue
+        beat = epoch(r["heartbeatAt"])
+        url = r["url"][:-1] if r["url"].endswith("/") and len(r["url"]) > 1 else r["url"]
+        alive = beat is not None and now - beat <= sheet.HEARTBEAT_S and sminos.pid_alive(r["pid"])
+        regs.append((r["name"] != "mawsd", r["name"], n, {"url": url, "reach": r["reach"], "alive": alive}))
+    chosen, _ = sheet.suiting([x[-1] for x in sorted(regs, key=lambda x: x[:3])],
+                              bool(os.environ.get("SSH_CONNECTION")))
+    return {"url": chosen["url"]} if chosen else None
+
+
+def cmd_status(a):
+    """The tasks' mod's read (§4): this session's target's open tasks counted, the open blocking tasks it assigned
+    itself (its own new ones raise the human's notification), and the board's address. A reader: no lock, no
+    write, no pair bound, and no migration (sminos.main dispatches it ahead), since the mod runs it on a timer."""
+    session = session_arg(a.session)
+    if not a.json:
+        raise Refused(EXIT_USAGE, "status answers --json only")
+    state, memo = _reader_state(), {}
+    open_ = [t for t in state["tasks"].values() if t.get("state") == "open"]
+    target = [t for t in open_ if target_of(state, t, memo)["session"] == session]
+    mine = sorted((t for t in open_ if t.get("class") == "blocking" and (t.get("askers") or [{}])[0].get("session")
+                   == session), key=lambda t: -t["born"])[:MINE_MAX]
+    print(jline({"v": V, "seq": state["seq"],
+                 "open": {"count": len(target), "blocking": sum(1 for t in target if t.get("class") == "blocking")},
+                 "mine": [{"id": t["id"], "title": t["title"], "born": t["born"]} for t in mine],
+                 "board": board_of()}))
+    return 0
+
+
 VERBS = {"assign": cmd_assign, "revise": cmd_revise, "comment": cmd_comment, "withdraw": cmd_withdraw,
          "reopen": cmd_reopen, "show": cmd_show, "list": cmd_list, "waiting": cmd_waiting,
          "done": lambda a: cmd_done(a, "done"), "decline": lambda a: cmd_done(a, "decline"), "act": cmd_act,
-         "remind": cmd_remind, "shown": cmd_shown}
+         "remind": cmd_remind, "shown": cmd_shown, "status": cmd_status}
 
 
 def run(argv):
