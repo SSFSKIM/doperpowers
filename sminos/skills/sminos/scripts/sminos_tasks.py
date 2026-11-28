@@ -919,11 +919,13 @@ def parser():
     def verb(name, help):
         return sub.add_parser(name, help=help, description=help)
 
-    def wake(o):
+    def wake(o, whose=""):
         o.add_argument("--wake", dest="wake", action="store_const", const=True, default=None,
-                       help="start the asker's stopped conversation for this act")
+                       help=whose + "the human's choice: wake the asker's conversation for this act if it "
+                       "has stopped (a blocking task's default)")
         o.add_argument("--no-wake", dest="wake", action="store_const", const=False,
-                       help="never start it for this act; it reads the act at its next start")
+                       help=whose + "the human's choice: do not wake it; it reads the act at its next start (any other "
+                       "task's default)")
 
     def body(o, what="the body"):
         o.add_argument("--body-file", default=None, metavar="F|-", help="%s, read from the file F, or from "
@@ -933,10 +935,10 @@ def parser():
         o.add_argument("--due", default=None, metavar="YYYY-MM-DD", help="the date it is needed by")
         o.add_argument("--no-due", action="store_true", help="no date")
 
-    def key(o):
-        o.add_argument("--key", default=None, metavar="UUID", help="the act's key: the same command again with it "
-                       "answers the first verdict and applies nothing (minted and printed on standard error when "
-                       "not given)")
+    def key(o, whose=""):
+        o.add_argument("--key", default=None, metavar="UUID", help=whose + "the act's key: the same command again "
+                       "with it answers the first verdict and applies nothing (minted and printed on standard error "
+                       "when not given)")
 
     o = verb("assign", "give the human a task, from a session; prints its id and its line")
     o.add_argument("--class", dest="cls", required=True, choices=CLASSES,
@@ -948,7 +950,8 @@ def parser():
     o.add_argument("--tag", action="append", default=[], help="a tag (repeatable)")
     o.add_argument("--asker-agent", default=None, metavar="ID", help="the subagent that assigns it")
     o.add_argument("--asker-name", default=None, metavar="N", help="that subagent's name")
-    o = verb("revise", "change a task this session assigned; the fields given are replaced")
+    o = verb("revise", "change an open task this session is the asker of (it assigned it, or took its asker's "
+             "place at a /clear); the fields given are replaced")
     o.add_argument("id")
     o.add_argument("--title", default=None, help="a new title")
     body(o, "a new body")
@@ -960,9 +963,9 @@ def parser():
     o.add_argument("id")
     o.add_argument("text", nargs="?", default=None, help="the comment, or give --body-file")
     body(o, "the comment")
-    key(o)
-    wake(o)
-    o = verb("withdraw", "close a task this session assigned, as no longer needed")
+    key(o, "the human's comment only: ")
+    wake(o, "the human's comment only: ")
+    o = verb("withdraw", "close an open task this session is the asker of, as no longer needed")
     o.add_argument("id")
     o.add_argument("--reason", default="", help="why, shown to the human")
     o = verb("reopen", "open again a task the human marked done, saying why")
@@ -973,7 +976,7 @@ def parser():
     o.add_argument("--json", action="store_true", help="the task as stored, with its target")
     o = verb("list", "the open tasks, one line each")
     o.add_argument("--closed", action="store_true", help="the closed ones of the last 30 days instead")
-    o.add_argument("--all", action="store_true", help="open and closed")
+    o.add_argument("--all", action="store_true", help="the open ones and those closed in the last 30 days")
     o.add_argument("--mine", action="store_true", help="only those that answer to this session")
     o.add_argument("--json", action="store_true", help="as JSON")
     o = verb("waiting", "the human's acts that no start of their asker has shown yet")
@@ -985,7 +988,7 @@ def parser():
         if op == "done":
             o.add_argument("--note", dest="text", default=None, help="a note for the asker")
         else:
-            o.add_argument("--reason", dest="text", default=None, help="why, for the asker")
+            o.add_argument("--reason", dest="text", required=True, help="why, for the asker (not empty)")
         key(o)
         wake(o)
     verb("act", "the door: the human's acts as JSON lines on standard input, a verdict a line on standard output")

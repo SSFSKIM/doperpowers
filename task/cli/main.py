@@ -53,7 +53,8 @@ def parser():
                ".doperpowers/board.json on that remote's default branch as last fetched; --repo owner/name works "
                "a board from anywhere. Tasks on the human's board, which sminos keeps on this machine: "
                "assign-human, revise, withdraw and reopen, show and comment given a task's id (t<n>), and list "
-               "--human, each run as the matching sminos task verb. A verb's flags: task <verb> --help.")
+               "--human, each run as the matching sminos task verb. A verb's flags: task <verb> --help (on the "
+               "human's board: task show t1 --help, task comment t1 --help, task list --human --help).")
     p.add_argument("--version", action="version", version=version())
     sub = p.add_subparsers(dest="verb", metavar="<verb>", parser_class=Parser)
 
