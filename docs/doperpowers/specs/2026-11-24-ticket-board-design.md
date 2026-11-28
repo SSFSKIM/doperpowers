@@ -809,7 +809,7 @@ At apply each row's issue is read again and is one of three things. Of its label
       "lapsed":  [ { "repo", "number", "title", "url", "reason", "at" } ],
       "offered": [ { "repo", "number", "title", "url", "claim", "since" } ] }
 
-`held` and `lapsed` are the named thread's rows (empty without `--thread`); `offered` is the held rows whose `successor` is the named session. `--cleared-from` first sets `successor` to that session on the held rows of the thread it names.
+`held` and `lapsed` are the named thread's rows (empty without `--thread`): `held` its held rows and its owed ones, whose claim still stands on GitHub until the release is written (an owed release is retried only on a fresh answer that the thread has ended; a live answer makes the row held again), and `lapsed` only rows whose claim has ended; `offered` is the held rows whose `successor` is the named session. `--cleared-from` first sets `successor` to that session on the held rows of the thread it names.
 
 `task settle [--thread <thread id>] --json`:
 
