@@ -1897,6 +1897,19 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
   /** The Stop the module keeps for its session now, if any. */
   const keptStop = (h: { kept: Map<string, unknown> }) => (h.kept.get('sminos.sheet') as { session?: string; stoppedAt?: string }).stoppedAt
 
+  test('a Stop recorded between an idle reservation and its hop lets the reservation go: an answer accepted after the Stop goes in one submit with the reserved one', async () => {
+    const rec = record()
+    const h = await started(rec)
+    await answered(h, rec, out('k1', 'q1'))
+    // Reserved, its hop not yet run; another main turn starts and is stopped meanwhile.
+    await h.turnStart('t1')
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    await answered(h, rec, out('k2', 'q2', { acceptedAt: AFTER }))
+    await h.hop()
+    expect(h.submits).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
+  })
+
   test('an answer accepted in the same millisecond as the Stop is held; one a millisecond after it wakes the session', async () => {
     const { h, rec } = await stopped()
     const at = keptStop(h) as string
