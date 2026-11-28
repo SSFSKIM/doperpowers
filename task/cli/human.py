@@ -17,7 +17,8 @@ runs `assign`; `list --human` runs `list` without the flag), sminos found as
 every call `task` makes to it is (`sminos_client.find`), bounded at
 `sminos_client.TIMEOUT`. Standard input, output and error are this process's
 own, handed over unread, so a heredoc's body reaches sminos byte for byte and
-what sminos prints is what the caller reads. The exit is kept when it is 0, 2
+what sminos prints is what the caller reads: a verb's `--help` is sminos's,
+its usage and its flags. The exit is kept when it is 0, 2
 or 3, the codes the two commands share (done, usage, refused); anything else,
 sminos's 75 (its store's lock not had) and a signal included, is 1.
 """
@@ -52,6 +53,12 @@ def form(argv):
     return None
 
 
+def asks_help(args):
+    """Whether `args` ask a verb for its help, as argparse reads them: `-h` or `--help` before any `--`."""
+    head = args[:args.index("--")] if "--" in args else args
+    return "-h" in head or "--help" in head
+
+
 def run(verb, args):
     """Run `sminos task` with `args` (what `form` gave for `verb`); the exit
     `task` ends with."""
@@ -60,6 +67,10 @@ def run(verb, args):
                          % (verb, args[1], verb))
         return USAGE
     cli = sminos_client.find()
+    if cli and verb != args[0] and asks_help(args):
+        # sminos's help names its own verb (`sminos task assign`): say which `task` runs.
+        sys.stdout.write("task %s runs sminos task %s, whose help this is:\n" % (verb, args[0]))
+        sys.stdout.flush()
     if not cli:
         sys.stderr.write("task %s: the human's board is kept by sminos, which is not installed here (looked for: "
                          "TASK_SMINOS, else sminos on the PATH, else the doperpowers marketplace's clone)\n" % verb)
