@@ -1736,7 +1736,7 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([])
   })
 
-  test('E4: stopped answers that fill two envelopes: the prompt that enters takes the first and ends the hold, and once that turn ends with its answer the second goes by the idle route', async () => {
+  test('E4: stopped answers that fill two envelopes: the prompt that enters takes the first, its turn\'s start ends the hold, and once that turn ends with its answer the second goes by the idle route', async () => {
     const rec = record([], { per: 1 })
     const h = await started(rec)
     await h.turnStart('t1')
@@ -1747,8 +1747,9 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([])
     const first = envelopeOf([out('k1', 'q1')], 'main', true)
     expect(((await h.prompt('go on')) as { context?: string[] }).context).toEqual([first])
-    expect((h.kept.get('sminos.sheet') as { stoppedAt?: unknown }).stoppedAt).toBeUndefined()
+    expect(keptStop(h)).toBeDefined()
     await h.turnStart('t2')
+    expect(keptStop(h)).toBeUndefined()
     await h.append({ door: 'hook-context', origin: PROMPT_ROW, text: first })
     await h.settle()
     await h.turnComplete('t2', 'answer')
@@ -1757,13 +1758,18 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([envelopeOf([out('k2', 'q2')], 'main')])
   })
 
-  test('a prompt that is dropped beneath does not end the hold; one that enters does', async () => {
+  test("a prompt dropped beneath, a slash command and a subagent's turn end no hold; a main turn's start does", async () => {
     const { h, rec } = await stopped()
     await h.prompt('dropped', {}, async () => ({ drop: 'a hook beneath' }))
-    expect((h.kept.get('sminos.sheet') as { stoppedAt?: unknown }).stoppedAt).toBeDefined()
+    await h.prompt('/review', { command: { name: 'review', args: '' } })
+    await h.turnStart('s1', 'a1')
+    await h.turnComplete('s1', 'answer', 'a1')
+    expect(keptStop(h)).toBeDefined()
     await answered(h, rec, out('d2', 'q2', { kind: 'dismiss' }))
     await h.hop()
     expect(h.submits).toEqual([])
+    await h.turnStart('t2')
+    expect(keptStop(h)).toBeUndefined()
   })
 
   test('E5: a reload after the Stop keeps it: the reloaded module drains the record and opens no idle route, and an answer accepted after the Stop still wakes it', async () => {
@@ -1842,12 +1848,14 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([envelopeOf([out('k1', 'q1')], 'main')])
   })
 
-  test("the mod's own idle prompt entering ends the hold, as a prompt that enters does", async () => {
+  test("the mod's own idle prompt's turn starting ends the hold; its submit's answer alone does not", async () => {
     const { h, rec } = await stopped()
     await answered(h, rec, out('k2', 'q2', { acceptedAt: AFTER }))
     await h.hop()
     expect(h.submits).toHaveLength(1)
-    expect((h.kept.get('sminos.sheet') as { stoppedAt?: unknown }).stoppedAt).toBeUndefined()
+    expect(keptStop(h)).toBeDefined()
+    await h.turnStart('t2')
+    expect(keptStop(h)).toBeUndefined()
   })
 
   test('an idle reservation made before a turn that ends aborted before the hop submits nothing; what it held rides the next prompt', async () => {
@@ -1900,13 +1908,10 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2'), out('k3', 'q3')], 'main')])
   })
 
-  test("the mod's own idle prompt ends the hold once it enters, whichever comes first, its row or its submit's answer, and when it entered without the envelope; a dropped one does not", async () => {
-    for (const order of ['row first', 'submit first', 'stripped', 'dropped'] as const) {
+  test("the idle prompt's own turn stopped before its submit's late acknowledgement keeps the new Stop, whichever comes first, its row or that answer, with the envelope or without it", async () => {
+    for (const order of ['row first', 'submit last', 'stripped'] as const) {
       let enter: () => void = () => {}
-      const { h, rec } = await stopped({
-        submit: (text) =>
-          new Promise((resolve) => (enter = () => resolve(order === 'stripped' ? { text: 'a hook rewrote it' } : order === 'dropped' ? { drop: 'a hook said no' } : { text }))),
-      })
+      const { h, rec } = await stopped({ submit: (text) => new Promise((resolve) => (enter = () => resolve(order === 'stripped' ? { text: 'a hook rewrote it' } : { text }))) })
       await answered(h, rec, out('k2', 'q2', { acceptedAt: AFTER }))
       await h.hop()
       expect(h.submits).toHaveLength(1)
@@ -1915,11 +1920,18 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
         await h.settle()
         expect(steps(h, 'landed').flatMap((s) => s.keys as string[]).sort()).toEqual(['k1', 'k2'])
       }
-      expect(keptStop(h)).toBeDefined()
+      const first = keptStop(h)
+      await h.turnStart('ours')
+      expect(keptStop(h)).toBeUndefined()
+      await h.turnComplete('ours', 'aborted')
+      await h.settle()
+      const second = keptStop(h)
+      expect(second).toBeDefined()
+      expect(Date.parse(second as string)).toBeGreaterThanOrEqual(Date.parse(first as string))
       enter()
       await h.settle()
-      if (order === 'dropped') expect(keptStop(h)).toBeDefined()
-      else expect(keptStop(h)).toBeUndefined()
+      await h.hop()
+      expect(keptStop(h)).toBe(second)
     }
   })
 
@@ -1954,35 +1966,45 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     }
   })
 
-  test('a prompt typed over a turn and admitted, then that turn ending aborted (a message preempted it), keeps no Stop; the aborted end, then the prompt, keeps none either; the turn such a prompt opens, stopped, does', async () => {
+  test('a prompt folded into the running turn starts none: that turn stopped holds; a preempting message\'s turn, started after the aborted end, ends the hold, and one started before it leaves none set', async () => {
     const rec = record()
     const h = await started(rec)
     await h.turnStart('t1')
-    await h.prompt('instead', { turnId: 't1' })
+    await h.prompt('also this', { turnId: 't1' })
+    await answered(h, rec, out('k1', 'q1'))
     await h.turnComplete('t1', 'aborted')
     await h.settle()
-    expect(keptStop(h)).toBeUndefined()
-    await h.turnStart('t2')
-    await h.turnComplete('t2', 'aborted')
-    await h.settle()
     expect(keptStop(h)).toBeDefined()
+    // A dismissal sent since opens no idle route for the answer held at the Stop.
+    await answered(h, rec, out('d2', 'q2', { kind: 'dismiss' }))
+    await h.hop()
+    expect(h.submits).toEqual([])
 
+    // The preempting message: the old turn's aborted end, then the new turn's start.
     const h2 = await started(record())
     await h2.turnStart('t1')
+    await h2.prompt('instead', { turnId: 't1' })
     await h2.turnComplete('t1', 'aborted')
     await h2.settle()
     expect(keptStop(h2)).toBeDefined()
-    await h2.prompt('instead', { turnId: 't1' })
+    await h2.turnStart('t2')
     expect(keptStop(h2)).toBeUndefined()
-    // A prompt into an idle session whose turn has started by the time its hooks resolve: that turn's Stop holds.
-    await h2.prompt('go', {}, async (e) => (await h2.turnStart('t2'), { text: e.text, context: e.context, origin: e.origin }))
-    await h2.turnComplete('t2', 'aborted')
-    await h2.settle()
-    expect(keptStop(h2)).toBeDefined()
+
+    // The new turn's start read first: the aborted end sets nothing.
+    const h3 = await started(record())
+    await h3.turnStart('t1')
+    await h3.prompt('instead', { turnId: 't1' })
+    await h3.turnStart('t2')
+    await h3.turnComplete('t1', 'aborted')
+    await h3.settle()
+    expect(keptStop(h3)).toBeUndefined()
+    await h3.turnComplete('t2', 'aborted')
+    await h3.settle()
+    expect(keptStop(h3)).toBeDefined()
   })
 
-  test("a prompt entered while a reload's session.start has not restored the choice keeps the Stop from being taken up, its hooks resolving before the restore or after it", async () => {
-    for (const when of ['before', 'after'] as const) {
+  test("a main turn that starts while a reload's session.start has not restored the choice keeps the Stop from being taken up; a prompt admitted then, which starts none, does not", async () => {
+    for (const what of ['turn', 'prompt'] as const) {
       const { h, rec } = await stopped()
       const reloaded = sheetOn({ kept: h.kept, step: rec.script })
       let restore: () => void = () => {}
@@ -1994,18 +2016,13 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
       }
       const starting = reloaded.start()
       await reloaded.settle()
-      let admit: () => void = () => {}
-      const admitted = reloaded.prompt('a person writes', {}, (e) => new Promise((resolve) => (admit = () => resolve({ text: e.text, context: e.context, origin: e.origin }))))
-      await reloaded.settle()
-      if (when === 'before') admit()
-      await reloaded.settle()
+      if (what === 'turn') await reloaded.turnStart('t2')
+      else await reloaded.prompt('a person writes')
       restore()
       await starting
       await reloaded.settle()
-      if (when === 'after') admit()
-      await admitted
-      await reloaded.settle()
-      expect(keptStop(reloaded)).toBeUndefined()
+      if (what === 'turn') expect(keptStop(reloaded)).toBeUndefined()
+      else expect(keptStop(reloaded)).toBeDefined()
     }
   })
 
