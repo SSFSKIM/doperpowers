@@ -565,7 +565,7 @@ assert_contains "$triage" '이 프로토콜은 `ready-for-architect`로 티켓�
     "triage protocol states it never births an architect-lane ticket"
 assert_contains "$triage" "설계가 앞서야 하는 항목도 \`needs-human\`입니다" \
     "design-heavy feedback parks needs-human for the human to route"
-assert_contains "$decomposing" "parent-pin" "decomposing doctrine names the dispatch-time pin"
+assert_contains "$decomposing" "parent pin" "decomposing doctrine names the pin a child cites (the composite's commit as the child received its section)"
 
 # Worker mode is a SECOND implementation of the dispatcher (the live cloud
 # routine runs it, not src/dispatch.ts), so the provenance fencing that

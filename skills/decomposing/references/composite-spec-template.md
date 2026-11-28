@@ -6,16 +6,13 @@
 > node — "Milestone 5", "Phase 2", … — annotation only; delete if the
 > project doesn't use one]. **Consumes:** [existing canon/upstream
 > artifacts this unit builds on, if any — delete if none; an artifact
-> that participates in this unit's contracts or edges is a CHILD
+> that participates in this unit's contracts or edges is a child
 > (possibly already landed), not a Consumes entry]. Children dispatch
-> per their grain hint, each carrying its section as its spec; each
-> child's artifact (brief or plan, ledger, findings, PR, ticket — or a
-> composite child's own composite spec) opens by citing this document
-> (path + child id + parent pin) — except a child that landed before this cut: it
-> cannot cite forward, so the citation runs backward (its child section
-> and the Tracking Map point at its artifact). For a coupled
-> goal this document is doperpowers:brainstorming's approved design
-> spec extended in place — design up top, roadmap below, one document.
+> per their grain hint, each carrying its section as its spec; a child's
+> artifacts (brief or plan, ledger, findings, PR, ticket — or a composite
+> child's own composite spec) open by citing this document (path + child
+> id + parent pin). A child that landed before this cut cannot cite
+> forward: its section and the Tracking Map point at its artifact.
 
 ## Purpose
 
@@ -24,7 +21,7 @@ Purpose first; mechanics later.]
 
 ## Parent-Level Acceptance
 
-[The observable state that closes this unit AS A WHOLE — not the sum of
+[The observable state that closes this unit as a whole — not the sum of
 child acceptances. What can a user/operator do, see, or rely on when this
 unit is done? Behavior-phrased, checkable. May include disjunctions over
 child gates ("gate G2 passes OR the conditional spike's findings are
@@ -84,7 +81,7 @@ assigned to the child or spike that will answer them.]
 
 [X1, X2, … — each a shared interface, invariant, ordering rule, or
 definition two or more children must agree on. Exact names and shapes
-where known. What is landed here is the AUTHORITY — who owns the
+where known. What is landed here is the authority — who owns the
 contract and whom it binds; content may be delegated to the owner child
 (name the owner and the gate that delivers the content). Children
 re-litigate neither. A contract — or a named clause of one — written to
@@ -120,13 +117,14 @@ one is also an invariant, cross-reference its contract id.]
 
 [child id → ledger (or ticket #), plus its plan / findings / composite
 spec where one exists, and status. Its first line names the commit your
-human partner approved. This map plus the children's Status fields IS
-this unit's progress record — there is no separate Progress section. Keep it current as children land; a landed child's row carries
+human partner approved. This map plus the children's Status fields is
+this unit's Progress, the one living-spec.md asks of every spec; a
+composite keeps no separate section. Keep it current as children land; a landed child's row carries
 its closing evidence and points at the ledger whose outcome section is
 the child's retrospective.]
 
 ## Outcomes & Retrospective
 
-Pending — written when the unit closes. Closing is a RECOMPOSITION check:
+Pending — written when the unit closes. Closing is a recomposition check:
 verify Parent-Level Acceptance as written — all children landed is not the
 same event — then retrospect.
