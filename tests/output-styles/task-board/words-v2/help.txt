@@ -1,0 +1,14 @@
+The human's task board (this machine's, kept by sminos; these work in any directory):
+
+  task assign-human --class blocking|needed|optional --title "..." [--body-file F|-] [--due YYYY-MM-DD] [--tag x]...
+        a task for the human; prints its id and the line they will see, and returns at once
+        --class      blocking: you cannot go on without it; needed: it must be done at some point; optional
+        --body-file  the body, Markdown, from a file or from standard input (-): what to do, why, and how the
+                     human knows it is done
+  task show t7 [--json]            the task whole: its body, its comments, what the human did and their words
+  task list --human [--mine] [--closed|--all] [--json]    the board, blocking first
+  task revise t7 [--title ...] [--body-file F|-] [--class ...] [--due ...|--no-due] [--tag x]... [--no-tags]
+        change a task you assigned; the human sees it marked Updated
+  task comment t7 "..." | --body-file F|-    a comment on an open task
+  task withdraw t7 [--reason "..."]          take back a task you assigned
+  task reopen t7 --comment "..."             put a task the human marked done back on the board, saying why

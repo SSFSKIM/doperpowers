@@ -20,6 +20,7 @@ The owner supervises many agent sessions. A session often needs the human to do 
 - [x] (2026-11-27T23:41Z) The owner changed how a completion returns, having read what the envelope cost in this document ("sminos inbox로 바꾼다 (Recommended)", R9). D5 is the notice; the extraction of the sheet's routes and everything that served the envelope are gone from the design and from B1.
 - [x] (2026-11-27) One `doperpowers:adversarial-reviewer` round on the rewritten delivery and on B1's re-cut execution, folded. Review stops here; what it changed since the owner's ruling is "Since the approval".
 - [x] (2026-11-28) Two rulings of the owner's on what agents are told: R15 keeps one direction (the body says how the human knows it is done), R16 has B5 measure every behaviour around a task, not only the three it judges.
+- [x] (2026-11-28) B5: the words settled over 100 counted sessions, at the scale the owner cut the plan to ("약 60세션, 애매할 때만 추가 (Recommended)"). Its thresholds are met; one measured failure, a session looking for the human's board with the ticket board's `task list`, earned the words' one line of guidance; D2 is rewritten for what the words carry and who reads each.
 - [ ] Children: the Tracking Map.
 
 ## Terms
@@ -73,6 +74,7 @@ Events and subscriptions are out of this scope ("이번에는 뺀다 (Recommende
 - **The notice names no alias** (D5), though one was allowed: the clause for a successor and for a subagent's thread says what is needed without one, and the ended line goes to a log others read.
 - **A sending a dead door left is finished late, not retried at once** (D5): by the next call of the door on the machine or, within the hour, by the daemon. A notice once written is retried by sminos alone.
 - **The three-day exemption's second half** (D7) is an act that asked for a wake, not yet shown at a start and younger than three days, from the moment it is applied.
+- **What agents are told lost one definition and gained one line** (D2), on B5's runs. The approved list had the words say that the door refuses any agent session, so that the human's acts are the human's alone; no session of 100 completed or declined a task or called the door to act, none of those with most reason to had read the words, and the door's refusal says why when a session meets it, so the words do not carry it. They gained the line that tells the human's board's list from the ticket board's. D2 also says now which text reaches whom: a subagent never reads the guide's line.
 
 ## Grounding Baseline
 
@@ -144,7 +146,7 @@ The verbs are a thin front over the store's commands in sminos (D3): each runs `
 - A permission rule or a classic `PreToolUse` check that depends on the arguments after the verb sees one more argument. U1 looks at what the engine does with each; no rule is promised to match.
 - Where the mod is not loaded the asker is the thread alone. An agent that writes the flag itself is believed: it is a delivery hint.
 
-**What agents are told.** In the plugin's skill (`task:human-tasks`), in one line of sminos's start guide, and in one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence). They describe the board and what its verbs do, and leave when and how to use them to the agent (R14). One direction they carry (R15): the body says how the human knows the task is done. The definitions they carry: D1's line between a task, an act only the human can do in the world, and a question; what `blocking`, `needed` and `optional` mean; that the human's acts reach the asker as a notice naming the task and what the human did, and are named again at its next start, and that the human's words are read with `sminos task show`; that "done" is the human's word about their step, and a task can be reopened; that the door refuses any agent session, so the human's acts are the human's alone. What an agent does after assigning a task, or on being told of an act, is its own judgment, and nothing in them prescribes it unless B5 measured a failure there (R16). The words are B5's to settle before they ship (X7).
+**What agents are told.** In four texts, each read by whoever its place reaches: one line of sminos's start guide, read by a main session at its start and never by a subagent (the guide is a SessionStart hook's); the plugin's skill (`task:human-tasks`), whose description is in every session's and every subagent's skill listing and whose body is read by a session that invokes it; the help `task` prints for the human's board's verbs; and one sentence of the question tool's description (the sheet's holder's to place; B5 hands them the sentence with its evidence). So a subagent learns of the board from the skill's description alone, and the description and the guide's line each carry D1's line. They describe the board and what its verbs do, and leave when and how to use them to the agent (R14). One direction they carry (R15): the body says how the human knows the task is done. The definitions they carry: D1's line between a task, an act only the human can do in the world, and a question; what `blocking`, `needed` and `optional` mean; that the human's acts reach the asker as a notice naming the task and what the human did, and are named again at its next start, and that the human's words are read with `sminos task show`; that "done" is the human's word about their step, and a task can be reopened. One line of guidance, for the failure B5 measured (R16): `task list --human` shows the board, and `task list` alone is the repository's tickets; a session told that a task was on the board looked for it with the ticket board's verb in 10 runs of 13, and in one concluded that the task did not exist. What an agent does after assigning a task, or on being told of an act, is its own judgment, and nothing in them prescribes it. The words are B5's (X7): `docs/doperpowers/plans/2026-11-27-task-board-b5-words.md`, with the evidence for each part.
 
 ### D3. The store
 
@@ -348,7 +350,7 @@ The unit closes when this holds on one Mac with the released plugins, each line 
 - **Contracts:** owner of X7; consumer of X5, X6.
 - **Design inheritance:** D1, D2 ("What agents are told"), D5's notice; U3.
 - **Required:** required.
-- **Status:** not-dispatched (dispatchable now; it needs no built store).
+- **Status:** done, one pull request (branch `task-board-b5`), not merged. Its thresholds, set before its runs and restated at the scale the owner cut them to, are met on the wording it proposes: `login` 9 of 10 and 5 of 5, `decision` 10 of 10 and 5 of 5, `wants` 0 of 10 flooded; 100 counted sessions over two rounds. One measured failure earned one line (D2). The ledger is `docs/doperpowers/plans/2026-11-27-task-board-b5-ledger.md`, the words with their evidence `docs/doperpowers/plans/2026-11-27-task-board-b5-words.md`, the eval `tests/output-styles/task-board-eval.py`. Not run: `wants` and the wrong completion on Fable, the start line, a decline or a comment's notice (the ledger's "Not verified").
 
 ## Cross-Child Contracts
 
@@ -404,7 +406,7 @@ The owner approved the spec on 2026-11-27 (R11), as it read at `478da2969` with 
 | B2 | MAWS's execution document | not-dispatched (B1.G1 met; its external edges) |
 | B3 | MAWS's execution document | not-dispatched (B1.G1 met) |
 | B4 | its own cut at dispatch | not-dispatched (deliberately late) |
-| B5 | ledger at dispatch | not-dispatched (dispatchable now) |
+| B5 | `docs/doperpowers/plans/2026-11-27-task-board-b5-ledger.md`; the words, `docs/doperpowers/plans/2026-11-27-task-board-b5-words.md` | done, in review: its thresholds met on the words it proposes (v2), D2 rewritten for them; not merged. B1's M5 ships them; the question tool's sentence waits on the sheet's holder |
 
 ## Outcomes & Retrospective
 
