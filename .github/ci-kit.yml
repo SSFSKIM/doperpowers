@@ -247,6 +247,15 @@ gates:
     timeout: 5
     paths: ["skills/query-transcript/**", "bin/**", "tests/query-transcript/**", ".github/ci-kit.yml", ".github/workflows/**"]
 
+  # Every tracked CLAUDE.md under its word budget (1,500): each is read whole by
+  # every session and subagent working beneath it. The script carries a dated
+  # allowance for the files still over budget, emptied as they come under it.
+  - name: claudemd-budget
+    setup: false
+    run: python3 scripts/check-claudemd-budget.py
+    timeout: 2
+    paths: ["CLAUDE.md", "**/CLAUDE.md", "scripts/check-claudemd-budget.py", ".github/ci-kit.yml", ".github/workflows/**"]
+
   - name: repo-checks
     # Fast checks of the repo as a whole: the lint script's own test, doc
     # cross-references, the version bump (per plugin), the review engine, the
