@@ -2001,6 +2001,15 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     await h3.turnComplete('t2', 'aborted')
     await h3.settle()
     expect(keptStop(h3)).toBeDefined()
+
+    // The old turn's aborted end read only after the new turn has also ended: it sets nothing either.
+    const h4 = await started(record())
+    await h4.turnStart('t1')
+    await h4.turnStart('t2')
+    await h4.turnComplete('t2', 'answer')
+    await h4.turnComplete('t1', 'aborted')
+    await h4.settle()
+    expect(keptStop(h4)).toBeUndefined()
   })
 
   test("a main turn that starts while a reload's session.start has not restored the choice keeps the Stop from being taken up; a prompt admitted then, which starts none, does not", async () => {
