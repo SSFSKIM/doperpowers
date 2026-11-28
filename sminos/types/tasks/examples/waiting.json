@@ -4,6 +4,26 @@
  "waiting": [
   {
    "at": "2026-11-27T16:15:00.000Z",
+   "key": "t1.1",
+   "kind": "done",
+   "send": null,
+   "seq": 21,
+   "state": "done",
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a1",
+    "state": "running",
+    "thread": "7d000000-0000-4000-8000-0000000000b1",
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "task": "t1",
+   "wake": true
+  },
+  {
+   "at": "2026-11-27T16:15:00.000Z",
    "key": "t2.1",
    "kind": "done",
    "send": {
@@ -56,35 +76,6 @@
   },
   {
    "at": "2026-11-27T16:15:00.000Z",
-   "key": "t4.1",
-   "kind": "done",
-   "send": {
-    "agent": null,
-    "answer": "sent",
-    "at": "2026-11-27T16:20:00.000Z",
-    "how": "notice",
-    "liveOnly": true,
-    "project": "1c0de000-0000-5000-8000-0000000000aa",
-    "session": "5eed0000-0000-4000-8000-0000000000a1",
-    "state": "sent"
-   },
-   "seq": 24,
-   "state": "done",
-   "target": {
-    "project": "1c0de000-0000-5000-8000-0000000000aa",
-    "runner": "terminal",
-    "session": "5eed0000-0000-4000-8000-0000000000a1",
-    "state": "running",
-    "thread": "7d000000-0000-4000-8000-0000000000b1",
-    "via": "self",
-    "wake": null,
-    "why": ""
-   },
-   "task": "t4",
-   "wake": true
-  },
-  {
-   "at": "2026-11-27T16:15:00.000Z",
    "key": "t5.1",
    "kind": "done",
    "send": {
@@ -110,6 +101,30 @@
     "why": ""
    },
    "task": "t5",
+   "wake": true
+  },
+  {
+   "at": "2026-11-27T16:15:00.000Z",
+   "key": "t6.1",
+   "kind": "done",
+   "send": {
+    "at": "2026-11-27T16:20:00.000Z",
+    "state": "none",
+    "why": "not-addressable"
+   },
+   "seq": 26,
+   "state": "done",
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a1",
+    "state": "running",
+    "thread": "7d000000-0000-4000-8000-0000000000b1",
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "task": "t6",
    "wake": true
   },
   {
@@ -158,6 +173,66 @@
     "why": ""
    },
    "task": "t8",
+   "wake": true
+  },
+  {
+   "at": "2026-11-27T16:15:00.000Z",
+   "key": "t9.1",
+   "kind": "done",
+   "send": null,
+   "seq": 29,
+   "state": "done",
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a4",
+    "state": "ended",
+    "thread": "7d000000-0000-4000-8000-0000000000b3",
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "task": "t9",
+   "wake": true
+  },
+  {
+   "at": "2026-11-27T16:15:00.000Z",
+   "key": "t10.1",
+   "kind": "done",
+   "send": null,
+   "seq": 30,
+   "state": "done",
+   "target": {
+    "project": "1c0de000-0000-5000-8000-0000000000aa",
+    "runner": "terminal",
+    "session": "5eed0000-0000-4000-8000-0000000000a4",
+    "state": "ended",
+    "thread": "7d000000-0000-4000-8000-0000000000b3",
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "task": "t10",
+   "wake": true
+  },
+  {
+   "at": "2026-11-27T16:15:00.000Z",
+   "key": "t11.1",
+   "kind": "done",
+   "send": null,
+   "seq": 31,
+   "state": "done",
+   "target": {
+    "project": null,
+    "runner": "maws",
+    "session": "5eed0000-0000-4000-8000-0000000000a3",
+    "state": "gone",
+    "thread": null,
+    "via": "self",
+    "wake": null,
+    "why": ""
+   },
+   "task": "t11",
    "wake": true
   }
  ]

@@ -51,6 +51,11 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
 - **Every applied line is kept by its key**, `seen` and `shown` too, and is one change of the store (`seq` + 1)
   even where it changed nothing else. A verdict that is not `applied` (stale, closed, unknown, refused) is not
   kept and changes nothing; the same line again is judged again.
+- **What the door checks** is what the schema says, and no more loosely: a task's id is `t` and a positive integer
+  with no leading zero and no cap (`^t[1-9][0-9]*$`), an outcome's key that id, `.` and another; a revision is a
+  positive integer. A field is of its type exactly: a boolean is no integer, an integer no boolean, and an integer
+  is written without a fraction or exponent (`1`, never `1.0`). A text that must say something is any string but
+  `""`: whitespace is text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied.
 - **The order of the refusals.** A key already used comes first (the stored verdict, or `key-reused`); then an
   unknown id; then a task no longer open (`closed`); then a revision that is not current (`stale`).
 - **`seen`** raises `seenSeq` to the line's `seq`, never lowers it, and never past the store's `seq` before the
@@ -60,7 +65,8 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
   outcome; an agent's has `outcome: null`.
 - **`wake`** is resolved at the act: the line's when it is not null, else whether the task is blocking.
 - **Until M2** every outcome is written with `send: null` and `endedLine: null`, and `told` is `next-start` but for
-  `ended` and `maws`; the schemas carry every value M2 fills (`examples/state.json`).
+  `ended` and `maws`; the schemas carry every value M2 fills (`examples/state.json`, where each `told` is paired
+  with a `send` a step can reach: a send only with `now` or `wake`).
 - **The readers.** `list --json` gives the tasks in the order of their ids' numbers, `waiting --json` the outcomes
   by `seq`; the text forms order as §3 says. `list --closed` is the closed tasks whose `closed.at` is within 30
   days, `--all` those and the open ones.

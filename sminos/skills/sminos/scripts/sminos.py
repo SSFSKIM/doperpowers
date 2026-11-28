@@ -12049,8 +12049,10 @@ def record_session(project, session, tpath, event, last_message="", source="", o
         if left and os.path.exists(os.path.join(root(), "tasks", "state.json")):
             # The Task Board's pair, while the witness still answers: the release renames the session left.
             try:
-                tasks_module().cleared(left, session, wait=max(0.0, (_RECORD_DEADLINE or time.time() + 10)
-                                                              - time.time()))
+                # The store's full wait, past the hook's own bound: a pair not written now may be written nowhere
+                # once the alias is released (remind's own write is the other chance). The record's timer is
+                # paused for it, so the release after it still runs whatever the wait took.
+                _timer_paused(tasks_module().cleared, left, session)
             except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the release goes on
                 daemon_log("record: the Task Board's pair %s -> %s was not written: %s"
                            % (left[:8], session[:8], getattr(e, "message", e)))
@@ -12294,6 +12296,16 @@ def _record_expired(_signum, _frame):
     raise RecordTimeout()
 
 
+def _timer_paused(fn, *args):
+    """fn(*args) with the record's interval timer (run_record's) paused, the time it had left given back after."""
+    left, _ = signal.setitimer(signal.ITIMER_REAL, 0)
+    try:
+        return fn(*args)
+    finally:
+        if left:
+            signal.setitimer(signal.ITIMER_REAL, left)
+
+
 def _record_gave_up(seconds, behind):
     try:
         daemon_log("record: gave up after %gs, %s; the next Stop retries" % (seconds, behind))
@@ -12318,7 +12330,9 @@ def run_record():
     heals: the position moves only after the batch, so the next Stop retries,
     and a batch cut mid-write is completed then, since the batch drops what
     the file already holds and an append ends a torn line. Every other verb
-    keeps waiting on the same locks.
+    keeps waiting on the same locks. One wait runs past the deadline, with the
+    timer paused: a /clear's Task Board pair (the store's full 10 s), since
+    the release after it leaves no witness to write it from.
 
     Before all of it, a spawned session's SessionStart claims the provenance
     its launch left for it (claim_launch): it needs only the payload's
@@ -22365,8 +22379,10 @@ def main(argv=None):
         # migration, so a session's hooks never wait on the registry's lock.
         cmd_sheet(a)
         return
-    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"]):
-        # The start hook's two calls (smns-tasks.sh): no migration, so a start never waits on the registry's lock.
+    if a.cmd == "task" and a.argv[:1] in (["remind"], ["shown"], ["list"], ["show"], ["waiting"]):
+        # The start hook's two calls (smns-tasks.sh), so a start never waits on the registry's lock, and the readers,
+        # which a page runs on every change and on its interval: no migration, which takes a lock and writes. Their
+        # one write is the store's (text `show`'s `seen`, the hook's steps).
         cmd_task(a)
         return
     if a.cmd == "guide":

@@ -4,7 +4,8 @@ Every text the board writes for an agent is built from these fixed words, a task
 subagent's id, and nothing else: no title, no body, no agent's comment, no subagent's name, no alias, no note of
 the human's (D5). `texts.examples.json` holds an example of each form, with the fields it was built from.
 
-    id      = "t" 1*DIGIT
+    id      = "t" pos
+    pos     = %x31-39 *DIGIT                       ; a positive integer, no leading zero, no cap
     word    = "marked " id " done" / "declined " id / "commented on " id
     agent   = 1*128( ALPHA / DIGIT / "_" / "." / "@" / "-" )
 
@@ -52,7 +53,7 @@ holds any open task.
 
     remind = keys LF [ start LF ] [ fork LF ]
     keys   = [ okey *( " " okey ) ]                  ; an empty line for none
-    okey   = id "." 1*DIGIT
+    okey   = id "." pos                       ; the outcome's task, then its number
 
 The first line is the keys of the outcomes `acted` names, in its order, which the hook hands to
 `sminos task shown --keys` once the rest is printed; the hook prints everything after it.

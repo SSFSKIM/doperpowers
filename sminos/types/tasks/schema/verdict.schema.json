@@ -1,11 +1,11 @@
 {
  "$defs": {
   "outcomeKey": {
-   "pattern": "^t[1-9][0-9]{0,8}\\.[1-9][0-9]{0,8}$",
+   "pattern": "^t[1-9][0-9]*\\.[1-9][0-9]*$",
    "type": "string"
   },
   "taskId": {
-   "pattern": "^t[1-9][0-9]{0,8}$",
+   "pattern": "^t[1-9][0-9]*$",
    "type": "string"
   },
   "uuid": {

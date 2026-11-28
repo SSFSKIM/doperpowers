@@ -60,8 +60,8 @@ def sha(data):
 
 T_TIME = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"}
 T_UUID = {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
-T_TASK = {"type": "string", "pattern": "^t[1-9][0-9]{0,8}$"}
-T_OKEY = {"type": "string", "pattern": "^t[1-9][0-9]{0,8}\\.[1-9][0-9]{0,8}$"}
+T_TASK = {"type": "string", "pattern": "^t[1-9][0-9]*$"}
+T_OKEY = {"type": "string", "pattern": "^t[1-9][0-9]*\\.[1-9][0-9]*$"}
 T_DATE = {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
 T_TAG = {"type": "string", "pattern": "^[a-z0-9-]{1,32}$"}
 T_SHA = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
@@ -504,52 +504,76 @@ case("shown-keys", "the start hook's second call: exactly the keys remind named,
 
 # ------------------------------------------------------------------ examples: every value, every shape
 
+T3, T9 = tid("b3"), tid("b9")                                      # a thread that ended, a thread a /clear left
+S4 = sid("a4")                                                     # the ended thread's last session
+TARGET_RUNNING = {"session": S1, "thread": T1, "project": PROJECT, "state": "running", "runner": "terminal",
+                  "wake": None, "why": "", "via": "self"}
+TARGET_ENDED = {"session": S4, "thread": T3, "project": PROJECT, "state": "ended", "runner": "terminal",
+                "wake": None, "why": "", "via": "self"}
+TARGET_MAWS = {"session": S3, "thread": None, "project": None, "state": "gone", "runner": "maws", "wake": None,
+               "why": "", "via": "self"}
+TARGET_HELD = {"session": S2, "thread": T2, "project": PROJECT, "state": "stopped", "runner": "terminal",
+               "wake": "held", "why": "mode", "via": "cleared"}
+
+
 def every_value():
     """A store with an outcome for each `told` (in `applied`) and each value of `send`, so what M2 fills is in the
-    schema now."""
+    schema now: each pair of them one a step can reach (§3's table). A send is made only for `now` and `wake`: a
+    tell, and a notice for a running target, are `now`, a notice that may wake (not live-only) is `wake`, a send
+    still due is `now`, and one found to have no way is either; `next-start`, `ended` and `maws` send nothing, and
+    an `ended` outcome's line is written or not yet. Each asker is what its `told` implies: the thread T1 running,
+    the thread T3 ended, a MAWS session with no thread."""
     sent_tell = {"state": "sent", "how": "tell", "at": at(4), "session": S1, "agent": AGENT_ID, "liveOnly": True,
                  "project": None, "answer": "queued"}
     sent_live = {"state": "sent", "how": "notice", "at": at(4), "session": S1, "agent": None, "liveOnly": True,
                  "project": PROJECT, "answer": "sent"}
     sent_wake = dict(sent_live, liveOnly=False, answer="woken")
-    sends = [None, {"state": "due", "since": at(4)}, sent_tell, sent_live, sent_wake] + \
-        [{"state": "none", "at": at(4), "why": w} for w in WHY_NONE]
+    none = {w: {"state": "none", "at": at(4), "why": w} for w in WHY_NONE}
+    in_t1, in_t3, in_maws = asker(thread=T1, alias="alpha"), asker(session=S4, thread=T3, alias="gamma"), \
+        asker(session=S3)
+    combos = [   # (told, send, endedLine, the asker)
+        ("next-start", None, None, in_t1),
+        ("now", {"state": "due", "since": at(4)}, None, in_t1),
+        ("now", sent_tell, None, dict(in_t1, agent={"id": AGENT_ID, "name": "reviewer"})),
+        ("now", sent_live, None, in_t1),
+        ("wake", sent_wake, None, in_t1),
+        ("now", none["not-addressable"], None, in_t1),
+        ("wake", none["no-writer"], None, in_t1),
+        ("now", none["log-refused"], None, in_t1),
+        ("ended", None, at(4), in_t3),
+        ("ended", None, None, in_t3),
+        ("maws", None, None, in_maws)]
     tasks, applied_ = [], {}
-    for i, send in enumerate(sends):
-        n = i + 1
+    for n, (told, send, ended_line, who) in enumerate(combos, 1):
         k = "t%d.1" % n
-        told = TOLD[i % len(TOLD)]
         line_ = {"v": 1, "key": key(100 + n), "act": "done", "task": "t%d" % n, "revision": 1, "text": "",
                  "wake": None}
         v = {"v": 1, "key": key(100 + n), "act": "done", "verdict": "applied", "task": "t%d" % n, "revision": 1,
              "state": "done", "outcome": k, "told": told}
         applied_.update(applied(line_, "t%d" % n, at(3), v))
-        agent = {"id": AGENT_ID, "name": "reviewer"} if send is sent_tell else None
-        tasks.append(task("t%d" % n, "blocking", "Task %d" % n, n, at(0), project=PROJECT,
-                          askers=[asker(thread=T1, alias="alpha", agent=agent)], state="done", acts=1,
-                          closed={"how": "done", "seq": 20 + n, "at": at(3), "text": ""},
-                          outcomes=[outcome(k, 20 + n, "done", at(3), 1, "", True, send=send,
-                                            ended_line=at(4) if told == "ended" else None,
-                                            shown={"at": at(5), "session": S1} if told == "now" else None)]))
-    return store(30, len(sends) + 1, tasks, applied=applied_,
-                 successors={S1: {"session": S2, "thread": T2, "at": at(1)},
-                             S2: {"session": S3, "thread": None, "at": at(2)}})
+        tasks.append(task("t%d" % n, "blocking", "Task %d" % n, n, at(0), project=PROJECT, askers=[who],
+                          state="done", acts=1, closed={"how": "done", "seq": 20 + n, "at": at(3), "text": ""},
+                          outcomes=[outcome(k, 20 + n, "done", at(3), 1, "", True, send=send, ended_line=ended_line,
+                                            shown={"at": at(5), "session": S1} if send is sent_live else None)]))
+    # The two shapes of a /clear's pair, bound and not yet, each left by a session no task here names.
+    return store(30, len(combos) + 1, tasks, applied=applied_,
+                 successors={S9: {"session": S2, "thread": T2, "at": at(1)},
+                             sid("a5"): {"session": sid("a6"), "thread": None, "at": at(2)}})
 
 
 EVERY = every_value()
 put("examples/state.json", dump(EVERY))
-TARGET_RUNNING = {"session": S1, "thread": T1, "project": PROJECT, "state": "running", "runner": "terminal",
-                  "wake": None, "why": "", "via": "self"}
-TARGET_HELD = {"session": S2, "thread": T2, "project": PROJECT, "state": "stopped", "runner": "terminal",
-               "wake": "held", "why": "mode", "via": "cleared"}
-TARGET_MAWS = {"session": S3, "thread": None, "project": None, "state": "gone", "runner": "maws", "wake": None,
-               "why": "", "via": "self"}
-put("examples/list.json", dump({"v": 1, "seq": 3, "tasks": [dict(T1_REV, target=TARGET_RUNNING, updated=True),
-                                                            dict(T2_NEW, target=TARGET_HELD, updated=False)]}))
-put("examples/show.json", dump({"v": 1, "seq": 4, "task": dict(T1_DONE, target=TARGET_MAWS, updated=True)}))
+# A reader's target, as §2 finds it: a task with no thread is its asker's session's; one whose thread a /clear left
+# goes to the successor (S9's pair above, bound to T2).
+put("examples/list.json", dump({"v": 1, "seq": 3, "tasks": [
+    dict(T1_REV, target=dict(TARGET_RUNNING, thread=None), updated=True),
+    dict(T2_NEW, askers=[asker(session=S9, thread=T9)], target=TARGET_HELD, updated=False)]}))
+put("examples/show.json", dump({"v": 1, "seq": 4, "task": dict(T1_DONE, askers=[asker(session=S3)],
+                                                                target=TARGET_MAWS, updated=True)}))
+WAITING_TARGET = {T1: TARGET_RUNNING, T3: TARGET_ENDED, None: TARGET_MAWS}
 put("examples/waiting.json", dump({"v": 1, "seq": 30, "waiting": [
     {"key": o["key"], "task": t["id"], "state": t["state"], "kind": o["kind"], "seq": o["seq"], "at": o["at"],
-     "wake": o["wake"], "send": o["send"], "target": TARGET_RUNNING}
+     "wake": o["wake"], "send": o["send"], "target": WAITING_TARGET[t["askers"][0]["thread"]]}
     for t in EVERY["tasks"].values() for o in t["outcomes"] if o["shown"] is None]}))
 put("examples/lines.json", dump([DONE_LINE, DECLINE_LINE, COMMENT_LINE, SEEN_LINE, SHOWN_LINE,
                                  dict(DONE_LINE, key=key(9), wake=True), dict(COMMENT_LINE, key=key(10), wake=False)]))
@@ -609,7 +633,8 @@ Every text the board writes for an agent is built from these fixed words, a task
 subagent's id, and nothing else: no title, no body, no agent's comment, no subagent's name, no alias, no note of
 the human's (D5). `texts.examples.json` holds an example of each form, with the fields it was built from.
 
-    id      = "t" 1*DIGIT
+    id      = "t" pos
+    pos     = %x31-39 *DIGIT                       ; a positive integer, no leading zero, no cap
     word    = "marked " id " done" / "declined " id / "commented on " id
     agent   = 1*128( ALPHA / DIGIT / "_" / "." / "@" / "-" )
 
@@ -657,7 +682,7 @@ holds any open task.
 
     remind = keys LF [ start LF ] [ fork LF ]
     keys   = [ okey *( " " okey ) ]                  ; an empty line for none
-    okey   = id "." 1*DIGIT
+    okey   = id "." pos                       ; the outcome's task, then its number
 
 The first line is the keys of the outcomes `acted` names, in its order, which the hook hands to
 `sminos task shown --keys` once the rest is printed; the hook prints everything after it.
@@ -723,6 +748,11 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
 - **Every applied line is kept by its key**, `seen` and `shown` too, and is one change of the store (`seq` + 1)
   even where it changed nothing else. A verdict that is not `applied` (stale, closed, unknown, refused) is not
   kept and changes nothing; the same line again is judged again.
+- **What the door checks** is what the schema says, and no more loosely: a task's id is `t` and a positive integer
+  with no leading zero and no cap (`^t[1-9][0-9]*$`), an outcome's key that id, `.` and another; a revision is a
+  positive integer. A field is of its type exactly: a boolean is no integer, an integer no boolean, and an integer
+  is written without a fraction or exponent (`1`, never `1.0`). A text that must say something is any string but
+  `""`: whitespace is text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied.
 - **The order of the refusals.** A key already used comes first (the stored verdict, or `key-reused`); then an
   unknown id; then a task no longer open (`closed`); then a revision that is not current (`stale`).
 - **`seen`** raises `seenSeq` to the line's `seq`, never lowers it, and never past the store's `seq` before the
@@ -732,7 +762,8 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
   outcome; an agent's has `outcome: null`.
 - **`wake`** is resolved at the act: the line's when it is not null, else whether the task is blocking.
 - **Until M2** every outcome is written with `send: null` and `endedLine: null`, and `told` is `next-start` but for
-  `ended` and `maws`; the schemas carry every value M2 fills (`examples/state.json`).
+  `ended` and `maws`; the schemas carry every value M2 fills (`examples/state.json`, where each `told` is paired
+  with a `send` a step can reach: a send only with `now` or `wake`).
 - **The readers.** `list --json` gives the tasks in the order of their ids' numbers, `waiting --json` the outcomes
   by `seq`; the text forms order as §3 says. `list --closed` is the closed tasks whose `closed.at` is within 30
   days, `--all` those and the open ones.

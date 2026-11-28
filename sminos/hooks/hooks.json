@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/smns-tasks.sh\"",
-            "timeout": 20
+            "timeout": 30
           }
         ]
       },

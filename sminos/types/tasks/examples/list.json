@@ -31,7 +31,7 @@
     "runner": "terminal",
     "session": "5eed0000-0000-4000-8000-0000000000a1",
     "state": "running",
-    "thread": "7d000000-0000-4000-8000-0000000000b1",
+    "thread": null,
     "via": "self",
     "wake": null,
     "why": ""
@@ -46,8 +46,8 @@
     {
      "agent": null,
      "alias": null,
-     "session": "5eed0000-0000-4000-8000-0000000000a1",
-     "thread": null
+     "session": "5eed0000-0000-4000-8000-0000000000a9",
+     "thread": "7d000000-0000-4000-8000-0000000000b9"
     }
    ],
    "body": "",

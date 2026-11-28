@@ -22,11 +22,13 @@ import os.path, runpy  # noqa: E401 — devcloud kept out first (T1's M5), from 
 runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "devcloud_isolation.py"))
 import contextlib
 import fcntl
+import hashlib
 import io
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import uuid as uuidlib
@@ -230,7 +232,23 @@ class Store(Board):
         good = self.line(act="done", task="t1", revision=1, text="", wake=None)
         for bad in ('{"v":1}', self.line(act="done", task="t1", revision=1, text="", wake=None, extra=1),
                     self.line(act="decline", task="t1", revision=1, text="", wake=None), "not json",
-                    self.line(act="done", task="t1", revision=1, text="", wake=None).replace("null", "NaN")):
+                    self.line(act="done", task="t1", revision=1, text="", wake=None).replace("null", "NaN"),
+                    # Each field of its type exactly, checked before anything else looks at it.
+                    self.line(act=["done"], task="t1", revision=1, text="", wake=None),
+                    self.line(act={"done": 1}, task="t1"),
+                    self.line(act="done", task="t1", revision=1, text="", wake=1),
+                    self.line(act="done", task="t1", revision=1, text="", wake=0),
+                    self.line(act="done", task="t1", revision=True, text="", wake=None),
+                    self.line(act="done", task="t1", revision=1.0, text="", wake=None),
+                    self.line(act="done", task="t1", revision=1, text=7, wake=None),
+                    self.line(act="done", task=1, revision=1, text="", wake=None),
+                    self.line(act="done", key=7, task="t1", revision=1, text="", wake=None),
+                    self.line(act="done", task="t1", revision=1, text="", wake=None).replace('"v": 1', '"v": true'),
+                    self.line(act="seen", task="t1", seq=True),
+                    self.line(act="comment", task="t1", text=["x"], wake=None),
+                    self.line(act="shown", task="t1", session=7, keys=["t1.1"]),
+                    self.line(act="shown", task="t1", session=sid(), keys="t1.1"),
+                    self.line(act="shown", task="t1", session=sid(), keys=[1])):
             with self.subTest(bad=bad):
                 self.assertEqual(self.t("act", stdin=good + "\n" + bad + "\n")[0], 2)
                 self.assertEqual(self.raw(), before)
@@ -279,6 +297,74 @@ class Store(Board):
         self.assertEqual(json.loads(self.ok("list", "--closed", "--json"))["tasks"], [])
         self.assertEqual([x["id"] for x in json.loads(self.ok("list", "--json"))["tasks"]], ["t1"])
 
+    def test_a_line_refused_as_closed_is_stale_after_a_reopen_and_never_applied(self):
+        s1 = sid()
+        self.assign(s1)
+        self.done("t1")
+        late = self.line(act="done", task="t1", revision=1, text="late", wake=None)
+        closed = json.loads(self.ok("act", stdin=late + "\n"))
+        self.assertEqual((closed["verdict"], closed["state"]), ("closed", "done"))
+        self.ok("reopen", "t1", "--comment", "still asks", session=s1)
+        again = json.loads(self.ok("act", stdin=late + "\n"))
+        self.assertEqual((again["verdict"], again["revision"], again["state"]), ("stale", 2, "open"))
+        t = self.state()["tasks"]["t1"]
+        self.assertEqual((t["state"], t["acts"], len(t["outcomes"])), ("open", 1, 1), "the late done not applied")
+        self.assertNotIn(json.loads(late)["key"], self.state()["applied"], "a refusal is not kept by its key")
+
+    def test_only_reopen_makes_a_task_open_again_and_it_moves_the_revision(self):
+        """A stale-or-closed line stays refused only while no path makes a closed task open at the revision the
+        line was written for: the one place the module sets a task open again is reopen's step, beside the
+        revision's + 1 (a new task is made open at revision 1, in assign's dict)."""
+        import ast
+        with open(tasks.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+
+        def key_of(node):
+            return isinstance(node, ast.Subscript) and getattr(node.slice, "value", None)
+        opens, moves = set(), set()
+        for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Assign) and getattr(node.value, "value", None) == "open" and \
+                        any(key_of(x) == "state" for x in node.targets):
+                    opens.add(fn.name)
+                if isinstance(node, ast.AugAssign) and key_of(node.target) == "revision":
+                    moves.add(fn.name)
+        self.assertEqual(opens, {"cmd_reopen"})
+        self.assertIn("cmd_reopen", moves, "the step that opens it moves its revision")
+
+    def test_an_id_has_no_cap(self):
+        s1 = sid()
+        self.assign(s1)
+        far = "t12345678901"
+        v = json.loads(self.ok("act", stdin=self.line(act="done", task=far, revision=12345678901, text="",
+                                                      wake=None) + "\n"))
+        self.assertEqual((v["verdict"], v["task"]), ("unknown", far))
+        code, _, err = self.t("show", far)
+        self.assertNotEqual(code, 2, err)
+        self.assertEqual(self.t("show", "t01")[0], 2)
+        code, out, err = self.t("done", far + "@12345678901")
+        self.assertEqual(json.loads(out)["verdict"], "unknown", err)
+
+    def test_a_stamp_is_the_millisecond_its_second_is(self):
+        t = 1764263999.9997
+        self.assertEqual(tasks.stamp(t), time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(1764263999)) + ".999Z")
+        self.assertEqual(tasks.stamp(1764264000.0), time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(1764264000)) +
+                         ".000Z")
+
+    def test_the_humans_comment_and_reason_are_held_to_the_doors_rule(self):
+        s1 = sid()
+        self.assign(s1)
+        self.assign(s1, cls="optional", title="second")
+        for argv in (("comment", "t1", "   "), ("decline", "t2", "--reason", " \t ")):
+            with self.subTest(argv=argv):
+                code, out, err = self.t(*argv)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["verdict"], "applied")
+        for argv in (("comment", "t1", ""), ("decline", "t1", "--reason", "")):
+            with self.subTest(argv=argv):
+                self.assertEqual(self.t(*argv)[0], 2, "the empty string is no text, at the CLI as at the door")
+        self.assertEqual(self.t("comment", "t1", " ", session=s1)[0], 0, "an agent's comment by the same rule")
+
     def test_show_prints_a_dones_note_and_a_declines_reason(self):
         s1 = sid()
         self.assign(s1)
@@ -304,6 +390,40 @@ class Store(Board):
         s = self.state()
         self.assertEqual((s["seq"], s["tasks"]["t1"]["seenSeq"]), (3, 2), "a seen for the snapshot's seq")
         self.assertFalse(json.loads(self.ok("show", "t1", "--json"))["task"]["updated"])
+
+    def test_a_reader_leaves_the_whole_home_as_it_was(self):
+        """The readers run ahead of main's migration (which would make the root 0700, files 0600, former paths'
+        links): every file and directory of HOME and SMINOS_HOME, its bytes and its mode, as it was. The human's
+        text show changes the store alone (its `seen`)."""
+        s1, _ = self.opened()
+        self.assign(s1)
+        self.done("t1")
+        os.chmod(sminos.root(), 0o755)     # what a migration would put right, so a reader that ran one shows it
+
+        def snapshot(skip=()):
+            got = {}
+            for top in (os.environ["HOME"], sminos.root()):
+                for d, dirs, files in os.walk(top):
+                    for n in dirs + files:
+                        p = os.path.join(d, n)
+                        if p in skip:
+                            continue
+                        st = os.lstat(p)
+                        body = b""
+                        if os.path.isfile(p) and not os.path.islink(p):
+                            with open(p, "rb") as f:
+                                body = f.read()
+                        got[p] = (st.st_mode, hashlib.sha256(body).hexdigest(), os.path.islink(p) and os.readlink(p))
+                got[top] = (os.lstat(top).st_mode,)
+            return got
+        before = snapshot()
+        for argv in (("list",), ("list", "--json"), ("list", "--all"), ("show", "t1", "--json"), ("waiting",),
+                     ("waiting", "--json"), ("waiting", "--mine")):
+            with self.subTest(argv=argv):
+                self.t(*argv, session=s1 if "--mine" in argv else None)
+                self.assertEqual(snapshot(), before)
+        self.ok("show", "t1")
+        self.assertEqual(snapshot(skip={self.path()}), {p: v for p, v in before.items() if p != self.path()})
 
     def test_waiting_lists_an_outcome_of_a_task_closed_forty_days_ago(self):
         s1 = sid()
@@ -647,6 +767,11 @@ class Targets(Board):
         with mock.patch.object(tasks, "_describe", wraps=tasks._describe) as describe:
             self.ok("list", "--json")
         self.assertEqual(describe.call_count, 1)
+        lines = "".join(self.line(act="done", task="t%d" % n, revision=1, text="", wake=None) + "\n"
+                        for n in range(1, 6))
+        with mock.patch.object(tasks, "_describe", wraps=tasks._describe) as describe:
+            self.ok("act", stdin=lines)
+        self.assertEqual(describe.call_count, 1, "one target memo for the call's lines")
 
 
 # ------------------------------------------------------------ a real /clear
@@ -719,6 +844,50 @@ class ClearedPair(Board):
         out = self.remind()
         self.assertEqual(self.state()["successors"][self.old]["session"], self.NEW)
         self.assertIn("Tasks you assigned to the human: 1 open (1 blocking).", out)
+
+    def held(self, seconds):
+        """The store's lock held by another holder (its own open file) for `seconds`, from a thread."""
+        lock = open(tasks.lock_path(), "a")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+
+        def let_go():
+            time.sleep(seconds)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+        th = threading.Thread(target=let_go)
+        th.start()
+        self.addCleanup(th.join)
+        return th
+
+    def test_remind_at_a_clear_waits_past_the_hooks_short_wait_to_write_the_pair(self):
+        self.note()
+        self.held(tasks.HOOK_LOCK_WAIT + 1)
+        began = time.time()
+        self.remind()
+        self.assertGreater(time.time() - began, tasks.HOOK_LOCK_WAIT, "it waited")
+        self.assertEqual(self.state()["successors"][self.old]["session"], self.NEW)
+
+    def test_the_record_hook_writes_the_pair_past_its_own_deadline_and_still_releases_the_alias(self):
+        """The record's timer (run_record's, here 1.5 s) is paused while the pair waits for the lock (2.5 s), so
+        neither the pair nor the release after it is cut short."""
+        import signal
+        self.note()
+        self.held(2.5)
+        previous = signal.signal(signal.SIGALRM, sminos._record_expired)
+        signal.setitimer(signal.ITIMER_REAL, 1.5)
+        try:
+            self.record()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertEqual(self.state()["successors"][self.old]["session"], self.NEW)
+        self.assertEqual(threads.get(threads.thread_of(self.old)["thread"])["released"]["alias"], "alpha")
+
+    def test_shown_with_nothing_to_mark_or_bind_takes_no_lock(self):
+        self.held(4)
+        began = time.time()
+        self.assertEqual(self.ok("shown", "--session", self.old, "--keys", ""), "\n")
+        self.assertLess(time.time() - began, 2, "it read the store and stopped, the lock held elsewhere")
 
     def test_no_store_no_pair(self):
         os.unlink(self.path())

@@ -14,8 +14,9 @@ sminos/types/tasks/, written by sminos/tests/tasks-contract.gen.py and never by 
     target_of(store, task, memo=None) -> {session, thread, project, state, runner, wake, why, via}
     is_asker(store, task, session, memo=None) -> bool
     cleared(left, begun, wait=LOCK_WAIT) -> None      # a witnessed /clear's pair, before the alias is released
-    bind(session, wait=LOCK_WAIT) -> None             # binds the pairs that name this session to its thread
-    apply_line(line) -> verdict                       # one of the door's lines, checked, in a step of its own
+    bind(store, session) -> bool                      # in place: binds the pairs naming this session to its thread
+    bind_step(session, wait=LOCK_WAIT) -> None        # the same as a step of its own, when one waits
+    apply_line(line, memo=None) -> verdict            # one of the door's lines, checked, in a step of its own
     notice_text, ended_line, start_line               # §5's texts, word for word (X6)
 
 Nothing is sent from here until M2: every outcome is written with `send: null`, and the door's `told` is
@@ -39,7 +40,7 @@ import sminos
 V = 1
 VERSION = 1                 # the store's contract version this module writes (X1)
 LOCK_WAIT = 10.0            # the store's lock, as the sheet's door waits for its own
-HOOK_LOCK_WAIT = 3.0        # remind's own steps (the pair, the bind) are skipped past this: a start never waits
+HOOK_LOCK_WAIT = 3.0        # remind's bind is skipped past this; only a /clear's pair waits the full LOCK_WAIT
 OPEN_MAX = 500
 KEPT = 30 * 86400           # a closed task is listed as closed for 30 days (D3)
 START_NAMED = 20            # the outcomes a start line names; the rest are counted
@@ -47,9 +48,9 @@ LINES_MAX = 50
 TEXT_MAX, TITLE_MAX, BODY_MAX, TAGS_MAX = 10000, 200, 20000, 8
 EXIT_FAIL, EXIT_USAGE, EXIT_REFUSED, EXIT_BUSY = 1, 2, 3, 75
 
-TASK_ID = re.compile(r"t[1-9][0-9]{0,8}")
-OUTCOME_KEY = re.compile(r"(t[1-9][0-9]{0,8})\.[1-9][0-9]{0,8}")
-HANDLE = re.compile(r"(t[1-9][0-9]{0,8})(?:@([1-9][0-9]{0,8}))?")
+TASK_ID = re.compile(r"t[1-9][0-9]*")              # D2's, uncapped, wherever an id is read
+OUTCOME_KEY = re.compile(r"(t[1-9][0-9]*)\.[1-9][0-9]*")
+HANDLE = re.compile(r"(t[1-9][0-9]*)(?:@([1-9][0-9]*))?")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 TAG = re.compile(r"[a-z0-9-]{1,32}")
@@ -96,8 +97,10 @@ def clock():
 
 
 def stamp(t):
-    """ISO-8601 in UTC with milliseconds (§1)."""
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % (int(round(t * 1000)) % 1000)
+    """ISO-8601 in UTC with milliseconds (§1), truncated as sminos.now(ms=True) is: one millisecond count gives
+    both the seconds and their fraction."""
+    ms = int(t * 1000)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ms // 1000)) + ".%03dZ" % (ms % 1000)
 
 
 def epoch(ts):
@@ -392,9 +395,10 @@ def is_asker(store, task, session, memo=None):
     return a.get("session") == session
 
 
-def _bind_in(state, session):
-    """Each pair whose successor is `session` and not bound yet, bound to the thread whose current session it is
-    now, when a live record has it. Whether anything changed."""
+def bind(state, session):
+    """§2's `bind(store, session)`, in place, inside a step the caller holds (M2's hourly duty calls it in its own):
+    each pair whose successor is `session` and not bound yet, bound to the thread whose current session it is now,
+    when a live record has it. Whether anything changed."""
     pending = [p for p in (state.get("successors") or {}).values()
                if isinstance(p, dict) and p.get("session") == session and not p.get("thread")]
     if not pending:
@@ -407,15 +411,20 @@ def _bind_in(state, session):
     return True
 
 
-def bind(session, wait=LOCK_WAIT):
-    """The session's own step that binds the pairs naming it (§2), taken only when one waits to be bound."""
+def unbound_for(state, session):
+    """Whether a pair names `session` as its successor and is not bound yet."""
+    return any(isinstance(p, dict) and p.get("session") == session and not p.get("thread")
+               for p in (state.get("successors") or {}).values())
+
+
+def bind_step(session, wait=LOCK_WAIT):
+    """The session's own step that binds the pairs naming it (bind), taken only when one waits to be bound."""
     state = read_state()
-    if state is None or not any(isinstance(p, dict) and p.get("session") == session and not p.get("thread")
-                                for p in state["successors"].values()):
+    if state is None or not unbound_for(state, session):
         return
 
     def change(st):
-        if st is not None and _bind_in(st.state, session):
+        if st is not None and bind(st.state, session):
             st.changed = True
     step(change, wait=wait)
 
@@ -434,7 +443,7 @@ def cleared(left, begun, wait=LOCK_WAIT):
         if left not in succ:
             succ[left] = {"session": begun, "thread": None, "at": st.at}
             st.changed = True
-        if _bind_in(st.state, begun):
+        if bind(st.state, begun):
             st.changed = True
     step(change, wait=wait)
 
@@ -496,19 +505,20 @@ def _refuse_constant(name):
 
 
 def check_line(obj, where="the line"):
-    """The line when it is one of §3's, else Refused (2): every field its act lists and no other."""
+    """The line when it is one of §3's, else Refused (2): every field its act lists and no other, each of its type
+    exactly (a boolean is no integer and an integer no boolean, as JSON Schema reads them)."""
     def bad(why):
         raise Refused(EXIT_USAGE, "%s: %s" % (where, why))
     if not isinstance(obj, dict):
         bad("not a JSON object")
     act = obj.get("act")
-    if act not in LINE_FIELDS:
+    if not isinstance(act, str) or act not in LINE_FIELDS:
         bad("act is one of %s" % ", ".join(LINE_FIELDS))
     fields = LINE_FIELDS[act]
     extra, missing = sorted(set(obj) - set(fields)), [f for f in fields if f not in obj]
     if extra or missing:
         bad("a %s line has %s" % (act, "no field %s" % ", ".join(extra) if extra else "a %s" % ", ".join(missing)))
-    if obj["v"] != 1 or type(obj["v"]) is not int:
+    if type(obj["v"]) is not int or obj["v"] != 1:
         bad("v is 1")
     if not (isinstance(obj["key"], str) and UUID.fullmatch(obj["key"])):
         bad("key is a UUID")
@@ -522,7 +532,7 @@ def check_line(obj, where="the line"):
             bad("text is a string of at most %d characters" % TEXT_MAX)
         if act in ("decline", "comment") and not t:
             bad("a %s's text is not empty" % act)
-    if "wake" in obj and obj["wake"] not in (True, False, None):
+    if "wake" in obj and not (obj["wake"] is None or type(obj["wake"]) is bool):
         bad("wake is true, false or null")
     if "seq" in obj and not (type(obj["seq"]) is int and obj["seq"] >= 0):
         bad("seq is an integer from 0")
@@ -570,9 +580,11 @@ def told_of(target, outcome):
     return "next-start"
 
 
-def apply_line(line):
+def apply_line(line, memo=None):
     """One checked line of the door in a step of its own: its verdict, stored under its key when applied, in the
-    replace that applies it (so the same line again answers the same, `told` included)."""
+    replace that applies it (so the same line again answers the same, `told` included). `memo`: the call's targets,
+    shared by every line of one call, so a task's target is resolved once for each distinct asker (§2)."""
+    memo = {} if memo is None else memo
     key, act, tid = line["key"], line["act"], line["task"]
     head = {"v": V, "key": key, "act": act}
 
@@ -594,7 +606,6 @@ def apply_line(line):
             return dict(head, verdict="closed", **where)
         if act in ("done", "decline") and line["revision"] != t["revision"]:
             return dict(head, verdict="stale", **where)
-        memo = {}
         if act in KIND:
             verdict = _act(st, t, line, KIND[act], target_of(s, t, memo), head)
         elif act == "seen":
@@ -870,9 +881,10 @@ def task_arg(s):
 
 
 def checked_text(what, s, limit, empty=False):
+    """Text for the store, held to the door's rule (check_line): empty means the empty string, nothing else."""
     if not isinstance(s, str) or not _no_surrogate(s):
         raise Refused(EXIT_USAGE, "%s is not text" % what)
-    if not empty and not s.strip():
+    if not empty and not s:
         raise Refused(EXIT_USAGE, "%s is empty" % what)
     if len(s) > limit:
         raise Refused(EXIT_USAGE, "%s is longer than %d characters" % (what, limit))
@@ -881,6 +893,8 @@ def checked_text(what, s, limit, empty=False):
 
 def checked_title(s):
     checked_text("the title", s, TITLE_MAX)
+    if not s.strip():
+        raise Refused(EXIT_USAGE, "the title says nothing")
     if CONTROLS.search(s) or SPACED.search(s):
         raise Refused(EXIT_USAGE, "the title is one line, with no control character")
     return s
@@ -959,7 +973,7 @@ def cmd_assign(a):
 
     def change(st):
         s = st.state
-        if _bind_in(s, session):
+        if bind(s, session):
             st.changed = True
         n = open_count(s)
         if n >= OPEN_MAX:
@@ -999,7 +1013,7 @@ def cmd_revise(a):
 
     def change(st):
         t = _task_of(st, tid)
-        if _bind_in(st.state, session):
+        if bind(st.state, session):
             st.changed = True
         _the_askers(st, t, session, "revise")
         if t["state"] != "open":
@@ -1019,18 +1033,19 @@ def cmd_comment(a):
     text = body_from(a.body_file, "the comment") if a.body_file is not None else a.text
     if text is None:
         raise Refused(EXIT_USAGE, "comment %s: no text (a last argument, or --body-file F|-)" % tid)
-    checked_text("the comment", text, TEXT_MAX)
     session = caller()
     if not session:
+        # The human's comment is the door's line: the door's check is its only one.
         return human_act({"act": "comment", "task": tid, "text": text, "wake": a.wake}, a.key)
     need_session()
+    checked_text("the comment", text, TEXT_MAX)
     if a.key is not None or a.wake is not None:
         raise Refused(EXIT_USAGE, "--key and --wake are the human's, at a terminal that is no session")
     alias = _membership(session)[1]
 
     def change(st):
         t = _task_of(st, tid)
-        if _bind_in(st.state, session):
+        if bind(st.state, session):
             st.changed = True
         if t["state"] != "open":
             raise Refused(EXIT_REFUSED, "%s is %s: a closed task takes no comment" % (tid, t["state"]))
@@ -1050,7 +1065,7 @@ def cmd_withdraw(a):
 
     def change(st):
         t = _task_of(st, tid)
-        if _bind_in(st.state, session):
+        if bind(st.state, session):
             st.changed = True
         _the_askers(st, t, session, "withdraw")
         if t["state"] != "open":
@@ -1070,7 +1085,7 @@ def cmd_reopen(a):
 
     def change(st):
         t = _task_of(st, tid)
-        if _bind_in(st.state, session):
+        if bind(st.state, session):
             st.changed = True
         _the_askers(st, t, session, "reopen")
         if t["state"] != "done":
@@ -1111,19 +1126,17 @@ def cmd_done(a, act):
     m = HANDLE.fullmatch(a.handle or "")
     if not m:
         raise Refused(EXIT_USAGE, "%r is no task (t7, or t7@2 for the revision read)" % a.handle)
-    text = a.text or ""
-    if act == "decline" and not (a.text or "").strip():
-        raise Refused(EXIT_USAGE, "decline %s: --reason is not empty" % m.group(1))
-    checked_text("the note" if act == "done" else "the reason", text, TEXT_MAX, empty=act == "done")
-    return human_act({"act": act, "task": m.group(1), "revision": int(m.group(2) or 1), "text": text,
+    # The door's line made for the caller: the door's check (check_line) is its only one.
+    return human_act({"act": act, "task": m.group(1), "revision": int(m.group(2) or 1), "text": a.text or "",
                       "wake": a.wake}, a.key)
 
 
 def cmd_act(_a):
     refuse_session()
     lines = read_lines(sys.stdin.buffer.read() if sys.stdin is not None else b"")
+    memo = {}
     for line in lines:
-        print(verdict_line(apply_line(line)), flush=True)
+        print(verdict_line(apply_line(line, memo)), flush=True)
     return 0
 
 
@@ -1221,12 +1234,12 @@ def cmd_remind(a):
             left = ""
         if left:
             try:
-                cleared(left, session, wait=HOOK_LOCK_WAIT)
+                cleared(left, session)       # the full wait: a pair not written here may be written nowhere
             except Refused as e:
                 if e.code != EXIT_BUSY:
                     raise
     try:
-        bind(session, wait=HOOK_LOCK_WAIT)
+        bind_step(session, wait=HOOK_LOCK_WAIT)
     except Refused as e:
         if e.code != EXIT_BUSY:
             raise
@@ -1248,13 +1261,19 @@ def cmd_shown(a):
     for k in keys:
         if not OUTCOME_KEY.fullmatch(k):
             raise Refused(EXIT_USAGE, "--keys holds outcome keys, t<n>.<m>: %r" % k)
+    if not keys:
+        # An ordinary start's call with nothing to mark: the lock only when a pair waits to be bound.
+        state = read_state()
+        if state is None or not unbound_for(state, session):
+            print("")
+            return 0
     _fresh_engine()
 
     def change(st):
         if st is None:
             return []
         s, memo, marked = st.state, {}, []
-        if _bind_in(s, session):
+        if bind(s, session):
             st.changed = True
         for k in keys:
             t = s["tasks"].get(k.split(".")[0])

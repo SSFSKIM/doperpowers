@@ -11,7 +11,7 @@
     "revision": 1,
     "state": "done",
     "task": "t1",
-    "told": "now",
+    "told": "next-start",
     "v": 1,
     "verdict": "applied"
    }
@@ -27,7 +27,7 @@
     "revision": 1,
     "state": "done",
     "task": "t2",
-    "told": "wake",
+    "told": "now",
     "v": 1,
     "verdict": "applied"
    }
@@ -43,7 +43,7 @@
     "revision": 1,
     "state": "done",
     "task": "t3",
-    "told": "next-start",
+    "told": "now",
     "v": 1,
     "verdict": "applied"
    }
@@ -59,7 +59,7 @@
     "revision": 1,
     "state": "done",
     "task": "t4",
-    "told": "ended",
+    "told": "now",
     "v": 1,
     "verdict": "applied"
    }
@@ -75,7 +75,7 @@
     "revision": 1,
     "state": "done",
     "task": "t5",
-    "told": "maws",
+    "told": "wake",
     "v": 1,
     "verdict": "applied"
    }
@@ -123,24 +123,72 @@
     "revision": 1,
     "state": "done",
     "task": "t8",
-    "told": "next-start",
+    "told": "now",
+    "v": 1,
+    "verdict": "applied"
+   }
+  },
+  "5eed0000-0000-4000-8000-00000000c109": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "digest": "b7ba75dc1f809236e89738bb7aa789e1d4ee3c39a309d9e65297ff72ea9f5212",
+   "task": "t9",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c109",
+    "outcome": "t9.1",
+    "revision": 1,
+    "state": "done",
+    "task": "t9",
+    "told": "ended",
+    "v": 1,
+    "verdict": "applied"
+   }
+  },
+  "5eed0000-0000-4000-8000-00000000c110": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "digest": "966dc1bb7d45433bc5e72a5b2ea78dfa08456ca1ab07a696037f5e40bb384af9",
+   "task": "t10",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c110",
+    "outcome": "t10.1",
+    "revision": 1,
+    "state": "done",
+    "task": "t10",
+    "told": "ended",
+    "v": 1,
+    "verdict": "applied"
+   }
+  },
+  "5eed0000-0000-4000-8000-00000000c111": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "digest": "22d925928ce1b438b1502b42a4d76b3f27d01c0c4761bcef9e02fa6acf6ab64f",
+   "task": "t11",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c111",
+    "outcome": "t11.1",
+    "revision": 1,
+    "state": "done",
+    "task": "t11",
+    "told": "maws",
     "v": 1,
     "verdict": "applied"
    }
   }
  },
- "nextId": 9,
+ "nextId": 12,
  "seq": 30,
  "successors": {
-  "5eed0000-0000-4000-8000-0000000000a1": {
+  "5eed0000-0000-4000-8000-0000000000a5": {
+   "at": "2026-11-27T16:10:00.000Z",
+   "session": "5eed0000-0000-4000-8000-0000000000a6",
+   "thread": null
+  },
+  "5eed0000-0000-4000-8000-0000000000a9": {
    "at": "2026-11-27T16:05:00.000Z",
    "session": "5eed0000-0000-4000-8000-0000000000a2",
    "thread": "7d000000-0000-4000-8000-0000000000b2"
-  },
-  "5eed0000-0000-4000-8000-0000000000a2": {
-   "at": "2026-11-27T16:10:00.000Z",
-   "session": "5eed0000-0000-4000-8000-0000000000a3",
-   "thread": null
   }
  },
  "tasks": {
@@ -177,10 +225,7 @@
      "revision": 1,
      "send": null,
      "seq": 21,
-     "shown": {
-      "at": "2026-11-27T16:25:00.000Z",
-      "session": "5eed0000-0000-4000-8000-0000000000a1"
-     },
+     "shown": null,
      "text": "",
      "wake": true
     }
@@ -191,6 +236,96 @@
    "state": "done",
    "tags": [],
    "title": "Task 1"
+  },
+  "t10": {
+   "acts": 1,
+   "agentSeq": 10,
+   "askers": [
+    {
+     "agent": null,
+     "alias": "gamma",
+     "session": "5eed0000-0000-4000-8000-0000000000a4",
+     "thread": "7d000000-0000-4000-8000-0000000000b3"
+    }
+   ],
+   "body": "",
+   "born": 10,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:15:00.000Z",
+    "how": "done",
+    "seq": 30,
+    "text": ""
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t10",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": null,
+     "key": "t10.1",
+     "kind": "done",
+     "revision": 1,
+     "send": null,
+     "seq": 30,
+     "shown": null,
+     "text": "",
+     "wake": true
+    }
+   ],
+   "project": "1c0de000-0000-5000-8000-0000000000aa",
+   "revision": 1,
+   "seenSeq": 10,
+   "state": "done",
+   "tags": [],
+   "title": "Task 10"
+  },
+  "t11": {
+   "acts": 1,
+   "agentSeq": 11,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a3",
+     "thread": null
+    }
+   ],
+   "body": "",
+   "born": 11,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:15:00.000Z",
+    "how": "done",
+    "seq": 31,
+    "text": ""
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t11",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": null,
+     "key": "t11.1",
+     "kind": "done",
+     "revision": 1,
+     "send": null,
+     "seq": 31,
+     "shown": null,
+     "text": "",
+     "wake": true
+    }
+   ],
+   "project": "1c0de000-0000-5000-8000-0000000000aa",
+   "revision": 1,
+   "seenSeq": 11,
+   "state": "done",
+   "tags": [],
+   "title": "Task 11"
   },
   "t2": {
    "acts": 1,
@@ -324,7 +459,7 @@
    "outcomes": [
     {
      "at": "2026-11-27T16:15:00.000Z",
-     "endedLine": "2026-11-27T16:20:00.000Z",
+     "endedLine": null,
      "key": "t4.1",
      "kind": "done",
      "revision": 1,
@@ -339,7 +474,10 @@
       "state": "sent"
      },
      "seq": 24,
-     "shown": null,
+     "shown": {
+      "at": "2026-11-27T16:25:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a1"
+     },
      "text": "",
      "wake": true
     }
@@ -442,10 +580,7 @@
       "why": "not-addressable"
      },
      "seq": 26,
-     "shown": {
-      "at": "2026-11-27T16:25:00.000Z",
-      "session": "5eed0000-0000-4000-8000-0000000000a1"
-     },
+     "shown": null,
      "text": "",
      "wake": true
     }
@@ -554,6 +689,51 @@
    "state": "done",
    "tags": [],
    "title": "Task 8"
+  },
+  "t9": {
+   "acts": 1,
+   "agentSeq": 9,
+   "askers": [
+    {
+     "agent": null,
+     "alias": "gamma",
+     "session": "5eed0000-0000-4000-8000-0000000000a4",
+     "thread": "7d000000-0000-4000-8000-0000000000b3"
+    }
+   ],
+   "body": "",
+   "born": 9,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:15:00.000Z",
+    "how": "done",
+    "seq": 29,
+    "text": ""
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t9",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": "2026-11-27T16:20:00.000Z",
+     "key": "t9.1",
+     "kind": "done",
+     "revision": 1,
+     "send": null,
+     "seq": 29,
+     "shown": null,
+     "text": "",
+     "wake": true
+    }
+   ],
+   "project": "1c0de000-0000-5000-8000-0000000000aa",
+   "revision": 1,
+   "seenSeq": 9,
+   "state": "done",
+   "tags": [],
+   "title": "Task 9"
   }
  },
  "v": 1,

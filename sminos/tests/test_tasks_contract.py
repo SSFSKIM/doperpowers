@@ -185,6 +185,70 @@ class TheSet(unittest.TestCase):
         self.assertEqual(sends, {"null", "due///", "sent/tell/True/", "sent/notice/True/", "sent/notice/False/",
                                  "none///not-addressable", "none///no-writer", "none///log-refused"})
 
+    def test_each_example_is_one_a_step_can_reach(self):
+        """§3's table: a send only with `now` or `wake`; none with `ended` or `maws`, and an ended line only on an
+        `ended` outcome. A reader's target, by §2: a task with no thread is its asker's session's; a target reached
+        through a /clear's pair (`via: cleared`) has a thread to have been followed, and the pair is in the store."""
+        ex = os.path.join(SET, "examples")
+        s = load(os.path.join(ex, "state.json"))
+        told = {a["verdict"]["outcome"]: a["verdict"]["told"] for a in s["applied"].values()}
+        for t in s["tasks"].values():
+            for o in t["outcomes"]:
+                with self.subTest(outcome=o["key"]):
+                    if o["send"] is not None:
+                        self.assertIn(told[o["key"]], ("now", "wake"))
+                    if told[o["key"]] in ("ended", "maws", "next-start"):
+                        self.assertIsNone(o["send"])
+                    if o["endedLine"] is not None:
+                        self.assertEqual(told[o["key"]], "ended")
+                    if (o["send"] or {}).get("how") == "tell":
+                        self.assertEqual(told[o["key"]], "now")
+                        self.assertIsNotNone(t["askers"][0]["agent"], "a tell goes to the subagent that asked")
+                    if (o["send"] or {}).get("how") == "notice":
+                        self.assertEqual(told[o["key"]], "wake" if not o["send"]["liveOnly"] else "now")
+                    if (o["send"] or {}).get("state") == "due":
+                        self.assertEqual(told[o["key"]], "now")
+        pairs = s["successors"]
+        rows = [t for t in load(os.path.join(ex, "list.json"))["tasks"]] + [load(os.path.join(ex, "show.json"))["task"]]
+        rows += [dict(s["tasks"][w["task"]], target=w["target"]) for w in load(os.path.join(ex, "waiting.json"))["waiting"]]
+        for t in rows:
+            first, target = t["askers"][0], t["target"]
+            with self.subTest(task=t["id"], target=target["session"]):
+                if first["thread"] is None:
+                    self.assertEqual((target["session"], target["thread"], target["via"]),
+                                     (first["session"], None, "self"))
+                if target["via"] == "cleared":
+                    self.assertIsNotNone(first["thread"])
+                    self.assertTrue([p for p in pairs.values() if p["session"] == target["session"] or
+                                     (p["thread"] and p["thread"] == target["thread"])],
+                                    "a pair in examples/state.json leads to the target")
+                if target["runner"] == "maws" or target["state"] == "ended":
+                    for o in t["outcomes"]:
+                        self.assertIsNone(o["send"])
+
+    def test_an_id_is_one_rule_in_the_schema_and_the_door(self):
+        line = load(os.path.join(SET, "examples", "lines.json"))[0]
+        for task_id, ok in (("t1", True), ("t1234567890123", True), ("t0", False), ("t01", False), ("t", False),
+                            ("T1", False), ("t1.1", False)):
+            with self.subTest(task=task_id):
+                this = dict(line, task=task_id)
+                self.assertEqual(sheet_schema.errors(SCHEMA["act-line"], this) == [], ok)
+                if ok:
+                    self.assertEqual(tasks.check_line(dict(this)), this)
+                else:
+                    with self.assertRaises(tasks.Refused):
+                        tasks.check_line(dict(this))
+        shown = {"v": 1, "key": line["key"], "act": "shown", "task": "t1", "session": "5eed0000-0000-4000-8000-0000000000a1"}
+        for k, ok in (("t1.1", True), ("t12345678901.12345678901", True), ("t1.0", False), ("t1.01", False)):
+            with self.subTest(key=k):
+                this = dict(shown, keys=[k])
+                self.assertEqual(sheet_schema.errors(SCHEMA["act-line"], this) == [], ok)
+                if ok:
+                    self.assertEqual(tasks.check_line(dict(this)), this)
+                else:
+                    with self.assertRaises(tasks.Refused):
+                        tasks.check_line(dict(this))
+
     def test_the_schemas_refuse_what_they_must(self):
         line = load(os.path.join(SET, "examples", "lines.json"))[0]
         for bad in (dict(line, extra=1), {k: v for k, v in line.items() if k != "wake"}, dict(line, key="K"),
