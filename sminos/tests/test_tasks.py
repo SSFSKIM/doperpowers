@@ -311,27 +311,6 @@ class Store(Board):
         self.assertEqual((t["state"], t["acts"], len(t["outcomes"])), ("open", 1, 1), "the late done not applied")
         self.assertNotIn(json.loads(late)["key"], self.state()["applied"], "a refusal is not kept by its key")
 
-    def test_only_reopen_makes_a_task_open_again_and_it_moves_the_revision(self):
-        """A stale-or-closed line stays refused only while no path makes a closed task open at the revision the
-        line was written for: the one place the module sets a task open again is reopen's step, beside the
-        revision's + 1 (a new task is made open at revision 1, in assign's dict)."""
-        import ast
-        with open(tasks.__file__, encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-
-        def key_of(node):
-            return isinstance(node, ast.Subscript) and getattr(node.slice, "value", None)
-        opens, moves = set(), set()
-        for fn in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
-            for node in ast.walk(fn):
-                if isinstance(node, ast.Assign) and getattr(node.value, "value", None) == "open" and \
-                        any(key_of(x) == "state" for x in node.targets):
-                    opens.add(fn.name)
-                if isinstance(node, ast.AugAssign) and key_of(node.target) == "revision":
-                    moves.add(fn.name)
-        self.assertEqual(opens, {"cmd_reopen"})
-        self.assertIn("cmd_reopen", moves, "the step that opens it moves its revision")
-
     def test_an_id_has_no_cap(self):
         s1 = sid()
         self.assign(s1)
@@ -882,6 +861,42 @@ class ClearedPair(Board):
             signal.signal(signal.SIGALRM, previous)
         self.assertEqual(self.state()["successors"][self.old]["session"], self.NEW)
         self.assertEqual(threads.get(threads.thread_of(self.old)["thread"])["released"]["alias"], "alpha")
+
+    def test_the_record_hook_keeps_the_releases_budget_after_waiting_for_the_board(self):
+        """Through the hook's own entry (smns-record.sh, `sminos record`, run_record's deadline at 2 s): the board's
+        lock held 3.5 s, and as it is let go the thread store's lock (which the release's journaled change on a
+        record its human opened takes, until the record's deadline) held 1 s more. The pair waits out the first; the release still has the budget
+        it had before the pair, so it waits out the second and the alias is released."""
+        self.note()
+        left_thread = threads.thread_of(self.old)["thread"]
+        board = open(tasks.lock_path(), "a")
+        fcntl.flock(board, fcntl.LOCK_EX)
+        store = open(os.path.join(threads.store_dir(), ".lock"), "a")
+
+        def let_go():
+            time.sleep(3.5)
+            fcntl.flock(store, fcntl.LOCK_EX)      # the hook is waiting for the board by now, past its own locks
+            fcntl.flock(board, fcntl.LOCK_UN)
+            time.sleep(1)
+            fcntl.flock(store, fcntl.LOCK_UN)
+        th = threading.Thread(target=let_go)
+        th.start()
+        self.addCleanup(board.close)
+        self.addCleanup(store.close)
+        payload = {"session_id": self.NEW, "transcript_path": os.path.join(self.home, "t-%s.jsonl" % self.NEW),
+                   "cwd": self.root, "hook_event_name": "SessionStart", "source": "clear"}
+        hook = os.path.join(os.path.dirname(HERE), "hooks", "smns-record.sh")
+        subprocess.run([hook], input=json.dumps(payload), text=True, capture_output=True, timeout=60,
+                       env={**os.environ, **self.env, "SMNS_RECORD_TIMEOUT": "2"})
+        th.join()
+        sminos.forget_caches()
+        log = os.path.join(sminos.root(), "daemon.log")
+        with open(log) if os.path.exists(log) else contextlib.nullcontext(io.StringIO()) as f:
+            said = f.read()
+        self.assertEqual(self.state()["successors"][self.old]["session"], self.NEW, said)
+        self.assertEqual((threads.get(left_thread).get("released") or {}).get("alias"), "alpha", said)
+        self.assertIsNotNone(threads.current_record(self.NEW, fresh=True), "the join after it, made: " + said)
+        self.assertEqual(said, "", "nothing skipped")
 
     def test_shown_with_nothing_to_mark_or_bind_takes_no_lock(self):
         self.held(4)

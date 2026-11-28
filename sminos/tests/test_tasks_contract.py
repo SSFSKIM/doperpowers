@@ -186,28 +186,34 @@ class TheSet(unittest.TestCase):
                                  "none///not-addressable", "none///no-writer", "none///log-refused"})
 
     def test_each_example_is_one_a_step_can_reach(self):
-        """§3's table: a send only with `now` or `wake`; none with `ended` or `maws`, and an ended line only on an
-        `ended` outcome. A reader's target, by §2: a task with no thread is its asker's session's; a target reached
-        through a /clear's pair (`via: cleared`) has a thread to have been followed, and the pair is in the store."""
+        """What §3's table guarantees of an outcome, and no more: a send only under `now` or `wake`, none under
+        `ended` or `maws`; a notice for the live alone only for an outcome that may not wake, one that may wake only
+        for one that may; an ended line only on `ended`; the seqs within the store's. A reader's target, by §2: a
+        task with no thread is its asker's session's; a target reached through a /clear's pair (`via: cleared`) has
+        a thread to have been followed, and the pair is in the store. Nothing is read back from a target's state
+        now into what a sending was allowed to do then."""
         ex = os.path.join(SET, "examples")
         s = load(os.path.join(ex, "state.json"))
         told = {a["verdict"]["outcome"]: a["verdict"]["told"] for a in s["applied"].values()}
         for t in s["tasks"].values():
             for o in t["outcomes"]:
                 with self.subTest(outcome=o["key"]):
+                    send = o["send"] or {}
                     if o["send"] is not None:
                         self.assertIn(told[o["key"]], ("now", "wake"))
-                    if told[o["key"]] in ("ended", "maws", "next-start"):
+                    if told[o["key"]] in ("ended", "maws"):
                         self.assertIsNone(o["send"])
+                    if send.get("how") == "notice":
+                        self.assertEqual(o["wake"], not send["liveOnly"])
                     if o["endedLine"] is not None:
                         self.assertEqual(told[o["key"]], "ended")
-                    if (o["send"] or {}).get("how") == "tell":
-                        self.assertEqual(told[o["key"]], "now")
-                        self.assertIsNotNone(t["askers"][0]["agent"], "a tell goes to the subagent that asked")
-                    if (o["send"] or {}).get("how") == "notice":
-                        self.assertEqual(told[o["key"]], "wake" if not o["send"]["liveOnly"] else "now")
-                    if (o["send"] or {}).get("state") == "due":
-                        self.assertEqual(told[o["key"]], "now")
+                    self.assertLessEqual(o["seq"], s["seq"])
+            with self.subTest(task=t["id"]):
+                for f in ("born", "agentSeq", "seenSeq"):
+                    self.assertLessEqual(t[f], s["seq"], f)
+                self.assertLessEqual((t["closed"] or {}).get("seq", 0), s["seq"], "closed")
+        waiting = load(os.path.join(ex, "waiting.json"))
+        self.assertEqual(waiting["seq"], s["seq"], "the snapshot is of this store")
         pairs = s["successors"]
         rows = [t for t in load(os.path.join(ex, "list.json"))["tasks"]] + [load(os.path.join(ex, "show.json"))["task"]]
         rows += [dict(s["tasks"][w["task"]], target=w["target"]) for w in load(os.path.join(ex, "waiting.json"))["waiting"]]
@@ -222,9 +228,6 @@ class TheSet(unittest.TestCase):
                     self.assertTrue([p for p in pairs.values() if p["session"] == target["session"] or
                                      (p["thread"] and p["thread"] == target["thread"])],
                                     "a pair in examples/state.json leads to the target")
-                if target["runner"] == "maws" or target["state"] == "ended":
-                    for o in t["outcomes"]:
-                        self.assertIsNone(o["send"])
 
     def test_an_id_is_one_rule_in_the_schema_and_the_door(self):
         line = load(os.path.join(SET, "examples", "lines.json"))[0]

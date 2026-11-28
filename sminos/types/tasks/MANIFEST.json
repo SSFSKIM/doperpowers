@@ -1,13 +1,13 @@
 {
- "digest": "88c376f91470de395ce1de25418a270a41d9d848af5c0b534e2d33d3c06d7a55",
+ "digest": "85218a516bb64984984778d3413c378b61cd0d649a90e56b02ed5a5d5889e2fe",
  "files": {
   "README.md": "c76ba629e53dfdf663e9b23885997787e07e1ea66d3120f6f2d918fed14ca131",
   "examples/lines.json": "81734f63454467e2bb80b50a9432a6402ca75828a91b0ead2c73acf17b9392a6",
   "examples/list.json": "b93ed68a513ee971b4843baa5235666ca05c99116bad9a5642f9e12bb830695e",
   "examples/show.json": "24d7be2edb6d55f1a3c4d2daeb3be3f41e1765647dd0c5976fab1e8dcf98d99b",
-  "examples/state.json": "a3835d201ba6eb0e50afe8ba82cfaa46a39261b8d85de55f3141141b265e9a3b",
+  "examples/state.json": "2ecc11ea837fed9c0ff85c92eace608b7bfc73239ac52c51612a7233793c09fe",
   "examples/verdicts.json": "b986152cacf8909d19911805d94cbe2af74c8fa88045dac0b229c4e5d8c0b54d",
-  "examples/waiting.json": "2462179313aae461b68fbd396526427afea9b718472978e975faadc5ff56b717",
+  "examples/waiting.json": "d9acf0d5e2796a3cb65bc715daf93095e02918f4d1e1e3ada1a21db108e3e3d6",
   "fixtures/act-on-a-closed-task/after/tasks/state.json": "bcead718269ce3a02cc604b719bd993360b9d7d631aa71c29184fea12adda900",
   "fixtures/act-on-a-closed-task/before/tasks/state.json": "bcead718269ce3a02cc604b719bd993360b9d7d631aa71c29184fea12adda900",
   "fixtures/act-on-a-closed-task/case.json": "efef8fcf621295305fa69c37ea6f88be8791f37a290fd4fbd72faec1d4e02af8",

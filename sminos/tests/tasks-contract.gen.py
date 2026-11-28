@@ -546,17 +546,22 @@ def every_value():
     tasks, applied_ = [], {}
     for n, (told, send, ended_line, who) in enumerate(combos, 1):
         k = "t%d.1" % n
+        # A notice for the live alone is what an outcome that may not wake gets: the human said so on the line.
+        live_only = send is sent_live
         line_ = {"v": 1, "key": key(100 + n), "act": "done", "task": "t%d" % n, "revision": 1, "text": "",
-                 "wake": None}
+                 "wake": False if live_only else None}
         v = {"v": 1, "key": key(100 + n), "act": "done", "verdict": "applied", "task": "t%d" % n, "revision": 1,
              "state": "done", "outcome": k, "told": told}
         applied_.update(applied(line_, "t%d" % n, at(3), v))
         tasks.append(task("t%d" % n, "blocking", "Task %d" % n, n, at(0), project=PROJECT, askers=[who],
                           state="done", acts=1, closed={"how": "done", "seq": 20 + n, "at": at(3), "text": ""},
-                          outcomes=[outcome(k, 20 + n, "done", at(3), 1, "", True, send=send, ended_line=ended_line,
-                                            shown={"at": at(5), "session": S1} if send is sent_live else None)]))
+                          outcomes=[outcome(k, 20 + n, "done", at(3), 1, "", not live_only, send=send,
+                                            ended_line=ended_line,
+                                            shown={"at": at(5), "session": S1} if live_only else None)]))
+    # The store's seq: its last act's, and one more for the start that marked the live notice's outcome shown.
+    seq = max(o["seq"] for t in tasks for o in t["outcomes"]) + 1
     # The two shapes of a /clear's pair, bound and not yet, each left by a session no task here names.
-    return store(30, len(combos) + 1, tasks, applied=applied_,
+    return store(seq, len(combos) + 1, tasks, applied=applied_,
                  successors={S9: {"session": S2, "thread": T2, "at": at(1)},
                              sid("a5"): {"session": sid("a6"), "thread": None, "at": at(2)}})
 
@@ -571,7 +576,7 @@ put("examples/list.json", dump({"v": 1, "seq": 3, "tasks": [
 put("examples/show.json", dump({"v": 1, "seq": 4, "task": dict(T1_DONE, askers=[asker(session=S3)],
                                                                 target=TARGET_MAWS, updated=True)}))
 WAITING_TARGET = {T1: TARGET_RUNNING, T3: TARGET_ENDED, None: TARGET_MAWS}
-put("examples/waiting.json", dump({"v": 1, "seq": 30, "waiting": [
+put("examples/waiting.json", dump({"v": 1, "seq": EVERY["seq"], "waiting": [
     {"key": o["key"], "task": t["id"], "state": t["state"], "kind": o["kind"], "seq": o["seq"], "at": o["at"],
      "wake": o["wake"], "send": o["send"], "target": WAITING_TARGET[t["askers"][0]["thread"]]}
     for t in EVERY["tasks"].values() for o in t["outcomes"] if o["shown"] is None]}))

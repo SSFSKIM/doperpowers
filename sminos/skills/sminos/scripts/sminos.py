@@ -12297,11 +12297,17 @@ def _record_expired(_signum, _frame):
 
 
 def _timer_paused(fn, *args):
-    """fn(*args) with the record's interval timer (run_record's) paused, the time it had left given back after."""
+    """fn(*args) with the record's clock stopped: its interval timer (run_record's) paused and given back the time
+    it had left, and its deadline (_RECORD_DEADLINE, which the locks after it wait until) moved by the time paused,
+    so what follows keeps the budget it had before."""
+    global _RECORD_DEADLINE
     left, _ = signal.setitimer(signal.ITIMER_REAL, 0)
+    began = time.time()
     try:
         return fn(*args)
     finally:
+        if _RECORD_DEADLINE is not None:
+            _RECORD_DEADLINE += time.time() - began
         if left:
             signal.setitimer(signal.ITIMER_REAL, left)
 
@@ -12331,8 +12337,9 @@ def run_record():
     and a batch cut mid-write is completed then, since the batch drops what
     the file already holds and an append ends a torn line. Every other verb
     keeps waiting on the same locks. One wait runs past the deadline, with the
-    timer paused: a /clear's Task Board pair (the store's full 10 s), since
-    the release after it leaves no witness to write it from.
+    record's clock stopped (the timer paused, the deadline moved by as much):
+    a /clear's Task Board pair (the store's full 10 s), since the release
+    after it leaves no witness to write it from.
 
     Before all of it, a spawned session's SessionStart claims the provenance
     its launch left for it (claim_launch): it needs only the payload's
