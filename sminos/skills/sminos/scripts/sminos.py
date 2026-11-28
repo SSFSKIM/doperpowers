@@ -10979,6 +10979,36 @@ def cmd_say(a):
     say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws)
 
 
+def say_appends(dest, sid, kind, recipients, text, raws, sender, wake=False, notice=None, extra=None, each=None):
+    """The appends of one say, `say_into`'s and board_notice's: one event per
+    audience its recipients give (streams_for), each with only its own
+    recipients' tags (P5 O18 D4), refused whole before anything is written
+    when one of them is out of reach (Unreachable, StreamUnknown); each
+    recipient's transcript noted first (frame_landed); each stream's
+    audience kept before its event. An event's fields: `from`, `to` (its
+    recipients, or `*` for an untagged one that is not for the live alone),
+    `text`, the machine's `notice` when given, `wake` (for the live alone:
+    an @all, or board_notice's one recipient), then `extra`. `each(event,
+    its recipients)` after each append, the event as log_append answers it
+    (`seq` None: it waits for its writer's head). An append that fails
+    raises its OSError, those before it kept. [(event, recipients)]."""
+    splits = streams_for(dest, sid, recipients, text, raws)
+    note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
+    out = []
+    for split_writer, aud, rs, split in splits:
+        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": split,
+                  **({"notice": notice} if notice is not None else {})}
+        if wake:
+            fields["wake"] = True
+        fields.update(extra or {})
+        keep_stream(dest, split_writer, aud)
+        e = log_append(dest, split_writer, kind, **fields)
+        out.append((e, rs))
+        if each is not None:
+            each(e, rs)
+    return out
+
+
 def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, said=None, told=()):
     """A tagged or untagged say's appends and deliveries, its destination
     and recipients resolved: one event per audience its recipients give
@@ -10999,39 +11029,29 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
             recipients = [r for r in recipients if r["session"] != sid]
         elif any(r["session"] == sid for r in recipients):
             die("you cannot tag yourself")
-    # One event per audience its recipients give, each with only its own recipients' tags (P5 O18 D4), refused
-    # whole before anything is written when one of them is out of reach.
-    au = audience_module()
-    try:
-        splits = streams_for(dest, sid, recipients, a.text, None if wake else raws)
-    except au.Unreachable as err:
-        die(str(err), EXIT_UNKNOWN)
-    except au.StreamUnknown as err:
-        die("say could not be recorded: %s" % err, 1)
     copied = said.copied if said is not None else bool(sid and home is not None and home.id != dest.id)
+    extra = dict(said.fields) if said is not None else {"from_project": home.id} if copied else {}
     recorded = []
-    note_transcripts(r["session"] for _, _, rs, _ in splits for r in rs)   # before the appends (frame_landed)
-    for split_writer, aud, rs, text in splits:
-        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text, **notice_field(a)}
-        if wake:
-            fields["wake"] = True
-        if said is not None:
-            fields.update(said.fields)
-        elif copied:
-            fields["from_project"] = home.id  # the sender's own project, where a reply finds it
-        try:
-            keep_stream(dest, split_writer, aud)
-            e = log_append(dest, split_writer, kind, **fields)
-        except OSError as err:
-            die("say could not be recorded: %s" % err, 1)
+
+    def appended(e, rs):
         here = {r["session"] for r in rs}
         for line in [line for who, line in told if who in here]:
             print(line)
         if e["seq"] is None:
-            print(waits_line(dest, split_writer))
-            continue
+            print(waits_line(dest, e["writer"]))
+            return
         print("recorded %s in %s" % (event_ref(e), dest.name))
         recorded.append((e, rs))
+    au = audience_module()
+    try:
+        say_appends(dest, sid, kind, recipients, a.text, None if wake else raws, sender, wake, a.notice, extra,
+                    appended)
+    except au.Unreachable as err:
+        die(str(err), EXIT_UNKNOWN)
+    except au.StreamUnknown as err:
+        die("say could not be recorded: %s" % err, 1)
+    except OSError as err:
+        die("say could not be recorded: %s" % err, 1)
     if said is not None and said.after:
         print(said.after)
     if recorded and copied and said is None:
