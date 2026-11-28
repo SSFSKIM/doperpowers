@@ -516,9 +516,9 @@ class Store(Board):
         seen = []
         real = tasks.apply_line
 
-        def check(line):
+        def check(line, memo=None):
             seen.append(sys.stderr.getvalue())
-            return real(line)
+            return real(line, memo)
         with mock.patch.object(tasks, "apply_line", side_effect=check):
             self.t("done", "t1")
         self.assertTrue(seen and seen[0].startswith("key "), seen)

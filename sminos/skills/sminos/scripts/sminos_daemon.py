@@ -2280,6 +2280,19 @@ def override_duty():
     sweep_launches()
     sweep_holder_deliveries()
     sweep_cleared()
+    sweep_tasks()
+
+
+def sweep_tasks():
+    """The Task Board's hourly duty (sminos_tasks.hourly): its due sendings resolved, its pairs bound, its old
+    closed tasks pruned. Each problem it reports, and any exception, is a line in daemon.log; nothing else of the
+    daemon's touches the store."""
+    try:
+        problems = sminos.sibling_module("sminos_tasks").hourly()
+    except Exception as e:   # the board's own failure is no other duty's
+        problems = [getattr(e, "message", None) or "%s: %s" % (type(e).__name__, e)]
+    for why in problems:
+        sminos.daemon_log("tasks: %s" % why)
 
 
 def _cleared_notes():

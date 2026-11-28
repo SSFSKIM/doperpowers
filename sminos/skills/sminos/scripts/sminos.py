@@ -11067,6 +11067,61 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
         sys.exit(EXIT_HELD)
 
 
+TASKS_NOTICE = "tasks"   # the program the Task Board's notices name (sminos_tasks, X6)
+
+
+def board_notice(session, project, text, live_only):
+    """The Task Board's notice (sminos_tasks.send; the plan docs/doperpowers/
+    plans/2026-11-27-task-board-b1.md, §5): one `human` event of this
+    machine's own writer marked `notice: "tasks"` (X8), appended in the
+    project of id `project` as say_appends appends any. Addressed to
+    `session` as its own row there gives it ({session, alias}: member_row,
+    no alias resolved), for the live alone when `live_only` (the mark an
+    @all carries, with one recipient: deliver_next settles it `recorded`
+    for a session no process holds, so it never starts one), then
+    delivered as a sender's own call delivers (deliver_next, due);
+    `session` None: to nobody, `to` `*`, delivered to no one. ("sent",
+    the delivery's outcome for the event, or `owed` when the call gave
+    none for it: it waits for its writer's head, a gate, an earlier
+    event, or another machine's daemon), or ("none", why) with nothing
+    appended: `not-addressable` (no such project here, or `session` no
+    member of it), `no-writer` (a machine name no notice is read under),
+    `log-refused` (the append refused or failed). It prints nothing,
+    never exits, and takes no lock of the store's; `cmd_say` is not its
+    caller and nothing of say's validation or output is here."""
+    writer = writer_id()
+    if not notice_of({"kind": "human", "writer": writer, "notice": TASKS_NOTICE}):
+        return "none", "no-writer"
+    dest = known_project(project) if isinstance(project, str) else None
+    if dest is None or is_channel_id(dest.id):
+        return "none", "not-addressable"
+    member = None
+    if session is not None:
+        member = member_row(dest, session)
+        if member is None:
+            return "none", "not-addressable"
+    recipients = [{"session": session, "alias": member.alias}] if member is not None else []
+    au = audience_module()
+    try:
+        [(e, _)] = say_appends(dest, "", "human", recipients, text, None, "human", wake=bool(live_only and member),
+                               notice=TASKS_NOTICE)
+    except (au.Unreachable, au.StreamUnknown, OSError):
+        return "none", "log-refused"
+    if member is None:
+        return "sent", "recorded"
+    if e["seq"] is None or not member.local:
+        nudge_daemon()   # its writer's head first, or the member's own machine's daemon
+        return "sent", "owed"
+    try:
+        result = deliver_next(dest, member, due=True)
+    except DeliveryUnreadable:
+        return "sent", "owed"
+    mine = [o for ev, o in result["outcomes"] if ev["writer"] == e["writer"] and ev["seq"] == e["seq"]]
+    if not mine:
+        nudge_daemon()
+    return "sent", str(mine[0]) if mine else "owed"
+
+
 def broadcast(e):
     """Whether an event for the live alone (`wake`) is read as a broadcast:
     every one but a machine's notice to one recipient with no scope

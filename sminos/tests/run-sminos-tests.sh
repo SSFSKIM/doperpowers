@@ -640,6 +640,9 @@ run_suites_c() {
   else fail "the Task Board: the store, the door, the start line, the target and a /clear's pair (test_tasks.py)"; fi
   if "$SCRIPT_DIR/test-tasks-hook.sh"; then pass "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; else
     fail "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks_telling.py"; then
+    pass "the Task Board telling the asker: the table, the notice, the tell, a due sending, the ended line, the hourly duty (test_tasks_telling.py)"
+  else fail "the Task Board telling the asker: the table, the notice, the tell, a due sending, the ended line, the hourly duty (test_tasks_telling.py)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a
