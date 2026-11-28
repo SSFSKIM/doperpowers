@@ -77,7 +77,7 @@
     {
       "name": "task",
       "description": "The ticket board: a repository's GitHub issues as the agents' backlog, worked through one command, task, which reads what a ticket needs before work can start, how far off it is and whether a thread has it",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "source": "./task",
       "author": {
         "name": "SSFSKIM",

@@ -16,7 +16,7 @@ import lint as L
 import record
 import settle as S
 import sminos_client as sminos
-from common import failed, refused, usage
+from common import FAILED, Stop, failed, refused, usage
 from github import Q_NODE, SEARCH_LIMIT, Client, GitHubError
 
 _REF = re.compile(r"(?:(?P<repo>[^#\s]+)#)?(?P<number>[1-9][0-9]*)")
@@ -34,11 +34,20 @@ class Context:
 
     @property
     def board(self):
+        """The ticket board this verb works. A failure to find one names the
+        human's board too: an agent looking for a task (`t<n>`) with a ticket
+        verb read "no board" as the task's absence (B5's ledger, F1)."""
         if self._board is None:
-            if getattr(self.args, "repo", None) is not None:
-                self._board = config.from_github(self.args.repo, self.client)
-            else:
-                self._board = config.from_clone(os.getcwd())
+            try:
+                if getattr(self.args, "repo", None) is not None:
+                    self._board = config.from_github(self.args.repo, self.client)
+                else:
+                    self._board = config.from_clone(os.getcwd())
+            except Stop as stop:
+                if stop.code != FAILED:
+                    raise
+                raise Stop(FAILED, "%s\n(this is the repository's ticket board; the human's board, the tasks "
+                                   "t<n>, is `task list --human`)" % stop.message)
         return self._board
 
     @property
