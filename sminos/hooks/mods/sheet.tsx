@@ -187,7 +187,7 @@ type Gen = {
   rerouteOwed: Set<string>
   /** Keys whose idle flight did not land: their envelope waits for a route that starts no turn, so no turn is started for it again and again. */
   noIdle: Set<string>
-  /** How many main turns ended aborted (a Stop), and the count each step still outstanding was ordered under (MAWS's C5, F34). */
+  /** How many main turns ended aborted (a Stop), and the count each step still outstanding was ordered under: while one ordered before the last Stop is, no idle wake (MAWS's C5, F34). */
   stops: number
   ordered: Set<{ stops: number }>
   /** I10's context the next result or prompt route carries, once: where no SessionStart could return it (M4's decisions). */
@@ -407,18 +407,29 @@ function retire() {
  * the caller orders the event again, or settles a call.
  */
 async function step(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
-  // Outstanding from here until its view is adopted or passed over: a Stop meanwhile holds what any view brings then.
+  // Outstanding from here until its view is adopted or passed over. One ordered before a Stop holds what its own
+  // reply shows, and until it is done no idle wake is made (`isStopWindow`): a step's reply need not follow the order
+  // of the commits, so a newer view may hold what it committed while its own reply has not come.
   const order = { stops: gen.stops }
   gen.ordered.add(order)
   try {
-    return await stepOnce(port, gen, event, agents)
+    return await stepOnce(port, gen, event, agents, order)
   } finally {
     gen.ordered.delete(order)
+    if (order.stops < gen.stops && !isStopWindow(gen)) {
+      // The window closed: the latest view is considered again, for an answer no pre-Stop reply held.
+      deliver(port, gen)
+    }
   }
 }
 
+/** Whether a step ordered before the generation's last Stop is still outstanding: the idle route waits for it. */
+function isStopWindow(gen: Gen): boolean {
+  return [...gen.ordered].some((order) => order.stops < gen.stops)
+}
+
 /** The step itself (`step` holds it outstanding meanwhile). */
-async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, agents?: string[]): Promise<Answer> {
+async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, agents: string[] | undefined, order: { stops: number }): Promise<Answer> {
   const own = isRecord(event.call) ? event.call.callId : undefined
   const acked = [...gen.toAck].filter((id) => id !== own)
   let running = agents
@@ -446,17 +457,16 @@ async function stepOnce(port: Port, gen: Gen, event: Record<string, unknown>, ag
     return answer
   }
   acked.forEach((id) => gen.toAck.delete(id))
+  if (order.stops < gen.stops) {
+    // Ordered before a Stop it answers after: what its own reply shows was pending at that Stop, adopted or not.
+    holdStopped(gen, answer.view)
+  }
   if (answer.effects.owed > 0) {
     projectLog(port, gen)
   }
   if (isNewer(gen.held === undefined ? undefined : { session: gen.session, view: gen.held }, gen.session, answer.view)) {
     const before = gen.held
     gen.held = answer.view
-    if ([...gen.ordered].some((other) => other.stops < gen.stops)) {
-      // A step ordered before a Stop is still outstanding, this one among them or not: what it committed may have
-      // been pending at that Stop and be in this view, whose reply came first (replies need not follow commits).
-      holdStopped(gen)
-    }
     // A view adopted opens the routes it holds envelopes for (I9).
     deliver(port, gen)
     correctStopped(port, gen, running)
@@ -794,7 +804,7 @@ function deliver(port: Port, gen: Gen) {
   if (!isStarted(gen)) {
     return
   }
-  if (isTerminal() && sheet.mainTurn === undefined) {
+  if (isTerminal() && sheet.mainTurn === undefined && !isStopWindow(gen)) {
     const envelope = readyFor(gen, 'main')
     const wake = envelope !== undefined && envelope.wakes ? freshWake(gen, envelope) : undefined
     if (envelope !== undefined && wake !== undefined) {
@@ -1076,7 +1086,7 @@ function routable(): Gen | undefined {
 async function endTurn(port: Port, gen: Gen, turnId: string, reason: string, isAborted: boolean) {
   if (isAborted) {
     gen.stops += 1
-    holdStopped(gen)
+    if (gen.held !== undefined) holdStopped(gen, gen.held)
   }
   const due = gen.flights.filter((flight) => flight.isAdmitting !== true && (flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId))
   const typedOver = new Set(due.filter((flight) => flight.turnId === undefined && flight.tentative === turnId))
@@ -1111,17 +1121,16 @@ async function endTurn(port: Port, gen: Gen, turnId: string, reason: string, isA
 
 /**
  * What a Stop holds (MAWS's C5, F34; the composite's Stop rule), in both
- * runners: every key the view held lists as pending for the main
- * conversation, and every key of its ready envelope, joins `noIdle`, and the
- * answered count is spent as a failed idle submit spends it for a view that
- * is cut. So none of it opens the idle route again by itself, however the
- * view is adopted next (a dismissal, a reroute, a `landed` retry, a step the
- * Stop overtook); a newer answer does and takes it along, and any prompt that
- * enters carries it.
+ * runners, from a view that shows what was pending at it (the view held at
+ * the aborted end, or the reply of a step ordered before that end): every key
+ * it lists as pending for the main conversation, and every key of its ready
+ * envelope, joins `noIdle`, and the answered count is spent as a failed idle
+ * submit spends it for a view that is cut. So none of it opens the idle route
+ * again by itself, however the view is adopted next (a dismissal, a reroute,
+ * a `landed` retry, a step the Stop overtook); a newer answer does and takes
+ * it along, and any prompt that enters carries it.
  */
-function holdStopped(gen: Gen) {
-  const view = gen.held
-  if (view === undefined) return
+function holdStopped(gen: Gen, view: View) {
   for (const o of view.pending) if (o.recipient === 'main') gen.noIdle.add(o.key)
   for (const key of view.ready.find((ready) => ready.recipient === 'main')?.keys ?? []) gen.noIdle.add(key)
   gen.idleFailedAt = Math.max(gen.idleFailedAt ?? 0, view.answeredCount)

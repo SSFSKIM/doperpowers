@@ -409,9 +409,12 @@ cut batch its answers first), so a ring finds an answer while one is
 pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
 `sheet: a ring is dropped: …`). In both runners a main turn that ends
 aborted (a Stop) puts what was then pending for the main conversation in
-`noIdle`; so does every view adopted while a step ordered before that Stop
-is still outstanding (a reply need not follow the order of the commits),
-and an idle reservation made before it is let go at its hop: none of it
+`noIdle`, and so does the reply of each step ordered before that Stop that
+answers after it, adopted or not; until the last such step is done no idle
+wake is made (a reply need not follow the order of the commits), and then
+the latest view is considered again, so an answer no such reply held wakes
+as any newer answer does. An idle reservation made before the Stop is let
+go at its hop. None of what the Stop holds
 opens the idle route until a newer answer, and any prompt that enters
 carries it all. A ring orders no step.
 

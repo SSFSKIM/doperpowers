@@ -1637,13 +1637,15 @@ Each ring's fate is a debug line.
 **A stopped turn** (MAWS's C5, F34, both runners). When a main turn ends
 aborted (the turn's end event's `isAborted`), every key the view held lists
 as pending for the main conversation and every key of its ready envelope
-join `noIdle`, and `idleFailedAt` takes the view's answered count. While
-a step ordered before that end is still outstanding (`stops`, counted per
-generation, and each step's count noted while it runs), any view adopted
-does the same with its own, whichever step it came from: a step's reply
-need not follow the order of the commits, so a later step's newer view can
-hold what the earlier one committed. An idle reservation made before the
-end is let go at its hop. A ring orders no step at all. So nothing pending at a Stop
+join `noIdle`, and `idleFailedAt` takes the view's answered count. A step
+ordered before that end (`stops`, counted per generation, and each step's
+count noted while it runs) that answers after it does the same with its own
+reply's view, adopted or not. While such a step is outstanding no idle wake
+is made, since a step's reply need not follow the order of the commits and a
+later step's newer view can hold what the earlier one committed; when the
+last of them is done, the latest view is considered again, so an answer no
+such reply held (applied in that window) opens the idle route as any newer
+answer does. An idle reservation made before the end is let go at its hop. A ring orders no step at all. So nothing pending at a Stop
 opens the idle route again, whatever step's view is adopted next (a
 dismissal, a reroute, a `landed` retry, a step the Stop overtook); a newer
 answer does and takes it along, and any prompt that enters carries it all.
