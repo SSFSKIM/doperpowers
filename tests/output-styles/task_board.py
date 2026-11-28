@@ -57,7 +57,8 @@ what agents are told, in the four parts an arm switches:
                              description, after its first paragraph
 
 Arms: `bare` (none), `ship` (guide, skill, help: what B1's M5 ships),
-`ship+sheet` (all four); any other name is its parts joined by `+`.
+`ship+sheet` (all four); any other name is its parts joined by `+`
+(`sheet` alone: the sentence and nothing else).
 """
 from __future__ import annotations
 
@@ -81,7 +82,7 @@ from mid_turn import CC_IDENTITY, claude_code_system  # noqa: E402
 
 REPO = qs.REPO
 DIR = HERE / "task-board"
-DEFAULT_WORDS = DIR / "words-v1"
+DEFAULT_WORDS = DIR / "words-v2"
 TASK_MAIN = REPO / "task" / "cli" / "main.py"
 SMINOS_CLI = REPO / "sminos" / "skills" / "sminos" / "scripts" / "sminos"
 SESSION = "3f9a1c2e-6b1d-4e0a-9c57-2d8e41b7a0f3"

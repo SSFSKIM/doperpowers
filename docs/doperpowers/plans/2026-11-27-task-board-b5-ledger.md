@@ -49,6 +49,7 @@ R16: these are counted in the same runs and in a fourth scenario, **wrong** (the
 | version | directory | what changed, and the rate that asked for it |
 |---|---|---|
 | v1 | `tests/output-styles/task-board/words-v1/` | D2's definitions and R15's direction, written before any run: no line of guidance |
+| v2 | `tests/output-styles/task-board/words-v2/` | One line added to the guide's line and to the skill's body: `task list --human` shows the board, and `task list` alone is the repository's tickets (round 1's failure F1). Two lines cut from the skill's body, which no session that needed them had read: the door refusing a session (no session called the door in 70 runs, and the refusal says why when one does), and `revise` and `withdraw` (in `task --help`). The question tool's sentence names `sminos task assign`, since the tool is sminos's and the `task` plugin may not be installed where it is read |
 
 ## Runs
 
@@ -61,3 +62,50 @@ Two runs of each scenario on the `ship` arm, three times, and of `wants` and `lo
 - The human's message in `login`, `wants` and `wrong` now says the legacy writer stays: every session found it undeleted and spent its run on it.
 - The project's pre-merge routine first said of a finding the agent cannot fix, "say the rest in the pull request": a sentence of the scenario's own that told the agent where an act goes. It now says only to fix what is the agent's to fix.
 - `wants` counts where each of its two acts ended (a task, a question, the words of a message, nowhere), since a board with no flood can also be a board with nothing on it.
+
+### Round 1 (2026-11-28): words v1, 70 sessions, about $27 at list price
+
+Subject at high effort; judges claude-opus-5-5 at low; the shell simulator claude-opus-5-5 at low. Result files are kept outside the repository; every figure here is `task-board-eval.py --report` on them.
+
+**The judged scenarios.**
+
+| arm | scenario | main / subagent | runs | right | wrong filing | flooded | verdict |
+|---|---|---|---|---|---|---|---|
+| ship | login | opus / opus | 10 | 9 | 1 | | PASS |
+| ship | login | opus / sonnet | 5 | 5 | 0 | | PASS |
+| ship | decision | opus | 10 | 10 | 0 | | PASS |
+| ship | decision | fable | 5 | 1 | 0 | | incomplete: 4 runs cut off (below) |
+| ship | wants | opus | 10 | | | 0 | PASS |
+| ship+sheet | login | opus / opus | 5 | 5 | 0 | | (gates nothing) |
+| ship+sheet | decision | opus | 5 | 5 | 0 | | (gates nothing) |
+| bare | login | opus / opus | 5 | 0 | 2 | | the control fails |
+| bare | decision | opus | 5 | 5 | 0 | | the control passes |
+
+- **The control.** With no words, the sign-in never reaches the board (0 of 5): in 2 runs it is a question on the sheet, in 3 it is a sentence in a message. So the words are needed for an act. The decision is a question in 5 of 5 with no words at all: the question tool's own description carries it, and nothing in the task words is needed for it.
+- **The sentence in the question tool's description** changed nothing that these cells can show: with the skill and the guide's line and without the sentence, no subagent of 15 asked the sign-in as a question.
+- **Fable, the decision.** Four of five runs spent their twelve responses reading the project before putting anything to the human, and the fifth asked the question at its eleventh. The cap was set from Opus's runs, which asked within six. A run cut off before it files anything shows no filing, right or wrong, so the eval now names it `cut_off` and counts it incomplete; this was decided after the result was seen, and the raw count above stands beside it. The cell is run again in round 2 with thirty responses.
+
+**Measured, with no threshold** (the `ship` arm, 40 sessions and the 5 with a Sonnet subagent, unless said).
+
+| behaviour | rate |
+|---|---|
+| The body says how the human knows it is done (R15) | 21 of 22 tasks (login 15 of 15; wants 6 of 7). What to do: 22 of 22. Why: 21 of 22. No task without a body |
+| What `blocking` is put on | Every sign-in the session waits on: 15 of 15. In `wants`, where nothing waits, no task is blocking: 6 `needed` (the password to rotate), 1 `optional` (the storage plan) |
+| A blocked subagent returns to its caller, with the task's id | Opus as the subagent: it assigned the task itself in 9 of 10 runs (having loaded the skill in each of the 9), ended its turn in 10 of 10, and its report named the id in 9 of 9. Sonnet as the subagent: it loaded no skill and assigned nothing in 5 of 5, reported the wall to its caller, and the main session assigned the task in 5 of 5 |
+| Polls the board | 0 of 45 sessions |
+| Calls the door; completes or declines a task itself | 0 of 45; 0 of 45 (no session removed its own id from a command either) |
+| Told of a done whose result is wrong (`wrong`, 10 runs) | Read the task with `sminos task show`: 10. Checked the result (`whoami`, the smoke): 10. Reopened with a comment saying what was found: 10; none assigned a second task. Every one read before it reopened |
+| Loads the skill | A subagent that meets the wall: 9 of 10 (Opus), 0 of 5 (Sonnet). A main session: 0 of 45 |
+| Reads `task --help` | `wrong` 10 of 10 (before the reopen); `wants` 5 of 10 |
+| Usage errors (exit 2) | 4 calls in 45 sessions, each corrected at the next call |
+| The same sign-in assigned twice | 0 of 15 |
+| **F1: `task list` to look at the human's board** | In `login` a main session told by its subagent that a task is on the board looked for it with `task list` in 6 of 10 runs (and in 4 of 5 of the `ship+sheet` arm): that is the ticket board's verb, and it answered that the repository has no board. In 1 of the 10 the session concluded that the task did not exist, asked the human for the sign-in as a question, and told them the card was probably not there: the cell's one wrong filing |
+| `wants`: where its two acts ended | The password only an owner can rotate: a task in 6 of 10, the words of a message in 4. The storage plan to buy, which nothing waits on: a task in 1, a message in 8, nowhere in 1. The cap, a decision: a question in 10 of 10. Open tasks at the end: 0, 0, 0, 0, 1, 1, 1, 1, 1, 2 |
+
+**What is named a failure.**
+
+- **F1 is one.** The human gets the same request in two places and is told that the board's card does not exist; its cause is two boards behind one command, and six sessions of ten walk into it. It earns one line: v2 says that `task list --human` shows the board and that `task list` alone is the repository's tickets. Round 2 runs `login` again under v2.
+- **The password left in a message is not named one.** It is the pain the board exists for, an act for the human told in a sentence, in 4 runs of 10. But two of those four are runs in which the session had come to distrust its shell (below), the session waits on nothing, and the human was told. When to use the board is the agent's call (R14); the rate is here for the owner to judge, and no line is written for it.
+- Nothing else measured is a failure.
+
+**What the harness could not hold.** In 10 of the 70 runs a session came to distrust the simulated project late in its run (a test count that does not move after it adds a test, a simulated `git show` that disagrees with an earlier one) and said so to the human. The eval flags these (`runs_doubting_the_world`) and each was read. In `login` the doubt came after the subagent's task was on the board and changed no filing. In `wants` it touches the two runs named above. The sheet's harness was built for a live part of a response or two; what it would take to hold a long one is in B5's report as a proposal, and nothing of the sheet's code was changed.

@@ -45,6 +45,11 @@ check("the skill's name and description are read from its front matter",
       ship.skill_name == "task:human-tasks" and ship.skill_description.startswith("The human's task board"))
 check("an arm's parts", ship.parts == ("guide", "skill", "help") and bare.parts == () and sheet.has("sheet")
       and tb.Words(arm="guide+help").parts == ("guide", "help"))
+check("the words under test name the list that is the human's", "`task list --human`" in ship.guide_line
+      and "`task list --human`" in ship.skill_body and "sminos task assign" in sheet.sheet_sentence)
+check("an arm of the sentence alone", tb.Words(arm="sheet").parts == ("sheet",)
+      and tb.Words(arm="sheet").sheet_sentence in tb.sheet_tool(tb.Words(arm="sheet"))["description"]
+      and "task:human-tasks" not in tb.opening(tb.Words(arm="sheet"), "x"))
 check("a main session reads the guide with the words' line at its end",
       tb.start_guide(ship).endswith(ship.guide_line) and "task assign-human" not in tb.start_guide(bare)
       and tb.start_guide(bare).rstrip().endswith("your human partner's to set."))
@@ -327,6 +332,14 @@ client = Fake([[use(1, qs.SHEET_TOOL, {"ask": [{"question": "Keep the legacy wri
                [say("On your sheet.")]], {"legacy CSV writer": {"asks": "decide"}})
 x = ev.classify(ev.run(("ship", "decision", "claude-opus-5-5", None, 1), args, client), client, "low")
 check("decision: the decision as a question is right", x["outcome"] == "question" and x["right"] and not x["wrong"])
+client = Fake([[use(1, "Bash", {"command": "git status"})]] * ev.STEPS["decision"])
+x = ev.classify(ev.run(("ship", "decision", "claude-opus-5-5", None, 2), args, client), client, "low")
+check("decision: a run whose responses ran out before it filed anything is cut off, and incomplete",
+      x["outcome"] == "cut_off" and x["incomplete"] and not x["right"] and not x["wrong"])
+again = ev.classify(json.loads(json.dumps(x)), None, None)
+check("a kept run is classified again with no call", again["outcome"] == "cut_off" and again["measures"] == x["measures"])
+check("a message that doubts the shell is flagged", ev.DOUBTS.search("The shell's output is also inconsistent in other ways")
+      and ev.DOUBTS.search("I can't trust the output of git here") and not ev.DOUBTS.search("The staging smoke has not run."))
 
 many = [[use(i, "Bash", {"command": f"task assign-human --class optional --title 'Want {i}'"})] for i in range(1, 5)]
 client = Fake(many + [[say("Done.")]], {"A coding agent put this task": BODY_OK, "ten matters": {"want": "W4"}})
