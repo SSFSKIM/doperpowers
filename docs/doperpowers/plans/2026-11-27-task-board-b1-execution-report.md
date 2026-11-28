@@ -48,3 +48,15 @@ These are recorded in the B1 document's "As built" paragraph under M1:
 - **The illustrative history in `examples/state.json`** counts sequence slots only for the outcome and the final `shown` step (task review, round 3, Minor). It does not change how a snapshot is read, and it matters only if the example is replayed as a history.
 - **Unguarded `daemon_log` in `release_alias`.** The release's own failure handler in `sminos.py` calls `daemon_log` unguarded. That predates this branch and is outside the task path, which M1 made best-effort.
 - **Notes for M2.** M2 replaces `told_of` with §3's table and writes `send: due`, and its hourly duty also prunes the kept keys of unknown ids.
+
+## M3 — the `task` verbs (2026-11-28)
+
+Built on `task-board-b1-m3` from `main` at `f695ab504`, once the `task` plugin's change to `create` and `claim` (#648) had merged; one PR. One `doperpowers:task-executor` built it and was resumed for the fix. The milestone's review was `doperpowers:review-code` at the medium rung the document names; the dispatching session ruled that, for a PR of one milestone, it stands in for a separate task review of the same range.
+
+| step | range | result |
+|---|---|---|
+| M3 built | `f695ab504..5db5b5bc6` | `ci-gate --gates task,version-bump` GREEN |
+| review, medium | 2 P2 | one fixed in `0c0844640` (gate GREEN), one recorded |
+| main merged in | `497d8d875` | the doperpowers bump on main had moved past the base |
+
+Decisions made in execution are in the document's "As built" paragraph under M3. Recorded, not fixed: the ticket-number refusal of `revise`, `withdraw` and `reopen` reads only the first argument, so `task revise --title X 7` reaches sminos and exits 1 or 3, not 2. The plain form the document names exits 2, and sminos refuses the others. Found for another writer: the ticket board's spec still says the human's verb names stay unused (the document's list for the composite's writer).

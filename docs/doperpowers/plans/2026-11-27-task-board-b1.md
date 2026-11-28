@@ -10,7 +10,7 @@
 
 - [x] (2026-11-28T01:57Z) M1 — The store, its commands, the door, the start line, the published set (gate G1). Task review clean after two fix rounds; sminos 1.60.0; the set's digest is in `sminos/types/tasks/MANIFEST.json`.
 - [ ] M2 — Telling the asker now: the notice, the subagent's message, the wake.
-- [ ] M3 — The `task` verbs. Waits on the `task` plugin's first release.
+- [x] (2026-11-28T06:40Z) M3 — The `task` verbs. Review at the medium rung clean after one fix (a prefix of `--human`); task 0.3.0.
 - [ ] M4 — The session's side: the subagent's attribution, the terminal's line, the notification.
 - [ ] M5 — What agents are told, what is written beside the code, the acceptance. Waits on B5.
 
@@ -341,6 +341,8 @@ Which form a notice takes is decided by the target and the task, in this order: 
 
 **Gate.** `ci-gate --gates task,version-bump`.
 
+**As built.** `task/cli/human.py` holds the dispatch: `form(argv)` answers the `sminos task` argv for a human's form or None, and `main` asks it before its parser, the board's configuration or `gh`; `run` finds sminos with `sminos_client.find()` and its 30 s bound. Readings M3 settled: a task id counts only as the verb's first argument (`task show --json t7` is the ticket board's, whose error then says so); `list --human` drops the flag, and the prefixes argparse would resolve to it (`--hu` to `--huma`; `--h` is also `--help`), and passes the rest through, `--closed` and `--all` included; `revise`, `withdraw` and `reopen` whose first argument is a ticket's number exit 2 in `task` itself, so the exit holds where sminos is not installed (a number in a later position reaches sminos, which refuses it with 1 or 3); sminos's 75 and a signal become 1. The help text is the least that makes `--help` true, for M5 to replace with B5's words; the plugin's description still says "the ticket board", for M5.
+
 ### M4 — The session's side: the subagent's attribution, the terminal's line, the notification
 
 **At its end.** A task a subagent assigns names the subagent, and the person approving the call sees the flag that says so; completed while that subagent runs, the subagent itself is told. The line above the prompt counts the session's open tasks; a new blocking task raises one notification on the machine.
@@ -468,6 +470,8 @@ Left for later, and carried to M1's pull request as review input:
 
 M2 consumes the "As built" paragraph under M1 and its own notes (`told_of` replaced, `send: due`, the prune of unknown ids' keys).
 
+**M3 (2026-11-28).** Built in one pass on its own branch from `main` after the `task` plugin's 0.2.0 (#648); task 0.3.0. The review at the medium rung found two things. The fix: argparse took a prefix of `--human` (`--huma`) for the flag the early dispatch did not see, so the ticket board answered with tickets; the dispatch now takes those prefixes as the flag. Recorded, not fixed: the ticket-number refusal of `revise`, `withdraw` and `reopen` reads the first argument only, and the plain form the milestone names holds. The lesson: a front that intercepts argv ahead of an argparse parser inherits that parser's abbreviations, and must match what the parser would resolve, not the literal flag.
+
 ## For the composite's writer
 
-Nothing outstanding at the parent pin.
+- **X5's hand-over did not reach the ticket board's spec.** `docs/doperpowers/specs/2026-11-24-ticket-board-design.md` still says the dispatch keeps the human's names unused and that `task assign-human` exits 2 saying the Task Board is not built (its D4, and its acceptance 7, "The seam"). Since M3 both are false: the three branches are in the dispatch. The sentence and the acceptance item are the ticket board's writer's to rewrite.

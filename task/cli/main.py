@@ -1,7 +1,8 @@
-"""`task`: the agents' one command for tracked work (R9). Every verb this
-release builds works tickets on a GitHub board; the verbs that would write
-to the human's Task Board are a separate unit, and their names stay unused
-here (`assign-human` says so)."""
+"""`task`: the agents' one command for tracked work (R9), with two
+destinations: tickets on a repository's GitHub board, and tasks on the
+human's board, which sminos keeps on the machine. A form of the human's board
+(`human.form`) is recognized first and run as `sminos task` (`human.py`);
+every other form is the ticket board's and goes through the parser here."""
 import argparse
 import json
 import pathlib
@@ -10,6 +11,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import claiming  # noqa: E402
+import human  # noqa: E402
 import migrate  # noqa: E402
 import verbs  # noqa: E402
 from common import FAILED, USAGE, Stop  # noqa: E402
@@ -31,6 +33,9 @@ def issue_number(text):
     except ValueError:
         n = 0
     if n < 1 or not text.strip().isdigit():
+        if human.TASK_ID.fullmatch(text):
+            raise argparse.ArgumentTypeError("%r is no issue number (a positive integer); a task's id names the "
+                                             "human's board when it is the verb's first argument" % text)
         raise argparse.ArgumentTypeError("%r is no issue number (a positive integer)" % text)
     return n
 
@@ -46,7 +51,9 @@ def parser():
     p = Parser(prog="task", description="Tickets on a repository's GitHub board: the board is the repository of "
                "the clone's designated remote (git config task.remote, else origin), configured by "
                ".doperpowers/board.json on that remote's default branch as last fetched; --repo owner/name works "
-               "a board from anywhere.")
+               "a board from anywhere. Tasks on the human's board, which sminos keeps on this machine: "
+               "assign-human, revise, withdraw and reopen, show and comment given a task's id (t<n>), and list "
+               "--human, each run as the matching sminos task verb.")
     p.add_argument("--version", action="version", version=version())
     sub = p.add_subparsers(dest="verb", metavar="<verb>", parser_class=Parser)
 
@@ -87,6 +94,7 @@ def parser():
     held.add_argument("--unclaimed", action="store_true")
     v.add_argument("--batch", metavar="NAME")
     v.add_argument("--untracked", action="store_true", help="the open issues that are not on the board instead")
+    v.add_argument("--human", action="store_true", help="the human's board's tasks instead (sminos task list)")
 
     v = verb("search", verbs.search, "GitHub's issue search, held to the board's repository", (on_board, reading))
     v.add_argument("query")
@@ -172,21 +180,23 @@ def parser():
     s.add_argument("plan", metavar="PLAN")
     s.set_defaults(run=migrate.apply)
 
-    v = sub.add_parser("assign-human", help="(the human's Task Board: not built)", add_help=False)
-    v.add_argument("rest", nargs=argparse.REMAINDER)
-    v.set_defaults(run=None)
+    # The human's board's own verbs, listed for --help; main runs them before parsing (human.py).
+    for name, help in (("assign-human", "give the human a task on this machine's board; prints its id and its line"),
+                       ("revise", "change a task you assigned (t<n>)"),
+                       ("withdraw", "withdraw a task you assigned (t<n>)"),
+                       ("reopen", "reopen a task the human marked done (t<n>), with a comment")):
+        sub.add_parser(name, help=help, add_help=False)
     return p
 
 
 def main(argv):
+    on_human_board = human.form(argv)
+    if on_human_board is not None:
+        return human.run(argv[0], on_human_board)
     p = parser()
     args = p.parse_args(argv)
     if args.verb is None:
         p.print_help(sys.stderr)
-        return USAGE
-    if args.verb == "assign-human":
-        sys.stderr.write("task assign-human: the Task Board is not built (what agents ask of the human, and the "
-                         "human's to-dos, are a unit of their own); task works tickets on GitHub boards only\n")
         return USAGE
     try:
         args.run(verbs.Context(args))

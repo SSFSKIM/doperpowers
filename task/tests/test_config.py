@@ -169,11 +169,7 @@ class ConfigurationTest(BoardCase):
 
 
 class SeamTest(BoardCase):
-    def test_assign_human_is_not_built(self):
-        code, _, err = self.task("assign-human", "do the thing", repo=False)
-        self.assertEqual(code, 2)
-        self.assertIn("Task Board is not built", err)
-        self.assertEqual(self.calls(), [])
+    """The seam's own case went with the human's board's verbs (test_human.py)."""
 
     def test_an_unknown_verb_is_usage(self):
         self.assertEqual(self.task("frobnicate", repo=False)[0], 2)
