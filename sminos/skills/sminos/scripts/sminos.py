@@ -9272,7 +9272,7 @@ def frame_of(project, e, events, session, cursor, thread=None):
     if e.get("from_project") and is_channel_id(project.id):
         label = " (not in %s)%s" % (project.name, label)
     return compose_chat_frame(project.name, event_ref(e), sender,
-                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""), label)
+                              target_label(e) if broadcast(e) else "@you", unread, str(e.get("text") or ""), label)
 
 
 def push_event(project, member, session, e, events, cursor, words=None, owing=None, looked=None):
@@ -11067,11 +11067,21 @@ def say_into(a, dest, home, sid, sender, writer, kind, recipients, wake, raws, s
         sys.exit(EXIT_HELD)
 
 
+def broadcast(e):
+    """Whether an event for the live alone (`wake`) is read as a broadcast:
+    every one but a machine's notice to one recipient with no scope
+    (board_notice's for the live alone), which is as addressed as any."""
+    if not e.get("wake"):
+        return False
+    to = e.get("to")
+    return isinstance(e.get("scope"), dict) or not (notice_of(e) and isinstance(to, list) and len(to) == 1)
+
+
 def target_label(e):
     to = e.get("to")
     if to == "*":
         return "*"
-    if e.get("wake"):
+    if broadcast(e):
         return scope_label(e["scope"]) if isinstance(e.get("scope"), dict) else "@all"
     if isinstance(to, list):
         return " ".join("@" + str(r.get("alias") or "?") for r in to if isinstance(r, dict)) or "-"
