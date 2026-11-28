@@ -157,6 +157,15 @@ class ConfigurationTest(BoardCase):
         self.assertIn("--repo", err)
         self.assertEqual(self.calls(), [])
 
+    def test_a_ticket_verb_with_no_board_names_the_humans_board(self):
+        # An agent told "t1 is on the board" ran `task list` and read the refusal as the task's absence.
+        outside = self.task("list", repo=False)
+        no_file = self.task("list", cwd=self.clone("nofile", defaults={"origin": None}), repo=False)
+        for name, (code, _, err) in (("outside a clone", outside), ("no board file", no_file)):
+            with self.subTest(name):
+                self.assertEqual(code, 1)
+                self.assertIn("task list --human", err)
+
     def test_help_and_version_outside_a_repository(self):
         code, out, _ = self.task("--help", repo=False)
         self.assertEqual(code, 0)
