@@ -176,7 +176,8 @@ def create(ctx):
         nodes.append(node)
     keys = {"registered-by": ctx.address(), "for": for_address, "due": a.due, "spec": a.spec}
     body = record.compose(text, keys)
-    labels = [a.horizon, B.PRIORITY_PREFIX + a.priority, a.category] + ([B.BATCH_PREFIX + a.batch] if a.batch else [])
+    labels = [a.horizon] + [l for l in (a.priority and B.PRIORITY_PREFIX + a.priority, a.category,
+                                        a.batch and B.BATCH_PREFIX + a.batch) if l]
     claiming.retry_owed(ctx)
     ensure(ctx, labels + [a.readiness])
     made = ctx.client.create_issue(repo, a.title, body, labels)

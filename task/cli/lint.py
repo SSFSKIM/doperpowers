@@ -98,12 +98,8 @@ def lint(repo, nodes, login):
         priorities, categories = B.priorities_of(labels), B.categories_of(labels)
         if len(priorities) > 1:
             _find(out, "FAIL", n, "two priorities (%s)" % ", ".join(priorities), cmd("set %d --priority <P>" % n))
-        elif not priorities:
-            _find(out, "WARN", n, "no priority", cmd("set %d --priority <P>" % n))
         if len(categories) > 1:
             _find(out, "FAIL", n, "two categories (%s)" % ", ".join(categories), cmd("set %d --category <C>" % n))
-        elif not categories:
-            _find(out, "WARN", n, "no category", cmd("set %d --category <C>" % n))
         if t.body_trusted and t.parsed.problems:
             _find(out, "FAIL", n, "a malformed record block (%s)" % "; ".join(t.parsed.problems),
                   "%s, which drops the unreadable block; then set its keys again with --due, --spec and --to"

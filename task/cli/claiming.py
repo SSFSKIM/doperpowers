@@ -225,11 +225,6 @@ class Result:
         self.code, self.text = code, text
 
 
-def _for_another(t, address):
-    wanted = t.parsed.fields.get("for") if t.body_trusted and t.parsed.readable else None
-    return wanted if wanted and wanted != address else None
-
-
 def _wait_past(reopened):
     """Until the second of the reopening has passed on this machine's clock."""
     while datetime.datetime.now(datetime.timezone.utc) < reopened + datetime.timedelta(seconds=1.2):
@@ -286,12 +281,6 @@ def _claim_one(ctx, number, address, thread):
                     return Result(OK, "#%d: already yours (claim %d)" % (number, t.holder.id))
                 I.remove(token)
                 return Result(REFUSED, "#%d is held by %s" % (number, holder_text(t)))
-            other = _for_another(t, address)
-            if other:
-                I.remove(token)
-                return Result(REFUSED, "#%d is registered for %s: it is claimed by another thread only after its "
-                                       "record is changed (%s or --no-to, on the owner's word)"
-                              % (number, other, ctx.cmd("set %d --to <thread>" % number)))
             unmet = [r for r in t.not_takeable(lambda: address) if r not in ("closed", "held")]
             ctx.client.ensure_labels(repo, {B.CLAIMED: B.label_spec(B.CLAIMED)})
             _barrier("")

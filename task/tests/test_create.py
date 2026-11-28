@@ -15,8 +15,7 @@ class CreateTest(BoardCase):
         return self.task(*args, **kw)
 
     def test_required_options_are_usage(self):
-        full = {"--category": "bug", "--priority": "P3", "--readiness": "ready-to-work",
-                "--body-file": self.body_file("text")}
+        full = {"--readiness": "ready-to-work", "--body-file": self.body_file("text")}
         for missing in full:
             with self.subTest(missing=missing):
                 args = ["create", "a title"]
@@ -31,6 +30,15 @@ class CreateTest(BoardCase):
             with self.subTest(bad=bad):
                 self.assertEqual(self.create(*bad)[0], 2)
         self.assertEqual(self.writes(), [])
+
+    def test_without_a_category_or_a_priority(self):
+        code, out, err = self.task("create", "Look into it", "--readiness", "ready-to-work",
+                                   "--body-file", self.body_file("Look into it.\n"))
+        self.assertEqual(code, 0, err)
+        n = int(out.split()[0])
+        self.assertEqual(sorted(self.gh_issue(n)["labels"]), ["expected", "ready-to-work"])
+        t = self.json("show", str(n))
+        self.assertEqual((t["priority"], t["category"], t["on_board"], t["takeable"]), (None, None, True, True))
 
     def test_labels_and_record(self):
         code, out, err = self.create()

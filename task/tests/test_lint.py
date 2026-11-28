@@ -75,12 +75,16 @@ class LintTest(BoardCase):
         cases = [
             (["ready-to-work", "planned", "priority:P3", "bug"], "planned", {}),
             (GOOD, "not planned", {"blocked_by": [90]}),
-            (["ready-to-work", "expected", "bug"], "priority", {}),
-            (["ready-to-work", "expected", "priority:P3"], "category", {}),
         ]
         for i, (labels, words, kw) in enumerate(cases):
             with self.subTest(case=i, words=words):
                 self.assert_finds("WARN", 60 + i, words, labels, **kw)
+
+    def test_no_priority_or_category_is_a_normal_ticket(self):
+        self.issue(1, labels=["ready-to-work", "expected"])
+        code, out = self.lint()
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("#1 ", out)
 
     def test_a_stuck_repair_names_a_usable_blocker(self):
         self.add_repo("acme/gears")
