@@ -115,7 +115,7 @@ def lint(repo, nodes, login):
                 same = b["repo"].lower() == repo.lower()
                 shown = "#%d" % b["number"] if same else "%s#%d" % (b["repo"], b["number"])
                 arg = "%d" % b["number"] if same else shlex.quote("%s#%d" % (b["repo"], b["number"]))
-                how = "as not planned" if b["state"] == "not-planned" else "with no reason GitHub gives as completed"
+                how = "as not planned" if b["state"] == "not-planned" else "with a reason task does not know"
                 _find(out, "WARN", n, "a blocker closed %s (%s): stuck" % (how, shown),
                       "%s, or %s" % (cmd("edge %d --unblock %s" % (n, arg)), cmd("close %d --not-planned" % n)))
     for part in _cycles(repo, nodes):

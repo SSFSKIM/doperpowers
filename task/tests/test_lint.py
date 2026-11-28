@@ -86,7 +86,7 @@ class LintTest(BoardCase):
         self.add_repo("acme/gears")
         self.issue(7, repo="acme/gears", labels=GOOD, state="CLOSED", reason="NOT_PLANNED")
         self.issue(90, labels=GOOD, state="CLOSED", reason="NOT_PLANNED")
-        self.issue(91, labels=GOOD, state="CLOSED", reason=None)
+        self.issue(91, labels=GOOD, state="CLOSED", reason="SOMETHING_NEW")
         self.issue(1, labels=GOOD, blocked_by=[90, 91, ("acme/gears", 7)])
         code, out = self.lint()
         lines = [l for l in out.splitlines() if l.startswith("WARN #1 ")]

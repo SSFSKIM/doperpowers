@@ -80,12 +80,13 @@ def _repo_of(node):
 def issue_state(node):
     """(state, close_reason) of §5: open with null, or closed with
     `completed`, `not-planned` (a duplicate is not planned) or null, for a
-    close whose reason GitHub gives as none or as one this does not know.
-    Only a close GitHub calls completed is a completion."""
+    close whose reason this does not know. A close GitHub gives no reason
+    for is completed (D1): those come from before GitHub had close reasons,
+    when "not planned" did not exist."""
     if node["state"] == "OPEN":
         return "open", None
     reason = node.get("stateReason")
-    if reason == "COMPLETED":
+    if reason in ("COMPLETED", None):
         return "closed", "completed"
     if reason in ("NOT_PLANNED", "DUPLICATE"):
         return "closed", "not-planned"
@@ -99,7 +100,7 @@ def ref_state(node):
     return reason or state
 
 
-# A blocker in one of these states will never be completed as it stands: the ticket is stuck.
+# A blocker in one of these states is not known to be completed: the ticket is stuck.
 STUCK = ("not-planned", "closed")
 
 
