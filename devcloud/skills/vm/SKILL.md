@@ -1,6 +1,6 @@
 ---
 name: vm
-description: Use when work is too heavy or too long for the person's Macs (a loaded Mac, a full test matrix, a long build or soak), needs Linux, Docker or isolation, or should run on a cloud machine or a server the person owns — creating, using, extending or deleting a devcloud VM with `devcloud vm`, adopting a server, or adding a cloud that devcloud does not ship (writing a provider).
+description: Verified guidance on devcloud VMs (`devcloud vm`) — creating, using, extending and deleting one, adopting a server, or adding a cloud devcloud does not ship (a provider) — for work too heavy or too long for the person's Macs (a loaded Mac, a full test matrix, a long build or soak), that needs Linux, Docker or isolation, or that should run on a cloud machine or a server the person owns.
 ---
 
 # devcloud VMs
@@ -15,11 +15,9 @@ made to enroll: by `sminos spawn --on new`, by `up --enroll`, or with
 the MAWS project under a profile that provisions it. It runs on the Macs
 only; on a host it exits 6.
 
-A VM is worth its few minutes of boot and its hourly price for work that
-would take a Mac long or load it heavily, or that needs Linux, Docker or a
-clean machine. It is not worth it for a quick command, nor for anything
-that needs a Mac's GUI, the person's browser, or a file that exists only
-on this Mac.
+A VM takes a few minutes to boot and bills by the hour. It is a clean
+Linux machine; it has no GUI, not the person's browser, and
+none of this Mac's files but what is pushed.
 
 ## Making one
 
@@ -107,46 +105,32 @@ A VM is owned by a thread: the one whose session made it, or the one it
 was last handed to. (A session the MAWS app launched is no thread: a VM
 it makes is recorded under that session, and nothing guards that VM when
 the session ends.) A kept VM costs its hourly price until someone downs
-it. After three days with no activity (no transcript written, no
-terminal login, no load), it sends its owning thread a sminos message
-with its idle time, what it has cost, and its unpushed work, and again
-every three idle days; down it when its work is done, or tell the person
-why it stays. At a leased VM's lease end its departure starts, and it is
-deleted with everything on it; in the lease's last thirty minutes the VM
-tries to send its owning thread a message naming the repositories with
-unpushed work. Each message is addressed to that thread's current
-session (once the VM has seen the thread move to it) and wakes it if
-stopped, as any addressed message does. Where the VM's own `say` to the
-thread does not succeed (usually because it reports the thread held and
-not woken, ended, or no member), the VM tries the thread's project's
-live sessions, then, when none is live, its log; a machine asleep or
-offline is not by itself such a case (the VM can still see a hold that
-machine published before), and the message waits for it there. Only from
-a VM made from now on, whose own sminos and the reader's are updated,
-does it arrive from `devcloud@<name>` (the VM's own notice, which nobody
-answers) and go on for a held thread. A VM made from now on, whose own
-sminos is updated, also records each notice, where it can, in every
-channel whose pool it reads itself in (a thread of it is in the channel,
-or a member added the machine by hand; a channel its enrollment does not
-carry, or whose log it cannot write, is passed over): `sminos chat
-<channel>` shows it, addressed to no one, so it stands in for none of the
-deliveries above. That copy is the notice's own text, the repositories
-with unpushed work and the instruction to down the VM included, and
-everyone who may read the channel reads it, beyond the owner's project;
-downing the VM is still the owning thread's decision alone. On a Mac,
-`sminos channel show <channel>` shows what this Mac's devcloud has of
-each VM of the channel: who owns it, how long it has run and what it has
-cost (list price times age), with a line after the pool when devcloud
-could not be asked or did not cover an account. `devcloud vm lease <name>
-<duration>` sets the end to now plus the duration, and `lease <name>
-keep` removes it. A change between kept and leased makes the host rejoin
-the tailnet under the same name, and `lease` waits until it is back.
-When the work is done, push it and `devcloud vm down <name>`: it refuses
-(exit 5) while a checkout under `~/Developer/GitHub` has unpushed or
-uncommitted work, and `--force` discards that work, so use it only for
-work nobody needs. `devcloud vm ls` shows the VMs of every account it
-can list (it names the accounts it skips), each with its lease, age,
-price and cost so far, and the unconfirmed count against the cap.
+it; a leased one is deleted, with everything on it, when its lease ends.
+
+The VM tells its owning thread itself, in a sminos message from
+`devcloud@<name>` (no session answers it) to the thread's current
+session, which wakes it if stopped: after three days with no activity (no
+transcript written, no terminal login, no load) and every three idle days
+after, with its idle time, its cost and its unpushed work; and in a
+lease's last thirty minutes, naming the repositories with unpushed work.
+On an idle notice, down the VM when its work is done, or tell the person
+why it stays. Where the thread cannot be reached, the notice goes to its
+project's live sessions, or with none to the project's log. The VM also
+records each notice in the channels whose pool holds it (`sminos chat
+<channel>`), where everyone who reads the channel sees it, unpushed
+repositories included; downing the VM stays the owning thread's
+decision. `sminos channel show <channel>` lists each VM of the channel
+with its owner, how long it has run and what it has cost.
+
+`devcloud vm lease <name> <duration>` sets the end to now plus the
+duration, and `lease <name> keep` removes it; `lease` waits while the
+host rejoins the tailnet under the same name. When the work is done, push
+it and `devcloud vm down <name>`: it refuses (exit 5) while a checkout
+under `~/Developer/GitHub` has unpushed or uncommitted work, and
+`--force` discards that work, so use it only for work nobody needs.
+`devcloud vm ls` shows the VMs of every account it can list (it names
+the accounts it skips), each with its lease, age, price and cost so far,
+and the unconfirmed count against the cap.
 
 **Handing it on.** When you are done and another thread of this Mac
 still uses the VM, or should take it over, hand it on rather than down
