@@ -476,6 +476,22 @@ export type Chosen = { choice: Choice; runner?: Runner; why: string; log?: strin
 const isSet = (value: string | undefined): value is string => value !== undefined && value !== ''
 
 /**
+ * The delivery's form MAWS names in `MAWS_QUESTION_SHEET`, `<form>:<session id>` (MAWS's C5, F32; the composite's
+ * §5.4, "The proof names the form"): in form 2 the tool delivers and MAWS only rings. A value of another form, or of
+ * none (the bare id a plugin before this one took), is no proof: its MAWS does not ring as this mod delivers.
+ */
+export const MAWS_FORM = 2
+
+/** Why a `MAWS_QUESTION_SHEET` is not this session's proof, or undefined when it is. */
+function proofRefusal(value: string, session: string): string | undefined {
+  const form = /^([0-9]+):/.exec(value)
+  if (form === null) return `names no form (${cut(value, 80)})`
+  if (form[1] !== String(MAWS_FORM)) return `names the form ${cut(form[1] as string, 10)}, not ${MAWS_FORM} (${cut(value, 80)})`
+  const id = value.slice(form[0].length)
+  return id === session ? undefined : `names another session (${cut(id, 80)}, not ${session})`
+}
+
+/**
  * I8's table, top row first: the choice is made at a process's first
  * `session.start` and kept, so a reload and a /clear keep the process's.
  */
@@ -492,10 +508,11 @@ export async function chooseStart(reads: ChoiceReads): Promise<Chosen> {
   }
   const maws = await reads.env.MAWS_QUESTION_SHEET()
   if (isSet(maws)) {
-    if (maws === reads.session) {
-      return { choice: 'sheet', runner: 'maws', why: 'MAWS_QUESTION_SHEET names this session' }
+    const refusal = proofRefusal(maws, reads.session)
+    if (refusal === undefined) {
+      return { choice: 'sheet', runner: 'maws', why: `MAWS_QUESTION_SHEET names this session in form ${MAWS_FORM}` }
     }
-    log.push(`sheet: MAWS_QUESTION_SHEET is set and names another session (${cut(maws, 80)}, not ${reads.session}): not taken as MAWS's proof`)
+    log.push(`sheet: MAWS_QUESTION_SHEET ${refusal}: not taken as MAWS's proof`)
   }
   const done = (chosen: Omit<Chosen, 'log'>): Chosen => (log.length > 0 ? { ...chosen, log } : chosen)
   if (isSet(await reads.env.MAWS_NATIVE_TO_HUMAN())) {
@@ -544,6 +561,8 @@ export type View = {
   ready: { recipient: Recipient; keys: string[]; text: string; wakes: boolean; more: boolean }[]
   surface: { name: string; url: string; reach: string } | null
   surfaces: number
+  /** The latest `acceptedAt` among the pending answers for the main conversation, over the whole of `pending`; absent when there is none (MAWS's C5, F34). */
+  mainAcceptedAt?: string
 }
 export type Verdict = Record<string, unknown> & { verdict: string }
 export type Effects = {
@@ -1109,6 +1128,24 @@ export function heldKeys(api: readonly { role: string; content: unknown }[]): Se
 export function endedNotice(agent: { agentId: string; name: string }, questions: readonly { id: string; question: string }[]): string {
   const listed = questions.map((q) => `${q.id} ${JSON.stringify([...q.question].slice(0, 200).join(''))}`).join(', ')
   return `[sheet v1] The subagent ${[...agent.name].slice(0, 200).join('')} (${agent.agentId}) ended with questions still open on your sheet: ${listed}. Their answers will come to you; withdraw what you no longer need.`
+}
+
+/**
+ * MAWS's constant frame (MAWS's C5, F33; the composite's §5.4): the sentence and its mark, one U+2060 WORD JOINER,
+ * which no trimming removes and no person types. Its `SHEET_RING` is the same bytes. The engine joins and trims a
+ * message's text blocks before the hook reads them, so the mark is on the ring, never on a person's message.
+ */
+export const RING = 'The human answered questions on your sheet.\u2060'
+/** The reason a ring is dropped with: MAWS's `SHEET_RING_DROP` is the same bytes, and it reads the drop by it (F39). */
+export const RING_DROP = 'nothing is ready on the sheet'
+
+/**
+ * Whether an envelope fills a ring: its own block names an answer (F33). Its dismissals alone are no reason for a
+ * turn (§5.2), and the view's list of pending outcomes, the first 200 of every recipient's, cannot say what one
+ * envelope holds, so the block is what is read.
+ */
+export function ringHasAnswer(envelope: View['ready'][number] | undefined): boolean {
+  return envelope !== undefined && blocksOf(envelope.text).some((block) => block.answered.length > 0)
 }
 
 // ------------------------------------------------------------------ the terminal's drawing (M5; §8.3, §8.1)

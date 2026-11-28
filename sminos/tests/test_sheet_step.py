@@ -875,6 +875,182 @@ class Packing(unittest.TestCase):
         self.assertLessEqual(step_module.units(e["text"]), 60000)
 
 
+
+def dismissals(ids, batch=None):
+    out = []
+    for i in ids:
+        x = {"v": 1, "key": "page-d%07d" % i, "kind": "dismiss", "id": "q%d" % i}
+        if batch:
+            x["batch"] = batch
+        x.update(by="page", at="2026-11-24T09:59:00.000Z")
+        out.append(x)
+    return out
+
+
+def block_of(text):
+    """The `<sheet-delivery>` block an envelope ends with, read."""
+    last = text.splitlines()[-1]
+    return json.loads(last[len("<sheet-delivery>"):-len("</sheet-delivery>")])
+
+
+def main_ready(st, runner):
+    return next(e for e in step_module.ready(st, runner, WHERE, UTC) if e["recipient"] == "main")
+
+
+class MawsRunPacking(unittest.TestCase):
+    """Under runner `maws` the step composes the main conversation's envelope too, and packs it with the batches that
+    hold an answer first, so a ring finds an answer while one is pending (MAWS's C5, F8 and F33). A terminal
+    session's order, a subagent's envelope and `envelope` called alone stay C2's."""
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_b4b_after_a_resume_the_answer_accepted_last_leads_the_envelope_under_maws_and_not_in_a_terminal(self):
+        st = built([{"question": "Keep %d?" % i} for i in range(1, 222)])
+        st, _, _ = drained(st, dismissals(range(1, 221)) + answers([221], lambda i: "yes"), "start")
+        self.assertTrue(st["pending"] and all(o["acrossStop"] for o in st["pending"]), "a start marks every outcome")
+        maws = main_ready(st, "maws")
+        self.assertIn("page-00000221", maws["keys"])
+        self.assertEqual(block_of(maws["text"])["answered"][0]["id"], "q221")
+        self.assertTrue(maws["more"] and maws["text"].splitlines()[0].endswith(" More follows."))
+        self.assertEqual(len(maws["keys"]), 200)
+        self.assertEqual(maws["keys"][1:], ["page-d%07d" % i for i in range(1, 200)])
+        terminal = main_ready(st, "terminal")
+        self.assertEqual(terminal["keys"], ["page-d%07d" % i for i in range(1, 201)], "C2's order: accepted first")
+        self.assertEqual(block_of(terminal["text"])["answered"], [])
+        self.assertEqual(step_module.envelope(st, "main", WHERE, UTC)["keys"], terminal["keys"], "envelope alone: C2's")
+
+    def test_b4b_a_batch_too_long_for_one_envelope_is_cut_with_its_answer_in_it_under_maws(self):
+        st = built([{"question": "Keep %d?" % i} for i in range(1, 203)])
+        st, _, _ = drained(st, dismissals(range(1, 202), batch="page-b000000C") +
+                           answers([202], lambda i: "yes", batch="page-b000000C"))
+        maws = main_ready(st, "maws")
+        self.assertEqual(maws["keys"], ["page-00000202"] + ["page-d%07d" % i for i in range(1, 200)])
+        self.assertTrue(maws["more"])
+        terminal = main_ready(st, "terminal")
+        self.assertEqual(terminal["keys"], ["page-d%07d" % i for i in range(1, 201)], "C2's cut: in order")
+
+    def test_an_envelope_of_answers_and_dismissals_that_fits_is_the_same_text_in_both_runners(self):
+        """The published `terminal` example: an ended subagent's answer, named with its asker and its question, an
+        answer owed across a stop, dismissals."""
+        base = os.path.join(SET, "examples", "terminal")
+        sess = os.listdir(os.path.join(base, "input", "sheet"))[0]
+        h = scratch(os.path.join(base, "input"))
+        state = load(os.path.join(h, "sheet", sess, "state.json"))
+        where = os.path.join(h, "sheet", sess)
+        with open(os.path.join(base, "envelope.txt"), encoding="utf-8") as f:
+            want = f.read().replace("{HOME}", h)
+        got = next(e for e in step_module.ready(state, "maws", where, UTC) if e["recipient"] == "main")
+        self.assertEqual(got["text"], want)
+        self.assertIn('q12 (from the subagent reviewer, a1b2c3, which has ended) "Ship the migration today?" → Yes.',
+                      got["text"])
+
+    def test_a_subagents_envelope_keeps_its_order_under_maws(self):
+        st = built([{"question": "Keep %d?" % i} for i in range(1, 4)])
+        st, _, _ = drained(st, dismissals([1]) + answers([2], lambda i: "yes"), "start")
+        for o in st["pending"]:
+            o["recipient"], o["taken"] = {"agentId": "a1b2c3"}, True
+        e = next(e for e in step_module.ready(st, "maws", WHERE, UTC) if e["recipient"] != "main")
+        self.assertEqual(e, step_module.envelope(st, {"agentId": "a1b2c3"}, WHERE, UTC))
+
+    def test_a_d_under_maws_a_competing_answer_a_retract_and_a_resent_line_each_end_in_one_delivery(self):
+        """C2's own cases of the published set, replayed under runner `maws`: the main conversation's envelope carries
+        each applied outcome once and nothing refused or set aside, and once it lands nothing goes again."""
+        expected = {"two-surfaces": ["page-0401a001"], "retract-queued": ["page-0701a005"], "retract-too-late": [],
+                    "resent-key": ["page-1201a001"], "resent-then-retract": ["page-1301a001"]}
+        for case, keys_owed in expected.items():
+            with self.subTest(case=case):
+                base = os.path.join(SET, "fixtures", case)
+                c = load(os.path.join(base, "case.json"))
+                before = os.path.join(base, "before", "sheet", c["session"], "state.json")
+                owed = {o["key"] for o in load(before)["pending"]} if os.path.exists(before) else set()
+                scratch(os.path.join(base, "before"))
+                event = dict(c["event"], runner="maws")
+                out = sheet.run_step(c["session"], json.dumps(event).encode(), now=c["now"], tz=UTC)
+                self.assertTrue(out["ok"], out)
+                mains = [e for e in out["view"]["ready"] if e["recipient"] == "main"]
+                after = load(os.path.join(base, "after", "sheet", c["session"], "state.json"))
+                want = sorted(o["key"] for o in after["pending"] if o["recipient"] == "main")
+                keys = mains[0]["keys"] if mains else []
+                self.assertEqual(sorted(keys), want, "exactly what the published fixture leaves owed, in one envelope")
+                self.assertEqual(want, keys_owed, "the fixture's own after state")
+                self.assertEqual(len(keys), len(set(keys)))
+                applied = {k for k, v in c["verdicts"].items() if v["verdict"] == "applied"}
+                self.assertLessEqual(set(keys), applied | owed, "nothing refused, retracted or set aside")
+                if mains:
+                    blk = block_of(mains[0]["text"])
+                    ids = [a["id"] for a in blk["answered"]] + blk["dismissed"]
+                    self.assertEqual(len(ids), len(set(ids)), "one delivery a question")
+                    landed = sheet.run_step(c["session"], json.dumps(ev("landed", runner="maws", keys=keys)).encode(),
+                                            now=c["now"], tz=UTC)
+                    self.assertEqual([e for e in landed["view"]["ready"] if e["recipient"] == "main"], [])
+                    again = sheet.run_step(c["session"], json.dumps(event).encode(), now=c["now"], tz=UTC)
+                    self.assertEqual([e for e in again["view"]["ready"] if e["recipient"] == "main"], [],
+                                     "the same lines again deliver nothing more")
+
+    def test_the_view_of_a_maws_run_session_holds_the_main_conversations_envelope(self):
+        st = built([{"question": "Ship?"}])
+        st, _, _ = drained(st, answers([1], lambda i: "yes"))
+        v = step_module.view(st, "maws", WHERE, None, 0, UTC)
+        self.assertEqual([e["recipient"] for e in v["ready"]], ["main"])
+        self.assertEqual(v["ready"][0]["keys"], ["page-00000001"])
+
+
+
+class TheStopsTime(unittest.TestCase):
+    """The view tells the mod the latest `acceptedAt` among the main conversation's pending answers, past the first
+    200 it lists too, so a Stop can be told from an answer accepted after it (MAWS's C5, F34). A reroute and a start
+    move an outcome to the main conversation and keep when it was accepted."""
+
+    def test_the_latest_main_answer_past_the_listed_two_hundred(self):
+        st = built([{"question": "Keep %d?" % i} for i in range(1, 252)])
+        self.assertNotIn("mainAcceptedAt", step_module.view(st, "terminal", WHERE, None, 0, UTC))
+        st, _, _ = drained(st, dismissals(range(1, 201)), now="2026-11-24T10:00:00.000Z")
+        st, _, _ = drained(st, answers(range(201, 251), lambda i: "yes"), now="2026-11-24T10:00:01.000Z")
+        st, _, _ = drained(st, dismissals([251]), now="2026-11-24T10:00:09.000Z")
+        v = step_module.view(st, "terminal", WHERE, None, 0, UTC)
+        self.assertEqual(len(v["pending"]), 200, "the answers are past what the view lists")
+        self.assertEqual(v["mainAcceptedAt"], "2026-11-24T10:00:01.000Z", "a dismissal is no answer")
+
+    def test_a_subagents_answer_is_not_the_main_conversations_until_it_is_moved_there_keeping_its_time(self):
+        st = built([{"question": "Ship?"}])
+        st, _, _ = drained(st, answers([1], lambda i: "yes"), now="2026-11-24T10:00:01.000Z")
+        st["pending"][0].update(recipient={"agentId": "a1b2c3"}, taken=True)
+        self.assertNotIn("mainAcceptedAt", step_module.view(st, "terminal", WHERE, None, 0, UTC))
+        st, _, _ = step_module.apply(st, b"", {"event": "reroute", "keys": ["page-00000001"]},
+                                     "2026-11-24T10:05:00.000Z", SESSION)
+        self.assertEqual(st["pending"][0]["recipient"], "main")
+        self.assertEqual(step_module.view(st, "terminal", WHERE, None, 0, UTC)["mainAcceptedAt"],
+                         "2026-11-24T10:00:01.000Z")
+        st, _, _ = drained(st, [], "start", now="2026-11-24T11:00:00.000Z")
+        self.assertEqual(step_module.view(st, "maws", WHERE, None, 0, UTC)["mainAcceptedAt"],
+                         "2026-11-24T10:00:01.000Z", "a start keeps it too")
+
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_an_answer_put_while_a_step_waits_on_the_lock_is_accepted_after_the_wait(self):
+        """The step reads its clock once it holds the lock: an answer the door appended while a drain waited on it is
+        accepted after a Stop taken in that wait, never before (MAWS's C5, F34; wave 4's finding 1)."""
+        import threading
+        import time
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_c", [{"question": "Ship?"}]))
+        out = []
+        drain = json.dumps(ev("drain")).encode()
+        with sheet.Lock(SESSION):
+            t = threading.Thread(target=lambda: out.append(sheet.run_step(SESSION, drain, tz=UTC)))
+            t.start()
+            time.sleep(0.3)               # the drain waits on the lock
+            stopped = sheet.S.now(ms=True)
+            time.sleep(0.01)
+            put_raw(SESSION, answers([1], lambda i: "yes"))
+        t.join(timeout=30)
+        self.assertTrue(out and out[0]["ok"], out)
+        self.assertGreater(state_of()["pending"][0]["acceptedAt"], stopped)
+
+
 class TheCap(unittest.TestCase):
     def test_the_sheet_holds_five_hundred_open(self):
         """U7: an add past 500 open questions is refused with the reason; a revise still applies."""

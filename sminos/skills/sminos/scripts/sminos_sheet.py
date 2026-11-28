@@ -1006,10 +1006,11 @@ def run_step(session, raw, now=None, tz=None):
     why = _event_error(event)
     if why:
         return _bad("bad-event", why)
-    now = now or _now_ms()
     try:
         with Lock(session):
-            return _step_locked(session, event, now, tz)
+            # The clock is read once the lock is had: an answer the door appended while this step waited is accepted
+            # after anything the waiting saw, a Stop included (MAWS's C5, F34).
+            return _step_locked(session, event, now or _now_ms(), tz)
     except Busy:
         return _bad("busy", "the sheet's lock was not had in %d s" % LOCK_WAIT_S)
 

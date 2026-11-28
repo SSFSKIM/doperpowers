@@ -51,15 +51,19 @@ describe('the start choice, at session.start (I8)', () => {
     }
   })
 
-  test("MAWS's proof: its variable naming this session is the sheet run by MAWS; a nested claude -p with another's id is not, said in the debug log", async () => {
-    const maws = harness({ env: { MAWS_QUESTION_SHEET: S1, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
+  test("MAWS's proof: its variable naming the form and this session is the sheet run by MAWS; a nested claude -p with another's id, and the published plugin's form, are not, said in the debug log", async () => {
+    const maws = harness({ env: { MAWS_QUESTION_SHEET: `2:${S1}`, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
     await maws.start(false)
     expect(maws.kept.get('sminos.sheet')).toEqual({ shape: 1, choice: 'sheet', runner: 'maws', session: S1 })
     expect(maws.registered().map((r) => r.inputSchema)).toEqual([INPUT_SCHEMA])
-    const nested = harness({ env: { MAWS_QUESTION_SHEET: S2, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
+    const nested = harness({ env: { MAWS_QUESTION_SHEET: `2:${S2}`, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
     await nested.start(false)
     expect(nested.registered()).toEqual([])
-    expect(nested.logs()).toContain(`sheet: MAWS_QUESTION_SHEET is set and names another session (${S2}, not ${S1}): not taken as MAWS's proof`)
+    expect(nested.logs()).toContain(`sheet: MAWS_QUESTION_SHEET names another session (${S2}, not ${S1}): not taken as MAWS's proof`)
+    const bare = harness({ env: { MAWS_QUESTION_SHEET: S1, MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false })
+    await bare.start(false)
+    expect(bare.registered()).toEqual([])
+    expect(bare.logs()).toContain(`sheet: MAWS_QUESTION_SHEET names no form (${S1}): not taken as MAWS's proof`)
   })
 
   test('the choice is kept across a reload, whatever the setting says then; a kept ask snapshot with no choice kept is today', async () => {

@@ -395,8 +395,8 @@ with attributes a step sets: `recipient` (`main`, or a running subagent),
 `taken` (the mod itself sends it to that subagent) and `acrossStop`.
 `ready` and `in flight` are
 the mod's memory; on disk both are "in `pending`". In a MAWS-run session
-an outcome whose recipient is `main` is MAWS's to deliver and leaves on a
-`delivered` line.
+the tool delivers as well (MAWS's C5, F8, which replaces "MAWS's to deliver,
+leaving on a `delivered` line": that line stays in the set, unused).
 
 **A call**, by its call id, while the mod has no answer for it:
 
@@ -1345,7 +1345,7 @@ Made at a process's first `session.start` and kept:
     kept choice                                  → that choice (a reload, a /clear: the process's is one)
     no kept choice, a kept `ask` snapshot        → 'today' (a module before this one served today's tool here)
     SMNS_INTERNAL set                            → 'none'
-    MAWS_QUESTION_SHEET equals the session's id  → 'sheet', runner 'maws'
+    MAWS_QUESTION_SHEET is `2:<the session's id>`  → 'sheet', runner 'maws'
     MAWS_NATIVE_TO_HUMAN set                     → 'none' (as today: MAWS serves its own ask)
     not interactive                              → 'none' (U9)
     the record has an open question, a pending
@@ -1354,16 +1354,19 @@ Made at a process's first `session.start` and kept:
       alive whose reach suits                    → 'sheet', runner 'terminal'
     otherwise                                    → 'today'
 
-- **The proof for MAWS** (§7, C2's side, which waits on C5's agreement):
-  MAWS sets `MAWS_QUESTION_SHEET` to the launch's session id, which it
-  knows for every launch (`--session-id` for a new session and a fork,
-  the resumed id otherwise: `buildLaunch` in MAWS's
-  `src/engine-host/launch.ts`). The tool takes the variable as proof only
-  when it equals the id of the session this process starts. The proof is
-  in hand at once, needs no bridge and no registry record, and a `claude`
-  a tool starts inside the session inherits the variable under another
-  id. A variable that is set and does not match is ignored, with a debug
-  line saying so.
+- **The proof for MAWS** (§7; as C5 agreed it, its F2 and F32): MAWS's
+  engine host sets `MAWS_QUESTION_SHEET` to `2:` and the launch's session
+  id, which `buildLaunch` in MAWS's `src/engine-host/launch.ts` resolves for
+  every launch, a prestarted one included. 2 is the delivery's form
+  (`MAWS_FORM`): the tool delivers and MAWS rings (I9, "In a MAWS-run
+  session"), so a plugin that would apply answers and never deliver them
+  under such a MAWS (the bare id was this plugin's form until 1.60.0) does
+  not take the sheet. The tool takes the variable as proof only when its
+  form is 2 and its id is the session this process starts. The proof is in
+  hand at once, needs no bridge and no registry record, and a `claude` a
+  tool starts inside the session inherits the variable under another id. A
+  variable that is set and is not this proof is ignored, with a debug line
+  saying which: another session's id, another form, or no form.
 - `SMINOS_QUESTION_SHEET` is on for `1`, `true`, `on`, `yes` and off for
   `0`, `false`, `off`, `no`, in any case; unset is the default, one
   constant in `H/sheet-model.tsx` that C7 changes.
@@ -1462,8 +1465,8 @@ says it is one of the tool's own: of the main conversation (no
 `agentId`), and either door `hook-context` with origin `{ kind: 'plugin',
 event: 'tool.call' | 'prompt.submit' }`, or door `prompt` with origin `{
 kind: 'plugin', name: 'sminos' }`. A human's prompt that quotes an
-envelope has another origin and lands nothing; neither does MAWS's steer:
-in a MAWS-run session only a `delivered` line moves an outcome (§5.4).
+envelope has another origin and lands nothing; neither does MAWS's ring
+itself, whose context, the tool's, is the route's row (in both runners).
 Landing is read from the row and never from the flight, so it also holds
 for a row a module before a reload sent.
 
@@ -1589,7 +1592,7 @@ relies on, then the rules the task review settled.
   searches and routes its context. A compaction's SessionStart orders its
   own drain step; an early start's context, and a context whose step gave
   no answer, ride the next route (in a MAWS-run session the prompt route,
-  context only). The prompt route puts back each context and notice the
+  context only, until MAWS's C5 opened every route there). The prompt route puts back each context and notice the
   entered prompt lost, independently of the envelope.
 - *Notices.* An ended subagent's open questions are named at the stop
   from the view held then, and again after the stop's drain, once per
@@ -1603,14 +1606,72 @@ relies on, then the rules the task review settled.
   record directory that is a link, and removes a real one holding a
   linked child without following it.
 
-**In a MAWS-run session** the mod opens none of the four routes (a turn
-the tool submits there is a turn MAWS did not send: C0's P1); it drains,
-sends to running subagents, and takes `delivered` lines; the step
-composes no envelope for the main conversation there. The context §5.4
-has the tool add to a steer that carries an ended subagent's answer is
-C5's to build; C0's P1 showed the hook sees the steer and can add to it,
-and `show --json --keys` (I4) gives it each outcome's question and
-labels, bounded.
+**In a MAWS-run session** (MAWS's C5, F8, F33 and F34, which replace what
+this paragraph said of C5's earlier design, in which MAWS delivered and said
+so by a `delivered` line) the tool delivers as in a terminal session by
+every route but the idle one: the result and prompt routes carry the main
+conversation's envelope, the notices and a context; a stored row of a
+route's kind lands its keys; a start searches the transcript; the step
+composes the main conversation's envelope (`ready`), with the batches that
+hold an answer first and a cut batch's answers before its dismissals (the
+terminal's order stays the wakers first). It drains, sends to running
+subagents, and submits no prompt of its own: a plugin's prompt carries no
+context, and MAWS's Stop does not withdraw it. For a turn, MAWS writes its
+ring when the session is idle and an answer is owed: a prompt of origin
+`composer` whose whole text is `The human answered questions on your
+sheet.` and its mark, one U+2060 WORD JOINER (`RING`, written as an escape,
+compared by exact equality with nothing normalised: the engine joins and
+trims a message's text blocks before the hook reads them, so a person's
+message of those words is told from the ring by the mark it lacks). The
+prompt hook, before taking anything, awaiting
+nothing and ordering no step, fills a ring when the block of the envelope ready for the main
+conversation names an answer (one owed across a stop included), and
+otherwise drops it, `{ drop: 'nothing is ready on the sheet' }`
+(`RING_DROP`): nothing ready, the envelope on another route, dismissals
+alone, or the session's start not yet answered. A dropped ring takes no
+notice and no context. The plain sentence, unmarked, in any form and
+beside any block, the marked one under any other origin or in a terminal
+session, and any text one character off enter as any prompt does.
+Each ring's fate is a debug line.
+
+**A stopped turn** (MAWS's C5, F34, both runners). The Stop is a time.
+When a main turn ends aborted (the turn's end event's `isAborted`), the mod
+sets `SheetKept.stoppedAt` (UTC to the millisecond, the step's own form) in
+the same synchronous stretch, from its own clock, the machine's the step
+stamps `acceptedAt` with, which the step reads once it holds the record's
+lock (an answer appended while a step waited on the lock is accepted after
+a Stop taken in the wait). An aborted end read after a later main turn
+has begun (a message preempted it) sets nothing, that turn running still
+or ended already: only the latest main turn to start, kept across its end,
+sets a Stop by its aborted end. Setting it lets go an idle reservation
+not yet handed to the engine (its hop would submit what it reserved
+before the Stop); the next delivery reserves from the view as it then is. A reload of the same
+session takes it up before its first drain; a fork and a `/clear` start
+without it. The next main turn's start clears it (`turn.start` without an
+`agentId`), whatever began the turn: the engine mints every turn's id at
+its start, a hook that heard a turn's start hears its end after it, and on
+the main loop the start follows `prompt.submit`. Nothing clears it at a
+prompt's admission, a continuation after an await that no event orders: a
+prompt folded into the running turn (`prompt.submit`'s `turnId`) starts no
+turn, so that turn stopped holds; a prompt dropped beneath and a slash
+command start none and clear nothing; a Stop of the mod's own idle
+prompt's turn is set after that turn's start, so the submit's late
+acknowledgement cannot clear it; and no admission waiting across a reload
+or a `/clear` reaches another conversation's Stop. A main turn that starts
+before a reload's `session.start` restored the choice keeps the kept Stop
+from being taken up.
+While it is set the idle route opens only when the view's
+`mainAcceptedAt` (the step's: the latest `acceptedAt` among the pending
+answers for the main conversation, over the whole of `pending`; absent
+when there is none) is later than it, checked again at the reservation's
+hop; the same millisecond is held. The envelope is then the ordinary one
+and carries the stopped answers too. A dismissal, a reroute or a `landed`
+retry changes no answer's time, so nothing pending at a Stop opens the
+route by itself, whatever step's view comes when; an answer accepted after
+the Stop does. `noIdle` and `idleFailedAt` are a failed idle submit's alone.
+A ring orders no step at all; one that comes while a reload's
+`session.start` has not restored the choice is known by its mark and
+dropped.
 
 ### I10 · What the tool supplies at a start (§5.5)
 

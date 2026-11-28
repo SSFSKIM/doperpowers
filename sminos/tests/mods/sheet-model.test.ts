@@ -5,7 +5,10 @@ import {
   DESCRIPTION,
   FIELD_DESCRIPTIONS,
   INPUT_SCHEMA,
+  MAWS_FORM,
   NOT_KNOWN,
+  RING,
+  RING_DROP,
   SHEET_TOOL,
   WITHDRAWN,
   announcement,
@@ -34,6 +37,7 @@ import {
   parseResult,
   questionSentence,
   readInput,
+  ringHasAnswer,
   rowLines,
   searchedKeys,
   settingOf,
@@ -403,15 +407,23 @@ describe("the start choice: I8's table, row by row", () => {
     expect(await chooseStart(reads({ env: { SMNS_INTERNAL: '1', SMINOS_QUESTION_SHEET: '1' }, probed: ALIVE }).r)).toMatchObject({ choice: 'none' })
   })
 
-  test("MAWS's proof: the variable equal to the session's id is the sheet, run by MAWS; another id is no proof, said in the debug log", async () => {
-    expect(await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: 'S1', MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false }).r)).toEqual({
+  test("MAWS's proof: the form and the session's id, `2:<id>`, is the sheet, run by MAWS; any other value is no proof, said in the debug log", async () => {
+    expect(MAWS_FORM).toBe(2)
+    expect(await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: '2:S1', MAWS_NATIVE_TO_HUMAN: '1' }, isInteractive: false }).r)).toEqual({
       choice: 'sheet',
       runner: 'maws',
-      why: 'MAWS_QUESTION_SHEET names this session',
+      why: 'MAWS_QUESTION_SHEET names this session in form 2',
     })
-    const nested = await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: 'S0' }, isInteractive: false }).r)
-    expect(nested).toMatchObject({ choice: 'none', why: 'not interactive' })
-    expect(nested.log).toEqual(['sheet: MAWS_QUESTION_SHEET is set and names another session (S0, not S1): not taken as MAWS\'s proof'])
+    const passed = async (value: string) => {
+      const chosen = await chooseStart(reads({ env: { MAWS_QUESTION_SHEET: value }, isInteractive: false }).r)
+      expect(chosen).toMatchObject({ choice: 'none', why: 'not interactive' })
+      return chosen.log
+    }
+    // The published plugin's form, the bare id: a MAWS that rings is not one it delivers for.
+    expect(await passed('S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names no form (S1): not taken as MAWS's proof"])
+    expect(await passed('1:S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names the form 1, not 2 (1:S1): not taken as MAWS's proof"])
+    expect(await passed('3:S1')).toEqual(["sheet: MAWS_QUESTION_SHEET names the form 3, not 2 (3:S1): not taken as MAWS's proof"])
+    expect(await passed('2:S0')).toEqual(["sheet: MAWS_QUESTION_SHEET names another session (S0, not S1): not taken as MAWS's proof"])
   })
 
   test("MAWS serves its own ask: none; a headless process: none, also with a sheet that has questions (U9)", async () => {
@@ -747,5 +759,29 @@ describe("the terminal's drawing (M5, §8.3)", () => {
       // U+2028 and U+2029 break a line as well, as the command's cleaner reads them.
       expect(rowLines({ ask: [{ question: 'Which\u2028one?', header: 'A\u2029B' }] }, added, none)).toEqual(['q7 A B — Which one?'])
     })
+  })
+})
+
+describe("a ring: MAWS's constant frame, and what fills it (MAWS's C5, F33)", () => {
+  const block = (answered: string[], dismissed: string[]) =>
+    `<sheet-delivery>${JSON.stringify({ v: 1, keys: [...answered, ...dismissed].map((id) => `key-${id}-0001`), answered: answered.map((id) => ({ id, revision: 1, picks: [1], text: '', images: [] })), dismissed })}</sheet-delivery>`
+  const ready = (text: string) => ({ recipient: 'main' as const, keys: ['key-q1-0001'], text, wakes: false, more: false })
+
+  test("the marked sentence and the drop's reason are MAWS's bytes (its SHEET_RING and SHEET_RING_DROP)", async () => {
+    // The sentence and one U+2060 WORD JOINER, the ring's mark: a person's message never carries it (the composite's
+    // writer's ruling on M2's stop S9: the engine trims a text block's `e.text`, so a line break could not tell them apart).
+    expect(RING).toBe('The human answered questions on your sheet.\u2060')
+    expect([...new TextEncoder().encode(RING).slice(-3)]).toEqual([0xe2, 0x81, 0xa0])
+    expect(RING.length).toBe(44)
+    expect(RING_DROP).toBe('nothing is ready on the sheet')
+  })
+
+  test("an envelope fills a ring when its own block names an answer, one owed across a stop included; one of dismissals alone, none, or one with no block does not", async () => {
+    expect(ringHasAnswer(ready(`[sheet v1] The human answered questions on your sheet.\nq1 "Ship?" → Yes.\n${block(['q1'], [])}`))).toBe(true)
+    expect(ringHasAnswer(ready(`[sheet v1] The human answered questions on your sheet.\nq1 (asked 2026-11-23 14:02, answered 2026-11-23 16:40, while this session was stopped) "Ship?" → Yes.\nDismissed: q2.\n${block(['q1'], ['q2'])}`))).toBe(true)
+    expect(ringHasAnswer(ready(`[sheet v1] The human dismissed questions on your sheet; no answer will come for them.\nDismissed: q2.\n${block([], ['q2'])}`))).toBe(false)
+    expect(ringHasAnswer(undefined)).toBe(false)
+    // The head's words are not read: only the block.
+    expect(ringHasAnswer(ready('[sheet v1] The human answered questions on your sheet.\nq1 "Ship?" → Yes.'))).toBe(false)
   })
 })

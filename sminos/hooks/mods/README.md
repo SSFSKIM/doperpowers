@@ -265,11 +265,13 @@ process chooses how the session asks, and keeps the choice in `$.state`
 (`{plugin: 'sminos', key: 'sheet'}`, `SheetKept` in `types/sminos.d.ts`), so
 a reload and a `/clear` keep it: the choice is the process's, made once. In order: a kept choice; a kept `ask`
 snapshot and no kept choice (a module before this one served the ask) is
-today's tool; `SMNS_INTERNAL` is none; `MAWS_QUESTION_SHEET` equal to this
+today's tool; `SMNS_INTERNAL` is none; `MAWS_QUESTION_SHEET` of `2:` and this
 session's id is the sheet with MAWS as runner (the launch contract MAWS's
-C5 sets on the launches it gives the sheet; a value naming another session,
-as a `claude -p` started inside one inherits it, is ignored with a debug
-line); `MAWS_NATIVE_TO_HUMAN` is
+C5 sets on the launches it gives the sheet; 2 is the delivery's form,
+`MAWS_FORM`: the tool delivers and MAWS rings; any other value, another
+session's id as a `claude -p` started inside one inherits it, another form,
+or the bare id of no form, is ignored with a debug line saying which);
+`MAWS_NATIVE_TO_HUMAN` is
 none; a session that is not interactive is none; a record that holds an
 open question, a pending outcome (an answer or a dismissal) or a queued
 line is the sheet; then
@@ -380,10 +382,53 @@ made, or the step (a start's or a compaction's) gave it no context in time,
 the context goes instead on the next result or prompt route, once. When the floor can be read (the highest
 id the conversation holds, read by `floorSearchArgs`'s perl pass over a
 transcript past 4 MiB), a fork's or a lost record's first id is past it. A subagent that stops with questions open is
-named to the main conversation once, on the next route. In a MAWS-run
-session no route of the main conversation opens and no row lands: MAWS
-delivers there and says so by a `delivered` line; a running subagent's
-answer still goes by a send.
+named to the main conversation once, on the next route.
+
+**A MAWS-run session** (runner `maws`; MAWS's question-sheet C5, F8, F33,
+F34). The tool delivers there as in a terminal session by every route but
+the idle one: the result and prompt routes carry the main conversation's
+envelope, the notices and a context, a route's row lands its keys, a start
+searches the transcript, and a running subagent's answer goes by a send.
+It submits no prompt of its own (a plugin's prompt carries no context of
+its own, and a Stop in MAWS does not withdraw it). When the session is idle
+and an answer is owed, MAWS writes its ring instead: a prompt of the
+composer's whose whole text is `The human answered questions on your
+sheet.` and one U+2060 WORD JOINER, its mark (`RING`, compared exactly and
+nothing normalised: the engine trims a message's text blocks, so the mark
+is on the ring and a person, who types none, is never taken for one). The
+prompt hook fills a ring with the ready envelope when
+that envelope's own block names an answer (`ringHasAnswer`), and otherwise
+drops it with `nothing is ready on the sheet` (`RING_DROP`, which MAWS reads)
+before taking anything or ordering a step, so a notice or a context that waits still waits; it
+awaits nothing first, the engine giving a prompt's hooks ten seconds in all.
+The plain sentence, without the mark, in any form and beside any block, the
+marked one under another origin or in a terminal session, and any text one
+character off are a prompt like any other. The step packs that
+conversation's envelope with the batches that hold an answer first (in a
+cut batch its answers first), so a ring finds an answer while one is
+pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
+`sheet: a ring is dropped: …`). A marked ring that comes while a reload's
+`session.start` has not yet restored the choice is known by its mark and
+dropped. In both runners a main turn that ends aborted (a Stop) sets
+`stoppedAt` in the kept choice, at once, from the mod's clock (not when a
+later main turn had already begun, running still or ended: a message
+preempted it), and lets go an idle reservation not yet handed to the
+engine, so the next delivery reserves from the view as it then is; a reload of the
+same session takes it up, a fork and a `/clear` start without it, and the
+next main turn's start clears it, whatever began that turn (the person's
+prompt, the mod's own idle prompt, a scheduled prompt, a task notification),
+never a prompt's admission: a prompt folded into the running turn, a prompt
+dropped beneath and a slash command start no turn and clear nothing, and a
+Stop of the idle prompt's own turn is set after that turn's start, so its
+submit's late acknowledgement cannot clear it. A main turn that starts while
+a reload restores the choice keeps the Stop from being taken up. While it is set the idle route opens only when the
+view's `mainAcceptedAt`, the latest time the step accepted an answer still
+owed to the main conversation, is later than it (the same millisecond is
+held); that envelope carries everything as ever. The step reads its clock
+once it holds the record's lock, so an answer it accepts after waiting on
+the lock is stamped after a Stop taken in the wait.
+A dismissal, a reroute or a `landed` retry changes no answer's time and
+opens nothing. A ring orders no step.
 
 **The terminal's drawing** (§8.3 of the composite). `registerSheetBand`,
 registered outside the ask's band, draws one line above the to-human band in

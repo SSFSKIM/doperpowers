@@ -6,6 +6,8 @@ import {
   DESCRIPTION,
   INPUT_SCHEMA,
   NOT_KNOWN,
+  RING,
+  RING_DROP,
   SHEET_TOOL,
   STARTING,
   WITHDRAWN,
@@ -36,6 +38,7 @@ import {
   parseResult,
   readInput,
   resultTextOf,
+  ringHasAnswer,
   rowLines,
   searchedKeys,
   snapshotOf,
@@ -284,6 +287,8 @@ type Sheet = {
   early?: { source: StartSource; session: string; transcript: string }
   /** The main turn running, by its id (`turn.start` without an agentId), until it completes. */
   mainTurn?: string
+  /** The latest main turn that started, kept across its end: only its aborted end is a Stop (F34). */
+  lastMainTurn?: string
   /** How many main turns have started in this module. */
   turns: number
   /** Subagents that stopped and have not started again: never sent to, as a send resumes one (C0's P2). */
@@ -296,6 +301,8 @@ type Sheet = {
   surfaceViews: number
   /** A row wanted the deliveries' blocks before the session's generation was there to read them. */
   isDeliveryWanted: boolean
+  /** A main turn started before a reload's session.start restored the choice: the kept Stop is not taken up (F34). */
+  isTurnStarted: boolean
   /** The ask snapshot last written or being written (I13), as its JSON: one that would say the same is not written again; forgotten when its write fails. */
   published?: string
   /** The snapshot writes, one after another, so the last asked for is the last to land. */
@@ -316,6 +323,7 @@ function fresh(): Sheet {
     ticks: 0,
     surfaceViews: 0,
     isDeliveryWanted: false,
+    isTurnStarted: false,
   }
 }
 
@@ -747,7 +755,11 @@ function readyFor(gen: Gen, recipient: Recipient): Envelope | undefined {
   return envelope !== undefined && !envelope.keys.some((key) => isInFlight(gen, key)) ? envelope : undefined
 }
 
-/** The main conversation's routes are the tool's to open in a terminal session; in a MAWS-run one, MAWS delivers (§5.4). */
+/**
+ * The idle route is a terminal session's alone: in a MAWS-run one the tool delivers by every other route, and MAWS
+ * writes the prompt a turn needs, its ring (MAWS's C5, F8): a plugin's own prompt carries no context of its own, and
+ * a Stop in MAWS does not withdraw it. The line above the prompt is a terminal's too.
+ */
 const isTerminal = () => sheet.runner === 'terminal'
 
 /**
@@ -763,7 +775,7 @@ function deliver(port: Port, gen: Gen) {
   if (!isStarted(gen)) {
     return
   }
-  if (isTerminal() && sheet.mainTurn === undefined) {
+  if (isTerminal() && sheet.mainTurn === undefined && !isStopHeld(gen)) {
     const envelope = readyFor(gen, 'main')
     const wake = envelope !== undefined && envelope.wakes ? freshWake(gen, envelope) : undefined
     if (envelope !== undefined && wake !== undefined) {
@@ -833,7 +845,8 @@ async function submitIdle(port: Port, gen: Gen, flight: Flight) {
   if (!gen.flights.includes(flight)) {
     return
   }
-  if (!isStarted(gen) || sheet.mainTurn !== undefined) {
+  if (!isStarted(gen) || sheet.mainTurn !== undefined || isStopHeld(gen)) {
+    // A turn runs, or a Stop since the reservation holds what the view holds now (F34).
     release(port, gen, flight)
     return
   }
@@ -1003,15 +1016,12 @@ function routeContext(gen: Gen, context: string | undefined) {
  * What a result or a prompt route carries (I9), taken in one synchronous
  * step: the ready envelope as a flight of its own (an idle reservation not
  * yet handed over yields it to the route that opened first), the notices
- * waiting, and a context owed; each an entry of its own. In a MAWS-run
- * session only the context (I10): no answer goes by a route there (§5.4).
+ * waiting, and a context owed; each an entry of its own. The same in a
+ * MAWS-run session (MAWS's C5, F8).
  */
 function take(gen: Gen, route: 'result' | 'prompt'): { entries: string[]; flight?: Flight; notices: string[]; context?: string } {
   const context = gen.context
   gen.context = undefined
-  if (!isTerminal()) {
-    return { entries: context === undefined ? [] : [context], notices: [], ...(context !== undefined && { context }) }
-  }
   gen.flights = gen.flights.filter((other) => other.route !== 'idle' || other.handed === true)
   const envelope = readyFor(gen, 'main')
   const flight: Flight | undefined = envelope === undefined ? undefined : { route, keys: envelope.keys, text: envelope.text, turnsAt: sheet.turns }
@@ -1026,7 +1036,7 @@ function putBack(gen: Gen, taken: ReturnType<typeof take>, entered: readonly str
   if (taken.context !== undefined && !entered.includes(taken.context)) gen.context ??= taken.context
 }
 
-/** The generation a route of the main conversation may open in: the current one, started; a result route only in a terminal session. */
+/** The generation a route of the main conversation may open in: the current one, started. */
 function routable(): Gen | undefined {
   const gen = current()
   return sheet.port !== undefined && isStarted(gen) ? gen : undefined
@@ -1041,7 +1051,8 @@ function routable(): Gen | undefined {
  * marked before the conversation is read, so a turn that starts during the
  * read is that one. A turn that ends while an idle flight's prompt has not
  * entered settles nothing of it. Then, a turn that ended with the model's
- * answer opens the idle route for what wakes.
+ * answer opens the idle route for what wakes. A turn that ended aborted (a
+ * Stop) set `stoppedAt` before this ran (`stopAt`).
  */
 async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
   const due = gen.flights.filter((flight) => flight.isAdmitting !== true && (flight.turnId === turnId || flight.turnId === '*' || flight.tentative === turnId))
@@ -1075,6 +1086,51 @@ async function endTurn(port: Port, gen: Gen, turnId: string, reason: string) {
   }
 }
 
+/**
+ * A Stop (MAWS's C5, F34; the composite's Stop rule), in both runners: the
+ * time a main turn ended aborted, kept for the session in the state a reload
+ * reads, until the next main turn starts (`endStop`). Set in the synchronous
+ * stretch that reads the aborted end, from the mod's own clock, which is the
+ * step's machine's (`acceptedAt` is written by the same clock). An idle
+ * reservation not yet handed to the engine is let go: its hop would submit
+ * what it reserved before the Stop, and the next delivery reserves from the
+ * view as it then is.
+ */
+function stopAt() {
+  keep({ stoppedAt: new Date(Date.now()).toISOString() })
+  const gen = current()
+  if (gen !== undefined) gen.flights = gen.flights.filter((flight) => flight.route !== 'idle' || flight.handed === true)
+}
+
+/**
+ * A main turn started: no Stop holds anything now. Read at the turn's start,
+ * an event, never in a continuation after an admission: a prompt folded into
+ * the running turn starts none, so a Stop of that turn still holds; the
+ * mod's own idle prompt's turn, stopped, sets a time after this. Before a
+ * reload's session.start restored the choice, remembered.
+ */
+function endStop() {
+  if (sheet.kept === undefined) {
+    sheet.isTurnStarted = true
+  } else if (sheet.kept.stoppedAt !== undefined) {
+    keep({ stoppedAt: undefined })
+  }
+}
+
+/**
+ * Whether a Stop holds the idle route (F34): `stoppedAt` is set and no answer
+ * owed to the main conversation was accepted after it, by the view held now
+ * (`mainAcceptedAt`, the latest over the whole of `pending`). The same
+ * millisecond is held. Under runner `maws` nothing reads it: there is no idle
+ * route there.
+ */
+function isStopHeld(gen: Gen): boolean {
+  const stoppedAt = sheet.kept?.stoppedAt
+  if (stoppedAt === undefined) return false
+  const accepted = gen.held?.mainAcceptedAt
+  return accepted === undefined || !(Date.parse(accepted) > Date.parse(stoppedAt))
+}
+
 /** A subagent stopped with questions open (E14): each question named to the main conversation once, from the view held. */
 function noticeEnded(gen: Gen, agentId: string) {
   const fresh = (gen.held?.open ?? []).filter((q) => q.asker !== 'main' && q.asker.agentId === agentId && !gen.named.has(q.id))
@@ -1096,8 +1152,7 @@ function noticeEnded(gen: Gen, agentId: string) {
  */
 async function afterStart(port: Port, gen: Gen, answer: Extract<Answer, { ok: true }>, event: Record<string, unknown>): Promise<string | undefined> {
   const start = answer.effects.start
-  // In a MAWS-run session only a `delivered` line moves an outcome of the main conversation (§5.4).
-  if (start === undefined || start.beforeCount === 0 || gen.transcript === undefined || !isTerminal()) {
+  if (start === undefined || start.beforeCount === 0 || gen.transcript === undefined) {
     return answer.effects.context
   }
   // When `before` lists every key pending, a key it does not list was not pending: the search prints those alone.
@@ -1595,7 +1650,9 @@ async function sessionStarted(port: Port, source: StartSource, session: string, 
   // being made ready, also before anything is awaited, and made ready first.
   const isNew = source === 'startup' || source === 'clear'
   const nonce = newName('n')
-  keep({ session, started: undefined, ...(isNew ? { starting: { nonce, source, floor: 0, transcript }, preparing: undefined } : { starting: undefined, preparing: { nonce, source: source as 'resume' | 'fork', transcript } }) })
+  // Another session (a fork, a /clear) starts without the last one's Stop (F34).
+  const isOther = sheet.kept?.session !== session
+  keep({ session, started: undefined, ...(isOther && { stoppedAt: undefined }), ...(isNew ? { starting: { nonce, source, floor: 0, transcript }, preparing: undefined } : { starting: undefined, preparing: { nonce, source: source as 'resume' | 'fork', transcript } }) })
   // The SessionStart names only the new session (C0's P5): the session a
   // /clear left is the one the end hook kept. Its removal is ordered behind
   // that session's start still in flight, in the background: never a
@@ -1783,7 +1840,11 @@ export function registerSheet(on: On) {
       ...(owed.preparing !== undefined && { preparing: owed.preparing }),
       ...(kept?.left !== undefined && { left: kept.left }),
       ...(kept?.left !== undefined && typeof kept.leftWitness === 'string' && { leftWitness: kept.leftWitness }),
+      // A Stop is its session's: taken up by a reload of the same session, before its first drain, unless a main turn
+      // started meanwhile (F34).
+      ...(kept?.session === session && typeof kept.stoppedAt === 'string' && !sheet.isTurnStarted && { stoppedAt: kept.stoppedAt }),
     }
+    sheet.isTurnStarted = false
     sheet.port = port
     if (sheet.gen?.session !== session) {
       sheet.gen = newGen(session)
@@ -1882,7 +1943,7 @@ export function registerSheet(on: On) {
       // The session's work retired, its start forgotten, so no trigger orders
       // it again; a start already in flight lands before the removal.
       retire()
-      keep({ left: e.sessionId, leftWitness: undefined, started: undefined, starting: undefined, preparing: undefined })
+      keep({ left: e.sessionId, leftWitness: undefined, started: undefined, starting: undefined, preparing: undefined, stoppedAt: undefined })
       removeLeftLater(port, e.sessionId, true)
     }
     return next(e)
@@ -1948,11 +2009,27 @@ export function registerSheet(on: On) {
 
   // The prompt route (I9): what is ready rides any prompt that enters, as
   // context of its own; what a prompt dropped beneath, or one that entered
-  // without it, did not carry is put back, each entry on its own. In a
-  // MAWS-run session only a start's or a compaction's context rides it.
-  on('prompt.submit', { text: /^/ }, async (_, e, next) => {
-    triggerCheck()
+  // without it, did not carry is put back, each entry on its own. MAWS's
+  // ring (MAWS's C5, F33) is filled by the same route when the envelope it
+  // would carry names an answer, and dropped otherwise, before anything is
+  // taken: nothing then needs putting back. Nothing is awaited before
+  // `next`, and a ring orders no step: the engine gives a prompt's hooks ten
+  // seconds in all.
+  on('prompt.submit', { text: /^/ }, async ($, e, next) => {
+    // A ring orders no step (F33): only a prompt that is not one triggers the check.
+    const isRinging = isRing(e)
+    if (!isRinging) triggerCheck()
     const gen = routable()
+    if (isRinging) {
+      const why = ringDrop(gen)
+      const line = why === undefined ? `sheet: a ring is filled: the main conversation's envelope, ${keysOf(readyFor(gen as Gen, 'main'))}` : `sheet: a ring is dropped: ${why}`
+      // While a reload restores the choice the port is not made yet.
+      if (sheet.port === undefined) $.ui.log(line, { to: 'debug' })
+      else sheet.port.log(line)
+      if (why !== undefined) {
+        return { drop: RING_DROP }
+      }
+    }
     // A slash command's prompt is passed over: what it runs may never reach the model.
     if (gen === undefined || e.command !== undefined) {
       return next(e)
@@ -2004,7 +2081,10 @@ export function registerSheet(on: On) {
   // no longer stopped.
   on('turn.start', { turnId: /./ }, (_, e, next) => {
     if (e.agentId === undefined) {
+      // A main turn, whatever began it, ends a Stop's hold (F34); a subagent's does not.
+      endStop()
       sheet.mainTurn = e.turnId
+      sheet.lastMainTurn = e.turnId
       sheet.turns += 1
       if (sheet.port !== undefined) publish(sheet.port)
       for (const flight of current()?.flights ?? []) {
@@ -2023,6 +2103,9 @@ export function registerSheet(on: On) {
   on('turn.complete', { turnId: /./ }, (_, e, next) => {
     triggerCheck()
     if (e.agentId === undefined) {
+      // A Stop, read here and set before anything else; not when a later main turn has begun (a message preempted it),
+      // running still or ended already.
+      if (e.isAborted === true && isSheetChosen() && (sheet.lastMainTurn === undefined || sheet.lastMainTurn === e.turnId)) stopAt()
       if (sheet.mainTurn === e.turnId) sheet.mainTurn = undefined
       if (sheet.port !== undefined) publish(sheet.port)
       const gen = routable()
@@ -2034,13 +2117,13 @@ export function registerSheet(on: On) {
   })
 
   // Landing (I9): a row of the routes' kinds, as stored, that holds a block
-  // lands its keys, whichever module sent it. A human's prompt that quotes
-  // one, or a steer, is another kind of row and lands nothing.
+  // lands its keys, whichever module sent it, in both runners. A human's
+  // prompt that quotes one, or MAWS's ring itself, is another kind of row and
+  // lands nothing; the context the tool attached to a ring is a route's row.
   on('session.append', { door: /./ }, async (_, e, next) => {
     const stored = await next(e)
     const gen = routable()
-    // In a MAWS-run session only a `delivered` line moves an outcome of the main conversation (§5.4).
-    if (gen !== undefined && isTerminal() && stored.message !== undefined && isRouteRow(e)) {
+    if (gen !== undefined && stored.message !== undefined && isRouteRow(e)) {
       const texts = contentTexts(stored.message.content)
       const keys = keysIn(texts)
       // What it delivered, for the rows' receipts (M5).
@@ -2114,17 +2197,52 @@ export function registerSheet(on: On) {
 }
 
 /**
+ * Whether a prompt is MAWS's ring (MAWS's C5, F33): three tests together, the
+ * runner, the origin and the whole text, compared exactly with the marked
+ * sentence and nothing normalised. A person types no mark, so a person's
+ * message of the same words, in any form the engine hands it on, is a
+ * prompt like any other; so is any other origin, a terminal session, or
+ * text that differs by one character.
+ */
+function isRing(e: { text: string; origin: { kind: string } }): boolean {
+  // A reloaded module has its choice only once its session.start has read it, and the engine does not hold prompts
+  // behind that hook: until then the mark alone, which only MAWS writes, says a composer's frame is a ring.
+  return (sheet.kept === undefined || (sheet.runner === 'maws' && isSheetChosen())) && e.origin.kind === 'composer' && e.text === RING
+}
+
+/**
+ * Why a ring is dropped, or undefined when it is filled: read from the view
+ * the mod holds at this instant and from the envelope it would attach,
+ * nothing else (F33). An answer the step applied and the mod has not adopted
+ * is not ready yet: MAWS rings again.
+ */
+function ringDrop(gen: Gen | undefined): string | undefined {
+  if (sheet.kept === undefined) return 'the choice is not restored yet'
+  if (gen === undefined) return 'the sheet has not started in this session'
+  const envelope = gen.held?.ready.find((ready) => ready.recipient === 'main')
+  if (envelope === undefined) return 'no envelope is ready for the main conversation'
+  if (readyFor(gen, 'main') === undefined) return "the main conversation's envelope is on a route already"
+  return ringHasAnswer(envelope) ? undefined : "the main conversation's envelope holds no answer"
+}
+
+/** How many keys an envelope carries, as the log says it. */
+function keysOf(envelope: Envelope | undefined): string {
+  const n = envelope?.keys.length ?? 0
+  return `${n} ${n === 1 ? 'key' : 'keys'}`
+}
+
+/**
  * The result route (I9): a call of the model's main loop that returned, not
  * denied and not aborted, carries what is ready as context on its result:
  * the envelope, a flight of the running turn, and the notices and a context
- * waiting. Only into the generation it was dispatched in (`dispatched`): a
- * call that ran across a session change (a fork, a /clear) returns as it was,
- * carrying nothing of the session after it.
+ * waiting, in both runners (MAWS's C5, F8). Only into the generation it was
+ * dispatched in (`dispatched`): a call that ran across a session change (a
+ * fork, a /clear) returns as it was, carrying nothing of the session after it.
  */
 function withResultRoute<R extends object>(dispatched: Gen | undefined, agentId: string | undefined, origin: { plugin: string }, signal: AbortSignal, result: R): R {
   const gen = routable()
   const { deny, context } = result as { deny?: unknown; context?: readonly string[] }
-  if (gen === undefined || gen !== dispatched || !isTerminal() || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
+  if (gen === undefined || gen !== dispatched || agentId !== undefined || origin.plugin !== 'engine' || deny !== undefined || signal.aborted) {
     return result
   }
   const taken = take(gen, 'result')
