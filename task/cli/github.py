@@ -9,6 +9,7 @@ import base64
 import json
 import re
 import subprocess
+import time
 import urllib.parse
 
 from common import failed
@@ -57,11 +58,12 @@ class GitHubError(Exception):
     """A call that failed. `status` is the HTTP status GitHub answered
     with, None when no answer was heard (a timeout, the transport)."""
 
-    def __init__(self, message, not_found=False, status=None):
+    def __init__(self, message, not_found=False, status=None, body=""):
         super().__init__(message)
         self.message = message
         self.not_found = not_found
         self.status = status
+        self.body = body  # what GitHub answered with, as gh printed it
 
     @property
     def refused(self):
@@ -69,29 +71,45 @@ class GitHubError(Exception):
         return self.status is not None and 400 <= self.status < 500
 
 
+class OutOfTime(GitHubError):
+    """A call not made, or cut short, because the bounded pass it belongs
+    to (the settle before list or claim) reached its deadline."""
+
+
 class Client:
     def __init__(self):
         self._login = None
         self._labels = {}
+        # A time.monotonic() value that bounds every call while it is set (a settle's deadline).
+        self.deadline = None
 
     # ── plumbing ──────────────────────────────────────────────────────────
     def _gh(self, args, data=None):
         argv = ["gh", "api", "--hostname", HOST] + args
         if data is not None:
             argv += ["--input", "-"]
+        timeout, bounded = TIMEOUT, False
+        if self.deadline is not None:
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                raise OutOfTime("the pass ran out of time before gh api %s" % args[0])
+            if left < timeout:
+                timeout, bounded = left, True
         try:
-            done = subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT,
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                                   input=json.dumps(data) if data is not None else None)
         except FileNotFoundError:
             raise failed("the GitHub client `gh` is not installed: the board lives on GitHub")
         except subprocess.TimeoutExpired:
+            if bounded:
+                raise OutOfTime("the pass ran out of time during gh api %s" % args[0])
             raise GitHubError("gh api %s gave no answer within %d s" % (args[0], TIMEOUT))
         if done.returncode != 0:
             said = (done.stderr.strip() or done.stdout.strip() or "exit %d" % done.returncode).splitlines()
             message = said[-1] if said else "gh failed"
             status = re.search(r"\(HTTP (\d{3})\)", done.stderr)
             raise GitHubError(message, not_found="HTTP 404" in done.stderr or "NOT_FOUND" in done.stdout,
-                              status=int(status.group(1)) if status else None)
+                              status=int(status.group(1)) if status else None, body=done.stdout)
         try:
             return json.loads(done.stdout) if done.stdout.strip() else None
         except ValueError:
@@ -147,10 +165,13 @@ class Client:
         owner, name = repo.split("/", 1)
         try:
             node = self.graphql(Q_ISSUE, owner=owner, name=name, number=number)["repository"]["issue"]
+        except OutOfTime:
+            raise
         except GitHubError as e:
             if "Could not resolve to an Issue" in e.message:
                 raise GitHubError("%s has no issue #%d" % (repo, number), not_found=True)
-            raise
+            # Anything else, a repository this credential cannot see included, is not the issue being gone.
+            raise GitHubError(e.message, status=e.status, body=e.body)
         if node is None:
             raise GitHubError("%s has no issue #%d" % (repo, number), not_found=True)
         self._read_on(owner, name, node)
@@ -215,7 +236,8 @@ class Client:
                     self.rest("POST", "repos/%s/labels" % repo,
                               {"name": name, "color": color, "description": description})
                 except GitHubError as e:
-                    if e.status != 422:  # 422: another writer made it a moment ago (several claim at once)
+                    # Another writer made it a moment ago (several sessions claim at once): GitHub says so.
+                    if not (e.status == 422 and '"already_exists"' in e.body):
                         raise
                 self._labels[repo].add(name)
 

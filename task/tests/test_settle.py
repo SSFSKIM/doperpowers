@@ -22,6 +22,7 @@ class SettleCase(ClaimCase):
         return [c for c in self.gh_issue(n, repo)["comments"] if c["body"].startswith("```task-claim")]
 
     def ended(self, thread=THREAD, session=SESSION, **kw):
+        self.load()  # save() writes the GitHub state too: what earlier commands wrote stays
         self.sminos["threads"][thread] = thread_answer(thread, session, ended=True, **kw)
         self.save()
 

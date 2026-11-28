@@ -132,7 +132,8 @@ CURRENT, SUPERSEDED, VOID, SHUT_OUT, OUTSIDE, CLOSED, MISSING = (
 class Fold:
     """Who holds a ticket. `holder`: the record (a claim or a takeover) that
     holds it, or None. `effect`: id → whether that record took effect.
-    `ended_by`: a claim's id → the record that ended it."""
+    `ended_by`: a claim's id → the record that ended it. `met`: id → the
+    holder when that record was applied (None: unheld)."""
 
     def __init__(self, recs, is_open, reopened):
         self.records = recs
@@ -141,9 +142,11 @@ class Fold:
         self.holder = None
         self.effect = {}
         self.ended_by = {}
+        self.met = {}
         self.inside = [r for r in recs if self._inside(r)]
         for r in self.inside:
             held = self.holder
+            self.met[r.id] = held
             if r.op == "claim":
                 took = held is None
                 if took:
@@ -170,7 +173,8 @@ class Fold:
 
     def outcome(self, rid):
         """(kind, other) for the writer's own record `rid`: `other` is the
-        record that superseded it, or the holder it met."""
+        record that superseded it, or, for a void one, the holder it met at
+        its place."""
         r = self.by_id(rid)
         if r is None:
             return MISSING, self.holder
@@ -181,7 +185,7 @@ class Fold:
                 return SHUT_OUT, None
             return OUTSIDE, None
         if not self.effect[r.id]:
-            return VOID, self.holder
+            return VOID, self.met[r.id]
         if self.holder is not None and self.holder.id == r.id:
             return CURRENT, None
         return (SUPERSEDED if r.makes_holder else CURRENT), self.ended_by.get(r.id)

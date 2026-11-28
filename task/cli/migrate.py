@@ -16,6 +16,7 @@ import re
 import subprocess
 
 import board as B
+import claiming
 import config
 import legacy
 import record
@@ -426,6 +427,7 @@ def apply(ctx):
                       "decided: true): %s; nothing was written"
                       % (len(open_rows), " is" if len(open_rows) == 1 else "s are", a.plan,
                          ", ".join("#%d" % r["number"] for r in open_rows)))
+    claiming.retry_owed(ctx)  # this machine's owed releases on the board, once the plan has passed
     login = ctx.client.login()
     run = Apply(ctx)
     for row in sorted(data["rows"], key=lambda r: r["number"]):

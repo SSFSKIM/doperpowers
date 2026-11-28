@@ -105,9 +105,10 @@ class ReleaseTest(ClaimCase):
         self.assertEqual(code, 0, err)
         new = self.records()[-1]
         self.assertIn(OTHER_ADDRESS, new["body"])
-        self.assertEqual(self.holder()["claim"], new["id"])
+        # The label as settle left it, before show (which writes a label that disagrees) reads anything.
         self.assertIn("claimed", self.gh_issue(5)["labels"])
         self.assertNotIn("reason: ended", "".join(c["body"] for c in self.records()))
+        self.assertEqual(self.holder()["claim"], new["id"])
 
     def test_a_writer_killed_between_its_record_and_its_label(self):
         self.claimed()

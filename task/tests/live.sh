@@ -192,7 +192,9 @@ PY
       exit 1
     fi
     "$sm" retire "$alias" > "$work/retire.txt" 2>&1
-    TASK_SMINOS="$sm" TASK_SETTLE_EVERY=1 "$task" list --repo "$TASK_LIVE_REPO" --json > "$work/list.json"
+    # Another session of this machine: an invented session id of its own.
+    CLAUDE_CODE_SESSION_ID="0000a11c-0000-4000-8000-$(printf '%012d' "$$")" TASK_SMINOS="$sm" TASK_SETTLE_EVERY=1 \
+      "$task" list --repo "$TASK_LIVE_REPO" --json > "$work/list.json"
     "$task" show "$number" --repo "$TASK_LIVE_REPO" --json > "$work/show.json"
     verdict="$(python3 - "$work/list.json" "$work/show.json" "$number" <<'PY'
 import json, sys

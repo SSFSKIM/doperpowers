@@ -19,8 +19,11 @@ State ($TASK_GH_STATE):
                 number, body, author, createdAt}} (`{last}` in the body is the
                 issue's latest comment id), {label: {repo, number, add|remove}},
                 {reopen|close: {repo, number, at}}, {delete_comment: {repo,
-                id}}, {sleep: seconds}, {kill: true} (the calling process,
-                killed as the call returns: a writer that dies after a write)
+                id}}, {hide: {repo, number, editor}} (the latest comment, last
+                edited by another account), {define: {repo, name}} (a label
+                another writer creates), {sleep: seconds}, {kill: true} (the
+                calling process, killed as the call returns: a writer that
+                dies after a write)
   repos         {"owner/name": {default_branch, files: {path: text},
                  labels: {name: {color, description}}, next,
                  issues: {"<n>": issue}}}
@@ -65,14 +68,15 @@ def stamp(s):
 
 
 class HTTPError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, errors=None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.errors = errors
 
 
-def fail(status, message):
-    raise HTTPError(status, message)
+def fail(status, message, errors=None):
+    raise HTTPError(status, message, errors)
 
 
 def repo_of(s, name):
@@ -162,6 +166,10 @@ def comments_page(it, cursor):
 
 # ── GraphQL, by operation name ─────────────────────────────────────────────
 def graphql(s, op, v):
+    if "owner" in v and not any(k.lower() == ("%s/%s" % (v["owner"], v["name"])).lower() for k in s["repos"]):
+        # As GitHub answers for a repository that is missing or that the credential cannot see.
+        return {"data": {"repository": None}, "errors": [{"type": "NOT_FOUND", "path": ["repository"],
+                "message": "Could not resolve to a Repository with the name '%s/%s'." % (v["owner"], v["name"])}]}
     if op in ("TaskIssue", "TaskComments", "TaskIssueNode"):
         key, r = repo_of(s, "%s/%s" % (v["owner"], v["name"]))
         it = r["issues"].get(str(v["number"]))
@@ -266,6 +274,8 @@ def rest(s, method, path, params, data):
         return [{"name": n, "color": l.get("color", ""), "description": l.get("description", "")}
                 for n, l in r.get("labels", {}).items()]
     if rest_ == "labels" and method == "POST":
+        if data["name"] in r.get("labels", {}):
+            fail(422, "Validation Failed", [{"resource": "Label", "code": "already_exists", "field": "name"}])
         r.setdefault("labels", {})[data["name"]] = {"color": data.get("color", ""),
                                                      "description": data.get("description", "")}
         save(s)
@@ -358,9 +368,14 @@ def act(action):
     if "kill" in action:
         os.kill(os.getppid(), signal.SIGKILL)
         sys.exit(1)  # before the call: it is never served
-    kind = next(k for k in ("comment", "label", "reopen", "close", "delete_comment") if k in action)
+    kind = next(k for k in ("comment", "label", "reopen", "close", "delete_comment", "hide", "define")
+                if k in action)
     a = action[kind]
     _, r = repo_of(s, a.get("repo", next(iter(s["repos"]))))
+    if kind == "define":
+        r.setdefault("labels", {})[a["name"]] = {"color": "ededed", "description": ""}
+        save(s)
+        return
     if kind == "delete_comment":
         for it in r["issues"].values():
             it["comments"] = [c for c in it["comments"] if int(c["id"]) != int(a["id"])]
@@ -380,6 +395,8 @@ def act(action):
         if a.get("remove") in it["labels"]:
             it["labels"].remove(a["remove"])
         stamp(s)
+    elif kind == "hide":
+        it["comments"][-1]["editor"] = a.get("editor", "passer-by")
     elif kind == "reopen":
         it["state"], it["stateReason"] = "OPEN", "REOPENED"
         it.setdefault("reopened", []).append(a.get("at") or stamp(s))
@@ -485,7 +502,7 @@ def main(argv):
             if paginate and slurp:
                 out = [out]
     except HTTPError as e:
-        print(json.dumps({"message": e.message}))
+        print(json.dumps(dict({"message": e.message}, **({"errors": e.errors} if e.errors else {}))))
         sys.stderr.write("gh: %s (HTTP %d)\n" % (e.message, e.status))
         return 1
     hooks("after", joined, stdin)

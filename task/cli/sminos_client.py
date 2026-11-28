@@ -36,13 +36,13 @@ def find():
     return str(clone) if clone.exists() else None
 
 
-def _call(args):
+def _call(args, timeout=TIMEOUT):
     """(the finished process, "") or (None, why: `no sminos`, `timeout`)."""
     cli = find()
     if not cli:
         return None, "no sminos"
     try:
-        return subprocess.run([cli] + args, capture_output=True, text=True, timeout=TIMEOUT), ""
+        return subprocess.run([cli] + args, capture_output=True, text=True, timeout=timeout), ""
     except subprocess.TimeoutExpired:
         return None, "timeout"
     except OSError:
@@ -70,11 +70,11 @@ def address():
     return m.group(1) if m and one_line(m.group(1)) else None
 
 
-def thread(name):
+def thread(name, timeout=TIMEOUT):
     """(`sminos who --thread=<name>`'s answer as a dict, "") or (None, why),
     `why` opening with what settle reports (`no sminos`, `timeout`, `exit
     N`, `unreadable answer`)."""
-    done, why = _call(["who", "--thread=%s" % name])
+    done, why = _call(["who", "--thread=%s" % name], timeout)
     if done is None:
         return None, why
     if done.returncode != 0:

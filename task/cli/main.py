@@ -178,10 +178,6 @@ def parser():
     return p
 
 
-# The verbs that write to GitHub: each first tries again the releases this machine owes on its board.
-WRITERS = ("create", "set", "adopt", "edge", "comment", "close", "claim", "release", "takeover")
-
-
 def main(argv):
     p = parser()
     args = p.parse_args(argv)
@@ -193,10 +189,7 @@ def main(argv):
                          "human's to-dos, are a unit of their own); task works tickets on GitHub boards only\n")
         return USAGE
     try:
-        ctx = verbs.Context(args)
-        if args.verb in WRITERS or getattr(args, "step", None) == "apply":
-            claiming.retry_owed(ctx)
-        args.run(ctx)
+        args.run(verbs.Context(args))
     except Stop as stop:
         if stop.message:
             sys.stderr.write("error: %s\n" % stop.message)

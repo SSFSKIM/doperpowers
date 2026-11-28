@@ -143,6 +143,23 @@ def same_ticket(row, repo, number):
     return row["repo"].lower() == repo.lower() and row["number"] == number
 
 
+def board_key(repo):
+    """The key of `settled` and `running`: a board's name as rows are matched, without regard to case."""
+    return repo.lower()
+
+
+def row_of_holder(data, repo, number, holder):
+    """This machine's row for the claim the fold says holds: by the claim's
+    id among held and owed rows, else by its attempt token among the rows
+    not lapsed (a pending row whose record took effect). None when the
+    machine has none."""
+    row = row_of_claim(data, repo, number, holder.id)
+    if row is None and holder.attempt:
+        row = next((r for r in data["rows"] if same_ticket(r, repo, number) and r["attempt"] == holder.attempt
+                    and r["state"] != LAPSED), None)
+    return row
+
+
 def row_of_claim(data, repo, number, claim):
     """The held or owed row of this machine for that claim, or None."""
     return next((r for r in data["rows"] if same_ticket(r, repo, number) and r["claim"] == claim

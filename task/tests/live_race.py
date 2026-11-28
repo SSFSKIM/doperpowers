@@ -4,8 +4,9 @@ every earlier claim comment, measured against real GitHub.
 Each round opens one fresh ticket and starts five `task claim` processes,
 each with a session id, a thread id and an address of its own from the
 stand-in sminos, and an index (TASK_HOME) of its own. Each is held at the
-barrier after a first read that found the ticket unheld; when all five are
-there they are let go together, so the round has five appends in
+barrier after a first read that found the ticket unheld and after every
+call it makes before its append; it says so in its trace as it arrives,
+and when all five are there they are let go together, so the round has five appends in
 competition. Each records (TASK_TRACE) which claim comments its confirming
 read saw, and is held again until all five reads are recorded, so that no
 loser deletes its record before every read has been captured. A round in
@@ -96,8 +97,9 @@ def main(repo, task, rounds):
             paths.append(path)
             procs.append(subprocess.Popen([task, "claim", number, "--repo", repo], env=env, stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE, text=True))
-        wait_for(procs, paths, "first", time.monotonic() + WAIT)
-        reached = all(any(t["read"] == "first" and t["holder"] is None for t in traces(p)) and proc.poll() is None
+        wait_for(procs, paths, "at-barrier", time.monotonic() + WAIT)
+        reached = all(any(t["read"] == "first" and t["holder"] is None for t in traces(p))
+                      and any(t["read"] == "at-barrier" for t in traces(p)) and proc.poll() is None
                       for proc, p in zip(procs, paths))
         barrier.write_text("go\n")
         if reached:

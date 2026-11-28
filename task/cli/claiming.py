@@ -62,9 +62,10 @@ def my_thread(ctx):
 
 def holds(ctx, t, holder):
     """Whether the calling session's thread holds `holder` (D3, Takeover):
-    where this machine has the claim's row, the row's thread decides (for a
-    row with no thread, its session); the address only where it has none."""
-    row = I.row_of_claim(I.read(), t.repo, t.number, holder.id)
+    where this machine has the claim's row (by its id, or by its attempt
+    token for a row still pending), the row's thread decides (for a row
+    with no thread, its session); the address only where it has none."""
+    row = I.row_of_holder(I.read(), t.repo, t.number, holder)
     if row is not None:
         if row["thread"]:
             return my_thread(ctx) == row["thread"]
@@ -120,6 +121,10 @@ def _barrier(suffix):
     path = os.environ.get("TASK_CLAIM_BARRIER")
     if not path:
         return
+    trace = os.environ.get("TASK_TRACE")
+    if trace:  # arrived: every call before the append (the label's discovery among them) is behind it
+        with open(trace, "a") as f:
+            f.write(json.dumps({"pid": os.getpid(), "read": "at-barrier" + suffix}) + "\n")
     deadline = time.monotonic() + 60
     while not os.path.exists(path + suffix):
         if time.monotonic() > deadline:
@@ -139,46 +144,54 @@ def _alive(run):
 def auto_settle(ctx):
     """Settle this machine's rows on the verb's board, and no other board's,
     unless a pass over them completed within TASK_SETTLE_EVERY (ten
-    minutes) or another verb's pass is running. Bounded; its failure goes to
-    stderr and fails nothing."""
+    minutes) or another verb's pass is running. Bounded by its deadline,
+    every call included; its failure, the running mark's cleanup among
+    them, goes to stderr and fails nothing."""
     repo = ctx.repo
+    key = I.board_key(repo)
     every = float(os.environ.get("TASK_SETTLE_EVERY") or SETTLE_EVERY)
     try:
         with I.locked() as data:
-            if not any(r["repo"].lower() == repo.lower() and r["state"] != I.LAPSED for r in data["rows"]):
+            if not any(r["repo"].lower() == key and r["state"] != I.LAPSED for r in data["rows"]):
                 return
-            last = data["settled"].get(repo)
+            last = data["settled"].get(key)
             if last and I.age(last).total_seconds() < every:
                 return
-            running = data["running"].get(repo)
+            running = data["running"].get(key)
             if running and _alive(running):
                 return
-            data["running"][repo] = {"pid": os.getpid(), "at": I.now()}
+            data["running"][key] = {"pid": os.getpid(), "at": I.now()}
     except Exception as e:  # noqa: BLE001 — an unreadable index fails no verb
         sys.stderr.write("task: the settle of %s's claims did not run: %s\n" % (repo, getattr(e, "message", e)))
         return
     complete = set()
     try:
-        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + SETTLE_DEADLINE)
+        budget = float(os.environ.get("TASK_SETTLE_DEADLINE") or SETTLE_DEADLINE)  # seconds; a test sets it short
+        report, complete = S.run(ctx.client, repo=repo, deadline=time.monotonic() + budget)
         for u in report["unreachable"]:
             sys.stderr.write("task: the settle of %s's claims stopped: %s\n" % (u["repo"], u["said"]))
     except Exception as e:  # noqa: BLE001 — the verb goes on whatever the settle met
         sys.stderr.write("task: the settle of %s's claims failed: %s\n" % (repo, getattr(e, "message", e)))
-    finally:
+    try:
         with I.locked() as data:
-            if (data["running"].get(repo) or {}).get("pid") == os.getpid():
-                del data["running"][repo]
-            if any(b.lower() == repo.lower() for b in complete):
-                data["settled"][repo] = I.now()
+            if (data["running"].get(key) or {}).get("pid") == os.getpid():
+                del data["running"][key]
+            if any(I.board_key(b) == key for b in complete):
+                data["settled"][key] = I.now()
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write("task: the settle of %s's claims could not be recorded: %s\n"
+                         % (repo, getattr(e, "message", e)))
 
 
 def retry_owed(ctx):
-    """Before a verb writes to GitHub: the releases this machine owes on its
-    board, tried again first. Silent when none is owed."""
-    rows = [r for r in I.read()["rows"] if r["state"] == I.OWED]
-    if not rows or not any(r["repo"].lower() == ctx.repo.lower() for r in rows):
-        return
+    """The releases this machine owes on the verb's board, tried again
+    (each on sminos's word of this moment, as settle does). Run by a verb
+    that writes to GitHub once its own preflight has passed, and before it
+    reads what it acts on. Silent when none is owed; it fails no verb."""
     try:
+        rows = [r for r in I.read()["rows"] if r["state"] == I.OWED]
+        if not rows or not any(r["repo"].lower() == ctx.repo.lower() for r in rows):
+            return
         report, _ = S.run(ctx.client, repo=ctx.repo, states=(I.OWED,))
         for u in report["unreachable"]:
             sys.stderr.write("task: a release owed on %s is still owed: %s\n" % (u["repo"], u["said"]))
@@ -197,7 +210,7 @@ def report_lapsed():
     except Exception:  # noqa: BLE001 — a warning, never a failure
         return
     for r in rows:
-        if r["session"] == sid and r["state"] in (I.LAPSED, I.OWED) and I.age(r["at"]) < I.LAPSED_KEPT:
+        if r["session"] == sid and r["state"] == I.LAPSED and I.age(r["at"]) < I.LAPSED_KEPT:
             sys.stderr.write("task: your claim on %s#%d lapsed (%s, %s): claim it again before you continue\n"
                              % (r["repo"], r["number"], r["reason"] or "ended", r["at"]))
 
@@ -321,9 +334,10 @@ def claim(ctx):
     a = ctx.args
     if bool(a.numbers) == (a.batch is not None):
         raise usage("task claim takes ticket numbers, or --batch NAME")
-    auto_settle(ctx)
     address = my_address(ctx)
     thread = my_thread(ctx)
+    retry_owed(ctx)
+    auto_settle(ctx)
     numbers = list(a.numbers)
     if a.batch is not None:
         try:
@@ -365,6 +379,19 @@ def _stop(result):
 
 
 # ── release, takeover, close ──────────────────────────────────────────────
+def _identify_holder(ctx, number):
+    """Before any housekeeping writes: what `holds` will need to say whether
+    the calling session holds the ticket, asked now, so that a verb that
+    exits for want of it has written nothing. The thread where this
+    machine has a row on the ticket with one; else the address (whose lack
+    matters only if the ticket turns out held, and is said then)."""
+    rows = [r for r in I.read()["rows"] if I.same_ticket(r, ctx.repo, number) and r["state"] != I.LAPSED]
+    if any(r["thread"] for r in rows):
+        my_thread(ctx)
+    else:
+        ctx.address()
+
+
 def _force_reason(text, flag="--force"):
     if text is None:
         return None
@@ -380,6 +407,9 @@ def release(ctx):
         raise usage("--of binds a forced release to one claim: give it with --force")
     forced = _force_reason(a.force)
     prose = read_body_file(a.body_file) if a.body_file is not None else None
+    if forced is None:
+        _identify_holder(ctx, a.number)
+    retry_owed(ctx)
     t = ctx.ticket(a.number)
     if t.state != "open":
         raise refused("#%d is closed: its close ended every claim, and there is nothing to release" % a.number)
@@ -393,11 +423,14 @@ def release(ctx):
         raise refused("#%d is held by %s, not by this session's thread: the holder releases its own claim, and "
                       "anyone else gives %s" % (a.number, holder_text(t), ctx.cmd(
                           'release %d --force "<reason>"' % a.number)))
-    row = I.row_of_claim(I.read(), t.repo, t.number, h.id)
+    row = I.row_of_holder(I.read(), t.repo, t.number, h)
     try:
         kind, other, _ = S.write_release(ctx.client, t.login, t.repo, t.number, h.id, forced or "released", prose)
     except GitHubError as e:
         raise failed("the release of #%d: %s" % (a.number, e.message))
+    if kind == C.MISSING:
+        raise failed("#%d: the release was written and the confirming read did not show it: read the ticket with "
+                     "%s before writing again" % (a.number, ctx.cmd("show %d" % a.number)))
     if kind != C.CURRENT:
         if row is not None:
             I.lapse(row["attempt"], _lapse_reason(other))
@@ -416,6 +449,7 @@ def takeover(ctx):
     forced = _force_reason(a.force)
     address = my_address(ctx)
     thread = my_thread(ctx)
+    retry_owed(ctx)
     repo, session, number = ctx.repo, sminos.session_id(), a.number
     token = C.mint()
     I.add(I.new_row(repo, number, "", "", token, session, thread, address))
@@ -432,8 +466,8 @@ def takeover(ctx):
             I.remove(token)
             print("#%d: already yours (claim %d)" % (number, h.id))
             return
-        grant = next((r for r in I.read()["rows"] if I.same_ticket(r, repo, number) and r["claim"] == h.id
-                      and r["state"] == I.HELD and r["successor"] == session), None)
+        left = I.row_of_holder(I.read(), repo, number, h)
+        grant = left if left is not None and left["state"] == I.HELD and left["successor"] == session else None
         if forced is None and grant is None:
             I.remove(token)
             raise refused("#%d is held by %s, and no /clear granted this session its takeover: taking a live "
@@ -447,7 +481,6 @@ def takeover(ctx):
         if kind == C.CURRENT:
             S.converge(ctx.client, t.login, t2)
             I.change(token, state=I.HELD, claim=own, since=t2.fold.by_id(own).created)
-            left = I.row_of_claim(I.read(), repo, number, h.id)
             if left is not None:
                 I.lapse(left["attempt"], "taken-over")
             print("#%d: taken over (claim %d, of %d, %s)" % (number, own, h.id, forced or "cleared"))
@@ -478,6 +511,9 @@ def close(ctx):
     forced = _force_reason(a.force)
     text = read_body_file(a.body_file) if a.body_file is not None else None
     reason = "not_planned" if a.not_planned else "completed"
+    if forced is None:
+        _identify_holder(ctx, a.number)
+    retry_owed(ctx)
     t = ctx.ticket(a.number)
     h = t.holder
     if h is not None and forced is None and not holds(ctx, t, h):
@@ -490,13 +526,16 @@ def close(ctx):
             ctx.client.comment(ctx.repo, a.number, "Closed over the claim of %s (claim %d): %s"
                                % (h.holder, h.id, forced[len(C.FORCED):]))
         ctx.client.edit_issue(ctx.repo, a.number, state="closed", state_reason=reason)
-        if B.CLAIMED in t.labels:
-            ctx.client.remove_label(ctx.repo, a.number, B.CLAIMED)
     except GitHubError as e:
         raise failed(e.message)
-    with I.locked() as data:
-        data["rows"] = [r for r in data["rows"] if not (I.same_ticket(r, t.repo, t.number)
-                                                        and r["state"] in (I.HELD, I.OWED))]
+    ended = I.row_of_holder(I.read(), t.repo, t.number, h) if h is not None else None
+    if ended is not None:  # the claim the close ended; any other row on the ticket is settle's to judge
+        I.remove(ended["attempt"])
+    try:
+        S.converge(ctx.client, t.login, S.read(ctx.client, t.login, t.repo, t.number))
+    except GitHubError as e:
+        sys.stderr.write("task: #%d is closed, and its claimed label could not be made to agree: %s\n"
+                         % (a.number, e.message))
     print("#%d closed, %s" % (a.number, reason.replace("_", " ")))
 
 
@@ -520,9 +559,9 @@ def held(ctx):
         rows = [dict(r) for r in data["rows"]]
     mine = [r for r in rows if a.thread and r["thread"] == a.thread]
     out = {"v": 1,
-           "held": [_brief(r, "claim", "since") for r in mine if r["state"] == I.HELD],
-           "lapsed": [dict(_brief(r), reason=r["reason"] or "ended", at=r["at"]) for r in mine
-                      if r["state"] in (I.LAPSED, I.OWED)],
+           # An owed row's claim stands on GitHub until its release is written: it is still held.
+           "held": [_brief(r, "claim", "since") for r in mine if r["state"] in (I.HELD, I.OWED)],
+           "lapsed": [dict(_brief(r), reason=r["reason"], at=r["at"]) for r in mine if r["state"] == I.LAPSED],
            "offered": [_brief(r, "claim", "since") for r in rows if r["state"] == I.HELD
                        and r["successor"] == a.session]}
     if a.json:
@@ -545,7 +584,7 @@ def settle(ctx):
     if a.thread is None and complete:
         with I.locked() as data:
             for repo in complete:
-                data["settled"][repo] = I.now()
+                data["settled"][I.board_key(repo)] = I.now()
     if a.json:
         print(json.dumps(report, indent=1))
         return

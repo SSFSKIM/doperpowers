@@ -177,6 +177,7 @@ class BoardCase(unittest.TestCase):
             e.update(env)
         done = subprocess.run(argv, cwd=str(cwd or self.outside), env=e, capture_output=True, text=True,
                               timeout=60)
+        self.load()  # what the command wrote, so that a later save() keeps it
         return done.returncode, done.stdout, done.stderr
 
     def json(self, *args, **kw):

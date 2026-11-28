@@ -173,6 +173,7 @@ def create(ctx):
     keys = {"registered-by": ctx.address(), "for": for_address, "due": a.due, "spec": a.spec}
     body = record.compose(text, keys)
     labels = [a.horizon, B.PRIORITY_PREFIX + a.priority, a.category] + ([B.BATCH_PREFIX + a.batch] if a.batch else [])
+    claiming.retry_owed(ctx)
     ensure(ctx, labels + [a.readiness])
     made = ctx.client.create_issue(repo, a.title, body, labels)
     number, url, node_id = made["number"], made["html_url"], made["node_id"]
@@ -417,9 +418,10 @@ def set_(ctx):
             or any(f is not None for f in label_flags)):
         raise usage("task set changes nothing without an option (task set --help)")
     text = read_body_file(a.body_file) if a.body_file is not None else None
-    t = ctx.ticket(a.number)
     if a.to is not None:
         updates["for"] = resolve_to(a.to)[1]
+    claiming.retry_owed(ctx)
+    t = ctx.ticket(a.number)
     if (updates or text is not None) and not t.body_trusted:
         raise _untrusted(ctx, t)
     if updates and text is None and t.parsed.problems:
@@ -477,6 +479,7 @@ def adopt(ctx):
     a = ctx.args
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", a.digest):
         raise usage("--digest takes the body_digest task show printed (sha256: and 64 hex digits)")
+    claiming.retry_owed(ctx)
     t = ctx.ticket(a.number)
     author = (t.node.get("author") or {}).get("login")
     if author != t.login:
@@ -535,6 +538,9 @@ def edge(ctx):
     a = ctx.args
     repo, n = ctx.repo, a.number
     me = (repo, n)
+    if a.block is not None or a.unblock is not None:
+        parse_ref(a.block if a.block is not None else a.unblock, repo)  # a usage error before any write
+    claiming.retry_owed(ctx)
     try:
         if a.block is not None or a.unblock is not None:
             other = parse_ref(a.block if a.block is not None else a.unblock, repo)
@@ -582,6 +588,7 @@ def edge(ctx):
 
 def comment(ctx):
     text = read_body_file(ctx.args.body_file)
+    claiming.retry_owed(ctx)
     repo = ctx.repo
     try:
         made = ctx.client.comment(repo, ctx.args.number, text)
