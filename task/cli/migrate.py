@@ -14,7 +14,6 @@ import os
 import pathlib
 import re
 import subprocess
-import urllib.parse
 
 import board as B
 import config
@@ -89,9 +88,12 @@ def _row(ticket, login):
     body_after = None
     if ticket.body_trusted:
         node = ticket.node
-        branches = ["https://github.com/%s/tree/%s" % (ticket.repo, urllib.parse.quote(b["ref"]["name"], safe="/"))
-                    for b in node["linkedBranches"]["nodes"] if b.get("ref")]
-        prs = [p["url"] for p in node["closedByPullRequestsReferences"]["nodes"]]
+        # What goes into public prose: a branch by its name alone (the query does not say which repository holds
+        # the ref), and only the pull requests of the issue's own repository, never another's name.
+        branches = [b["ref"]["name"] for b in node["linkedBranches"]["nodes"] if b.get("ref")]
+        home = "https://github.com/%s/pull/" % ticket.repo.lower()
+        prs = [p["url"] for p in node["closedByPullRequestsReferences"]["nodes"]
+               if (p.get("url") or "").lower().startswith(home)]
         body_after = legacy.rewrite(ticket.body, ", ".join(flight) or None, branches, prs)
     row = {"number": ticket.number, "title": ticket.node["title"], "seen": seen, "action": "relabel",
            "readiness": None, "horizon": None, "basis": "mechanical", "decided": True, "why": "",
