@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-execution
-description: Use to run a doperpowers:execspec spec whose Plan of Work has several milestones in this session.
+description: The execution loop for a doperpowers:execspec spec whose Plan of Work has several milestones, run in this session — a fresh executor per milestone, reviews at dependency frontiers, and a ledger that survives compaction.
 ---
 
 # Subagent-Driven Execution
@@ -40,7 +40,7 @@ or brainstorm first.
 ## The loop
 
 1. Read the spec once. Note the constraints that open its execution
-   section, create todos, make sure you are on an isolated checkout
+   section, make sure you are on an isolated checkout
    ([isolated-workspace.md](isolated-workspace.md)), resolve the artifact
    workspace (`scripts/sde-workspace SPEC_FILE`) and check for an existing
    ledger (Durable Progress below) before dispatching anything.
@@ -72,31 +72,27 @@ or brainstorm first.
    the executor, or up to whoever dispatched you.
 5. **Review at the frontier:** a task is reviewed clean — nothing left
    that must be fixed (step 6) — before any task that consumes what it
-   produced dispatches; the milestones' Interfaces name the producers, and the
-   spec's last milestone consumes the whole branch. Tasks nothing
-   downstream consumes yet may keep executing and are reviewed together
-   when the frontier closes (the next task consumes from them, or the Plan
-   of Work ends): one review package per task (`scripts/review-package
-   SPEC_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
-   per task (`doperpowers:task-reviewer`) with the printed path,
-   dispatched together when their focused tests cannot
-   collide — reviews read their package, not the tree, so hermetic suites
-   run concurrently; suites that share mutable state — a test database, a
+   produced dispatches. The milestones' Interfaces name the producers, the
+   spec's last milestone consumes the whole branch, and where none is
+   declared but two tasks touch the same files, an overlap that looks
+   load-bearing counts. Tasks nothing downstream consumes yet may keep
+   executing and are reviewed together when the frontier closes; the
+   frontier is the ceiling on deferral, not the floor — a
+   DONE_WITH_CONCERNS or a doubt of your own is a reason to review that
+   task now. Each task gets its own package (`scripts/review-package
+   SPEC_FILE BASE HEAD`, its own BASE..HEAD) and its own reviewer
+   (`doperpowers:task-reviewer`) with the printed path. Reviews read their
+   package, not the tree, so reviewers whose focused tests are hermetic
+   run together; suites that share mutable state — a test database, a
    fixed port — run one reviewer at a time.
-   Where no interface is declared but two tasks touch the same files,
-   judge from what each milestone says it touches: an overlap that looks
-   load-bearing is reviewed before the later task dispatches. The frontier
-   is the ceiling on deferral, not the floor: a DONE_WITH_CONCERNS or a
-   doubt of your own is a reason to review that task now.
-   A deferred review reads a tree that has moved past its package —
-   Task 1's package is BASE1..HEAD1 while the checkout sits at the
-   wave's last HEAD. Name the current HEAD and what landed since the
-   task's own HEAD (the sibling commits and files) in the dispatch, so
-   a sibling's effect is not read as this task's; a check that must see
-   the task's own tree — a focused test, a named risk — runs in a
-   detached worktree at the packaged HEAD (`git worktree add --detach
-   <workspace>/review-N <HEAD_N>`, removed after the review) rather
-   than in the shared checkout.
+   A deferred review's package ends at the task's HEAD while the checkout
+   sits at the wave's last one. Name the current HEAD and the sibling
+   commits and files that landed since in the dispatch, so a sibling's
+   effect is not read as this task's; a check that must see the task's
+   own tree — a focused test, a named risk — runs in a detached worktree
+   at the packaged HEAD (`git worktree add --detach <workspace>/review-N
+   <HEAD_N>`, removed after the review) rather than in the shared
+   checkout.
 6. **Findings:** the reviewer reports what it sees; what the task owes
    is your call against the spec, made for each Critical/Important
    finding before any goes back. A defect this task introduced that
@@ -105,31 +101,28 @@ or brainstorm first.
    cosmetic and cheap to live with, is recorded in the ledger with a
    one-line reason, beside the Minor findings, and not reopened. One
    the spec's intent contradicts is dismissed. One you cannot place is
-   fixed. Those to fix go back to the executor that
-   wrote the code — resume it with the findings; it holds the task's
-   context and skips the orientation a fresh fixer pays. Several tasks
-   with findings in one wave resume one at a time (shared worktree).
-   Re-review by resuming the reviewer with the fix commits' package
-   (`scripts/review-package SPEC_FILE FIX_BASE FIX_HEAD` — the fix range:
-   the reviewer already holds the task's original package, and a deferred
-   task's fix lands past its siblings' commits); repeat until a round
-   leaves nothing to fix. A reviewer finds something on every pass
-   (ci-kit #217: three rounds, new items in each), so a loop that waits
-   for its clean verdict has no end of its own. That message names the
-   fix range and what you dismissed or recorded, so it is not raised
-   again, sends the
-   reviewer back to the report (the executor appended the fix's test
-   evidence there), and carries the refreshed checkout head and what
-   landed since — plus a fresh detached worktree at the fix head if the
-   review needs the task's own tree. A resumed reviewer otherwise judges
-   the fix against its pre-fix memory. A fresh fixer (a new
-   `doperpowers:task-executor` briefed with the findings) when the executor
-   cannot be resumed, or when its frame is the problem — two failed
-   re-reviews is the usual sign. Record Minor findings in the ledger —
-   the final review triages that list, so it is read, not discarded. Fix
-   through a worker, not your own edits: manual fixes pollute your
-   context and skip review.
-7. Mark the task complete in todos and the ledger, and tick its milestone
+   fixed. Those to fix go back to the executor that wrote the code —
+   resume it with the findings; it holds the task's context and skips
+   the orientation a fresh fixer pays. Several tasks with findings in one
+   wave resume one at a time (shared worktree). Fix through a worker, not
+   your own edits: manual fixes pollute your context and skip review.
+   Re-review by resuming the reviewer with the fix range's package
+   (`scripts/review-package SPEC_FILE FIX_BASE FIX_HEAD`): it already
+   holds the task's original package, and a deferred task's fix lands
+   past its siblings' commits. The message names what you dismissed or
+   recorded, so it is not raised again, sends the reviewer back to the
+   report for the fix's test evidence, and carries the refreshed checkout
+   head and what landed since — plus a fresh detached worktree at the fix
+   head if the review needs the task's own tree; otherwise a resumed
+   reviewer judges the fix against its pre-fix memory. Repeat until a
+   round leaves nothing to fix: a reviewer finds something on every pass,
+   so a loop that waits for its clean verdict has no end of its own. A
+   fresh fixer (a new `doperpowers:task-executor` briefed with the
+   findings) takes over when the executor cannot be resumed, or when its
+   frame is the problem — two failed re-reviews is the usual sign. Record
+   Minor findings in the ledger — the final review triages that list, so
+   it is read, not discarded.
+7. Mark the task complete in the ledger, and tick its milestone
    in the spec's `Progress` with a timestamp and commit — the tick means
    reviewed clean, the same as the ledger's `complete`, and the ledger is
    gitignored, so the committed spec is what a recovery reader sees. For
@@ -157,25 +150,18 @@ or brainstorm first.
 
 ## Model selection
 
-`doperpowers:task-executor` is pinned to opus at high reasoning effort;
-the milestone grain is calibrated to that tier, and fixes resume the same
-executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
-the medium review rung's model and effort: the frontier review is a
-task-scoped gate, and the whole-branch review at the spec's named rung is
-the deep read. A simple task — a doc update, a mechanical rename, a
-verification walk with every command given — can go to sonnet, the tier
-below opus, by passing `model: sonnet` at dispatch, which overrides the
-executor's pin. Never dispatch workers on fable or astra: the top tier
-adds cost without adding reliability — the spec absorbs the difficulty,
-not the model, whatever model wrote the spec. When a worker reports BLOCKED on reasoning capacity rather
-than missing context, a sonnet task moves to opus; from opus there is no
-tier above — resolve the hard call yourself in the spec and
-re-dispatch, or split the milestone.
-
-The final whole-branch review is the deliberate exception: it goes through
-doperpowers:review-code at the rung the spec's verification names, or the
-level the branch warrants when none is named — it is the last gate before
-merge and the only reader of the entire branch.
+The workers run at their pins whatever model wrote the spec:
+`doperpowers:task-executor` at opus at high effort, the tier the
+milestone grain is calibrated to, and `doperpowers:task-reviewer` at sol
+at xhigh, the medium review rung, since the frontier review is a
+task-scoped gate and the whole-branch review is the deep read. The
+frontier's work is the design and the spec; building its milestones is
+close-frontier work, and the top tier (fable, astra) adds cost there
+without adding reliability. A simple task — a doc update, a mechanical
+rename, a verification walk with every command given — can go to sonnet
+with `model: sonnet` at dispatch (Executor statuses says where a sonnet
+task BLOCKED on reasoning goes); any other pin change is your human
+partner's, and reaches you in your brief.
 
 ## Executor statuses
 
@@ -202,9 +188,9 @@ executor, then re-review.
 ## Dispatch hygiene
 
 Everything pasted into a dispatch prompt — and everything a subagent prints
-back — stays resident in your context for the rest of the session. Hand
-artifacts over as files (a real session's dispatch hit 42k chars, 99% of it
-pasted prior-task history):
+back — stays resident in your context for the rest of the session, and
+pasted prior-task history is what bloats a dispatch. Hand artifacts over as
+files:
 
 - The worker contracts — TDD, deciding gaps and reporting decisions,
   self-review, escalation statuses, the report shape, the reviewer's
@@ -219,8 +205,8 @@ pasted prior-task history):
   to work from; the report-file path; and your answer to anything the
   executor asked.
 - The report file is `task-N-report.md` in the workspace; the executor
-  writes detail there and returns only status, commits, a one-line test
-  summary, decisions made, and concerns.
+  writes detail there and returns the short form its definition gives
+  (`agents/task-executor.md`, Report).
 - A reviewer dispatch carries the spec path and milestone (and, for a
   composite child, the composite's path and child id), the report path,
   the review package path, the task's BASE and HEAD and, for a deferred
@@ -240,22 +226,22 @@ pasted prior-task history):
   statement as wrong is fixed in the spec by you — the statement
   rewritten; you are its one writer — and in the code by the worker; only
   a fork under the gate goes up.
-- Fix messages — to a resumed executor or a fresh fixer — carry the
-  executor contract: re-run the covering tests (name them — a one-line
-  fix doesn't need the whole suite), report the command and output;
-  confirm all three are in the fix report before re-review. A resumed
-  executor's view of the tree ends at its own HEAD: name what landed
-  since (commits and files) and have it re-read before editing; its
-  covering tests include sibling suites touching the same files.
-- Final-review findings go to ONE fixer with the complete list — per-finding
-  fixers each rebuild context and re-run suites; a real session's
-  per-finding fix wave cost more than all its tasks combined.
+- Fix messages — to a resumed executor or a fresh fixer — name the
+  covering tests to re-run (a one-line fix doesn't need the whole suite);
+  confirm the fix report carries their command and output before
+  re-review. A resumed executor's view of the tree ends at its own HEAD:
+  name what landed since (commits and files) and have it re-read before
+  editing; its covering tests include sibling suites touching the same
+  files.
+- Final-review findings go to one fixer with the complete list — per-finding
+  fixers each rebuild context and re-run suites, and a per-finding fix wave
+  has cost more than all the tasks before it.
 
 ## Durable progress
 
-Conversation memory does not survive compaction. Controllers that lost
-their place have re-dispatched entire completed task sequences — the most
-expensive failure observed. The spec's Progress is the human-readable
+Conversation memory does not survive compaction, and a controller that
+loses its place re-dispatches completed tasks, the costliest failure this
+loop has. The spec's Progress is the human-readable
 state; the ledger file holds the mechanics a resume needs (bases, heads,
 agent handles), which do not belong in the spec:
 
