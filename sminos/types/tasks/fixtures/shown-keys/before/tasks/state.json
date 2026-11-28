@@ -1,5 +1,22 @@
 {
- "applied": {},
+ "applied": {
+  "5eed0000-0000-4000-8000-00000000c014": {
+   "at": "2026-11-27T16:10:00.000Z",
+   "digest": "ebc56b4e39eff921e5ccae46f29a6d4e9a7943261a0a253bf4cce27a83bee9e2",
+   "task": "t1",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c014",
+    "outcome": "t1.1",
+    "revision": 1,
+    "state": "done",
+    "task": "t1",
+    "told": "next-start",
+    "v": 1,
+    "verdict": "applied"
+   }
+  }
+ },
  "nextId": 3,
  "seq": 3,
  "successors": {},

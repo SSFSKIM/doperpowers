@@ -282,6 +282,20 @@ def asker_of(session, agent=None, membership=None):
     return {"thread": t["thread"] if t else None, "session": session, "alias": alias, "agent": agent}
 
 
+_PAIRS = "successors"    # a call's memo: the pairs its entries were resolved under (no asker's key is a string)
+
+
+def _memo_for(store, memo):
+    """The call's memo, for a step reading `store`: valid while the store's pairs are what they were when its
+    entries were resolved, emptied when a step of the same call reads other pairs (a /clear between two lines).
+    Thread and process state are not checked: the memo is one call's reading of them by design."""
+    pairs = store.get("successors") or {}
+    if memo.get(_PAIRS) != pairs:
+        memo.clear()
+        memo[_PAIRS] = json.loads(json.dumps(pairs))
+    return memo
+
+
 def target_of(store, task, memo=None):
     """Whom the task's outcomes go to now (§2), resolved once for each distinct asker of a call through `memo`. It
     reads with no lock and writes nothing."""
@@ -430,8 +444,10 @@ def bind_step(session, wait=LOCK_WAIT):
 
 
 def cleared(left, begun, wait=LOCK_WAIT):
-    """A witnessed /clear's pair, `successors[left]`, written when the store exists and the pair is not there yet,
-    in a step of its own (no thread lock is held here). Called where the witness is whole: before the alias of the
+    """A witnessed /clear's pair, `successors[left]`, in a step of its own (no thread lock is held here), when the
+    store exists. One clear has two writers naming the same begun session: a pair already naming `begun` is that
+    clear's, kept as it is. A pair naming another is an earlier clear's, of a session its human opened again since:
+    this clear's replaces it, unbound, at its own time. Called where the witness is whole: before the alias of the
     session left is released."""
     if not left or not begun or left == begun or not os.path.exists(state_path()):
         return
@@ -440,7 +456,8 @@ def cleared(left, begun, wait=LOCK_WAIT):
         if st is None:
             return
         succ = st.state["successors"]
-        if left not in succ:
+        pair = succ.get(left)
+        if not (isinstance(pair, dict) and pair.get("session") == begun):
             succ[left] = {"session": begun, "thread": None, "at": st.at}
             st.changed = True
         if bind(st.state, begun):
@@ -581,23 +598,31 @@ def told_of(target, outcome):
 
 
 def apply_line(line, memo=None):
-    """One checked line of the door in a step of its own: its verdict, stored under its key when applied, in the
-    replace that applies it (so the same line again answers the same, `told` included). `memo`: the call's targets,
-    shared by every line of one call, so a task's target is resolved once for each distinct asker (§2)."""
+    """One checked line of the door in a step of its own: its verdict, whatever it is (applied, stale, closed,
+    unknown), kept under its key in the replace that decides it, so the same line again answers the same, `told`
+    included, and changes nothing; `refused` (key-reused) answers a key already kept and is not kept itself.
+    `memo`: the call's targets, shared by every line of one call, so a task's target is resolved once for each
+    distinct asker (§2)."""
     memo = {} if memo is None else memo
     key, act, tid = line["key"], line["act"], line["task"]
     head = {"v": V, "key": key, "act": act}
 
     def change(st):
-        if st is None:
-            return dict(head, verdict="unknown", task=tid)
         s = st.state
+        _memo_for(s, memo)
         dg = digest(line)
         prior = s["applied"].get(key)
         if isinstance(prior, dict):
             if prior.get("digest") == dg and isinstance(prior.get("verdict"), dict):
                 return prior["verdict"]
-            return dict(head, verdict="refused", reason="key-reused")
+            return dict(head, verdict="refused", reason="key-reused")   # answers a key kept: not kept itself
+        verdict = judged(st, s)
+        # The first verdict, whatever it was, is the key's: the same line again answers it and changes nothing.
+        s["applied"][key] = {"task": tid, "at": st.at, "digest": dg, "verdict": verdict}
+        st.changed = True
+        return verdict
+
+    def judged(st, s):
         t = s["tasks"].get(tid)
         if not isinstance(t, dict):
             return dict(head, verdict="unknown", task=tid)
@@ -621,10 +646,9 @@ def apply_line(line, memo=None):
                     o["shown"] = {"at": st.at, "session": line["session"]}
                     marked.append(k)
             verdict = dict(head, verdict="applied", **where, keys=marked)
-        s["applied"][key] = {"task": tid, "at": st.at, "digest": dg, "verdict": verdict}
-        st.changed = True
         return verdict
-    return step(change)
+    # A line where no store is yet makes it: its verdict (unknown) is kept like any other.
+    return step(change, create=True)
 
 
 def _outcome(t, k):

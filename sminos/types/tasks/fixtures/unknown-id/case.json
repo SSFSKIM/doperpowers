@@ -3,7 +3,7 @@
   "task",
   "act"
  ],
- "covers": "an act on an id the store does not hold: unknown",
+ "covers": "an act on an id the store does not hold: unknown, kept by its key under the id it named",
  "exit": 0,
  "name": "unknown-id",
  "now": "2026-11-27T16:15:00.000Z",

@@ -3,7 +3,7 @@
   "task",
   "act"
  ],
- "covers": "the door's shown: the line's task's waiting keys whose target is the session told are marked; one already shown to another session and one of another task are passed over",
+ "covers": "the door's shown: the line's task's waiting keys whose target is the session told are marked; one already shown (at a start) and one of another task are passed over",
  "exit": 0,
  "name": "shown-by-a-deliverer",
  "now": "2026-11-27T16:30:00.000Z",

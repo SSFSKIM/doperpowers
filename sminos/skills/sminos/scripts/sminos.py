@@ -12054,8 +12054,8 @@ def record_session(project, session, tpath, event, last_message="", source="", o
                 # paused for it, so the release after it still runs whatever the wait took.
                 _timer_paused(tasks_module().cleared, left, session)
             except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the release goes on
-                daemon_log("record: the Task Board's pair %s -> %s was not written: %s"
-                           % (left[:8], session[:8], getattr(e, "message", e)))
+                _logged("record: the Task Board's pair %s -> %s was not written: %s"
+                        % (left[:8], session[:8], getattr(e, "message", e)))
         if left:
             try:
                 # In the project the session left is a member of, against the process the /clear was witnessed in.
@@ -12072,6 +12072,8 @@ def record_session(project, session, tpath, event, last_message="", source="", o
             pass
     if event == "SessionStart" and source in ("startup", "resume") and alias is not None and seat is None:
         note_launch_of(session, peer)
+    if event == "SessionStart" and source == "clear" and alias is not None and seat is None:
+        _bind_successor(session)
     if event != "Stop" or alias is None:
         return
     until = time.time() + FLUSH_WAIT
@@ -12079,6 +12081,31 @@ def record_session(project, session, tpath, event, last_message="", source="", o
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def _bind_successor(session):
+    """A /clear's pair bound to the new session's thread once its join has made it: the task hook may have run
+    before the join, when there was no thread to bind to, and an unbound successor that stops is taken for dead
+    (sminos_tasks._link). Best-effort, after the release and never around it: a short wait for the store's lock,
+    within the record's deadline, and any failure a daemon.log line."""
+    if not os.path.exists(os.path.join(root(), "tasks", "state.json")):
+        return
+    tasks = tasks_module()
+    wait = tasks.HOOK_LOCK_WAIT
+    if _RECORD_DEADLINE is not None:
+        wait = max(0.0, min(wait, _RECORD_DEADLINE - time.time()))
+    try:
+        tasks.bind_step(session, wait=wait)
+    except Exception as e:  # noqa: BLE001 — a hook's step: said in daemon.log, the session's next step binds it
+        _logged("record: the Task Board's pair to %s was not bound: %s" % (session[:8], getattr(e, "message", e)))
+
+
+def _logged(line):
+    """daemon_log, best-effort: a hook's diagnostic that cannot be written skips nothing after it."""
+    try:
+        daemon_log(line)
+    except OSError:
+        pass
 
 
 def entry_open(session):

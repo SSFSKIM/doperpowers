@@ -357,10 +357,13 @@ case("done-current", "a done at the current revision: applied, its outcome waiti
      stdin=stdin)
 
 STALE_LINE = dict(DONE_LINE, key=key(2), revision=1)
+STALE_VERDICT = {"v": 1, "key": key(2), "act": "done", "verdict": "stale", "task": "t1", "revision": 2,
+                 "state": "open"}
 argv, stdin = act(STALE_LINE)
-case("done-stale", "a done at an old revision: stale, with the current revision; nothing changes", at(3), argv,
-     REV, REV, jline({"v": 1, "key": key(2), "act": "done", "verdict": "stale", "task": "t1", "revision": 2,
-                      "state": "open"}) + "\n", stdin=stdin)
+case("done-stale", "a done at an old revision: stale, with the current revision; the task is untouched and the "
+     "verdict kept by its key", at(3), argv, REV,
+     store(4, 3, [T1_REV, T2_NEW], applied=applied(STALE_LINE, "t1", at(3), STALE_VERDICT)),
+     jline(STALE_VERDICT) + "\n", stdin=stdin)
 
 DECLINE_LINE = {"v": 1, "key": key(3), "act": "decline", "task": "t2", "revision": 1,
                 "text": "the key is not mine to rotate", "wake": None}
@@ -405,15 +408,25 @@ case("seen-older", "a seen naming a snapshot older than a later revise: seenSeq 
      store(4, 3, [dict(T1_REV, seenSeq=2), T2_NEW], applied=applied(SEEN_LINE, "t1", at(3), SEEN_VERDICT)),
      jline(SEEN_VERDICT) + "\n", stdin=stdin)
 
-SHOWN_BY_OTHER = {"at": at(4), "session": S9}
+# The door's shown, over a store a session's steps reach: the human's comment (t1.1, the line above), shown at a
+# start to the task's target (its asker, S1: a task with no thread has no other); a second comment (t1.2) and a done
+# (t1.3) through the door, each kept by its key.
+COMMENT2_LINE = {"v": 1, "key": key(12), "act": "comment", "task": "t1", "text": "the one with the hardware key",
+                 "wake": None}
+COMMENT2_VERDICT = dict(COMMENT_VERDICT, key=key(12), outcome="t1.2")
+DONE3_LINE = {"v": 1, "key": key(13), "act": "done", "task": "t1", "revision": 2, "text": "", "wake": None}
+DONE3_VERDICT = dict(DONE_VERDICT, key=key(13), outcome="t1.3")
 T1_THREE = dict(T1_REV, acts=3, comments=[
     {"n": 1, "seq": 4, "by": "human", "at": at(3), "text": "which account?", "outcome": "t1.1"},
-    {"n": 2, "seq": 5, "by": "human", "at": at(4), "text": "the one with the hardware key", "outcome": "t1.2"}],
-    state="done", closed={"how": "done", "seq": 6, "at": at(5), "text": ""},
-    outcomes=[outcome("t1.1", 4, "comment", at(3), 2, "which account?", True, shown=SHOWN_BY_OTHER),
-              outcome("t1.2", 5, "comment", at(4), 2, "the one with the hardware key", True),
-              outcome("t1.3", 6, "done", at(5), 2, "", True)])
-THREE = store(6, 3, [T1_THREE, T2_NEW])
+    {"n": 2, "seq": 6, "by": "human", "at": at(4), "text": "the one with the hardware key", "outcome": "t1.2"}],
+    state="done", closed={"how": "done", "seq": 7, "at": at(5), "text": ""},
+    outcomes=[outcome("t1.1", 4, "comment", at(3), 2, "which account?", True, shown={"at": at(4), "session": S1}),
+              outcome("t1.2", 6, "comment", at(4), 2, "the one with the hardware key", True),
+              outcome("t1.3", 7, "done", at(5), 2, "", True)])
+THREE_APPLIED = {**applied(COMMENT_LINE, "t1", at(3), COMMENT_VERDICT),
+                 **applied(COMMENT2_LINE, "t1", at(4), COMMENT2_VERDICT),
+                 **applied(DONE3_LINE, "t1", at(5), DONE3_VERDICT)}
+THREE = store(7, 3, [T1_THREE, T2_NEW], applied=THREE_APPLIED)
 SHOWN_LINE = {"v": 1, "key": key(6), "act": "shown", "task": "t1", "session": S1,
               "keys": ["t1.1", "t1.2", "t1.3", "t2.1"]}
 SHOWN_VERDICT = {"v": 1, "key": key(6), "act": "shown", "verdict": "applied", "task": "t1", "revision": 2,
@@ -423,8 +436,9 @@ for o in T1_THREE_SHOWN["outcomes"][1:]:
     o["shown"] = {"at": at(6), "session": S1}
 argv, stdin = act(SHOWN_LINE)
 case("shown-by-a-deliverer", "the door's shown: the line's task's waiting keys whose target is the session told "
-     "are marked; one already shown to another session and one of another task are passed over", at(6), argv,
-     THREE, store(7, 3, [T1_THREE_SHOWN, T2_NEW], applied=applied(SHOWN_LINE, "t1", at(6), SHOWN_VERDICT)),
+     "are marked; one already shown (at a start) and one of another task are passed over", at(6), argv,
+     THREE, store(8, 3, [T1_THREE_SHOWN, T2_NEW], applied={**THREE_APPLIED, **applied(SHOWN_LINE, "t1", at(6),
+                                                                                       SHOWN_VERDICT)}),
      jline(SHOWN_VERDICT) + "\n", stdin=stdin)
 
 case("withdraw", "the asker withdraws: state withdrawn, closed with the reason", at(3),
@@ -441,14 +455,29 @@ case("reopen", "the asker reopens a done task with a comment: open again, closed
      store(5, 3, [T1_REOPENED, T2_NEW], applied=DONE["applied"]), "t1 reopened: revision 3\n", session=S1)
 
 LATE_LINE = dict(DONE_LINE, key=key(7))
+LATE_VERDICT = {"v": 1, "key": key(7), "act": "done", "verdict": "closed", "task": "t1", "revision": 2,
+                "state": "done"}
 argv, stdin = act(LATE_LINE)
-case("act-on-a-closed-task", "a done on a task no longer open: closed, with its state", at(5), argv, DONE, DONE,
-     jline({"v": 1, "key": key(7), "act": "done", "verdict": "closed", "task": "t1", "revision": 2,
-            "state": "done"}) + "\n", stdin=stdin)
+case("act-on-a-closed-task", "a done on a task no longer open: closed, with its state, the verdict kept by its key",
+     at(5), argv, DONE, store(5, 3, [T1_DONE, T2_NEW], applied={**DONE["applied"],
+                                                               **applied(LATE_LINE, "t1", at(5), LATE_VERDICT)}),
+     jline(LATE_VERDICT) + "\n", stdin=stdin)
+CLOSED_KEPT = store(5, 3, [T1_DONE, T2_NEW], applied={**DONE["applied"], **applied(LATE_LINE, "t1", at(5),
+                                                                                  LATE_VERDICT)})
+T1_REOPENED_LATE = dict(T1_DONE, state="open", closed=None, revision=3, agentSeq=6, comments=[
+    {"n": 1, "seq": 6, "by": {"session": S1, "alias": None, "agent": None}, "at": at(6),
+     "text": "the console still asks for a login", "outcome": None}])
+REOPENED_LATE = store(6, 3, [T1_REOPENED_LATE, T2_NEW], applied=CLOSED_KEPT["applied"])
+case("refused-then-reopened", "the same line refused closed, again after the asker reopened: the kept verdict, "
+     "closed, and nothing applied", at(7), argv, REOPENED_LATE, REOPENED_LATE, jline(LATE_VERDICT) + "\n",
+     stdin=stdin)
 
-argv, stdin = act(dict(DONE_LINE, key=key(8), task="t99"))
-case("unknown-id", "an act on an id the store does not hold: unknown", at(3), argv, REV, REV,
-     jline({"v": 1, "key": key(8), "act": "done", "verdict": "unknown", "task": "t99"}) + "\n", stdin=stdin)
+UNKNOWN_LINE = dict(DONE_LINE, key=key(8), task="t99")
+UNKNOWN_VERDICT = {"v": 1, "key": key(8), "act": "done", "verdict": "unknown", "task": "t99"}
+argv, stdin = act(UNKNOWN_LINE)
+case("unknown-id", "an act on an id the store does not hold: unknown, kept by its key under the id it named",
+     at(3), argv, REV, store(4, 3, [T1_REV, T2_NEW], applied=applied(UNKNOWN_LINE, "t99", at(3), UNKNOWN_VERDICT)),
+     jline(UNKNOWN_VERDICT) + "\n", stdin=stdin)
 
 FUTURE = store(3, 3, [dict(T1_REV, future=["kept"]), T2_NEW], future={"written by": "a later sminos"})
 FUTURE_AFTER = store(4, 3, [dict(T1_REV, future=["kept"], agentSeq=4, comments=[
@@ -490,7 +519,9 @@ case("successor-purged", "a bound successor whose thread's record is gone (purge
 
 R_T1 = dict(T1_NEW, state="done", acts=1, closed={"how": "done", "seq": 3, "at": at(2), "text": "logged in"},
             outcomes=[outcome("t1.1", 3, "done", at(2), 1, "logged in", True)])
-R_BEFORE = store(3, 3, [R_T1, T2_NEW])
+R_LINE = {"v": 1, "key": key(14), "act": "done", "task": "t1", "revision": 1, "text": "logged in", "wake": None}
+R_APPLIED = applied(R_LINE, "t1", at(2), dict(DONE_VERDICT, key=key(14), revision=1))
+R_BEFORE = store(3, 3, [R_T1, T2_NEW], applied=R_APPLIED)
 R_T1_SHOWN = copy.deepcopy(R_T1)
 R_T1_SHOWN["outcomes"][0]["shown"] = {"at": at(3), "session": S1}
 START = ("t1.1\nTasks you assigned to the human: 1 open (0 blocking).\n"
@@ -498,7 +529,7 @@ START = ("t1.1\nTasks you assigned to the human: 1 open (0 blocking).\n"
 case("remind", "the start hook's first call: the keys it is about to name, then the start line; it marks nothing",
      at(3), ["task", "remind", "--session", S1, "--source", "startup"], R_BEFORE, R_BEFORE, START, session=S1)
 case("shown-keys", "the start hook's second call: exactly the keys remind named, marked shown to that session",
-     at(3), ["task", "shown", "--session", S1, "--keys", "t1.1"], R_BEFORE, store(4, 3, [R_T1_SHOWN, T2_NEW]),
+     at(3), ["task", "shown", "--session", S1, "--keys", "t1.1"], R_BEFORE, store(4, 3, [R_T1_SHOWN, T2_NEW], applied=R_APPLIED),
      "t1.1\n", session=S1)
 
 
@@ -582,6 +613,36 @@ put("examples/waiting.json", dump({"v": 1, "seq": EVERY["seq"], "waiting": [
     for t in EVERY["tasks"].values() for o in t["outcomes"] if o["shown"] is None]}))
 put("examples/lines.json", dump([DONE_LINE, DECLINE_LINE, COMMENT_LINE, SEEN_LINE, SHOWN_LINE,
                                  dict(DONE_LINE, key=key(9), wake=True), dict(COMMENT_LINE, key=key(10), wake=False)]))
+# Lines the schema takes and the door refuses (exit 2, nothing applied): its two wire rules the subset cannot say.
+# Each is JSON text as a writer would send it, over the store `fixtures/revise/after/` holds (t1 at revision 2).
+REJECTED = [
+    ("an integer written with a fraction", '"revision":2.0', "done"),
+    ("an integer written with an exponent", '"revision":2e0', "done"),
+    ("v written with a fraction", None, "v"),
+    ("a seq written with a fraction", None, "seen"),
+    ("a lone high surrogate in a text", '"text":"logged in \\ud800"', "comment"),
+    ("a lone low surrogate in a text", '"text":"\\udfff"', "decline")]
+
+
+def rejected():
+    out = []
+    for n, (why, field, form) in enumerate(REJECTED):
+        k = key(200 + n)
+        if form == "done":
+            text = '{"v":1,"key":"%s","act":"done","task":"t1",%s,"text":"","wake":null}' % (k, field)
+        elif form == "v":
+            text = '{"v":1.0,"key":"%s","act":"done","task":"t1","revision":2,"text":"","wake":null}' % k
+        elif form == "seen":
+            text = '{"v":1,"key":"%s","act":"seen","task":"t1","seq":2.0}' % k
+        elif form == "comment":
+            text = '{"v":1,"key":"%s","act":"comment","task":"t1",%s,"wake":null}' % (k, field)
+        else:
+            text = '{"v":1,"key":"%s","act":"decline","task":"t1","revision":2,%s,"wake":null}' % (k, field)
+        out.append({"why": why, "home": "fixtures/revise/after", "line": text})
+    return out
+
+
+put("examples/rejected.json", dump(rejected()))
 put("examples/verdicts.json", dump(
     [DONE_VERDICT, DECLINE_VERDICT, COMMENT_VERDICT, SEEN_VERDICT, SHOWN_VERDICT] +
     [dict(DONE_VERDICT, key=key(11 + i), told=t) for i, t in enumerate(TOLD)] +
@@ -720,6 +781,7 @@ composite's writer, and raises `version` in `MANIFEST.json`.
 | `schema/list.schema.json`, `show.schema.json`, `waiting.schema.json` | the readers' `--json` (§3) |
 | `examples/state.json` | a store holding an outcome for each value of `send` and a verdict for each `told` |
 | `examples/lines.json`, `verdicts.json`, `list.json`, `show.json`, `waiting.json` | one of each shape |
+| `examples/rejected.json` | lines the schema takes and the door refuses (exit 2, nothing applied), each as the JSON text sent, with the home it is sent to |
 | `grammar/texts.md` | the notice, the ended line, the start line and what `remind` prints: their grammar and the pattern a reader matches |
 | `grammar/texts.examples.json` | each form with the fields it was built from |
 | `fixtures/<case>/` | one step: `case.json` `{name, covers, now, session, argv, stdin, exit, stdout, stderr}`, `before/` and `after/` (each a `$SMINOS_HOME`) |
@@ -750,14 +812,22 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
   `[]`. An agent's `name` is null when none was given. An outcome's `text` is the note, the reason or the
   comment, `""` for a done with no note.
 - **A new task** has `agentSeq` and `seenSeq` both at its `born`: it is not Updated.
-- **Every applied line is kept by its key**, `seen` and `shown` too, and is one change of the store (`seq` + 1)
-  even where it changed nothing else. A verdict that is not `applied` (stale, closed, unknown, refused) is not
-  kept and changes nothing; the same line again is judged again.
+- **Every line's first verdict is kept by its key**, whatever it was: `applied` (`seen` and `shown` too), `stale`,
+  `closed` and `unknown`, each with the line's digest, and keeping it is one change of the store (`seq` + 1) even
+  where nothing else changed. The same line again answers that verdict and changes nothing, whatever the store
+  became since: a line refused `closed` stays refused after a reopen, one refused `unknown` after its id is made.
+  An entry's `task` is the id the line named, held or not. `refused` (`key-reused`) answers a key already kept and
+  is not kept itself. A door line where there is no store makes it, to keep its verdict. A human who wants to act
+  again after a refusal does so under a new key, which the convenience verbs (`done`, `decline`, the human's
+  `comment`) mint by default: a surface retries under the same key only a line whose verdict it did not see.
 - **What the door checks** is what the schema says, and no more loosely: a task's id is `t` and a positive integer
   with no leading zero and no cap (`^t[1-9][0-9]*$`), an outcome's key that id, `.` and another; a revision is a
   positive integer. A field is of its type exactly: a boolean is no integer, an integer no boolean, and an integer
-  is written without a fraction or exponent (`1`, never `1.0`). A text that must say something is any string but
-  `""`: whitespace is text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied.
+  is written without a fraction or exponent (`1`, never `1.0` or `1e0`). A text holds no lone surrogate (a `\\ud800`
+  to `\\udfff` escape that pairs with nothing). A text that must say something is any string but `""`: whitespace is
+  text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied. The schema's subset
+  cannot say the two wire rules (the fraction and the lone surrogate): `examples/rejected.json` holds lines it takes
+  and the door refuses.
 - **The order of the refusals.** A key already used comes first (the stored verdict, or `key-reused`); then an
   unknown id; then a task no longer open (`closed`); then a revision that is not current (`stale`).
 - **`seen`** raises `seenSeq` to the line's `seq`, never lowers it, and never past the store's `seq` before the

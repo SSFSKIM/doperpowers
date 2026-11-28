@@ -3,7 +3,7 @@
   "task",
   "act"
  ],
- "covers": "a done on a task no longer open: closed, with its state",
+ "covers": "a done on a task no longer open: closed, with its state, the verdict kept by its key",
  "exit": 0,
  "name": "act-on-a-closed-task",
  "now": "2026-11-27T16:25:00.000Z",

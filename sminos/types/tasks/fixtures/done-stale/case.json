@@ -3,7 +3,7 @@
   "task",
   "act"
  ],
- "covers": "a done at an old revision: stale, with the current revision; nothing changes",
+ "covers": "a done at an old revision: stale, with the current revision; the task is untouched and the verdict kept by its key",
  "exit": 0,
  "name": "done-stale",
  "now": "2026-11-27T16:15:00.000Z",

@@ -301,6 +301,42 @@ class Fixtures(unittest.TestCase):
                 for i, s in enumerate(case["stdout"].splitlines()):
                     valid(self, "verdict", json.loads(s), "%s verdict %d" % (name, i))
 
+    def test_each_rejected_line_passes_the_schema_and_the_door_refuses_it(self):
+        vectors = load(os.path.join(SET, "examples", "rejected.json"))
+        self.assertTrue(vectors)
+        for v in vectors:
+            with self.subTest(why=v["why"]):
+                self.assertEqual(sheet_schema.errors(SCHEMA["act-line"], json.loads(v["line"])), [],
+                                 "the schema takes it")
+                home = home_from(os.path.join(SET, v["home"]))
+                path = os.path.join(home, "tasks", "state.json")
+                before = raw(path)
+                code, out, err = replay(home, ["task", "act"], epoch("2026-11-27T16:30:00.000Z"),
+                                        stdin=v["line"] + "\n")
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertEqual(raw(path), before, "nothing applied")
+
+    def test_every_fixtures_store_is_one_steps_reach(self):
+        """Every store a fixture or the examples publish could have been written by the steps: each outcome made by
+        a door line kept under its key (an outcome is made nowhere else), each shown to a session that can have
+        been its target (a task with no thread has only its asker's), every seq within the store's."""
+        stores = [("examples", load(os.path.join(SET, "examples", "state.json")))]
+        for name in CASES:
+            for side in ("before", "after"):
+                p = os.path.join(SET, "fixtures", name, side, "tasks", "state.json")
+                if os.path.exists(p):
+                    stores.append(("%s/%s" % (name, side), load(p)))
+        for where, st in stores:
+            made = {a["verdict"].get("outcome") for a in st["applied"].values()
+                    if a["verdict"]["verdict"] == "applied"}
+            for t in st["tasks"].values():
+                for o in t["outcomes"]:
+                    with self.subTest(store=where, outcome=o["key"]):
+                        self.assertIn(o["key"], made, "an outcome its line made, kept by its key")
+                        self.assertLessEqual(o["seq"], st["seq"])
+                        if o["shown"] is not None and t["askers"][0]["thread"] is None:
+                            self.assertEqual(o["shown"]["session"], t["askers"][0]["session"])
+
     def test_the_readers_over_every_fixture_validate_and_write_nothing(self):
         for name in CASES:
             d = os.path.join(SET, "fixtures", name)

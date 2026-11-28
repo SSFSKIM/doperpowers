@@ -297,7 +297,9 @@ class Store(Board):
         self.assertEqual(json.loads(self.ok("list", "--closed", "--json"))["tasks"], [])
         self.assertEqual([x["id"] for x in json.loads(self.ok("list", "--json"))["tasks"]], ["t1"])
 
-    def test_a_line_refused_as_closed_is_stale_after_a_reopen_and_never_applied(self):
+    def test_a_refused_line_again_answers_its_refusal_whatever_the_store_became(self):
+        """§3's retry promise, the first verdict whatever it was: a refusal is kept by its key like an
+        application, so the same line again answers it and changes nothing."""
         s1 = sid()
         self.assign(s1)
         self.done("t1")
@@ -305,11 +307,46 @@ class Store(Board):
         closed = json.loads(self.ok("act", stdin=late + "\n"))
         self.assertEqual((closed["verdict"], closed["state"]), ("closed", "done"))
         self.ok("reopen", "t1", "--comment", "still asks", session=s1)
-        again = json.loads(self.ok("act", stdin=late + "\n"))
-        self.assertEqual((again["verdict"], again["revision"], again["state"]), ("stale", 2, "open"))
-        t = self.state()["tasks"]["t1"]
-        self.assertEqual((t["state"], t["acts"], len(t["outcomes"])), ("open", 1, 1), "the late done not applied")
-        self.assertNotIn(json.loads(late)["key"], self.state()["applied"], "a refusal is not kept by its key")
+        before = self.raw()
+        self.assertEqual(json.loads(self.ok("act", stdin=late + "\n")), closed)
+        self.assertEqual(self.raw(), before, "nothing applied, nothing changed")
+
+    def test_the_humans_keyed_comment_refused_closed_stays_refused_after_a_reopen(self):
+        s1 = sid()
+        self.assign(s1)
+        self.done("t1")
+        key = str(uuidlib.uuid4())
+        code, out, _ = self.t("comment", "t1", "which account?", "--key", key)
+        self.assertEqual((code, json.loads(out)["verdict"]), (3, "closed"))
+        self.ok("reopen", "t1", "--comment", "still asks", session=s1)
+        before = self.raw()
+        self.assertEqual(self.t("comment", "t1", "which account?", "--key", key)[:2], (code, out))
+        self.assertEqual(self.raw(), before)
+        self.assertEqual([c["by"] for c in self.state()["tasks"]["t1"]["comments"]].count("human"), 0)
+        code, out, _ = self.t("comment", "t1", "which account?")          # a new key: a new act
+        self.assertEqual((code, json.loads(out)["verdict"]), (0, "applied"))
+
+    def test_a_done_on_an_id_not_yet_made_stays_unknown_once_it_is(self):
+        s1 = sid()
+        self.assign(s1)
+        line = self.line(act="done", task="t2", revision=1, text="", wake=None)
+        unknown = json.loads(self.ok("act", stdin=line + "\n"))
+        self.assertEqual(unknown["verdict"], "unknown")
+        self.assertEqual(self.state()["applied"][json.loads(line)["key"]]["task"], "t2", "kept under the id named")
+        self.assign(s1, title="second")
+        self.assertIn("t2", self.state()["tasks"])
+        before = self.raw()
+        self.assertEqual(json.loads(self.ok("act", stdin=line + "\n")), unknown)
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(self.state()["tasks"]["t2"]["state"], "open")
+
+    def test_a_door_line_where_there_is_no_store_makes_it_to_keep_its_verdict(self):
+        line = self.line(act="done", task="t1", revision=1, text="", wake=None)
+        unknown = json.loads(self.ok("act", stdin=line + "\n"))
+        self.assertEqual(unknown["verdict"], "unknown")
+        self.assign(sid())
+        self.assertEqual(json.loads(self.ok("act", stdin=line + "\n")), unknown)
+        self.assertEqual(self.state()["tasks"]["t1"]["state"], "open")
 
     def test_an_id_has_no_cap(self):
         s1 = sid()
@@ -687,6 +724,47 @@ class Targets(Board):
         self.assertTarget(s1, "running")
         self.assertTrue(self.asker(s1))
 
+    def test_a_session_opened_again_and_cleared_again_goes_to_its_new_successor(self):
+        s1, _ = self.asked(live=False)
+        s2, s3 = sid(), sid()
+        clearing = self.session(sid=s1, started=ms_ago(60))[1]
+        self.session(sid=s2)
+        tasks.cleared(s1, s2)                                    # the first clear
+        self.assertTarget(s2, "running", via="cleared")
+        self.end(clearing)
+        time.sleep(0.01)
+        self.session(sid=s1, started=ms_ago(0))                  # its human opened it again: rule 2
+        self.assertTarget(s1, "running")
+        self.session(sid=s3)
+        tasks.cleared(s1, s3)                                    # and cleared it again: a new witnessed clear
+        tasks.cleared(s1, s3)                                    # whose second writer changes nothing
+        pair = self.state()["successors"][s1]
+        self.assertEqual((pair["session"], pair["thread"]), (s3, None))
+        self.assertTarget(s3, "running", via="cleared")
+        self.assertTrue(self.asker(s3))
+        self.ok("revise", "t1", "--class", "needed", session=s3)
+
+    def test_a_pair_written_between_two_lines_of_a_call_is_read_by_the_second(self):
+        s1, _ = self.asked()
+        self.assign(s1, title="second")
+        self.done("t1")
+        self.done("t2")
+        s2 = sid()
+        self.session(sid=s2)
+        time.sleep(0.01)
+        lines = [self.line(act="shown", task=t, session=s1, keys=[t + ".1"]) for t in ("t1", "t2")]
+        real = tasks.apply_line
+
+        def between(line, memo=None):
+            got = real(line, memo)
+            if line["task"] == "t1":
+                tasks.cleared(s1, s2)                            # a /clear lands between the two steps
+            return got
+        with mock.patch.object(tasks, "apply_line", side_effect=between):
+            out = [json.loads(x) for x in self.ok("act", stdin="\n".join(lines) + "\n").splitlines()]
+        self.assertEqual([v["keys"] for v in out], [["t1.1"], []], "the second marks against the new target")
+        self.assertIsNone(self.state()["tasks"]["t2"]["outcomes"][0]["shown"])
+
     def test_a_session_that_took_the_left_ones_alias_is_no_successor(self):
         s1, _ = self.asked(live=False)
         s2, s9 = sid(), sid()
@@ -897,6 +975,38 @@ class ClearedPair(Board):
         self.assertEqual((threads.get(left_thread).get("released") or {}).get("alias"), "alpha", said)
         self.assertIsNotNone(threads.current_record(self.NEW, fresh=True), "the join after it, made: " + said)
         self.assertEqual(said, "", "nothing skipped")
+
+    def run_hook(self, name, env=None):
+        """One of the plugin's SessionStart hooks run as the engine runs it, on the new session's /clear payload."""
+        payload = {"session_id": self.NEW, "transcript_path": os.path.join(self.home, "t-%s.jsonl" % self.NEW),
+                   "cwd": self.root, "hook_event_name": "SessionStart", "source": "clear"}
+        hook = os.path.join(os.path.dirname(HERE), "hooks", name)
+        done = subprocess.run([hook], input=json.dumps(payload), text=True, capture_output=True, timeout=60,
+                              env={**os.environ, **self.env, **(env or {})})
+        sminos.forget_caches()
+        return done
+
+    def test_the_task_hook_before_the_join_and_the_record_hook_binds_the_pair_after_it(self):
+        """The task hook's remind and shown both run before the record hook has joined the new session (no
+        thread to bind to yet); the record hook's join makes the thread, and the pair is bound to it there: the
+        successor that stops before its next task verb is still the target."""
+        self.note()
+        self.run_hook("smns-tasks.sh")
+        pair = self.state()["successors"][self.old]
+        self.assertEqual((pair["session"], pair["thread"]), (self.NEW, None), "no thread to bind to yet")
+        self.run_hook("smns-record.sh")
+        made = threads.current_record(self.NEW, fresh=True)
+        self.assertIsNotNone(made, "the join made the new session's thread")
+        self.assertEqual(self.state()["successors"][self.old]["thread"], made["thread"])
+        self.assertEqual(self.target()["session"], self.NEW)
+
+    def test_a_diagnostic_that_cannot_be_written_skips_neither_the_release_nor_the_join(self):
+        self.note()
+        with mock.patch.object(tasks, "cleared", side_effect=RuntimeError("the store")), \
+                mock.patch.object(sminos, "daemon_log", side_effect=OSError("the log")):
+            self.record()
+        self.assertEqual(threads.get(threads.thread_of(self.old)["thread"])["released"]["alias"], "alpha")
+        self.assertIsNotNone(threads.current_record(self.NEW, fresh=True), "the join after it")
 
     def test_shown_with_nothing_to_mark_or_bind_takes_no_lock(self):
         self.held(4)

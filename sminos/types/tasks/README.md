@@ -18,6 +18,7 @@ composite's writer, and raises `version` in `MANIFEST.json`.
 | `schema/list.schema.json`, `show.schema.json`, `waiting.schema.json` | the readers' `--json` (§3) |
 | `examples/state.json` | a store holding an outcome for each value of `send` and a verdict for each `told` |
 | `examples/lines.json`, `verdicts.json`, `list.json`, `show.json`, `waiting.json` | one of each shape |
+| `examples/rejected.json` | lines the schema takes and the door refuses (exit 2, nothing applied), each as the JSON text sent, with the home it is sent to |
 | `grammar/texts.md` | the notice, the ended line, the start line and what `remind` prints: their grammar and the pattern a reader matches |
 | `grammar/texts.examples.json` | each form with the fields it was built from |
 | `fixtures/<case>/` | one step: `case.json` `{name, covers, now, session, argv, stdin, exit, stdout, stderr}`, `before/` and `after/` (each a `$SMINOS_HOME`) |
@@ -48,14 +49,22 @@ a reader's `waiting` row are closed; a line with a field its act does not list i
   `[]`. An agent's `name` is null when none was given. An outcome's `text` is the note, the reason or the
   comment, `""` for a done with no note.
 - **A new task** has `agentSeq` and `seenSeq` both at its `born`: it is not Updated.
-- **Every applied line is kept by its key**, `seen` and `shown` too, and is one change of the store (`seq` + 1)
-  even where it changed nothing else. A verdict that is not `applied` (stale, closed, unknown, refused) is not
-  kept and changes nothing; the same line again is judged again.
+- **Every line's first verdict is kept by its key**, whatever it was: `applied` (`seen` and `shown` too), `stale`,
+  `closed` and `unknown`, each with the line's digest, and keeping it is one change of the store (`seq` + 1) even
+  where nothing else changed. The same line again answers that verdict and changes nothing, whatever the store
+  became since: a line refused `closed` stays refused after a reopen, one refused `unknown` after its id is made.
+  An entry's `task` is the id the line named, held or not. `refused` (`key-reused`) answers a key already kept and
+  is not kept itself. A door line where there is no store makes it, to keep its verdict. A human who wants to act
+  again after a refusal does so under a new key, which the convenience verbs (`done`, `decline`, the human's
+  `comment`) mint by default: a surface retries under the same key only a line whose verdict it did not see.
 - **What the door checks** is what the schema says, and no more loosely: a task's id is `t` and a positive integer
   with no leading zero and no cap (`^t[1-9][0-9]*$`), an outcome's key that id, `.` and another; a revision is a
   positive integer. A field is of its type exactly: a boolean is no integer, an integer no boolean, and an integer
-  is written without a fraction or exponent (`1`, never `1.0`). A text that must say something is any string but
-  `""`: whitespace is text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied.
+  is written without a fraction or exponent (`1`, never `1.0` or `1e0`). A text holds no lone surrogate (a `\ud800`
+  to `\udfff` escape that pairs with nothing). A text that must say something is any string but `""`: whitespace is
+  text. A line that breaks any of it refuses the whole call (exit 2), and nothing is applied. The schema's subset
+  cannot say the two wire rules (the fraction and the lone surrogate): `examples/rejected.json` holds lines it takes
+  and the door refuses.
 - **The order of the refusals.** A key already used comes first (the stored verdict, or `key-reused`); then an
   unknown id; then a task no longer open (`closed`); then a revision that is not current (`stale`).
 - **`seen`** raises `seenSeq` to the line's `seq`, never lowers it, and never past the store's `seq` before the
