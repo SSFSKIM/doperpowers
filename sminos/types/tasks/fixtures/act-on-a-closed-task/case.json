@@ -1,0 +1,14 @@
+{
+ "argv": [
+  "task",
+  "act"
+ ],
+ "covers": "a done on a task no longer open: closed, with its state",
+ "exit": 0,
+ "name": "act-on-a-closed-task",
+ "now": "2026-11-27T16:25:00.000Z",
+ "session": null,
+ "stderr": "",
+ "stdin": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c007\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2,\"text\":\"logged in with account B\",\"wake\":null}\n",
+ "stdout": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c007\",\"act\":\"done\",\"verdict\":\"closed\",\"task\":\"t1\",\"revision\":2,\"state\":\"done\"}\n"
+}

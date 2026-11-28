@@ -1,0 +1,630 @@
+{
+ "$defs": {
+  "agent": {
+   "properties": {
+    "id": {
+     "pattern": "^[A-Za-z0-9_.@-]{1,128}$",
+     "type": "string"
+    },
+    "name": {
+     "oneOf": [
+      {
+       "pattern": "^[A-Za-z0-9_.-]{1,64}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "id",
+    "name"
+   ],
+   "type": "object"
+  },
+  "asker": {
+   "properties": {
+    "agent": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/agent"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "alias": {
+     "oneOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "session": {
+     "$ref": "#/$defs/uuid"
+    },
+    "thread": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/uuid"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "thread",
+    "session",
+    "alias",
+    "agent"
+   ],
+   "type": "object"
+  },
+  "closed": {
+   "properties": {
+    "at": {
+     "$ref": "#/$defs/time"
+    },
+    "how": {
+     "enum": [
+      "done",
+      "declined",
+      "withdrawn"
+     ],
+     "type": "string"
+    },
+    "seq": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "text": {
+     "maxLength": 10000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "how",
+    "seq",
+    "at",
+    "text"
+   ],
+   "type": "object"
+  },
+  "comment": {
+   "properties": {
+    "at": {
+     "$ref": "#/$defs/time"
+    },
+    "by": {
+     "oneOf": [
+      {
+       "const": "human",
+       "type": "string"
+      },
+      {
+       "properties": {
+        "agent": {
+         "oneOf": [
+          {
+           "$ref": "#/$defs/agent"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "alias": {
+         "oneOf": [
+          {
+           "type": "string"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "session": {
+         "$ref": "#/$defs/uuid"
+        }
+       },
+       "required": [
+        "session",
+        "alias",
+        "agent"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "n": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "outcome": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/outcomeKey"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "seq": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "text": {
+     "maxLength": 10000,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "n",
+    "seq",
+    "by",
+    "at",
+    "text",
+    "outcome"
+   ],
+   "type": "object"
+  },
+  "outcome": {
+   "properties": {
+    "at": {
+     "$ref": "#/$defs/time"
+    },
+    "endedLine": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/time"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "key": {
+     "$ref": "#/$defs/outcomeKey"
+    },
+    "kind": {
+     "enum": [
+      "done",
+      "declined",
+      "comment"
+     ],
+     "type": "string"
+    },
+    "revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "send": {
+     "$ref": "#/$defs/send"
+    },
+    "seq": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "shown": {
+     "oneOf": [
+      {
+       "type": "null"
+      },
+      {
+       "properties": {
+        "at": {
+         "$ref": "#/$defs/time"
+        },
+        "session": {
+         "$ref": "#/$defs/uuid"
+        }
+       },
+       "required": [
+        "at",
+        "session"
+       ],
+       "type": "object"
+      }
+     ]
+    },
+    "text": {
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "wake": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "key",
+    "seq",
+    "kind",
+    "at",
+    "revision",
+    "text",
+    "wake",
+    "shown",
+    "send",
+    "endedLine"
+   ],
+   "type": "object"
+  },
+  "outcomeKey": {
+   "pattern": "^t[1-9][0-9]{0,8}\\.[1-9][0-9]{0,8}$",
+   "type": "string"
+  },
+  "readerTask": {
+   "properties": {
+    "acts": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "agentSeq": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "askers": {
+     "items": {
+      "$ref": "#/$defs/asker"
+     },
+     "minItems": 1,
+     "type": "array"
+    },
+    "body": {
+     "maxLength": 20000,
+     "type": "string"
+    },
+    "born": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "class": {
+     "enum": [
+      "blocking",
+      "needed",
+      "optional"
+     ],
+     "type": "string"
+    },
+    "closed": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/closed"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "comments": {
+     "items": {
+      "$ref": "#/$defs/comment"
+     },
+     "type": "array"
+    },
+    "createdAt": {
+     "$ref": "#/$defs/time"
+    },
+    "due": {
+     "oneOf": [
+      {
+       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "id": {
+     "$ref": "#/$defs/taskId"
+    },
+    "outcomes": {
+     "items": {
+      "$ref": "#/$defs/outcome"
+     },
+     "type": "array"
+    },
+    "project": {
+     "oneOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "revision": {
+     "minimum": 1,
+     "type": "integer"
+    },
+    "seenSeq": {
+     "minimum": 0,
+     "type": "integer"
+    },
+    "state": {
+     "enum": [
+      "open",
+      "done",
+      "declined",
+      "withdrawn"
+     ],
+     "type": "string"
+    },
+    "tags": {
+     "items": {
+      "pattern": "^[a-z0-9-]{1,32}$",
+      "type": "string"
+     },
+     "maxItems": 8,
+     "type": "array"
+    },
+    "target": {
+     "$ref": "#/$defs/target"
+    },
+    "title": {
+     "maxLength": 200,
+     "minLength": 1,
+     "type": "string"
+    },
+    "updated": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "id",
+    "revision",
+    "state",
+    "class",
+    "title",
+    "body",
+    "due",
+    "tags",
+    "project",
+    "askers",
+    "born",
+    "createdAt",
+    "agentSeq",
+    "seenSeq",
+    "comments",
+    "closed",
+    "acts",
+    "outcomes",
+    "target",
+    "updated"
+   ],
+   "type": "object"
+  },
+  "send": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "properties": {
+      "since": {
+       "$ref": "#/$defs/time"
+      },
+      "state": {
+       "const": "due",
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "since"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "agent": {
+       "oneOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "answer": {
+       "type": "string"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "how": {
+       "enum": [
+        "tell",
+        "notice"
+       ],
+       "type": "string"
+      },
+      "liveOnly": {
+       "type": "boolean"
+      },
+      "project": {
+       "oneOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "session": {
+       "$ref": "#/$defs/uuid"
+      },
+      "state": {
+       "const": "sent",
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "how",
+      "at",
+      "session",
+      "agent",
+      "liveOnly",
+      "project",
+      "answer"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "state": {
+       "const": "none",
+       "type": "string"
+      },
+      "why": {
+       "enum": [
+        "not-addressable",
+        "no-writer",
+        "log-refused"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "at",
+      "why"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "target": {
+   "additionalProperties": false,
+   "properties": {
+    "project": {
+     "oneOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "runner": {
+     "enum": [
+      "terminal",
+      "maws"
+     ],
+     "type": "string"
+    },
+    "session": {
+     "$ref": "#/$defs/uuid"
+    },
+    "state": {
+     "enum": [
+      "running",
+      "stopped",
+      "ended",
+      "gone",
+      "unknown"
+     ],
+     "type": "string"
+    },
+    "thread": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/uuid"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "via": {
+     "enum": [
+      "self",
+      "cleared"
+     ],
+     "type": "string"
+    },
+    "wake": {
+     "oneOf": [
+      {
+       "enum": [
+        "woken",
+        "held"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "why": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "session",
+    "thread",
+    "project",
+    "state",
+    "runner",
+    "wake",
+    "why",
+    "via"
+   ],
+   "type": "object"
+  },
+  "taskId": {
+   "pattern": "^t[1-9][0-9]{0,8}$",
+   "type": "string"
+  },
+  "time": {
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+   "type": "string"
+  },
+  "uuid": {
+   "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+   "type": "string"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "seq": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "task": {
+   "$ref": "#/$defs/readerTask"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  }
+ },
+ "required": [
+  "v",
+  "seq",
+  "task"
+ ],
+ "title": "sminos task show --json (X3; §3)",
+ "type": "object"
+}

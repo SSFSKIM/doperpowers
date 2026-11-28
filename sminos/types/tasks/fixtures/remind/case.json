@@ -1,0 +1,18 @@
+{
+ "argv": [
+  "task",
+  "remind",
+  "--session",
+  "5eed0000-0000-4000-8000-0000000000a1",
+  "--source",
+  "startup"
+ ],
+ "covers": "the start hook's first call: the keys it is about to name, then the start line; it marks nothing",
+ "exit": 0,
+ "name": "remind",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1.1\nTasks you assigned to the human: 1 open (0 blocking).\nThe human acted on tasks you assigned: marked t1 done. Read one: sminos task show t1\n"
+}

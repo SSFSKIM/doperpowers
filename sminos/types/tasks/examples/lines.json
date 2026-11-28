@@ -1,0 +1,65 @@
+[
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c001",
+  "revision": 2,
+  "task": "t1",
+  "text": "logged in with account B",
+  "v": 1,
+  "wake": null
+ },
+ {
+  "act": "decline",
+  "key": "5eed0000-0000-4000-8000-00000000c003",
+  "revision": 1,
+  "task": "t2",
+  "text": "the key is not mine to rotate",
+  "v": 1,
+  "wake": null
+ },
+ {
+  "act": "comment",
+  "key": "5eed0000-0000-4000-8000-00000000c004",
+  "task": "t1",
+  "text": "which account?",
+  "v": 1,
+  "wake": null
+ },
+ {
+  "act": "seen",
+  "key": "5eed0000-0000-4000-8000-00000000c005",
+  "seq": 2,
+  "task": "t1",
+  "v": 1
+ },
+ {
+  "act": "shown",
+  "key": "5eed0000-0000-4000-8000-00000000c006",
+  "keys": [
+   "t1.1",
+   "t1.2",
+   "t1.3",
+   "t2.1"
+  ],
+  "session": "5eed0000-0000-4000-8000-0000000000a1",
+  "task": "t1",
+  "v": 1
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c009",
+  "revision": 2,
+  "task": "t1",
+  "text": "logged in with account B",
+  "v": 1,
+  "wake": true
+ },
+ {
+  "act": "comment",
+  "key": "5eed0000-0000-4000-8000-00000000c010",
+  "task": "t1",
+  "text": "which account?",
+  "v": 1,
+  "wake": false
+ }
+]

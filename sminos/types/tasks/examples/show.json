@@ -1,0 +1,60 @@
+{
+ "seq": 4,
+ "task": {
+  "acts": 1,
+  "agentSeq": 3,
+  "askers": [
+   {
+    "agent": null,
+    "alias": null,
+    "session": "5eed0000-0000-4000-8000-0000000000a1",
+    "thread": null
+   }
+  ],
+  "body": "Open the console and sign in. Done when the dashboard loads.",
+  "born": 1,
+  "class": "blocking",
+  "closed": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "how": "done",
+   "seq": 4,
+   "text": "logged in with account B"
+  },
+  "comments": [],
+  "createdAt": "2026-11-27T16:00:00.000Z",
+  "due": null,
+  "id": "t1",
+  "outcomes": [
+   {
+    "at": "2026-11-27T16:15:00.000Z",
+    "endedLine": null,
+    "key": "t1.1",
+    "kind": "done",
+    "revision": 2,
+    "send": null,
+    "seq": 4,
+    "shown": null,
+    "text": "logged in with account B",
+    "wake": true
+   }
+  ],
+  "project": null,
+  "revision": 2,
+  "seenSeq": 1,
+  "state": "done",
+  "tags": [],
+  "target": {
+   "project": null,
+   "runner": "maws",
+   "session": "5eed0000-0000-4000-8000-0000000000a3",
+   "state": "gone",
+   "thread": null,
+   "via": "self",
+   "wake": null,
+   "why": ""
+  },
+  "title": "Log in to the cloud console",
+  "updated": true
+ },
+ "v": 1
+}

@@ -1,0 +1,17 @@
+{
+ "argv": [
+  "task",
+  "revise",
+  "t1",
+  "--title",
+  "Log in to the cloud console"
+ ],
+ "covers": "the asker revises: the fields given, revision + 1, agentSeq",
+ "exit": 0,
+ "name": "revise",
+ "now": "2026-11-27T16:10:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1 revision 2\n"
+}

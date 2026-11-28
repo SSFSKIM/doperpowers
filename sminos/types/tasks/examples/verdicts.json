@@ -1,0 +1,144 @@
+[
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c001",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "next-start",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "decline",
+  "key": "5eed0000-0000-4000-8000-00000000c003",
+  "outcome": "t2.1",
+  "revision": 1,
+  "state": "declined",
+  "task": "t2",
+  "told": "next-start",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "comment",
+  "key": "5eed0000-0000-4000-8000-00000000c004",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "open",
+  "task": "t1",
+  "told": "next-start",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "seen",
+  "key": "5eed0000-0000-4000-8000-00000000c005",
+  "revision": 2,
+  "state": "open",
+  "task": "t1",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "shown",
+  "key": "5eed0000-0000-4000-8000-00000000c006",
+  "keys": [
+   "t1.2",
+   "t1.3"
+  ],
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c011",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "now",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c012",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "wake",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c013",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "next-start",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c014",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "ended",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c015",
+  "outcome": "t1.1",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "told": "maws",
+  "v": 1,
+  "verdict": "applied"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c002",
+  "revision": 2,
+  "state": "open",
+  "task": "t1",
+  "v": 1,
+  "verdict": "stale"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c007",
+  "revision": 2,
+  "state": "done",
+  "task": "t1",
+  "v": 1,
+  "verdict": "closed"
+ },
+ {
+  "act": "done",
+  "key": "5eed0000-0000-4000-8000-00000000c008",
+  "task": "t99",
+  "v": 1,
+  "verdict": "unknown"
+ },
+ {
+  "act": "decline",
+  "key": "5eed0000-0000-4000-8000-00000000c001",
+  "reason": "key-reused",
+  "v": 1,
+  "verdict": "refused"
+ }
+]

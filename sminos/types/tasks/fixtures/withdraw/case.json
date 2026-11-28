@@ -1,0 +1,17 @@
+{
+ "argv": [
+  "task",
+  "withdraw",
+  "t2",
+  "--reason",
+  "not needed after all"
+ ],
+ "covers": "the asker withdraws: state withdrawn, closed with the reason",
+ "exit": 0,
+ "name": "withdraw",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t2 withdrawn\n"
+}

@@ -1,0 +1,153 @@
+{
+ "applied": {
+  "5eed0000-0000-4000-8000-00000000c006": {
+   "at": "2026-11-27T16:30:00.000Z",
+   "digest": "6d16e1465ae6f6ec7d9d2bdbe71bd226ad90a797243392b4037e2b1d5ddb2f4e",
+   "task": "t1",
+   "verdict": {
+    "act": "shown",
+    "key": "5eed0000-0000-4000-8000-00000000c006",
+    "keys": [
+     "t1.2",
+     "t1.3"
+    ],
+    "revision": 2,
+    "state": "done",
+    "task": "t1",
+    "v": 1,
+    "verdict": "applied"
+   }
+  }
+ },
+ "nextId": 3,
+ "seq": 7,
+ "successors": {},
+ "tasks": {
+  "t1": {
+   "acts": 3,
+   "agentSeq": 3,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:25:00.000Z",
+    "how": "done",
+    "seq": 6,
+    "text": ""
+   },
+   "comments": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "by": "human",
+     "n": 1,
+     "outcome": "t1.1",
+     "seq": 4,
+     "text": "which account?"
+    },
+    {
+     "at": "2026-11-27T16:20:00.000Z",
+     "by": "human",
+     "n": 2,
+     "outcome": "t1.2",
+     "seq": 5,
+     "text": "the one with the hardware key"
+    }
+   ],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": null,
+     "key": "t1.1",
+     "kind": "comment",
+     "revision": 2,
+     "send": null,
+     "seq": 4,
+     "shown": {
+      "at": "2026-11-27T16:20:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a9"
+     },
+     "text": "which account?",
+     "wake": true
+    },
+    {
+     "at": "2026-11-27T16:20:00.000Z",
+     "endedLine": null,
+     "key": "t1.2",
+     "kind": "comment",
+     "revision": 2,
+     "send": null,
+     "seq": 5,
+     "shown": {
+      "at": "2026-11-27T16:30:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a1"
+     },
+     "text": "the one with the hardware key",
+     "wake": true
+    },
+    {
+     "at": "2026-11-27T16:25:00.000Z",
+     "endedLine": null,
+     "key": "t1.3",
+     "kind": "done",
+     "revision": 2,
+     "send": null,
+     "seq": 6,
+     "shown": {
+      "at": "2026-11-27T16:30:00.000Z",
+      "session": "5eed0000-0000-4000-8000-0000000000a1"
+     },
+     "text": "",
+     "wake": true
+    }
+   ],
+   "project": null,
+   "revision": 2,
+   "seenSeq": 1,
+   "state": "done",
+   "tags": [],
+   "title": "Log in to the cloud console"
+  },
+  "t2": {
+   "acts": 0,
+   "agentSeq": 2,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "",
+   "born": 2,
+   "class": "needed",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:05:00.000Z",
+   "due": "2027-01-05",
+   "id": "t2",
+   "outcomes": [],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 2,
+   "state": "open",
+   "tags": [
+    "keys"
+   ],
+   "title": "Rotate the signing key"
+  }
+ },
+ "v": 1,
+ "version": 1
+}

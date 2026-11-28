@@ -1,0 +1,101 @@
+{
+ "applied": {
+  "5eed0000-0000-4000-8000-00000000c003": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "digest": "a1a843ac7e0dbc006a1f70323f1ebfdac0b9d509427e039ee67b789f0609e835",
+   "task": "t2",
+   "verdict": {
+    "act": "decline",
+    "key": "5eed0000-0000-4000-8000-00000000c003",
+    "outcome": "t2.1",
+    "revision": 1,
+    "state": "declined",
+    "task": "t2",
+    "told": "next-start",
+    "v": 1,
+    "verdict": "applied"
+   }
+  }
+ },
+ "nextId": 3,
+ "seq": 4,
+ "successors": {},
+ "tasks": {
+  "t1": {
+   "acts": 0,
+   "agentSeq": 3,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [],
+   "project": null,
+   "revision": 2,
+   "seenSeq": 1,
+   "state": "open",
+   "tags": [],
+   "title": "Log in to the cloud console"
+  },
+  "t2": {
+   "acts": 1,
+   "agentSeq": 2,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "",
+   "born": 2,
+   "class": "needed",
+   "closed": {
+    "at": "2026-11-27T16:15:00.000Z",
+    "how": "declined",
+    "seq": 4,
+    "text": "the key is not mine to rotate"
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:05:00.000Z",
+   "due": "2027-01-05",
+   "id": "t2",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": null,
+     "key": "t2.1",
+     "kind": "declined",
+     "revision": 1,
+     "send": null,
+     "seq": 4,
+     "shown": null,
+     "text": "the key is not mine to rotate",
+     "wake": false
+    }
+   ],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 2,
+   "state": "declined",
+   "tags": [
+    "keys"
+   ],
+   "title": "Rotate the signing key"
+  }
+ },
+ "v": 1,
+ "version": 1
+}

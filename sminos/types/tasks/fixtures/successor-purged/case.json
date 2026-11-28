@@ -1,0 +1,16 @@
+{
+ "argv": [
+  "task",
+  "remind",
+  "--session",
+  "5eed0000-0000-4000-8000-0000000000a1"
+ ],
+ "covers": "a bound successor whose thread's record is gone (purged) is no target: the task falls back to the asker's thread",
+ "exit": 0,
+ "name": "successor-purged",
+ "now": "2026-11-27T16:10:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "\nTasks you assigned to the human: 1 open (1 blocking).\n"
+}

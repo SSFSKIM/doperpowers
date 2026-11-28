@@ -1,0 +1,18 @@
+{
+ "argv": [
+  "task",
+  "shown",
+  "--session",
+  "5eed0000-0000-4000-8000-0000000000a1",
+  "--keys",
+  "t1.1"
+ ],
+ "covers": "the start hook's second call: exactly the keys remind named, marked shown to that session",
+ "exit": 0,
+ "name": "shown-keys",
+ "now": "2026-11-27T16:15:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a1",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "t1.1\n"
+}
