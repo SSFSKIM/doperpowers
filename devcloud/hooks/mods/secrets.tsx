@@ -251,7 +251,7 @@ const WITHHELD = 'secrets: the guard could not scrub this result, so it is withh
 
 const notRestored = (unrestored: readonly string[]) =>
   `secrets: not restored, so written as is: ${unrestored.join(', ')} ` +
-  "(a superseded value, a key no longer stored, or another session's redaction)."
+  "(nothing this session holds stands for it: a superseded value, a key no longer stored, another session's redaction, or text that only looks like a handle)."
 
 // A read that works in the command where a handle could not be restored.
 function readInstead(handle: string): string {

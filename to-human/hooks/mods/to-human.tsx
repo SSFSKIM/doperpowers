@@ -1591,7 +1591,9 @@ function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readon
  * The MAWS contract version from which the client reads this view's drawing
  * on its own surface. The plugin's `maws-surface.json` declares it to the
  * client, which reads that file without running the plugin
- * (`{ "toHumanView": { "drawsFrom": 9 } }`); the two must agree.
+ * (`{ "toHumanView": { "drawsFrom": 9 } }`); the two must agree. An
+ * installation without the file (every release before 0.9.0) steps aside
+ * for any non-empty value.
  */
 export const MAWS_DRAWS_FROM = 9
 
@@ -1951,7 +1953,8 @@ export function registerToHuman(on: On) {
   // run, as the message's result row draws nothing. It is known by where it
   // came from (the mod's own record of it, or the engine's flag on a row read
   // from the file) and by its exact text, so a model that writes the same
-  // sentence is drawn as ever.
+  // sentence is drawn as ever. A thought a client asks (`isSummary` set)
+  // holds no mark, so it is working record, folded with its run.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e, setting)) return next(e)
     await started($, view, next.signal, markSeen)

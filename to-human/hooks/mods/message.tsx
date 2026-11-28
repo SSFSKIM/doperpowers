@@ -38,7 +38,11 @@ export const INPUT_SCHEMA = {
  * The response the plugin answers in place of the request that would follow
  * a final message: what the transcript keeps as the turn's last row (no
  * request id, the engine's `answeredWithoutRequest` flag), which the view
- * draws as nothing (`isMadeUp`).
+ * draws as nothing (`isMadeUp`). A headless launch's stdout streams it as
+ * any response (`message_start` to `message_stop`, then an `assistant`
+ * frame) with a `msg_hook_` id, zero usage and no `request_id`, but without
+ * the row's `answeredWithoutRequest`, and the `result` frame's `result` is
+ * its text (live, 2.1.312).
  */
 export const FINAL_ANSWER = 'Message sent to the human.'
 
@@ -250,7 +254,9 @@ const getsTool = (isInteractive: boolean, advertised: string | undefined) =>
  *
  * A final message ends the turn once it is sent. The engine would otherwise
  * ask the model again after every tool result, and that request, over the
- * whole context, buys a closing text that mostly restates the message. So the
+ * whole context, buys a closing text that mostly restates the message (told
+ * to write nothing after it, haiku answered an empty response, which drew
+ * the engine's "no visible output" nudge and a third request). So the
  * main loop's next step is answered here, without `next` and so without a
  * request, by a made-up response (`FINAL_ANSWER`, stopping `end_turn`), and
  * the turn ends as any answered turn does. Only when that step would carry
@@ -260,7 +266,8 @@ const getsTool = (isInteractive: boolean, advertised: string | undefined) =>
  * engine's standing reminders lets the request go. A subagent's step is
  * never answered here (its calls are refused), nor a turn's first. The step
  * answered here reaches no hook beneath, so sminos' bridge streams no step
- * for it; the call's rows and the made-up response's are kept and exported
+ * for it (a steer the turn left unread still wakes the session at its end,
+ * as the bridge does for any turn); the call's rows and the made-up response's are kept and exported
  * as any row is, and the view draws the made-up one as nothing.
  */
 export function registerMessage(on: On) {
