@@ -8,7 +8,7 @@
 
 ## Progress
 
-- [ ] M1 — The store, its commands, the door, the start line, the published set (gate G1). Built first.
+- [x] (2026-11-28T01:57Z) M1 — The store, its commands, the door, the start line, the published set (gate G1). Task review clean after two fix rounds; sminos 1.60.0; the set's digest is in `sminos/types/tasks/MANIFEST.json`.
 - [ ] M2 — Telling the asker now: the notice, the subagent's message, the wake.
 - [ ] M3 — The `task` verbs. Waits on the `task` plugin's first release.
 - [ ] M4 — The session's side: the subagent's attribution, the terminal's line, the notification.
