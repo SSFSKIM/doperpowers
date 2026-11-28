@@ -956,7 +956,9 @@ class MawsRunPacking(unittest.TestCase):
     def test_a_d_under_maws_a_competing_answer_a_retract_and_a_resent_line_each_end_in_one_delivery(self):
         """C2's own cases of the published set, replayed under runner `maws`: the main conversation's envelope carries
         each applied outcome once and nothing refused or set aside, and once it lands nothing goes again."""
-        for case in ("two-surfaces", "retract-queued", "retract-too-late", "resent-key", "resent-then-retract"):
+        expected = {"two-surfaces": ["page-0401a001"], "retract-queued": ["page-0701a005"], "retract-too-late": [],
+                    "resent-key": ["page-1201a001"], "resent-then-retract": ["page-1301a001"]}
+        for case, keys_owed in expected.items():
             with self.subTest(case=case):
                 base = os.path.join(SET, "fixtures", case)
                 c = load(os.path.join(base, "case.json"))
@@ -967,9 +969,11 @@ class MawsRunPacking(unittest.TestCase):
                 out = sheet.run_step(c["session"], json.dumps(event).encode(), now=c["now"], tz=UTC)
                 self.assertTrue(out["ok"], out)
                 mains = [e for e in out["view"]["ready"] if e["recipient"] == "main"]
-                pending = [o["key"] for o in state_of(c["session"])["pending"] if o["recipient"] == "main"]
+                after = load(os.path.join(base, "after", "sheet", c["session"], "state.json"))
+                want = sorted(o["key"] for o in after["pending"] if o["recipient"] == "main")
                 keys = mains[0]["keys"] if mains else []
-                self.assertEqual(sorted(keys), sorted(pending), "everything owed, in one envelope")
+                self.assertEqual(sorted(keys), want, "exactly what the published fixture leaves owed, in one envelope")
+                self.assertEqual(want, keys_owed, "the fixture's own after state")
                 self.assertEqual(len(keys), len(set(keys)))
                 applied = {k for k, v in c["verdicts"].items() if v["verdict"] == "applied"}
                 self.assertLessEqual(set(keys), applied | owed, "nothing refused, retracted or set aside")

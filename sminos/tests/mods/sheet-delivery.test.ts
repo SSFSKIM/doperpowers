@@ -1743,6 +1743,46 @@ describe("a stopped turn (MAWS's C5, F34): what was pending at it opens no idle 
     expect(h.submits).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
   })
 
+  test("an answer applied during the window a step ordered before the stop is outstanding, which no such step's reply held: the window closes and it opens the idle route (a terminal session); under runner `maws` nothing is submitted and a ring is filled", async () => {
+    for (const env of [{}, MAWS]) {
+      let gate = false
+      const drains = gated(['drain'])
+      const rec = record()
+      const h = await started(rec, { env, step: (event, n) => (gate && event.event === 'drain' ? drains.script(event, n) : rec.script(event, n)) })
+      await h.turnStart('t1')
+      await answered(h, rec, out('k0', 'q0'))
+      const k0 = envelopeOf([out('k0', 'q0')], 'main')
+      expect(contextOf(await h.call('Read', {}))).toEqual([k0])
+      // A drain ordered before the Stop commits k1; its reply is held back.
+      gate = true
+      rec.queued.push(out('k1', 'q1'))
+      void sheetNudge(['k1'])
+      await h.settle()
+      expect(drains.waiting).toHaveLength(1)
+      const committed = rec.script(drains.waiting[0]!.event, 0) as string
+      // Fresh k2 comes after that commit: the `landed` step ordered after the Stop applies it.
+      rec.queued.push(out('k2', 'q2'))
+      h.converse({ rows: [], api: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: [{ type: 'text', text: 'read' }, { type: 'text', text: `<system-reminder>\ntool.call hook additional context: ${k0}\n</system-reminder>` }] }] }] })
+      await h.turnComplete('t1', 'aborted')
+      await h.settle()
+      expect(steps(h, 'landed').map((s) => s.keys)).toEqual([['k0']])
+      expect(rec.pending.map((o) => o.key)).toEqual(['k1', 'k2'])
+      await h.hop()
+      // The window is open: no idle wake yet.
+      expect(h.submits).toEqual([])
+      drains.waiting.splice(0).forEach((w) => w.release(committed))
+      await h.settle()
+      await h.hop()
+      const both = envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')
+      if (env === MAWS) {
+        expect(h.submits).toEqual([])
+        expect(((await h.prompt(RING)) as { context?: string[] }).context).toEqual([both])
+      } else {
+        expect(h.submits).toEqual([both])
+      }
+    }
+  })
+
   test('an idle reservation made before a turn that ends aborted before the hop submits nothing; what it held rides the next prompt', async () => {
     const rec = record()
     const h = await started(rec)
