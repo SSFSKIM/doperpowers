@@ -1,0 +1,32 @@
+[
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c200\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2.0,\"text\":\"\",\"wake\":null}",
+  "why": "an integer written with a fraction"
+ },
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c201\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2e0,\"text\":\"\",\"wake\":null}",
+  "why": "an integer written with an exponent"
+ },
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1.0,\"key\":\"5eed0000-0000-4000-8000-00000000c202\",\"act\":\"done\",\"task\":\"t1\",\"revision\":2,\"text\":\"\",\"wake\":null}",
+  "why": "v written with a fraction"
+ },
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c203\",\"act\":\"seen\",\"task\":\"t1\",\"seq\":2.0}",
+  "why": "a seq written with a fraction"
+ },
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c204\",\"act\":\"comment\",\"task\":\"t1\",\"text\":\"logged in \\ud800\",\"wake\":null}",
+  "why": "a lone high surrogate in a text"
+ },
+ {
+  "home": "fixtures/revise/after",
+  "line": "{\"v\":1,\"key\":\"5eed0000-0000-4000-8000-00000000c205\",\"act\":\"decline\",\"task\":\"t1\",\"revision\":2,\"text\":\"\\udfff\",\"wake\":null}",
+  "why": "a lone low surrogate in a text"
+ }
+]

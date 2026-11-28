@@ -6,6 +6,7 @@ Paths are named from `sminos/`. `hooks.json` registers both kinds of hook: the s
 
 - `smns-record.sh` (`Stop`; `SessionStart` except `compact`) pipes the payload to `sminos record` (`run_record`, `cmd_record`, `record_sheet` in `sminos.py`): joins the session to its project, exports what it sent its human into the project log, and at Stop writes what its question sheet owes the log.
 - `smns-derive.sh` (`SessionStart`, `compact`) starts `sminos derive <session> --compacted` detached, its output to `daemon.log` when the sminos home exists (`cmd_derive`, `derive_refusal`, `clear_status`).
+- `smns-tasks.sh` (`SessionStart`, every source) prints the Task Board's start line through `sminos task remind`, then marks those keys shown; its header states the order and why.
 - `smns-guide.sh` (`SessionStart`, each source `hooks.json` lists) prints `sminos guide` on a machine enrolled at a desk hub (`cmd_guide`, `guide_text`, `roster_text`).
 - `smns-cleared.sh` (`SessionEnd`) keeps a `/clear`'s payload and the identity of the question sheet left under `$SMINOS_HOME/cleared/<CLAUDE_PID>.*`, read by the new session's hooks (`cleared_from`) and the daemon's sweep (`sminos_sheet.remove_record`).
 
@@ -18,4 +19,4 @@ Paths are named from `sminos/`. `hooks.json` registers both kinds of hook: the s
 - **`smns-cleared.sh`**: bash with no Python and one write and rename per file, because an ending session's hooks get little time.
 - **Time bounds**: `run_record`'s docstring says what `SMNS_RECORD_TIMEOUT` bounds and what it lets finish; `hooks.json`'s `timeout` is the engine's kill of the hook process, not of the `nohup`ed derive it starts.
 
-Tests: `tests/test-smns-guide-hook.sh`, and the hooks run end to end in `tests/test-join.sh`, `test-org.sh`, `test-remote.sh` and `test_sheet_log.py`; `tests/run-sminos-tests.sh` runs them.
+Tests: `tests/test-smns-guide-hook.sh`, `tests/test-tasks-hook.sh`, and the hooks run end to end in `tests/test-join.sh`, `test-org.sh`, `test-remote.sh` and `test_sheet_log.py`; `tests/run-sminos-tests.sh` runs them.

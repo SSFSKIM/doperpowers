@@ -632,6 +632,14 @@ run_suites_c() {
   if python3 -B "$SCRIPT_DIR/test_sheet_log.py"; then
     pass "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"
   else fail "the question sheet in the project log: one question and its real answer across stop and resume, where each goes, removal and the sweep (test_sheet_log.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks_contract.py"; then
+    pass "the Task Board's published set: the generator's, valid, every fixture replayed, the readers, the texts (test_tasks_contract.py)"
+  else fail "the Task Board's published set: the generator's, valid, every fixture replayed, the readers, the texts (test_tasks_contract.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_tasks.py"; then
+    pass "the Task Board: the store, the door, the start line, the target and a /clear's pair (test_tasks.py)"
+  else fail "the Task Board: the store, the door, the start line, the target and a /clear's pair (test_tasks.py)"; fi
+  if "$SCRIPT_DIR/test-tasks-hook.sh"; then pass "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; else
+    fail "the Task Board's SessionStart hook: printed first, marked after (test-tasks-hook.sh)"; fi
 }
 run_suites() { run_suites_a; run_suites_b; run_suites_c; }
 # The declared channels' suites (CH1 of docs/doperpowers/specs/2026-11-21-sminos-channels-ch-design.md), a

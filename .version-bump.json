@@ -61,7 +61,8 @@
           "devcloud",
           "to-human",
           "sminos",
-          "web"
+          "web",
+          "task"
         ]
       }
     },
@@ -166,6 +167,31 @@
           "clipper",
           "runs"
         ]
+      }
+    },
+    {
+      "name": "task",
+      "root": "task",
+      "files": [
+        {
+          "path": "task/.claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=task].version"
+        }
+      ],
+      "unshipped": [
+        "CLAUDE.md",
+        "*/CLAUDE.md",
+        "README.md",
+        "*/README.md",
+        "tests/*",
+        "types/*"
+      ],
+      "audit": {
+        "exclude": []
       }
     }
   ]

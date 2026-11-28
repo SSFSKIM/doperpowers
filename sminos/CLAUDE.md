@@ -15,6 +15,7 @@ Paths below are named from `sminos/`; `docs/` paths are the repository's.
 | `skills/sminos/SKILL.md`, `skills/sminos/references/setup.md` | What a member acts on; machine setup (mirror, hub enrollment, daemon, policy) |
 | `skills/manager/` | The owner's read-only session manager (`docs/doperpowers/specs/2026-10-31-session-manager-design.md`); its command imports the CLI's modules and adds no verb |
 | `types/sheet/` | The question sheet's published contract, which MAWS pins; see below |
+| `types/tasks/` | The Task Board's published set, which MAWS pins; written by `tests/tasks-contract.gen.py` (design `docs/doperpowers/specs/2026-11-27-task-board-design.md`) |
 | `tests/` | `run-sminos-tests.sh` (the hermetic suite; `SMINOS_PART` picks the part a gate runs, `.github/ci-kit.yml`), `mods/run.sh` (the `sminos-mods` gate) |
 
 ## Where to stop and read first

@@ -1,0 +1,101 @@
+{
+ "applied": {
+  "5eed0000-0000-4000-8000-00000000c001": {
+   "at": "2026-11-27T16:15:00.000Z",
+   "digest": "f472a7128520640ce14b1a71651ec57e55a1952e82b203803bf398cc1039e273",
+   "task": "t1",
+   "verdict": {
+    "act": "done",
+    "key": "5eed0000-0000-4000-8000-00000000c001",
+    "outcome": "t1.1",
+    "revision": 2,
+    "state": "done",
+    "task": "t1",
+    "told": "next-start",
+    "v": 1,
+    "verdict": "applied"
+   }
+  }
+ },
+ "nextId": 3,
+ "seq": 4,
+ "successors": {},
+ "tasks": {
+  "t1": {
+   "acts": 1,
+   "agentSeq": 3,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "Open the console and sign in. Done when the dashboard loads.",
+   "born": 1,
+   "class": "blocking",
+   "closed": {
+    "at": "2026-11-27T16:15:00.000Z",
+    "how": "done",
+    "seq": 4,
+    "text": "logged in with account B"
+   },
+   "comments": [],
+   "createdAt": "2026-11-27T16:00:00.000Z",
+   "due": null,
+   "id": "t1",
+   "outcomes": [
+    {
+     "at": "2026-11-27T16:15:00.000Z",
+     "endedLine": null,
+     "key": "t1.1",
+     "kind": "done",
+     "revision": 2,
+     "send": null,
+     "seq": 4,
+     "shown": null,
+     "text": "logged in with account B",
+     "wake": true
+    }
+   ],
+   "project": null,
+   "revision": 2,
+   "seenSeq": 1,
+   "state": "done",
+   "tags": [],
+   "title": "Log in to the cloud console"
+  },
+  "t2": {
+   "acts": 0,
+   "agentSeq": 2,
+   "askers": [
+    {
+     "agent": null,
+     "alias": null,
+     "session": "5eed0000-0000-4000-8000-0000000000a1",
+     "thread": null
+    }
+   ],
+   "body": "",
+   "born": 2,
+   "class": "needed",
+   "closed": null,
+   "comments": [],
+   "createdAt": "2026-11-27T16:05:00.000Z",
+   "due": "2027-01-05",
+   "id": "t2",
+   "outcomes": [],
+   "project": null,
+   "revision": 1,
+   "seenSeq": 2,
+   "state": "open",
+   "tags": [
+    "keys"
+   ],
+   "title": "Rotate the signing key"
+  }
+ },
+ "v": 1,
+ "version": 1
+}

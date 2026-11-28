@@ -1,0 +1,16 @@
+{
+ "argv": [
+  "task",
+  "remind",
+  "--session",
+  "5eed0000-0000-4000-8000-0000000000a2"
+ ],
+ "covers": "a /clear's pair not bound yet; the successor's remind binds it to the thread whose current session it is, and the task is the successor's: its start line counts it",
+ "exit": 0,
+ "name": "successor-unbound-then-bound",
+ "now": "2026-11-27T16:10:00.000Z",
+ "session": "5eed0000-0000-4000-8000-0000000000a2",
+ "stderr": "",
+ "stdin": null,
+ "stdout": "\nTasks you assigned to the human: 1 open (1 blocking).\n"
+}

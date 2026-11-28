@@ -1,0 +1,284 @@
+{
+ "$defs": {
+  "outcomeKey": {
+   "pattern": "^t[1-9][0-9]*\\.[1-9][0-9]*$",
+   "type": "string"
+  },
+  "send": {
+   "oneOf": [
+    {
+     "type": "null"
+    },
+    {
+     "properties": {
+      "since": {
+       "$ref": "#/$defs/time"
+      },
+      "state": {
+       "const": "due",
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "since"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "agent": {
+       "oneOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "answer": {
+       "type": "string"
+      },
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "how": {
+       "enum": [
+        "tell",
+        "notice"
+       ],
+       "type": "string"
+      },
+      "liveOnly": {
+       "type": "boolean"
+      },
+      "project": {
+       "oneOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "session": {
+       "$ref": "#/$defs/uuid"
+      },
+      "state": {
+       "const": "sent",
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "how",
+      "at",
+      "session",
+      "agent",
+      "liveOnly",
+      "project",
+      "answer"
+     ],
+     "type": "object"
+    },
+    {
+     "properties": {
+      "at": {
+       "$ref": "#/$defs/time"
+      },
+      "state": {
+       "const": "none",
+       "type": "string"
+      },
+      "why": {
+       "enum": [
+        "not-addressable",
+        "no-writer",
+        "log-refused"
+       ],
+       "type": "string"
+      }
+     },
+     "required": [
+      "state",
+      "at",
+      "why"
+     ],
+     "type": "object"
+    }
+   ]
+  },
+  "target": {
+   "additionalProperties": false,
+   "properties": {
+    "project": {
+     "oneOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "runner": {
+     "enum": [
+      "terminal",
+      "maws"
+     ],
+     "type": "string"
+    },
+    "session": {
+     "$ref": "#/$defs/uuid"
+    },
+    "state": {
+     "enum": [
+      "running",
+      "stopped",
+      "ended",
+      "gone",
+      "unknown"
+     ],
+     "type": "string"
+    },
+    "thread": {
+     "oneOf": [
+      {
+       "$ref": "#/$defs/uuid"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "via": {
+     "enum": [
+      "self",
+      "cleared"
+     ],
+     "type": "string"
+    },
+    "wake": {
+     "oneOf": [
+      {
+       "enum": [
+        "woken",
+        "held"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "why": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "session",
+    "thread",
+    "project",
+    "state",
+    "runner",
+    "wake",
+    "why",
+    "via"
+   ],
+   "type": "object"
+  },
+  "taskId": {
+   "pattern": "^t[1-9][0-9]*$",
+   "type": "string"
+  },
+  "time": {
+   "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+   "type": "string"
+  },
+  "uuid": {
+   "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+   "type": "string"
+  }
+ },
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "additionalProperties": false,
+ "properties": {
+  "seq": {
+   "minimum": 0,
+   "type": "integer"
+  },
+  "v": {
+   "const": 1,
+   "type": "integer"
+  },
+  "waiting": {
+   "items": {
+    "additionalProperties": false,
+    "properties": {
+     "at": {
+      "$ref": "#/$defs/time"
+     },
+     "key": {
+      "$ref": "#/$defs/outcomeKey"
+     },
+     "kind": {
+      "enum": [
+       "done",
+       "declined",
+       "comment"
+      ],
+      "type": "string"
+     },
+     "send": {
+      "$ref": "#/$defs/send"
+     },
+     "seq": {
+      "minimum": 1,
+      "type": "integer"
+     },
+     "state": {
+      "enum": [
+       "open",
+       "done",
+       "declined",
+       "withdrawn"
+      ],
+      "type": "string"
+     },
+     "target": {
+      "$ref": "#/$defs/target"
+     },
+     "task": {
+      "$ref": "#/$defs/taskId"
+     },
+     "wake": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "key",
+     "task",
+     "state",
+     "kind",
+     "seq",
+     "at",
+     "wake",
+     "send",
+     "target"
+    ],
+    "type": "object"
+   },
+   "type": "array"
+  }
+ },
+ "required": [
+  "v",
+  "seq",
+  "waiting"
+ ],
+ "title": "sminos task waiting --json (X3; §3)",
+ "type": "object"
+}
