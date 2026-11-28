@@ -1886,6 +1886,129 @@ describe("a stopped turn (MAWS's C5, F34): the Stop is a time, and only an answe
     expect(h.submits).toEqual([])
     expect(((await h.prompt(RING)) as { context?: string[] }).context).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2')], 'main')])
   })
+  /** The Stop the module keeps for its session now, if any. */
+  const keptStop = (h: { kept: Map<string, unknown> }) => (h.kept.get('sminos.sheet') as { session?: string; stoppedAt?: string }).stoppedAt
+
+  test('an answer accepted in the same millisecond as the Stop is held; one a millisecond after it wakes the session', async () => {
+    const { h, rec } = await stopped()
+    const at = keptStop(h) as string
+    await answered(h, rec, out('k2', 'q2', { acceptedAt: at }))
+    await h.hop()
+    expect(h.submits).toEqual([])
+    await answered(h, rec, out('k3', 'q3', { acceptedAt: new Date(Date.parse(at) + 1).toISOString() }))
+    await h.hop()
+    expect(h.submits).toEqual([envelopeOf([out('k1', 'q1'), out('k2', 'q2'), out('k3', 'q3')], 'main')])
+  })
+
+  test("the mod's own idle prompt ends the hold once it enters, whichever comes first, its row or its submit's answer, and when it entered without the envelope; a dropped one does not", async () => {
+    for (const order of ['row first', 'submit first', 'stripped', 'dropped'] as const) {
+      let enter: () => void = () => {}
+      const { h, rec } = await stopped({
+        submit: (text) =>
+          new Promise((resolve) => (enter = () => resolve(order === 'stripped' ? { text: 'a hook rewrote it' } : order === 'dropped' ? { drop: 'a hook said no' } : { text }))),
+      })
+      await answered(h, rec, out('k2', 'q2', { acceptedAt: AFTER }))
+      await h.hop()
+      expect(h.submits).toHaveLength(1)
+      if (order === 'row first') {
+        await h.append({ door: 'prompt', origin: PLUGIN_ROW, text: `The sminos plugin sent a message:\n${h.submits[0]}\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns.` })
+        await h.settle()
+        expect(steps(h, 'landed').flatMap((s) => s.keys as string[]).sort()).toEqual(['k1', 'k2'])
+      }
+      expect(keptStop(h)).toBeDefined()
+      enter()
+      await h.settle()
+      if (order === 'dropped') expect(keptStop(h)).toBeDefined()
+      else expect(keptStop(h)).toBeUndefined()
+    }
+  })
+
+  test("a prompt admitted in one session, or the mod's own idle prompt submitted in it, ends no Stop of the session that followed (a /clear while it was admitted)", async () => {
+    for (const route of ['prompt', 'idle'] as const) {
+      // Every idle submit waits; the first is the old session's.
+      const enters: (() => void)[] = []
+      let admit: () => void = () => enters[0]!()
+      const rec = record()
+      const { h } = await stopped({ submit: (text) => new Promise((resolve) => enters.push(() => resolve({ text }))) }, rec)
+      let admitting: Promise<unknown> = Promise.resolve()
+      if (route === 'prompt') {
+        admitting = h.prompt('old', {}, (e) => new Promise((resolve) => (admit = () => resolve({ text: e.text, context: e.context, origin: e.origin }))))
+      } else {
+        await answered(h, rec, out('k2', 'q2', { acceptedAt: AFTER }))
+        await h.hop()
+        expect(h.submits).toHaveLength(1)
+      }
+      await h.settle()
+      await h.sessionEnd('clear')
+      await h.classicStart('clear', S2)
+      await h.settle()
+      await h.turnStart('t2')
+      await h.turnComplete('t2', 'aborted')
+      await h.settle()
+      const kept = h.kept.get('sminos.sheet') as { session?: string; stoppedAt?: string }
+      expect([kept.session, kept.stoppedAt !== undefined]).toEqual([S2, true])
+      admit()
+      await admitting
+      await h.settle()
+      expect(keptStop(h)).toBe(kept.stoppedAt)
+    }
+  })
+
+  test('a prompt typed over a turn and admitted, then that turn ending aborted (a message preempted it), keeps no Stop; the aborted end, then the prompt, keeps none either; the turn such a prompt opens, stopped, does', async () => {
+    const rec = record()
+    const h = await started(rec)
+    await h.turnStart('t1')
+    await h.prompt('instead', { turnId: 't1' })
+    await h.turnComplete('t1', 'aborted')
+    await h.settle()
+    expect(keptStop(h)).toBeUndefined()
+    await h.turnStart('t2')
+    await h.turnComplete('t2', 'aborted')
+    await h.settle()
+    expect(keptStop(h)).toBeDefined()
+
+    const h2 = await started(record())
+    await h2.turnStart('t1')
+    await h2.turnComplete('t1', 'aborted')
+    await h2.settle()
+    expect(keptStop(h2)).toBeDefined()
+    await h2.prompt('instead', { turnId: 't1' })
+    expect(keptStop(h2)).toBeUndefined()
+    // A prompt into an idle session whose turn has started by the time its hooks resolve: that turn's Stop holds.
+    await h2.prompt('go', {}, async (e) => (await h2.turnStart('t2'), { text: e.text, context: e.context, origin: e.origin }))
+    await h2.turnComplete('t2', 'aborted')
+    await h2.settle()
+    expect(keptStop(h2)).toBeDefined()
+  })
+
+  test("a prompt entered while a reload's session.start has not restored the choice keeps the Stop from being taken up, its hooks resolving before the restore or after it", async () => {
+    for (const when of ['before', 'after'] as const) {
+      const { h, rec } = await stopped()
+      const reloaded = sheetOn({ kept: h.kept, step: rec.script })
+      let restore: () => void = () => {}
+      const restoring = new Promise<void>((resolve) => (restore = resolve))
+      const read = reloaded.engine.state.get
+      ;(reloaded.engine.state as { get: unknown }).get = async (ref: unknown) => {
+        await restoring
+        return (read as (r: unknown) => unknown)(ref)
+      }
+      const starting = reloaded.start()
+      await reloaded.settle()
+      let admit: () => void = () => {}
+      const admitted = reloaded.prompt('a person writes', {}, (e) => new Promise((resolve) => (admit = () => resolve({ text: e.text, context: e.context, origin: e.origin }))))
+      await reloaded.settle()
+      if (when === 'before') admit()
+      await reloaded.settle()
+      restore()
+      await starting
+      await reloaded.settle()
+      if (when === 'after') admit()
+      await admitted
+      await reloaded.settle()
+      expect(keptStop(reloaded)).toBeUndefined()
+    }
+  })
+
 })
 
 describe("a ring while a reload's session.start has not yet restored the choice (MAWS's C5, F33)", () => {

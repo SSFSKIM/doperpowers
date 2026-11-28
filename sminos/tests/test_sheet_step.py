@@ -1026,6 +1026,30 @@ class TheStopsTime(unittest.TestCase):
         self.assertEqual(step_module.view(st, "maws", WHERE, None, 0, UTC)["mainAcceptedAt"],
                          "2026-11-24T10:00:01.000Z", "a start keeps it too")
 
+    def tearDown(self):
+        os.environ["SMINOS_HOME"] = os.path.join(BASE, "s")
+
+    def test_an_answer_put_while_a_step_waits_on_the_lock_is_accepted_after_the_wait(self):
+        """The step reads its clock once it holds the lock: an answer the door appended while a drain waited on it is
+        accepted after a Stop taken in that wait, never before (MAWS's C5, F34; wave 4's finding 1)."""
+        import threading
+        import time
+        scratch()
+        step(ev("start", start={"source": "startup"}))
+        step(inline_call("toolu_c", [{"question": "Ship?"}]))
+        out = []
+        drain = json.dumps(ev("drain")).encode()
+        with sheet.Lock(SESSION):
+            t = threading.Thread(target=lambda: out.append(sheet.run_step(SESSION, drain, tz=UTC)))
+            t.start()
+            time.sleep(0.3)               # the drain waits on the lock
+            stopped = sheet.S.now(ms=True)
+            time.sleep(0.01)
+            put_raw(SESSION, answers([1], lambda i: "yes"))
+        t.join(timeout=30)
+        self.assertTrue(out and out[0]["ok"], out)
+        self.assertGreater(state_of()["pending"][0]["acceptedAt"], stopped)
+
 
 class TheCap(unittest.TestCase):
     def test_the_sheet_holds_five_hundred_open(self):
