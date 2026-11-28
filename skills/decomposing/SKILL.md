@@ -1,6 +1,6 @@
 ---
 name: decomposing
-description: Use when a goal is too big for one agent to own as one unit and must become child goals (a roadmap), or when tending a live goal tree as children land.
+description: Verified guidance on dividing a goal too big for one agent to own as one unit into child goals (a roadmap), and on tending a live goal tree as children land.
 ---
 
 # Decomposing
@@ -9,55 +9,51 @@ description: Use when a goal is too big for one agent to own as one unit and mus
 
 Work is a tree of goals. Every node is a goal — a purpose with observable
 acceptance — whatever the project calls it: milestone, epic, phase, slice,
-ticket. doperpowers:brainstorming DEFINES one goal at a time, whatever its
-size — and for a goal whose pieces interact, MATURES the joint design
-before handing it here; this skill DIVIDES a goal that fails the gate
+ticket. doperpowers:brainstorming defines one goal at a time, whatever its
+size, and for a goal whose pieces interact it matures the joint design
+before handing it here; this skill divides a goal that fails the gate
 below into child goals one level down, and tends the tree as children
-land; the leaves are executed by their routes. The product of one run is a **composite spec** per
-`references/composite-spec-template.md` — the same species as any
-living spec ([../execspec/references/living-spec.md](../execspec/references/living-spec.md)), not a separate document type:
-design at the center, with the roadmap topology (children, edges,
-ordering) embedded as sections. Composite carries its
-Composite-pattern sense — a composite's child can itself be a
-composite, at every altitude; decomposing yields this spec,
-recomposition closes it. The document tree is the composite tree: one
-spec per composite, none per leaf. A child's contract is its section
-here; what it adds are execution artifacts — its brief or plan, and the
-ledger that records its run — a spike's findings, or its own composite
-spec when it is a composite in turn. The composite spec carries the
-matured design where one exists; children with purpose, observable acceptance, and dependency
-edges; the contracts that cross them; and a tracking map that follows the
-unit to its retrospective.
+land; the leaves are executed by their routes.
 
-This is the deliberate sibling of doperpowers:organizing-sprints. That
-skill turns raw *testimony* (an ideadump that may misread the code) into a
-sprint; this one divides trusted *intent*. Same output shape, different
-intake — here there is no verification table, but grounding still matters
-(see the pipeline).
+The product of one run is a **composite spec**
+(`references/composite-spec-template.md`): a living spec
+([../execspec/references/living-spec.md](../execspec/references/living-spec.md))
+with the roadmap — children, edges, ordering — embedded as sections under
+the design, not a separate document type. A composite's child can itself
+be a composite, at every altitude, and the document tree is the composite
+tree: one spec per composite, none per leaf. A leaf's contract is its
+section in the composite; what it adds are execution artifacts — its brief
+or plan and the ledger that records its run, or a spike's findings.
+
+doperpowers:organizing-sprints is the sibling with the other intake. It
+turns raw *testimony* (an ideadump that may misread the code) into a
+sprint; this skill divides trusted *intent*, so it keeps no verification
+table, though the cut is still grounded in the code.
 
 ## The Gate
 
 One criterion decides division, at every altitude — two checks:
 
-- **WELL-DEFINED** — every fork the work will hit has an owner or an
+- **Well-defined** — every fork the work will hit has an owner or an
   answer: purpose stated, acceptance observable, load-bearing decisions
-  made. Fails ⇒ what's missing is KNOWLEDGE — grill it
+  made. When it fails, what is missing is knowledge: grill it
   (doperpowers:brainstorming) when a conversation can close it; make it a
   child whose deliverable is findings (a spike or research goal) when it
   needs real work.
-- **WELL-SCOPED** — one agent can reliably own it as one unit. "One
+- **Well-scoped** — one agent can reliably own it as one unit. "One
   agent" means one accountable context: an owner may marshal subagent
   workers (the milestone workers of doperpowers:subagent-driven-execution) without
   that being decomposition — execution mechanics live below the tree's
-  resolution. Fails ⇒ divide into work-children.
+  resolution. When it fails, divide into work-children.
 
-A goal that passes the gate is a LEAF whatever its size — it dispatches by
-its route, and this skill's reach ends. Reliably-ownable is a moving
+A goal that passes the gate is a leaf whatever its size — it goes to its
+route, and this skill's reach ends. Reliably-ownable is a moving
 envelope, not a size class: big-but-coherent work that one context can
-carry is one leaf (evidence: an epic-sized phase correctly ran as one spec
-carrying its own execution). Depth is an output of the gate, never a
-target, and it is asymmetric by nature: one branch bottoms out in a single
-one-unit spec while its sibling divides twice more.
+carry is one leaf. Depth is an output of the gate, never a target, and it
+is asymmetric by nature: one branch bottoms out in a single one-unit spec
+while its sibling divides twice more. A cut that yields one child is the
+gate misfiring: the goal was already a leaf, or the cut found no seam
+where children land independently.
 
 **Split signals** (any altitude): parts with different state owners,
 invariants, failure modes, or verification strategies; acceptance you can
@@ -71,32 +67,32 @@ references/living-spec.md is this list applied there.
 
 ## The Tree
 
-- Decomposition is a TREE: every child has exactly one parent — its
+- Decomposition is a tree: every child has exactly one parent — its
   reason to exist and its flow-back address. A subgoal two parents need is
   hoisted to their common ancestor as its own child; the shared need
   becomes dependency edges, never a second parent.
-- Dependencies are EDGES, not structure: typed (`blocked-by`,
+- Dependencies are edges, not structure: typed (`blocked-by`,
   `conditional-on`, `external:<condition>`), cross-branch allowed,
   acyclic. The tree says what adds up to what; the edges say what waits
   for what.
 - Levels have no canonical names. Milestone, Epic, Phase, Sprint are
-  project vocabulary — annotate nodes with the project's words; never make
-  the doctrine speak them.
-- The ROOT is the project's standing purpose. Convention: CLAUDE.md
+  project vocabulary: annotate nodes with the project's words, and keep
+  them out of the doctrine.
+- The root is the project's standing purpose. Convention: CLAUDE.md
   states the top-level goal as short prose; a project that keeps a
   standing root spec routes to it from that line. Every new goal enters
   the tree by being situated against the root or an existing node —
   brainstorming's job, not this skill's.
 - No OR-branches: the tree records the chosen division; a cut that was
   seriously weighed and lost is named with the division's reason.
-- NO NEW SUBSTRATE: the tree is not a registry file. It IS the citation
-  chain (each child's artifact — brief, plan, ledger, PR body, ticket,
-  or a composite child's own spec — opens by citing its parent), the
-  board's typed edges, and the composite specs' tracking maps.
+- The tree is not a registry file. It is the citation chain (each
+  child's artifact — brief, plan, ledger, PR body, ticket, or a composite
+  child's own spec — opens by citing its parent), the board's typed
+  edges, and the composite specs' tracking maps.
 
 ## The Frontier
 
-The frontier governs COMMITMENT, not capture. Divide one level per run,
+The frontier governs commitment, not capture. Divide one level per run,
 and cut a branch only as it nears execution: child boundaries, gates,
 and binding contracts drawn today for far-off work go stale as landed
 siblings move them, and an undivided branch is cheap to re-cut. A child
@@ -104,135 +100,153 @@ whose own division can wait carries the grain hint "decomposing run at
 dispatch" and nothing more. Design prose is the opposite case — whatever
 the joint view produced about a distant branch stays in the parent at
 the depth it was produced, as advisory inheritance (see the Derivation
-Contract): expected to be revised by the time the branch nears dispatch,
+Contract): expected to be revised by the time the branch nears execution,
 and cheap to revise precisely because it was written down. A composite
-spec is BINDING near the frontier and advisory in the distance;
+spec is binding near the frontier and advisory in the distance;
 staleness in advisory content costs a rewrite, while an uncaptured
 insight is unrecoverable.
+
+## A run
+
+Intake has two shapes. A coupled goal arrives as a matured, approved
+design — doperpowers:brainstorming matured it precisely because its
+pieces interact (one that arrives undesigned goes there first: its
+interaction surface is designable only with everything in view). That
+design document is the run's primary input, and the roadmap sections
+extend it in place: one document, design up top, roadmap below. An
+uncoupled bundle arrives undesigned — its pieces share no design surface,
+so there was nothing to mature jointly; the defining work happens here,
+and the design sections stay thin.
+
+What a run produces:
+
+- **A cut grounded in the code.** Intent is trusted here, but a question
+  the codebase can answer is answered by reading; for matured intake,
+  verify the design's load-bearing code claims rather than re-deriving
+  them. From a matured design, derive children along its natural seams.
+  For an uncoupled bundle, propose tentative children as goals with
+  ordering and get your human partner's reaction before deep grilling.
+  Either way, check each child against the code for already-built or
+  partially-built reality: deliberate initiatives assume greenfield more
+  often than the code is. Over-merging hides independent shippables;
+  over-splitting loses coherence — ask when unsure.
+- **The residue, grilled** in batched frontier rounds, each question with
+  your recommended answer (doperpowers:brainstorming's grill): child
+  boundaries, dependency edges, cross-child contracts, authority grades,
+  and reservations that belong to a later cut rather than this one. A
+  matured design has already answered its architectural questions; an
+  uncoupled bundle needs each piece's purpose and acceptance grilled
+  here.
+- **The composite spec**, per `references/composite-spec-template.md`,
+  born landed: v1 already carries the design and the grill's decisions,
+  each design decision graded for authority (the Derivation Contract),
+  and it is kept current as
+  [../execspec/references/living-spec.md](../execspec/references/living-spec.md)
+  says. The check easiest to miss before anyone reads it is traceability:
+  every load-bearing declaration in the design has a counterpart slot in
+  the children, contracts, or acceptance sections.
+- **Your human partner's approval of the committed spec**, before
+  children start: the cut, the grades and the contracts bind every child.
+  The Tracking Map names the approved commit. A design already approved
+  in brainstorming needs their eyes only on what this run added.
+- **Tickets, when the project keeps its backlog on the board**: children
+  as tickets with typed edges through doperpowers:issue-tracker's
+  scripts, bodies fleshed to the pre-spec bar and citing the composite
+  (path + child id). They are registered from the approved spec: a batch
+  cut from a draft has to be closed ticket by ticket. Deferred entries
+  that are real work may register as parked tickets citing the composite,
+  so overflow from the design session outlives the Deferred list. A
+  document-only project has none — the tracking map is the handoff
+  contract either way.
+
+## Tending
+
+Children go to their routes per their grain hint, each carrying its
+section as pre-landed design and writing no spec of its own: a brief child
+implements against its section and a dispatch brief; a plan child grills only its
+residue (doperpowers:brainstorming) and writes its standalone execution
+document (living-spec.md, "A child of a composite spec"); a spike writes
+findings; a composite child runs this skill at its own dispatch.
+
+Every child keeps a ledger. A plan child's record is its committed
+execution document and the doperpowers:subagent-driven-execution ledger.
+A brief child opens `docs/doperpowers/ledgers/YYYY-MM-DD-<child-id>.md` on
+its branch at dispatch: it cites the composite (path + child id +
+parent pin), carries the brief verbatim, and then Progress as deliverables
+land, in-flight Decisions with their rationale, Surprises, and the
+flow-back raised; its outcome section, written at close, is the child's
+retrospective, and the Tracking Map points at it.
+
+As children land, the tracking map and the sections their work touched
+stay current (a composite in the earlier form continues its Decision Log
+and Surprises, as living-spec.md says under "Keeping the spec current").
+The Deferred section seeds the next cut.
+
+Siblings authored or executed at the same time share the composite, so it
+has one writer — the session running this skill: parallel authors editing
+one file drop each other's commits. A child's author records its residue
+in the child's own document, and that writer rewrites what it changes into
+the child's section. When more than one child extends a contract before
+any of them lands, open an interface ledger beside the execution
+documents — every added name with its owner and consumers, the shared
+files and the order they land in — reconciled before the first executor
+starts and kept current as children land, so the interim contract siblings
+code against is one document rather than several that disagree.
+
+## Upward Revision
+
+A child reads the parent's current state at dispatch, never a frozen
+snapshot, and records the parent pin — the composite's commit as the
+child received its section — in the citation that opens its artifacts, so
+"what contract did this child execute" stays answerable. A child revises
+its own means freely, and overturning advisory inheritance is revising
+means: the child states what it chose in its own document, lists the
+inherited sentence with its replacement for the parent's writer (evidence
+in a line), and moves on, no reconciliation.
+
+Discovery that touches a parent-owned end — purpose, acceptance, a
+cross-child contract, an edge, a binding design decision, the division
+itself — goes back to the session holding the composite, in the child's
+escalation or report, with the evidence and the affected clauses;
+binding content the child never edits. Where the child is a board ticket
+the durable record is a typed event on the child's own ticket, naming the
+parent in its text (`board-comment.sh <child> --kind parent-impact`,
+rendered `[parent-impact]`): the board reads the event on the child, and
+a plain comment carrying the marker is not one. That session judges materiality,
+rewrites the parent, and tells the in-flight children whose contract the
+rewrite touches. Purpose changes and material acceptance reductions go to
+your human partner.
 
 ## Recomposition
 
 All children green does not close a parent. The parent declares its own
-acceptance at cut time — the observable state that closes the unit AS A
-WHOLE, not the sum of child acceptances — and when the children have
-landed, closing the parent is a VERIFICATION event against that acceptance
-(integration seams, end-to-end behavior). Only then does the retrospective
-write.
+acceptance at cut time — the observable state that closes the unit as a
+whole, not the sum of child acceptances — and when the children have
+landed, the session holding the composite verifies that acceptance
+(integration seams, end-to-end behavior) and runs the lineage check: every
+child's pin against the final parent revision (`git diff <the pin's
+commit> -- <composite>`, read against what the child built) — incorporated,
+explicitly irrelevant, or a corrective child. Only then is the
+retrospective written.
 
-On the board, when the last child goes terminal the parent RETURNS to
-`ready-for-architect` (`recomposition-due`) instead of closing, and the
-session holding this composite issues the verdict. A non-code parent
-closes on its verification evidence directly. A code-bearing one — children that
-touched one executable surface, cross-child invariants, multi-repo
-composition, or a composite spec that marks review required — posts a closure
-package and goes to `in-review` for a SCALE REVIEW, whose clean verdict
-closes the parent and whose defects become corrective children (the
-parent waits and recomposes again). The shape of the unit gates which
-path runs; nothing about it is a status flip.
+A non-code parent closes on its verification evidence. A code-bearing
+one — children that touched one executable surface, cross-child
+invariants, multi-repo composition, or a composite that marks review
+required — also gets the independent review its Verification section
+names, on the integrated result (doperpowers:review-code). Give that
+review its range: the children have already merged, so the skill's
+default (the merge base with `main` to `HEAD`) is empty or holds only the
+closing document. The range is the commit before the first child landed
+to the integrated head, or each repository's landed range for a composite
+that spans several. A defect the review finds becomes a corrective child,
+and the parent recomposes again when it lands.
 
-<HARD-GATE>
-Materialization onto the issue board is gated on the human approving the
-written composite spec. Registering a unit's worth of tickets is an
-outward-facing batch action — do not touch the board before approval.
-</HARD-GATE>
-
-## Upward Revision
-
-Children read the parent's current state at dispatch — the dispatch
-stamps `parent-pin:` (the parent's commit, plus a hash of the parent's
-body as the child received it) into the child
-so "what contract did this child execute" is always answerable. A child
-revises its own means freely — and overturning advisory inheritance is
-revising means: the child states what it chose in its own document, lists
-the inherited sentence with its replacement for the parent's writer
-(evidence in a line), and moves on, no reconciliation. Discovery that touches a parent-owned end — purpose,
-acceptance, a cross-child contract, an edge, a BINDING design decision,
-the division itself — goes back to the session holding this composite,
-in the child's escalation or report (evidence + affected clauses;
-binding content the child never edits). That session judges
-materiality, rewrites the parent, and tells affected in-flight
-children. Purpose changes and material acceptance reductions go to the
-human. At final recomposition it runs the lineage check:
-every child's pin against the final parent revision (`git diff <the
-pin's commit> -- <composite>`, read against what the child built) — incorporated,
-explicitly irrelevant, or a corrective child.
-
-## The Pipeline
-
-Create a task per phase; complete them in order.
-
-Intake has two shapes. A COUPLED goal arrives as a matured, approved
-design — doperpowers:brainstorming matured it precisely because its
-pieces interact; that design document is this run's primary input, and
-the roadmap sections extend it in place (one document: design up top,
-roadmap below). An UNCOUPLED bundle arrives undesigned — its pieces
-share no design surface, so there was nothing to mature jointly; phases
-2–3 do the defining work here, and the design sections stay thin.
-
-1. **Ground the goal** — explore the code and repo state it touches.
-   Intent is trusted here, but a question the codebase can answer is
-   answered by reading, never asked. For matured intake, verify the
-   design's load-bearing code claims rather than re-deriving them.
-2. **Derive or propose the cut** — from a matured design, derive
-   children along its natural seams and grade each design decision's
-   authority (binding with its joint-view reason; advisory otherwise —
-   see the Derivation Contract). For an uncoupled bundle, propose
-   tentative children as goals with ordering and get the human's
-   reaction BEFORE deep grilling. Either way, check each child against
-   the code for already-built or partially-built reality: deliberate
-   initiatives assume greenfield more often than the code is.
-   Over-merging hides independent shippables; over-splitting loses
-   coherence — ask when unsure.
-3. **Grill the residue** — batched frontier rounds, each question with
-   your recommended answer (doperpowers:brainstorming's grill protocol):
-   child boundaries, dependency edges, cross-child contracts, authority
-   grades, and reservations that belong to a later cut rather than this
-   one. A matured design has already answered its architectural
-   questions — don't re-grill them; an uncoupled bundle needs each
-   piece's purpose and acceptance grilled here.
-4. **Author the composite spec** — per `references/composite-spec-template.md`,
-   born landed: v1 already carries the design and the grill's decisions,
-   and is kept current as [../execspec/references/living-spec.md](../execspec/references/living-spec.md) says. For matured intake,
-   extend the approved design spec in place rather than opening a
-   second document.
-5. **Self-review, then the human gate** — scan for placeholders and
-   contradictions, and run the traceability check: every load-bearing
-   declaration in the design has a counterpart slot in the children,
-   contracts, or acceptance sections. Commit the spec; the human's
-   approval opens phase 6, and the Tracking Map names the commit approved. (A design already approved in brainstorming
-   needs their eyes only on what this run added — the cut, the grades,
-   the contracts.)
-6. **Materialize onto the board (optional)** — when the project keeps its
-   backlog on the board: children as tickets with typed edges via
-   doperpowers:issue-tracker scripts, bodies fleshed to the pre-spec bar
-   and citing this composite spec (path + child id). Deferred entries that
-   are real work may register as parked tickets citing this composite spec, so
-   overflow from the design session keeps a durable home beyond the
-   Deferred list. Skip for document-only
-   projects — the tracking map is the handoff contract either way.
-7. **Dispatch and tend** — children go to their routes per their grain
-   hint, each carrying its section as pre-landed design and writing no
-   spec of its own: a brief child implements against its section and a
-   dispatch brief, a plan child grills only its residue
-   (doperpowers:brainstorming) and writes its standalone execution
-   document (living-spec.md, "A child of a composite spec"), a
-   spike writes findings, and a composite child runs this skill at its
-   own dispatch. Every child keeps a LEDGER: a plan child's record is its
-   committed execution document and the doperpowers:subagent-driven-execution ledger; a
-   brief child opens `docs/doperpowers/ledgers/YYYY-MM-DD-<child-id>.md`
-   on its branch at dispatch — it cites this document (path + child id +
-   parent pin), carries the brief verbatim, and then Progress as
-   deliverables land, in-flight Decisions with their rationale, Surprises,
-   and the flow-back raised; its outcome section, written at close, is
-   the child's retrospective and the Tracking Map points at it. What a
-   leaf's residue rulings change in this document, its one writer rewrites
-   into the child's section (below). As children land, the tracking map
-   and the sections their work touched stay current (a composite in the
-   earlier form continues its Decision Log and Surprises, as
-   living-spec.md says under "Keeping the spec current"); when
-   the children are all in, close the parent by RECOMPOSITION — verify the
-   parent's own acceptance, then write the retrospective; the Deferred
-   section seeds the next cut.
+Where the children are board tickets, bookkeeping returns the parent to
+`ready-for-architect` (`recomposition-due`) when its last child goes
+terminal instead of closing it, and the session holding the composite
+records the verdict there: `done` for a non-code parent; a closure
+package and `in-review` for a code-bearing one while its review runs, then
+`done` (doperpowers:issue-tracker, Epics).
 
 ## The Derivation Contract
 
@@ -268,9 +282,9 @@ grades:
   acceptance, edges, cross-child contracts, and any design decision
   that would come out differently without the whole picture in view
   (shared data models, interface shapes, failure semantics that span
-  children). Children never re-litigate binding content; discovery that
-  contradicts it flows back as `[parent-impact]` (see Upward Revision),
-  never a local override.
+  children). Children do not re-litigate binding content; discovery that
+  contradicts it flows back (Upward Revision) and is not overridden
+  locally.
 - **Advisory** — the parent's best full-picture thinking on matters
   local to one child: approach sketches, sequencing suggestions,
   anticipated pitfalls. The child inherits it as pre-landed grill
@@ -289,48 +303,11 @@ discovery into reconciliation traffic; a parent that withholds design
 to "let the child figure it out" throws away decisions that were only
 makeable with everything on the table.
 
-At dispatch, the child treats its section and its design inheritance as
-pre-landed grill input: it grills only the residue and never re-litigates
-landed decisions. Its section IS its spec. Design the child produces for
-itself expands that section in place; a leaf whose residue design trips
-the gate's split signals is a composite in disguise and gets its own
-composite spec instead. The child's artifacts — its brief or plan, its
-ledger, its PR or ticket — open by citing this composite spec (path +
-child id + parent pin); that citation is what keeps the flow-back channel
-alive when there is no board. Children read the parent document's
-*current* state at dispatch, never a frozen snapshot; when a rewrite
-touches an in-flight child's contract, tell that child.
-When a child's work contradicts the parent, the discovery flows back to
-the parent's writer — never silent
-divergence. This is the living-spec discipline one level up.
-
-Siblings authored or executed at the same time share this document, so it
-has one writer — the session running this skill. A child's author records
-its residue in the child's own document, and that writer rewrites what it
-changes here into the child's section; parallel
-authors editing one file drop each other's commits. When more than one
-child extends a contract before any of them lands, open an interface
-ledger beside the execution documents — every added name with its owner
-and consumers, the shared files and the order they land in — reconciled
-before the first executor starts and kept current as children land, so
-the interim contract siblings code against is one document rather than
-several that disagree.
-
-## Common Mistakes
-
-| Mistake | Fix |
-|---|---|
-| Running on a goal that passes the gate | That's a leaf with ceremony. Define it in doperpowers:brainstorming and dispatch it by its route. |
-| Running on a raw ungrounded ideadump | Wrong skill — doperpowers:organizing-sprints grounds testimony first. |
-| A cut that yields one child | A gate misfire: either the goal was already a leaf (ceremony), or the cut found no seam where children land independently. Back to the gate. |
-| Forcing division because a goal is big | The gate asks reliably-ownable, not small. Big-but-coherent is one leaf. |
-| Dividing branches far from the frontier | Distant CUTS go stale — commitments stay coarse until near execution. Captured design prose stays, graded advisory. |
-| Withholding design so the child can "figure it out" | Joint-view insight uncaptured is unrecoverable; write it down as advisory inheritance. Staleness flows back; loss doesn't. |
-| Binding child-local means | Advisory is the default grade; binding needs a joint-view reason. Flat bindingness turns every child discovery into reconciliation traffic. |
-| Cutting a coupled goal undesigned | The interaction surface is designable only with everything in view — doperpowers:brainstorming matures it first. Early routing is for uncoupled bundles. |
-| Treating level names as structure | Milestone/Epic/Phase are project annotations. The gate is the only law; depth is an output. |
-| Closing a parent by bookkeeping | Recomposition is verification against the parent's own acceptance, not a status flip. |
-| Inventing a tree registry | The tree is citations + edges + tracking maps. No new substrate. |
-| Materializing before spec approval | Outward-facing batch action; hard-gated on the human's review. |
-| Child quietly diverging from the parent | Contradictions flow back to the parent's writer, who rewrites the parent; flagged, not silent. |
-| Writing a spec for a leaf child | Its section is its spec — not a spec of its own, and not one carrying its own execution either: the composite is shared by parallel siblings, so the child's record is its brief or plan and its ledger. A leaf whose residue trips the split signals is a composite in disguise — cut it. |
+The child treats its section and its design inheritance as pre-landed
+grill input: it grills only the residue and does not re-litigate landed
+decisions. Its section is its spec. A leaf whose residue design trips the
+gate's split signals is a composite in disguise and gets its own composite
+spec instead. The child's artifacts — its brief or plan, its ledger, its
+PR or ticket — open by citing this composite spec (path + child id +
+parent pin); that citation is what keeps the flow-back channel alive when
+there is no board.

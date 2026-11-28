@@ -129,3 +129,35 @@ Every rep was read, not just counted. Revised-arm reasons converge on the
 skill's own vocabulary across reps ("narrow direct-track fix", "no shared
 design surface", "the track's review covers the residue"), so the shorter
 wording binds as tightly as the longer one did.
+
+## 2026-11-27 lean rewrite re-run
+
+The gate paragraph and its echoes were cut to one statement of whose
+decisions are whose (in the grill) and one of what waits for approval (in
+the presentation); the route became one section of facts. The five
+classification scenarios above were re-run against that text.
+
+Method: fresh general-purpose subagents, one per repetition, each told to
+read the skill snapshot as the guidance it works under and to classify the
+five scenarios in one reply; `opus` and `fable`, 5 repetitions each. The
+subagents load the user-level CLAUDE.md, which states the same preference,
+as in the 2026-09-09 runs. No control arm was run: the earlier no-guidance
+and before arms were already at ceiling, so the question was only whether
+the shorter text falls below it.
+
+- Snapshot: `4407c3088577e8ce8a01fc68cd686b2a05bfe85ae35ae9080470281f8761a220` (1,937 words)
+
+| Scenario | Expected | opus | fable |
+|---|---|---:|---:|
+| Authorized technical | PROCEED | 5/5 | 5/5 |
+| Unresolved product | PAUSE | 5/5 | 5/5 |
+| Mechanical fork | PROCEED | 5/5 | 5/5 |
+| Authorized execspec handoff, route not named | PROCEED | 5/5 | 5/5 |
+| Unresolved API-contract handoff | PAUSE | 5/5 | 5/5 |
+
+Every rep was read. PROCEED reasons state the design and the route in a line
+as they start ("I state the three-sentence design and the built-here route
+in a line and start"), so the presentation survives without an approval
+wait; PAUSE reasons put the fork to the partner with a recommendation.
+Not re-run: the first-round purpose scenario of
+`purpose-first-grill-eval.md`, whose section is unchanged.

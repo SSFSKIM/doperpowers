@@ -1,6 +1,6 @@
 ---
 name: organizing-sprints
-description: Use when a pile of raw observations or half-formed ideas — an ideadump, a walkthrough, a meeting transcript — needs to become the next sprint of work, especially when the notes may misread the code. A single idea is doperpowers:brainstorming; a deliberate goal that needs dividing is doperpowers:decomposing.
+description: Verified guidance on turning a pile of raw observations or half-formed ideas — an ideadump, a walkthrough, a meeting transcript — into the next sprint of work, especially when the notes may misread the code. A single idea is doperpowers:brainstorming; a deliberate goal that needs dividing is doperpowers:decomposing.
 disable-model-invocation: true
 ---
 
@@ -12,25 +12,15 @@ Turn a raw multi-observation note into one **umbrella sprint spec**, then
 materialize that spec onto the issue board as tickets with typed edges.
 The note is testimony; the codebase is truth. Every observation is grounded
 in code reality before it becomes work, every open question is landed by
-grilling BEFORE the spec is authored, and the spec — not the board — is the
-primary artifact: tickets, dependency edges, the plans derived from it, and the next
-milestone's reservations all flow from it, and its living sections track the
-sprint through to retrospective.
+grilling before the spec is authored (born landed beats revised), and the
+spec — not the board — is the primary artifact: tickets, dependency edges,
+the plans derived from it, and the next milestone's reservations all flow
+from it, and its living sections track the sprint through to retrospective.
 
-<HARD-GATE>
-MULTIPLE observations only. A single idea — however fuzzy — goes to
-doperpowers:brainstorming. One observation has nothing to cluster or cut.
-</HARD-GATE>
-
-<HARD-GATE>
-The materialize phase is gated on the human approving the written spec.
-Registering a sprint's worth of GitHub issues is an outward-facing batch
-action — do not touch the board until the spec document is approved.
-</HARD-GATE>
+A single idea, however fuzzy, is doperpowers:brainstorming's: one
+observation has nothing to cluster or cut.
 
 ## The pipeline
-
-Create a task per phase; complete them in order.
 
 1. **Ingest & atomize** — parse the note into discrete atomic observations.
    Lose none; merge none silently. When the note is itself a digest of
@@ -42,7 +32,7 @@ Create a task per phase; complete them in order.
    sketched interaction, the worked example — the form is part of the
    idea, not packaging around it) and their conversational status
    (endorsed, rejected, floated in passing, illustrative). Status is
-   testimony too — record it; don't adjudicate it silently.
+   testimony too: record it, and leave ruling on it to the grill.
 2. **Ground every observation in code** — fan out parallel explorations by
    area (native subagents) and classify each
    observation against code reality (see The verification table below).
@@ -51,7 +41,7 @@ Create a task per phase; complete them in order.
    only if they share a problem or outcome, not merely a topic or a page.
    Unsure whether two observations are one epic or two? Ask — over-merging
    hides independent shippables; over-splitting loses coherence. Present
-   the tentative map and get a reaction BEFORE deep grilling.
+   the tentative map and get a reaction before deep grilling.
 4. **Grill until every question lands** — batched frontier rounds, full
    record into the Decision Log (see The grill below). Milestone boundaries
    are grill questions too: work that outgrows this sprint is landed as a
@@ -61,11 +51,11 @@ Create a task per phase; complete them in order.
    born landed: v1 already carries the grill's decisions. Acceptance
    criteria are observable behavior. No per-epic plans of work —
    a big epic's plan is derived when the epic is taken, from this document.
-6. **Self-review, then the human gate** — scan for placeholders,
-   contradictions, and untraceable observations (every atomized observation
-   maps to an epic, a maintenance bundle, a deferral, or an explicit park).
-   Commit the spec; ask the human to review it. Only their approval opens
-   phase 7.
+6. **Self-review, then your human partner's approval** — check that
+   every atomized observation maps to an epic, a maintenance bundle, a
+   deferral, or an explicit park. Commit the spec and ask them to review
+   it. Tickets are registered from the approved spec: a sprint's worth of
+   issues cut from a draft has to be closed one by one.
 7. **Materialize onto the board** — see Materialization below. Often a
    separate session: the spec's tracking-map section is the handoff
    contract.
@@ -75,35 +65,10 @@ Create a task per phase; complete them in order.
    Decision Log / Surprises stay current; the retrospective closes it; its
    Deferred section seeds the next organizing run.
 
-```dot
-digraph organizing_sprints {
-    "Atomize the note" [shape=box];
-    "Ground in code (verification table)" [shape=box];
-    "Tentative streams/epics, get reaction" [shape=box];
-    "Grill in batched rounds" [shape=box];
-    "Every question landed or owner-assigned?" [shape=diamond];
-    "Author umbrella spec (born landed)" [shape=box];
-    "Human approves spec?" [shape=diamond];
-    "Materialize onto board + lint" [shape=box];
-    "Sprint runs; spec stays alive" [shape=doublecircle];
-
-    "Atomize the note" -> "Ground in code (verification table)";
-    "Ground in code (verification table)" -> "Tentative streams/epics, get reaction";
-    "Tentative streams/epics, get reaction" -> "Grill in batched rounds";
-    "Grill in batched rounds" -> "Every question landed or owner-assigned?";
-    "Every question landed or owner-assigned?" -> "Grill in batched rounds" [label="no / re-cut epics"];
-    "Every question landed or owner-assigned?" -> "Author umbrella spec (born landed)" [label="yes"];
-    "Author umbrella spec (born landed)" -> "Human approves spec?";
-    "Human approves spec?" -> "Author umbrella spec (born landed)" [label="changes"];
-    "Human approves spec?" -> "Materialize onto board + lint" [label="yes"];
-    "Materialize onto board + lint" -> "Sprint runs; spec stays alive";
-}
-```
-
 ## The verification table
 
 The heart of the grounding phase and the section the rest of the spec
-builds on. Classify EVERY observation:
+builds on. Classify every observation:
 
 | class | meaning | what it demands |
 |---|---|---|
@@ -112,9 +77,9 @@ builds on. Classify EVERY observation:
 | `[BUILT]` / `[PARTIAL]` | already exists, fully or partly | no work, or the delta only — name where it lives |
 | `[NOT-BUILT]` | absent | the sprint's real work |
 
-Why this is non-negotiable: a misread trusted as written ships the reverse
-of the actual requirement, and a feature assumed built but never checked
-becomes invisible sprint scope.
+A misread trusted as written ships the reverse of the actual requirement,
+and a feature assumed built but never checked becomes invisible sprint
+scope.
 
 ## The grill
 
@@ -150,8 +115,9 @@ lost.
 
 ## Materialization
 
-Runs only after the human approves the spec; often in a fresh session (the
-spec is self-contained).
+From the approved spec, often in a fresh session (the spec is
+self-contained). A sprint already on the board is not run through this
+skill again: answer on its tickets and register only the deltas.
 
 - One ticket per epic via `board-register.sh` (doperpowers:issue-tracker):
   priority always; slices as `--parent` children; ordering as
@@ -161,33 +127,21 @@ spec is self-contained).
   notes required).
 - Ticket bodies are fleshed to the pre-spec bar: self-contained, so a
   fresh-context session can take it from the body alone. Carry the epic's
-  decisions and acceptance criteria INTO the body, and cite the spec's epic
+  decisions and acceptance criteria into the body, and cite the spec's epic
   section (path + epic id) for surrounding context — the citation is
   context, not a substitute for self-containment.
-- Milestone + epic labels via raw `gh` are legal; states and edges go
-  through the scripts only (the Board Write Hard Gate).
+- Milestone and epic labels via raw `gh` are fine; states and edges go
+  through the issue-tracker scripts, which keep the board's schema.
 - **Disposition every pre-existing open ticket the sprint touches** —
   absorb into an epic, defer with a note, re-cut milestone/labels, or flag
   as a close candidate. A sprint that only adds tickets leaves the board
   lying.
-- Deferred-section reservations are registered as `deferred` tickets NOW —
-  scope-outs become tickets the moment the deferral is decided
-  (issue-tracker's deferral rule).
+- The Deferred section's reservations are registered as `deferred`
+  tickets in this same pass, each citing its entry: the section seeds the
+  next organizing run, and a reservation that lives only in this document
+  is not on the board when that run looks.
 - Finish with `board-lint.sh` at 0 FAIL, and write the record (epic → issue
   number, edges, dispositions) back into the spec's tracking-map section.
-
-## Common mistakes
-
-| Mistake | Fix |
-|---|---|
-| Building from the note | The verification table is truth; the note is testimony. A misread built as-written ships the reverse of what was wanted. |
-| Authoring the spec, then grilling | Born-landed beats revised: land the grill first, author once. |
-| Treating the whole dump as one project | It is usually several independent shippables. Cut streams and epics first. |
-| Per-epic plans of work in the umbrella | The umbrella stops at observable acceptance criteria; each epic's plan derives downstream when the epic is taken. |
-| Silent drops or merges | Every atomized observation traceable to an epic, a bundle, a deferral, or an explicit park. |
-| Re-running this skill on already-materialized tickets | Duplicate process. Targeted reinforcement instead: answer on the tickets, register only the deltas. |
-| Absorbing next-milestone ideas "while we're here" | Wrong milestoning is scope creep. Reserve them in the Deferred section + a `deferred` ticket. |
-| Skipping existing-ticket disposition | The board must reflect the sprint, not accumulate parallel truths. |
 
 ## Scale
 
@@ -195,6 +149,6 @@ The dump sets the scale — a handful of loose observations or a quarter's
 worth of accumulated notes both run the same phases; only the artifacts
 compress or grow. Epic count, ticket count, and document length are
 outputs of the shape rules (purpose-unit epics, gate-passing tickets),
-never targets: no floor, no ceiling. Never dropped, at any scale: the
+never targets: no floor, no ceiling. What every scale keeps: the
 verification table, observable acceptance criteria, the Decision Log with
 rejected alternatives, the tracking map, and the Deferred section.

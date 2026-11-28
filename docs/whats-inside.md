@@ -8,7 +8,7 @@ Everything the `doperpowers`, `sminos` and `to-human` plugins install, by what i
 
 | Skill | What it does |
 |---|---|
-| [`brainstorming`](../skills/brainstorming/SKILL.md) | Before any creative work: explores what the work should be, grills you in batched rounds until nothing is silently assumed, presents the design, and routes it: built here, or handed to `execspec` |
+| [`brainstorming`](../skills/brainstorming/SKILL.md) | For creative work whose shape is still open: explores what the work should be, grills you in batched rounds until nothing is silently assumed, presents the design, and routes it: built here, or handed to `execspec` |
 | [`execspec`](../skills/execspec/SKILL.md) | Turns an approved design into the living spec (design, acceptance, plan of work as milestones), reviews it, runs it, and keeps it stating the design as it stands |
 | [`decomposing`](../skills/decomposing/SKILL.md) | Splits a goal too big for one agent into child goals (a roadmap), and tends the tree as children land |
 | [`architecture-mapping`](../skills/architecture-mapping/SKILL.md) | Writes and maintains a repo's `ARCHITECTURE.md`, the map sessions read before asking where things live |
