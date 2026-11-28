@@ -35,12 +35,16 @@ error and `show`'s text are the built ones. What the stand-in adds:
                 `Board.look` writes those cells as a running member's
                 (`tally  heron (running)`), and the run's date as the
                 world's.
-  the help      `task <a human's verb> --help` is a usage error as built; an
-                arm with the `help` part prints the words' help.txt there
-                and after `task --help`.
+  the help      an arm with the `help` part prints the words' help.txt for
+                `task <a human's verb> --help` and after `task --help`.
+                When B5 ran, the built `--help` of a human's verb was a
+                usage error; each verb answers it since sminos 1.62.1 and
+                task 0.3.1, and an arm without the part gets that.
   tickets       the simulated project has no ticket board: a ticket form
-                answers as `task` answers in a clone whose default branch
-                holds no board file.
+                answers as `task` 0.3.1 answered in a clone whose default
+                branch holds no board file, which is what B5's runs met.
+                From 0.3.2 the answer also names `task list --human`, a
+                change those runs caused (the ledger's F1).
 
 The words (`Words`): a directory under task-board/ holding one version of
 what agents are told, in the four parts an arm switches:

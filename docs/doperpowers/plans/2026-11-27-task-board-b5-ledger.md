@@ -126,7 +126,7 @@ The scenario the words' change touches, `login`, at round 1's sizes; Fable's dec
 - **The one `login` run that is not right** filed nothing: its subagent reported the wall, the main session read `task assign-human --help`, and then a fault of the simulated project (a test count that did not move, a simulator's answer in prose) took the rest of its run. It is counted as it fell.
 - **The subagent varies, and both ways end on the board.** An Opus subagent loaded the skill and assigned the task in 3 of 10 runs of this round's `ship` cell, against 9 of 10 in round 1's, with the same words in front of it (the skill's description; the body differs only once loaded). Where it did not, it reported the wall to its caller, and the main session assigned the task in 6 of 7. Over both rounds: Opus as the subagent assigned in 21 of 30 runs; Sonnet in 0 of 10, its caller assigning in 10 of 10; a main session left with the wall assigned in 18 of 19.
 - **Fable, the decision, uncut.** 5 of 5 put the decision on the sheet, between the fourteenth and the twenty-fifth response, and each also put the password only an owner can rotate on the board as `needed`, its body saying how the human knows it is done. The decision's shell answered the pre-merge checks in this round, which is how Fable met the password.
-- **The sentence alone.** No subagent asked for the sign-in as a question (the control: 1 of 5, and a main session in another); all five went to `sminos task assign`. With no skill and no help they made 20 usage errors between them (`sminos task assign --help` is itself one), 4 subagents were cut off at twelve responses, 3 of them with the task assigned, and of the 4 tasks none says how the human knows it is done and 2 have no body. One of these sessions ran `sminos task act --help` while looking for help: the only call of the door in 100 runs, and no act.
+- **The sentence alone.** No subagent asked for the sign-in as a question (the control: 1 of 5, and a main session in another); all five went to `sminos task assign`. With no skill and no help they made 20 usage errors between them (`sminos task assign --help` was itself one at the parent pin; each verb answers it since sminos 1.62.1), 4 subagents were cut off at twelve responses, 3 of them with the task assigned, and of the 4 tasks none says how the human knows it is done and 2 have no body. One of these sessions ran `sminos task act --help` while looking for help: the only call of the door in 100 runs, and no act.
 
 ### Where it ends
 
@@ -149,6 +149,8 @@ No cell was borderline, so none was extended. `decision` on Opus, `wants` and `w
 **Not verified.**
 
 - `wants` and `wrong` on Fable, and `decision` on Opus, `wants` and `wrong` under v2.
+- The help as `task` and `sminos task` now print it. The runs read the words' help text, which the stand-in printed where the built commands had none; each verb's own `--help` landed on main while B5 ran and is not what these sessions read.
+- The ticket verb's new answer. `task list` with no ticket board names `task list --human` since task 0.3.2; the runs met the answer before it.
 - The start line. D2's words say an act is named again at the session's next start; no scenario starts a session with one waiting.
 - The notice as B1's M2 will push it. The eval builds the frame from the store's own text in sminos's chat frame; a decline, a comment, a successor's clause and a subagent's are not played.
 - A session without the to-human output style: every main session here is under it.
