@@ -125,8 +125,10 @@ def main(repo, task, rounds):
                             "missed": missed, "show_agrees": agrees})
             print("round %d (#%s): exits %s; winners %d; missed lower claims %d; show names the winner: %s"
                   % (counted, number, codes, len(winners), len(missed), agrees))
-        run([task, "close", number, "--repo", repo, "--not-planned", "--force", "live race round done"], driver,
-            check=False)
+        closed = run([task, "close", number, "--repo", repo, "--not-planned", "--force", "live race round done"],
+                     driver, check=False)
+        if closed.returncode != 0:  # the round still counts; the ticket is left open, and says so
+            print("  #%s was not closed (exit %d): %s" % (number, closed.returncode, closed.stderr.strip()))
         time.sleep(3)  # GitHub's limit on content writes per minute
     one = sum(1 for r in results if r["exits"].count(0) == 1)
     missed = sum(len(r["missed"]) for r in results)
