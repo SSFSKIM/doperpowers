@@ -1,6 +1,6 @@
 # What's inside
 
-Everything the `doperpowers`, `sminos` and `to-human` plugins install, by what it is for. Skills trigger from their own descriptions; the ones marked *manual* run only when you type their slash command. The marketplace also carries `devcloud`, `web` and `ci-kit`, each documented in its own directory.
+Everything the `doperpowers`, `sminos` and `to-human` plugins install, by what it is for. Skills trigger from their own descriptions; the ones marked *manual* run only when you type their slash command. The marketplace also carries `devcloud`, `web`, `task` (the ticket board's `task` command) and `ci-kit`, each documented in its own directory.
 
 ## doperpowers: skills
 
