@@ -411,15 +411,15 @@ pending. Each ring's fate is a debug line (`sheet: a ring is filled: …`,
 `session.start` has not yet restored the choice is known by its mark and
 dropped. In both runners a main turn that ends aborted (a Stop) sets
 `stoppedAt` in the kept choice, at once, from the mod's clock (not when a
-message preempted the turn: a later main turn had already begun, or a
-prompt typed over this one was admitted); a reload of the same session
-takes it up, a fork and a `/clear` start without it, and a prompt that
-enters the main conversation clears it: the mod's own idle prompt included,
-whether its row landed it first or it entered without the envelope, and only
-while the session it entered is still the current one (a prompt or idle
-submit still being admitted across a `/clear` clears nothing of the session
-after it); one entered while a reload restores the choice keeps the Stop
-from being taken up. While it is set the idle route opens only when the
+later main turn had already begun: a message preempted it); a reload of the
+same session takes it up, a fork and a `/clear` start without it, and the
+next main turn's start clears it, whatever began that turn (the person's
+prompt, the mod's own idle prompt, a scheduled prompt, a task notification),
+never a prompt's admission: a prompt folded into the running turn, a prompt
+dropped beneath and a slash command start no turn and clear nothing, and a
+Stop of the idle prompt's own turn is set after that turn's start, so its
+submit's late acknowledgement cannot clear it. A main turn that starts while
+a reload restores the choice keeps the Stop from being taken up. While it is set the idle route opens only when the
 view's `mainAcceptedAt`, the latest time the step accepted an answer still
 owed to the main conversation, is later than it (the same millisecond is
 held); that envelope carries everything as ever. The step reads its clock

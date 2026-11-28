@@ -1640,19 +1640,22 @@ sets `SheetKept.stoppedAt` (UTC to the millisecond, the step's own form) in
 the same synchronous stretch, from its own clock, the machine's the step
 stamps `acceptedAt` with, which the step reads once it holds the record's
 lock (an answer appended while a step waited on the lock is accepted after
-a Stop taken in the wait). An aborted end read after a message preempted
-the turn sets nothing: a later main turn has begun, or a prompt typed over
-that turn (`prompt.submit`'s `turnId`) was admitted. A reload of the same
+a Stop taken in the wait). An aborted end read after a later main turn
+has begun (a message preempted it) sets nothing. A reload of the same
 session takes it up before its first drain; a fork and a `/clear` start
-without it. A prompt that enters the main conversation clears it: one the
-prompt hook lets in (not a slash command, not one dropped), and the mod's
-own idle prompt once its submit answers that it entered (its row having
-landed it already or not, with the envelope or stripped of it); each only
-while the generation the prompt came under is still the current one, its
-session the kept one, so a prompt still being admitted across a `/clear`
-clears no Stop of the session after it. A prompt that comes before a
-reload's `session.start` restored the choice keeps the kept Stop from being
-taken up, its hooks resolving before the restore or after it.
+without it. The next main turn's start clears it (`turn.start` without an
+`agentId`), whatever began the turn: the engine mints every turn's id at
+its start, a hook that heard a turn's start hears its end after it, and on
+the main loop the start follows `prompt.submit`. Nothing clears it at a
+prompt's admission, a continuation after an await that no event orders: a
+prompt folded into the running turn (`prompt.submit`'s `turnId`) starts no
+turn, so that turn stopped holds; a prompt dropped beneath and a slash
+command start none and clear nothing; a Stop of the mod's own idle
+prompt's turn is set after that turn's start, so the submit's late
+acknowledgement cannot clear it; and no admission waiting across a reload
+or a `/clear` reaches another conversation's Stop. A main turn that starts
+before a reload's `session.start` restored the choice keeps the kept Stop
+from being taken up.
 While it is set the idle route opens only when the view's
 `mainAcceptedAt` (the step's: the latest `acceptedAt` among the pending
 answers for the main conversation, over the whole of `pending`; absent
