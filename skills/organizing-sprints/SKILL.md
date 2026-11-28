@@ -136,9 +136,10 @@ skill again: answer on its tickets and register only the deltas.
   absorb into an epic, defer with a note, re-cut milestone/labels, or flag
   as a close candidate. A sprint that only adds tickets leaves the board
   lying.
-- Deferred-section reservations are registered as `deferred` tickets now:
-  a scope-out becomes a ticket when the deferral is decided
-  (issue-tracker's deferral convention).
+- The Deferred section's reservations are registered as `deferred`
+  tickets in this same pass, each citing its entry: the section seeds the
+  next organizing run, and a reservation that lives only in this document
+  is not on the board when that run looks.
 - Finish with `board-lint.sh` at 0 FAIL, and write the record (epic → issue
   number, edges, dispositions) back into the spec's tracking-map section.
 
