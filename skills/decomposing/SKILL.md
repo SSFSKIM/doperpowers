@@ -207,9 +207,12 @@ in a line), and moves on, no reconciliation.
 Discovery that touches a parent-owned end — purpose, acceptance, a
 cross-child contract, an edge, a binding design decision, the division
 itself — goes back to the session holding the composite, in the child's
-escalation or report, with the evidence and the affected clauses (where
-the parent is a board ticket, also as a `[parent-impact]` comment on it);
-binding content the child never edits. That session judges materiality,
+escalation or report, with the evidence and the affected clauses;
+binding content the child never edits. Where the child is a board ticket
+the durable record is a typed event on the child's own ticket, naming the
+parent in its text (`board-comment.sh <child> --kind parent-impact`,
+rendered `[parent-impact]`): the board reads the event on the child, and
+a plain comment carrying the marker is not one. That session judges materiality,
 rewrites the parent, and tells the in-flight children whose contract the
 rewrite touches. Purpose changes and material acceptance reductions go to
 your human partner.
@@ -230,9 +233,13 @@ A non-code parent closes on its verification evidence. A code-bearing
 one — children that touched one executable surface, cross-child
 invariants, multi-repo composition, or a composite that marks review
 required — also gets the independent review its Verification section
-names, on the integrated result (doperpowers:review-code); a defect that
-review finds becomes a corrective child, and the parent recomposes again
-when it lands.
+names, on the integrated result (doperpowers:review-code). Give that
+review its range: the children have already merged, so the skill's
+default (the merge base with `main` to `HEAD`) is empty or holds only the
+closing document. The range is the commit before the first child landed
+to the integrated head, or each repository's landed range for a composite
+that spans several. A defect the review finds becomes a corrective child,
+and the parent recomposes again when it lands.
 
 Where the children are board tickets, bookkeeping returns the parent to
 `ready-for-architect` (`recomposition-due`) when its last child goes
