@@ -56,9 +56,12 @@ class Board:
 
 def _git(cwd, *args):
     try:
-        done = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, text=True, timeout=30)
+        done = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                              timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise failed("git %s could not run: %s" % (" ".join(args), e))
+    except UnicodeDecodeError:
+        raise failed("git %s gave text that is not UTF-8" % " ".join(args))
     return done.returncode, done.stdout, done.stderr
 
 

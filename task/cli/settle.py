@@ -220,6 +220,8 @@ def _settle_row(client, login, repo, row, ask, report):
     I.change(token, title=t.node["title"], url=t.node["url"])
     if t.state != "open":
         converge(client, login, t)
+        if row["state"] == I.PENDING and _may_still_land(t, row):
+            return  # the ticket may be reopened before the record lands: kept as an unfound record's row is
         if I.remove(token, expect=st):
             report["closed"].append(_entry(row))
         return
@@ -283,6 +285,13 @@ def _release(client, login, t, row, report):
         report["lapsed"].append(_entry(row, reason=reason))
 
 
+def _may_still_land(t, row):
+    """A pending row whose record the read does not show, young enough that
+    its writer may still be appending it (a POST in flight): kept, whatever
+    the ticket's state, until PENDING_KEPT has passed."""
+    return t.fold.by_attempt(row["attempt"]) is None and I.age(row["at"]).total_seconds() < PENDING_KEPT
+
+
 def _settle_pending(client, login, t, row, report):
     """A row whose record was appended and never confirmed, on an open
     ticket: the record that carries its token is found, and the row follows
@@ -291,7 +300,7 @@ def _settle_pending(client, login, t, row, report):
     token, pending = row["attempt"], (I.PENDING,)
     rec = t.fold.by_attempt(token)
     if rec is None:
-        if I.age(row["at"]).total_seconds() >= PENDING_KEPT:
+        if not _may_still_land(t, row):
             I.remove(token, expect=pending)
         return None
     kind, other = t.fold.outcome(rec.id)

@@ -124,11 +124,14 @@ def _row(ticket, login):
 def _inside_a_work_tree(directory):
     """The work tree holding a directory, or None when git confirms there is
     none; any other answer (no git, a timeout, a repository git declines to
-    read) decides nothing, and the plan is not written."""
-    env = {k: v for k, v in os.environ.items() if k != "LANGUAGE"}
-    env["LC_ALL"] = "C"  # the one message read below, untranslated
+    read) decides nothing, and the plan is not written. Git finds the
+    repository from the directory alone: every GIT_* variable (a GIT_DIR a
+    hook set, a ceiling) is dropped, and discovery crosses filesystems."""
+    env = {k: v for k, v in os.environ.items() if k != "LANGUAGE" and not k.startswith("GIT_")}
+    env.update(LC_ALL="C", GIT_DISCOVERY_ACROSS_FILESYSTEM="1")  # the one message read below, untranslated
+    physical = os.path.realpath(directory)
     try:
-        done = subprocess.run(["git", "-C", str(directory), "rev-parse", "--show-toplevel"], capture_output=True,
+        done = subprocess.run(["git", "-C", physical, "rev-parse", "--show-toplevel"], capture_output=True,
                               text=True, timeout=30, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         why = "git did not answer in time" if isinstance(e, subprocess.TimeoutExpired) else "git could not run: %s" % e

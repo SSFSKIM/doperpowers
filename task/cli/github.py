@@ -163,7 +163,10 @@ class Client:
             raise failed("%s's %s could not be read: %s" % (repo, path, e.message))
         if not isinstance(out, dict) or out.get("encoding") != "base64":
             return None
-        return base64.b64decode(out["content"]).decode("utf-8")
+        try:
+            return base64.b64decode(out["content"]).decode("utf-8")
+        except ValueError:  # not base64, or not UTF-8: as unreadable as a file that is not JSON
+            raise failed("%s's %s is not UTF-8 text: no board for task" % (repo, path))
 
     # ── reads ─────────────────────────────────────────────────────────────
     def issue(self, repo, number):

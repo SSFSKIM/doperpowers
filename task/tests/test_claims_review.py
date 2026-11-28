@@ -4,6 +4,7 @@ identity, the settle's deadline, housekeeping after preflight, a
 repository that cannot be read, close, the void claim's report, the board
 key, the label's 422, the outcome judged on the last read, the binding
 read before a settle writes, conditional index transitions)."""
+import base64
 import json
 import time
 import unittest
@@ -520,6 +521,64 @@ class FinalWaveTest(SettleCase):
         self.assertEqual(self.json("show", "5")["holder"]["address"], OTHER_ADDRESS)
         mine = [r for r in self.rows() if r["session"] == SESSION]
         self.assertEqual([(r["state"], r["reason"]) for r in mine], [("lapsed", "taken-over")])
+
+
+class FinalWaveTwoTest(SettleCase):
+    def settle_run(self):
+        return {"run": {"argv": [str(TASK), "settle", "--thread", THREAD]}}
+
+    def test_a_pending_row_outlives_a_close_its_record_has_not_met(self):                    # 1
+        self.ticket(5)
+        # The claim's append is in flight: the ticket is closed, settled, and reopened before it lands.
+        self.hook(COMMENTS, [{"close": {"number": 5}}, self.settle_run(), {"reopen": {"number": 5}}],
+                  stdin="op: claim")
+        code, out, err = self.task("claim", "5")
+        self.assertEqual(code, 0, err)
+        [rec] = self.records()
+        self.assertEqual(self.json("show", "5")["holder"]["claim"], rec["id"])
+        [row] = self.rows()
+        self.assertEqual((row["state"], row["claim"]), ("held", rec["id"]))
+
+    def test_a_loss_is_applied_to_a_row_a_settle_made_held(self):                             # 3
+        self.ticket(5)
+        # At the claim's label write: a settle makes the row held, then a forced takeover ends the claim.
+        body = takeover_body(0).replace("of: 0", "of: {last}")
+        self.hook(REPO + "/issues/5/labels", [self.settle_run(), {"comment": {"number": 5, "body": body}}])
+        code, out, err = self.task("claim", "5")
+        self.assertEqual(code, 3, out + err)
+        [row] = self.rows()
+        self.assertEqual((row["state"], row["reason"]), ("lapsed", "taken-over"))
+        code, out, _ = self.task("held", "--session", SESSION, "--thread", THREAD, "--json", repo=False)
+        self.assertEqual(json.loads(out)["held"], [])
+
+    def test_a_board_file_that_is_not_utf8_leaves_the_other_boards_settled(self):            # 5
+        gears = "acme/gears"
+        self.add_repo(gears)
+        self.save()
+        self.claimed(5)
+        self.claimed(6, repo=gears)
+        self.ended()
+        self.load()
+        raw = b'{"binding": "task", "repo": "acme/widgets", "note": "\xff"}'
+        self.state["repos"][REPO]["files"] = {".doperpowers/board.json": {"base64": base64.b64encode(raw).decode()}}
+        self.save()
+        data = self.settle()
+        [u] = data["unreachable"]
+        self.assertEqual(u["repo"], REPO)
+        self.assertIn("not UTF-8", u["said"])
+        self.assertEqual(self.row(5)["state"], "held")
+        self.assertEqual(self.row(6, gears)["state"], "lapsed")
+        self.assertEqual(len(self.releases(6, gears)), 1)
+
+    def test_a_hook_whose_command_fails_fails_the_call(self):                                 # 6
+        self.ticket(5)
+        fails = ["python3", "-c", "import sys; sys.stderr.write('it broke'); sys.exit(3)"]
+        self.hook("query TaskIssue", [{"run": {"argv": fails}}])
+        code, _, err = self.task("show", "5")
+        self.assertEqual(code, 1, err)
+        self.assertIn("exited 3, not 0: it broke", err)
+        self.hook("query TaskIssue", [{"run": {"argv": fails, "exit": 3}}])
+        self.assertEqual(self.task("show", "5")[0], 0)
 
 
 if __name__ == "__main__":

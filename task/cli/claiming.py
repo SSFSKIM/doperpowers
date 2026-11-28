@@ -305,6 +305,7 @@ def _claim_one(ctx, number, address, thread):
                 # takeover or a release may have landed by then.
                 last = S.converge(ctx.client, t.login, t2)
                 kind, other = last.fold.outcome(own)
+                # A loss is applied from any state not yet final: a settle may have made the row held meanwhile.
                 pending = (I.PENDING,)
                 if kind == C.CURRENT:
                     I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
@@ -312,12 +313,12 @@ def _claim_one(ctx, number, address, thread):
                             "owner's word" % ", ".join(unmet)) if unmet else ""
                     return Result(OK, "#%d: claimed (claim %d)%s" % (number, own, note))
                 if kind == C.SUPERSEDED:
-                    I.change(token, expect=pending, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
+                    I.change(token, expect=I.ACTIVE, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
                              since=last.fold.by_id(own).created)
                     return Result(REFUSED, "#%d: the claim (%d) took effect and was then ended by %s: it was taken "
                                            "on purpose, so it is not claimed again" % (number, own, _ended_by(other)))
                 if kind != C.MISSING:  # closed, or closed and reopened, since it took effect
-                    I.remove(token, expect=pending)
+                    I.remove(token, expect=I.ACTIVE)
                     return Result(REFUSED, "#%d: the claim (%d) took effect and the ticket was closed since"
                                   % (number, own))
             if kind == C.MISSING:
@@ -499,18 +500,18 @@ def takeover(ctx):
                 I.lapse(left["attempt"], "taken-over", expect=(I.HELD, I.OWED))
             last = S.converge(ctx.client, t.login, t2)
             kind, other = last.fold.outcome(own)
-            pending = (I.PENDING,)
+            pending = (I.PENDING,)  # a loss, as for a claim, from any state not yet final
             if kind == C.CURRENT:
                 I.change(token, expect=pending, state=I.HELD, claim=own, since=last.fold.by_id(own).created)
                 print("#%d: taken over (claim %d, of %d, %s)" % (number, own, h.id, forced or "cleared"))
                 return
             if kind == C.SUPERSEDED:
-                I.change(token, expect=pending, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
+                I.change(token, expect=I.ACTIVE, state=I.LAPSED, reason=_lapse_reason(other), claim=own,
                          since=last.fold.by_id(own).created)
                 raise refused("#%d: the takeover (%d) took effect and was then ended by %s" % (number, own,
                                                                                             _ended_by(other)))
             if kind != C.MISSING:
-                I.remove(token, expect=pending)
+                I.remove(token, expect=I.ACTIVE)
                 raise refused("#%d: the takeover (%d) took effect and the ticket was closed since" % (number, own))
         if kind == C.MISSING:
             raise failed("#%d: the confirming read did not show the takeover's own record (comment %d): the next "

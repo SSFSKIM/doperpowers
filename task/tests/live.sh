@@ -40,8 +40,8 @@ unset CLAUDE_CODE_SESSION_ID
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# A case writes to its repositories only once github.com has said each is private: its full name is kept in
-# resolved_<variable> (a renamed repository's answer is its new name).
+# A case writes to its repositories only once github.com has said each is private: the last one checked has its
+# full name, in lower case, in `resolved` (a renamed repository's answer is its new name).
 scratch() {
   need "$1"
   local seen
@@ -53,7 +53,23 @@ scratch() {
     echo "live.sh $case: $1 is not a private repository; nothing was run" >&2
     exit 2
   fi
-  printf -v "resolved_$1" '%s' "$(lower "${seen% *}")"
+  resolved="$(lower "${seen% *}")"
+}
+
+# A case that seeds or clears issues by hand does so only on a board whose default branch says binding "task" and
+# names that repository: a scratch repository given by mistake is never written to.
+board_of_task() {
+  local content
+  if ! content="$(gh api --hostname github.com "repos/${!1}/contents/.doperpowers/board.json" -q .content)" ||
+    ! python3 -c '
+import base64, json, sys
+data = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+sys.exit(0 if isinstance(data, dict) and data.get("binding") == "task"
+         and str(data.get("repo", "")).lower() == sys.argv[2].lower() else 1)' "$content" "${!1}" 2> /dev/null; then
+    echo "live.sh $case: $1's default branch has no .doperpowers/board.json saying binding \"task\" and naming it;" \
+      "nothing was run" >&2
+    exit 2
+  fi
 }
 
 case "$case" in
@@ -101,8 +117,9 @@ PY
     ;;
   edge)
     scratch TASK_LIVE_REPO
+    first="$resolved"
     scratch TASK_LIVE_REPO2
-    if [ "$resolved_TASK_LIVE_REPO" = "$resolved_TASK_LIVE_REPO2" ]; then
+    if [ "$first" = "$resolved" ]; then
       echo "live.sh edge: TASK_LIVE_REPO and TASK_LIVE_REPO2 are one repository; the case needs two" >&2
       exit 2
     fi
@@ -139,6 +156,7 @@ print(any((b["repo"].lower(), b["number"]) == want for b in json.load(sys.stdin)
     # it did not make is "leave"), applies twice and lints; its issues are closed at the end, and at the start
     # when an earlier run left them open. The fork case's standing ticket is on the board already: no row.
     scratch TASK_LIVE_REPO
+    board_of_task TASK_LIVE_REPO
     helper="$here/live_migrate.py"
     python3 "$helper" clear "$TASK_LIVE_REPO"
     # On a failure the work directory (the plan, each step's output) is kept and named.

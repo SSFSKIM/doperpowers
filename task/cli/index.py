@@ -18,6 +18,7 @@ from common import failed
 LAPSED_KEPT = datetime.timedelta(days=7)
 # The states of §7: a pending row's record is not yet confirmed; an owed row's release is due.
 PENDING, HELD, OWED, LAPSED = "pending", "held", "owed", "lapsed"
+ACTIVE = (PENDING, HELD, OWED)  # a row not yet settled for good
 
 
 def home():

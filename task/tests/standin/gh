@@ -24,9 +24,11 @@ State ($TASK_GH_STATE):
                 another writer creates), {vanish: {repo}} (the repository gone from
                 the credential's sight), {sleep: seconds}, {kill: true} (the
                 calling process, killed as the call returns: a writer that
-                dies after a write), {run: {argv, env}} (another command run
-                to its end meanwhile, with `env` over the call's environment)
-  repos         {"owner/name": {default_branch, files: {path: text},
+                dies after a write), {run: {argv, env, exit}} (another command
+                run to its end meanwhile, with `env` over the call's
+                environment; an exit other than `exit`, default 0, fails the
+                call)
+  repos         {"owner/name": {default_branch, files: {path: text | {base64}},
                  labels: {name: {color, description}}, next,
                  issues: {"<n>": issue}}}
 An issue: number, title, body, state (OPEN|CLOSED), stateReason, author,
@@ -279,7 +281,8 @@ def rest(s, method, path, params, data):
         text = r.get("files", {}).get(urllib.parse.unquote(rest_[len("contents/"):]))
         if text is None:
             fail(404, "Not Found")
-        return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+        raw = text["base64"] if isinstance(text, dict) else base64.b64encode(text.encode()).decode()
+        return {"encoding": "base64", "content": raw}
     if rest_ == "labels" and method == "GET":
         return [{"name": n, "color": l.get("color", ""), "description": l.get("description", "")}
                 for n, l in r.get("labels", {}).items()]
@@ -372,8 +375,13 @@ def delete_comment(s, path):
 # ── hooks: what another writer does at a chosen moment ─────────────────────
 def act(action):
     if "run" in action:
-        subprocess.run(action["run"]["argv"], env=dict(os.environ, **action["run"].get("env", {})),
-                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        run = action["run"]
+        done = subprocess.run(run["argv"], env=dict(os.environ, **run.get("env", {})), stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=60)
+        if done.returncode != run.get("exit", 0):  # a hook that did not do its part fails the call, and says why
+            sys.stderr.write("stand-in gh: a hook's command exited %d, not %d: %s\n"
+                             % (done.returncode, run.get("exit", 0), done.stderr.strip()))
+            sys.exit(1)
         return
     s = load()
     if "sleep" in action:

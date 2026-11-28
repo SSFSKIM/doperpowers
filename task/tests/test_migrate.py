@@ -199,6 +199,17 @@ class PlanTest(MigrateCase):
         self.assertEqual(code, 0, err)
         self.assertTrue(self.plan_path.exists())
 
+    def test_the_probe_ignores_gits_environment(self):
+        # As a hook runs: GIT_DIR relative, or a ceiling that hides the checkout from the directory below it.
+        clone = self.clone()
+        for name, env in (("GIT_DIR", {"GIT_DIR": ".git"}), ("ceiling", {"GIT_CEILING_DIRECTORIES": str(clone)})):
+            with self.subTest(env=name):
+                out = clone / "sub" / ("plan-%s.json" % name)
+                code, _, err = self.task("migrate", "plan", "--out", str(out), env=env)
+                self.assertEqual(code, 2, err)
+                self.assertIn("inside the work tree", err)
+                self.assertFalse(out.exists())
+
     def test_without_out_the_plan_goes_to_the_plugins_home(self):
         code, out, err = self.task("migrate", "plan")
         self.assertEqual(code, 0, err)
