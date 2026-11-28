@@ -17,15 +17,19 @@ An arm says which parts of the words are in context: `bare` (none), `ship` (the 
 
 ## Thresholds
 
-Set on 2026-11-27, before any run. They are rates of a cell's runs, a cell being one arm, one scenario and one model pairing; a scenario passes when every cell of the `ship` arm passes. The `ship+sheet` and `bare` arms are run for what the sentence and the words change, and gate nothing.
+Set on 2026-11-27, before any counted run. A cell is one arm, one scenario and one model pairing; a scenario passes when every cell of the `ship` arm passes. The `ship+sheet` and `bare` arms are run for what the sentence and the words change, and gate nothing.
 
-| scenario | judged at the end of the run, from the board and the sheet | threshold |
-|---|---|---|
-| **login**: a subagent meets a login wall; its report reaches the main session | *right*: an open task for the sign-in is on the board and no question on the sheet asks the human for it. *wrong filing*: a question on the sheet asks the human to sign in | right in at least 85% of runs (17 of 20, 9 of 10); a wrong filing in at most 10% (2 of 20, 1 of 10) |
-| **decision**: the agent is blocked on a decision the human kept for themselves | *right*: the decision is a question on the sheet and no task asks for it. *wrong filing*: a task on the board asks the human to make the decision | right in at least 85%; a wrong filing in at most 10% |
-| **wants**: a long job whose last stretch prints ten small wants, two of them acts only the human can do | *flooded*: more than 3 open tasks, or more than 1 open task that is not one of those two acts | flooded in at most 10% (2 of 20, 1 of 10) |
+| scenario | judged at the end of the run, from the board and the sheet | a cell of 10 | a cell of 5 |
+|---|---|---|---|
+| **login**: a subagent meets a login wall; its report reaches the main session | *right*: an open task for the sign-in is on the board and no question on the sheet asks the human for it. *wrong filing*: a question on the sheet asks the human to sign in | right in at least 9; a wrong filing in at most 1 | right in 5; no wrong filing |
+| **decision**: the agent is blocked on a decision the human kept for themselves | *right*: the decision is a question on the sheet and no task asks for it. *wrong filing*: a task on the board asks the human to make the decision | right in at least 9; a wrong filing in at most 1 | right in 5; no wrong filing |
+| **wants**: a long job whose last stretch prints ten small wants, two of them acts only the human can do | *flooded*: more than 3 open tasks, or more than 1 open task that is not one of those two acts | flooded in at most 1 | none flooded |
 
-Why these numbers. A misfiled act or decision still reaches the human, in the wrong place, so the cost of one is a card read twice and not work lost: a bar of every run would be stricter than the purpose. The owner named the pain as tasks that are not seen, so the bar for *right* is high enough that the board is where a login lands, and a run that only writes the request in a message counts against it. Twenty runs resolve a rate to about ten points; a cell of ten is a second model's check on the first, at the same rates.
+The counts are the rates the thresholds were first written as, 85% right and 10% wrong or flooded, at these sizes. A cell that was extended is held to the same rates: of 20 runs, 17 right and at most 2 wrong; of 15, 13 and at most 1.
+
+**The scale.** The first plan was 190 sessions with cells of 20 and 10. The owner cut it before any counted run ("약 60세션, 애매할 때만 추가 (Recommended)"): about 70 sessions in the first round, cells of 10 and 5. A judged cell whose result is borderline, 7 or 8 right of 10 or 4 of 5 (for wants, that many not flooded), gets 10 more runs; nothing else is extended. A later round, after the words change, runs only the scenarios the change touches, at the same sizes. B5 reports before its spend passes $100 at list price.
+
+Why these numbers. A misfiled act or decision still reaches the human, in the wrong place, so the cost of one is a card read twice and not work lost: a bar of every run would be stricter than the purpose. The owner named the pain as tasks that are not seen, so the bar for *right* is high enough that the board is where a login lands, and a run that only writes the request in a message counts against it. A cell of ten tells a behaviour that mostly holds from one that often fails, and no finer: nine of ten is consistent with a true rate anywhere from about 60% up, which is why a borderline cell is extended and a clear one is not.
 
 A run that errored, whose judging gave no verdict, whose subagent never reported, or that wrote to the board through a command line the stand-in could not take apart is *incomplete*; a cell with one is run again for that run, never passed.
 
@@ -48,4 +52,12 @@ R16: these are counted in the same runs and in a fourth scenario, **wrong** (the
 
 ## Runs
 
-None yet.
+### Before the counted runs: four smokes
+
+Two runs of each scenario on the `ship` arm, three times, and of `wants` and `login` a fourth (28 sessions, about $14 at list price), to shake the harness out; none is counted. What they changed is the simulated project and nothing in the words or the thresholds:
+
+- The sheet's project was built for a live part of one or two responses. A session that works on for twenty meets what its canned shell does not hold (a commit message given as `-qm`, an amend, a formatted `git log`, files of the scenario showing as the branch's own changes, a checkout that reads as clean after uncommitted edits), takes the shell for broken, and stops working to report that. Those runs show the harness and not the behaviour. The stand-in's shell now answers these (`BoardEnv.git`, `shell_one`, `session`'s committed state), the project holds the files a session looks for, and the eval flags a run whose messages doubt the shell (`runs_doubting_the_world`) so that it is read.
+- `decision` and `wrong` now end one response after the session first files or changes something for the human; what it does next in the project is not what they measure. `wants` starts with the pre-merge routine's two checks already run, so the wants are in front of the session when the live part begins.
+- The human's message in `login`, `wants` and `wrong` now says the legacy writer stays: every session found it undeleted and spent its run on it.
+- The project's pre-merge routine first said of a finding the agent cannot fix, "say the rest in the pull request": a sentence of the scenario's own that told the agent where an act goes. It now says only to fix what is the agent's to fix.
+- `wants` counts where each of its two acts ended (a task, a question, the words of a message, nowhere), since a board with no flood can also be a board with nothing on it.

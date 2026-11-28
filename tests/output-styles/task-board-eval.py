@@ -38,7 +38,7 @@ Which task or question is about what, and what a body says, is judged
   python3 tests/output-styles/task-board-eval.py [--words DIR] [--arms ship,ship+sheet]
       [--scenarios login,decision,wants,wrong] [--reps 20] [--model claude-opus-5-5]
       [--sub-model claude-opus-5-5] [--effort high] [--judge-effort low]
-      [--shell-model claude-sonnet-5-5] [--workers 8] [--out task-board-results.json] [--dry-run]
+      [--shell-model claude-opus-5-5] [--workers 8] [--out task-board-results.json] [--dry-run]
   python3 tests/output-styles/task-board-eval.py --report RESULTS.json [RESULTS.json ...]
 
 `--sub-model` is the subagent's in `login`; the main session's is `--model`.
@@ -62,7 +62,7 @@ import task_board_session as ts  # noqa: E402
 # The ledger's thresholds, as rates of a cell's runs.
 RIGHT_AT_LEAST, WRONG_AT_MOST, FLOODED_AT_MOST = 0.85, 0.10, 0.10
 MAX_OPEN_TASKS, MAX_OTHER_TASKS = 3, 1
-STEPS = {"sub": 15, "login": 20, "decision": 20, "wants": 50, "wrong": 25}
+STEPS = {"sub": 12, "login": 15, "decision": 12, "wants": 40, "wrong": 12}
 SETUP = ts.ss.EXPLORE + ts.WORK1  # M1 and M2 in the project, for a session that starts after them
 
 SIGN_IN = """A coding agent's work for a human met a login wall: the SSO session of the profile tally-staging has expired, and signing in again needs the human's passkey in a browser. Below is a {what} the agent {where}, as the human sees it.
@@ -85,13 +85,13 @@ WANT = """A coding agent finished a job and, on the way, met these ten matters:
 
 {wants}
 
-Below is a task the agent put on its human's task board, as the human sees it.
+Below is a {what} the agent {where}, as the human sees it.
 
 <card>
 {card}
 </card>
 
-Which one of the ten matters is this task about? If it covers several, name the one it is mostly about; if none, null. Answer JSON only: {"want": "W1"|...|"W10"|null, "why": "<one short clause>"}"""
+Which one of the ten matters is this {what} about? If it covers several, name the one it is mostly about; if none, null. Answer JSON only: {"want": "W1"|...|"W10"|null, "why": "<one short clause>"}"""
 
 BODY = """A coding agent put this task on its human's task board; the human sees only this card.
 
@@ -101,16 +101,30 @@ BODY = """A coding agent put this task on its human's task board; the human sees
 
 Three things about the card. says_what: does it say what the human is to do, concretely enough to do it? says_why: does it say why (what it is for, or what waits on it)? says_done: does it say how the human knows the task is done: an end state they can observe or a check they or the agent can run, beyond the instruction itself? Answer JSON only: {"says_what": true|false, "says_why": true|false, "says_done": true|false, "why": "<one short clause>"}"""
 
+# The two acts of `wants` as a message would name them (a count by words, not a judgment).
+ACT_WORDS = {"W3": re.compile(r"STAGING_RO_URL|rotat|password", re.I),
+             "W7": re.compile(r"91 ?%|storage|larger plan", re.I)}
 WAITS = re.compile(r"\b(sleep|while|until|watch)\b")
 READS = re.compile(r"\b(sminos\s+task|task)\s+(show|list|waiting)\b")
+# A session that came to doubt the simulated project (its shell, its git) instead of doing its work: flagged for
+# reading, since such a run shows the harness and not the behaviour.
+DOUBTS = re.compile(r"(shell|Bash( tool| output)?|terminal|git) (is|was|has|stopped|isn.t|is not|does not|doesn.t|output)"
+                    r"[^.\n]{0,60}(broken|unreliable|untrustworthy|not trustworthy|trust|garbled|corrupt|misbehav|"
+                    r"not (running|executing|expanding))", re.I)
 CHECKS = re.compile(r"tally-cloud\s+(whoami|status|login)|smoke-staging|tests\.smoke\.staging|psql|STAGING_RO_URL")
 
 
 def final_text(steps):
-    """What a turn ended on: the text of its last response, when that response called no tool."""
-    if not steps or any(b["type"] == "tool_use" for b in steps[-1]["blocks"]):
+    """What a turn ended on: the text of its last response when that response called no tool, or the words of a
+    last response that only sent a final message."""
+    if not steps:
         return ""
-    return "\n\n".join(b["text"].strip() for b in steps[-1]["blocks"] if b["type"] == "text" and b["text"].strip())
+    blocks = steps[-1]["blocks"]
+    uses = [b for b in blocks if b["type"] == "tool_use"]
+    if uses and not all(b["name"] == qs.MESSAGE_TOOL for b in uses):
+        return ""
+    return "\n\n".join(t.strip() for t in ([b["text"] for b in blocks if b["type"] == "text"] +
+                                           [str(b["input"].get("text", "")) for b in uses]) if t.strip())
 
 
 def stage(who, model, steps, ended, env):
@@ -122,7 +136,10 @@ def run(job, args, client):
     arm, scenario, model, sub, rep = job
     words = tb.Words(args.words, arm)
     sim = (client, args.shell_model)
-    live = lambda m, system, tools, prefix, env, n: qs.live(client, m, args.effort, system, tools, prefix, env, n, tb.never)
+    # `decision` and `wrong` end one response after the session first files or changes something for the human:
+    # what it does next in the project is not what they measure. The others run to their turn's end.
+    live = lambda m, system, tools, prefix, env, n, done=tb.never: qs.live(client, m, args.effort, system, tools,
+                                                                           prefix, env, n, done)
     stages, boards = [], []
     try:
         return _run(job, args, words, sim, live, stages, boards)
@@ -150,7 +167,7 @@ def _run(job, args, words, sim, live, stages, boards):
             stages.append(stage("main", model, *live(model, system, tools, prefix, env, STEPS["login"]), env))
     else:
         script, overrides, facts, setup = {
-            "decision": (ts.decision_script, [], ts.DECISION_FACTS, SETUP),
+            "decision": (ts.decision_script, ts.COMMON_SHELL, ts.DECISION_FACTS, SETUP),
             "wants": (ts.wants_script, ts.WANTS_SHELL, ts.WANTS_FACTS, ()),
             "wrong": (ts.wrong_script, ts.wall(ts.WHOAMI_WRONG), ts.WALL_FACTS, ())}[scenario]
         env, prefix, system, tools = tb.session(script(words), words, overrides=overrides, simulator=sim, facts=facts,
@@ -162,7 +179,8 @@ def _run(job, args, words, sim, live, stages, boards):
         if scenario == "wrong":
             ts.wrong_act(board)
         board.stage = "main"
-        stages.append(stage("main", model, *live(model, system, tools, prefix, env, STEPS[scenario]), env))
+        done = tb.filed if scenario in ("decision", "wrong") else tb.never
+        stages.append(stage("main", model, *live(model, system, tools, prefix, env, STEPS[scenario], done), env))
     x = {"arm": arm, "scenario": scenario, "model": model, "sub_model": sub if scenario == "login" else None,
          "rep": rep, "stages": stages, "steps": [s for st in stages for s in st["steps"]],
          "board": {"calls": board.calls, "acts": board.acts, "tasks": board.tasks()},
@@ -187,7 +205,11 @@ def measures(x, judged):
     door = [c for c in calls if c["verb"] in ("done", "decline", "act")]
     commands = bash_commands(x)
     reads = [c for c in calls if c["verb"] in ("show", "list", "waiting") and c["exit"] == 0]
+    said = [b["text"] if b["type"] == "text" else json.dumps(b["input"], ensure_ascii=False)
+            for st in x["stages"] for s in st["steps"] for b in s["blocks"]
+            if b["type"] == "text" or (b["type"] == "tool_use" and b["name"] in (qs.MESSAGE_TOOL, qs.SHEET_TOOL))]
     return {
+        "doubts_the_world": any(DOUBTS.search(t) for t in said),
         "assigned": len(assigned), "classes": [t["class"] for t in live],
         "no_body": sum(not (t.get("body") or "").strip() for t in live),
         "says_done": sum(judged.get("body " + t["id"], {}).get("says_done") is True for t in live),
@@ -260,13 +282,23 @@ def classify(x, client, effort):
     elif sc == "wants":
         listing = "\n".join(f"{k}: {v[1]}" for k, v in ts.WANTS.items())
         ok = lambda v: v.get("want") is None or v.get("want") in ts.WANTS
-        about = {t["id"]: ask("task " + t["id"], WANT.replace("{wants}", listing).replace("{card}", tb.card(t)), ok)["want"]
+        which = lambda what, where, c: WANT.replace("{wants}", listing).replace("{what}", what).replace(
+            "{where}", where).replace("{card}", c)
+        about = {t["id"]: ask("task " + t["id"], which("task", "put on its human's task board", tb.card(t)), ok)["want"]
                  for t in open_tasks}
+        asked = {q["id"]: ask("question " + q["id"], which("question", "put on its human's question sheet",
+                                                           qs.render_card(q)), ok)["want"] for q in questions}
         kinds = [ts.WANTS[w][0] if w else "none" for w in about.values()]
         other = sum(k != "act" for k in kinds)
+        told = "\n".join(str(b["input"].get("text", "")) for s in x["steps"] for b in s["blocks"]
+                         if b["type"] == "tool_use" and b["name"] == qs.MESSAGE_TOOL)
+        acts = sorted(k for k, v in ts.WANTS.items() if v[0] == "act")
         out = {"open_tasks": len(open_tasks), "about": about, "kinds": kinds, "other_tasks": other,
                "class_by_want": {w or "none": t["class"] for t, w in zip(open_tasks, about.values())},
-               "questions": len(questions),
+               "questions": len(questions), "asked": asked,
+               # where each of the two acts ended: a task, a question, the words of a message, or nowhere
+               "acts": {a: "task" if a in about.values() else "question" if a in asked.values() else "message"
+                        if ACT_WORDS[a].search(told) else "nowhere" for a in acts},
                "flooded": len(open_tasks) > MAX_OPEN_TASKS or other > MAX_OTHER_TASKS}
         out["outcome"] = "flooded" if out["flooded"] else "kept"
     else:
@@ -316,6 +348,8 @@ def gate(results):
         g["flooded"] += x.get("flooded") is True
     for (arm, sc, *_), g in out.items():
         n = g["n"]
+        good = n - g["flooded"] if sc == "wants" else g["right"]
+        g["borderline"] = (n == 10 and good in (7, 8)) or (n == 5 and good == 4)  # the ledger: 10 more runs
         if g["incomplete"] or not n:
             g["verdict"] = "incomplete"
         elif sc == "wants":
@@ -356,7 +390,8 @@ def summary(results):
              "runs_polling": sum(v["polls"] > 0 for v in m), "runs_calling_door": sum(v["door_calls"] > 0 for v in m),
              "runs_completing_itself": sum(v["completed_itself"] > 0 for v in m),
              "runs_with_ticket_calls": sum(v["ticket_calls"] > 0 for v in m),
-             "unparsed": sum(v["unparsed"] for v in m), "incomplete": sum(bool(x.get("incomplete")) for x in runs)}
+             "unparsed": sum(v["unparsed"] for v in m), "incomplete": sum(bool(x.get("incomplete")) for x in runs),
+             "runs_doubting_the_world": [x["rep"] for x in runs if x["measures"]["doubts_the_world"]]}
         if sc == "login":
             filed = [x for x in runs if x["sub_assigned"]]
             s.update(sub_assigned=len(filed), sub_asked=sum(x["sub_asked"] > 0 for x in runs),
@@ -372,7 +407,9 @@ def summary(results):
             s.update(open_tasks=sorted(x["open_tasks"] for x in runs),
                      filed_by_want=tally(w or "none" for x in runs for w in x["about"].values()),
                      class_by_want=tally(f"{w}:{c}" for x in runs for w, c in x["class_by_want"].items()),
-                     questions=sorted(x["questions"] for x in runs))
+                     questions=sorted(x["questions"] for x in runs),
+                     asked_by_want=tally(w or "none" for x in runs for w in x["asked"].values()),
+                     acts=tally(f"{a}:{where}" for x in runs for a, where in x["acts"].items()))
         else:
             s.update(read=sum(x["read"] for x in runs), checked=sum(x["checked"] for x in runs),
                      reopened=sum(x["reopened"] for x in runs), read_first=sum(x["read_first"] for x in runs),
@@ -416,7 +453,8 @@ def show(results):
                 f"right {g['right']}/{n} (at least {need(RIGHT_AT_LEAST, n)}), wrong filing {g['wrong']}/{n} "
                 f"(at most {need(WRONG_AT_MOST, n, False)})")
         print(f"  {' | '.join(str(c) for c in cell if c)}: {g['verdict']}  {what}"
-              + (f", incomplete runs {g['incomplete']}" if g["incomplete"] else ""))
+              + (f", incomplete runs {g['incomplete']}" if g["incomplete"] else "")
+              + ("; borderline: 10 more runs" if g["borderline"] else ""))
     return verdicts
 
 
@@ -430,7 +468,7 @@ if __name__ == "__main__":
     ap.add_argument("--sub-model", default="claude-opus-5-5")
     ap.add_argument("--effort", default="high")
     ap.add_argument("--judge-effort", default="low")
-    ap.add_argument("--shell-model", default="claude-sonnet-5-5", help="answers the commands the canned shell cannot")
+    ap.add_argument("--shell-model", default="claude-opus-5-5", help="answers the commands the canned shell cannot")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--out", default="task-board-results.json")
     ap.add_argument("--dry-run", action="store_true", help="build every session and print its size; call nothing")

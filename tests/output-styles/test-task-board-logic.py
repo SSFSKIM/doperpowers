@@ -24,6 +24,8 @@ import task_board as tb  # noqa: E402
 import task_board_session as ts  # noqa: E402
 
 FAILED = []
+STORES = lambda: set(Path(tb.tempfile.gettempdir()).glob("task-board-eval-*"))
+BEFORE = STORES()  # another eval's stores, when one runs beside this test
 
 
 def check(name, ok, detail=""):
@@ -199,7 +201,53 @@ for name, script, main, setup in (("login, the subagent", ts.login_sub_script(sh
         out = e.shell("make preflight && make smoke-staging")
         check("wants: each command of a line gets its own canned answer", "preflight: 0 errors" in out and "35 exports" in out)
         check("wants: the pre-merge routine is in the project", "make preflight" in e.fs.files[f"{qs.CWD}/docs/pre-merge.md"])
+        shown = json.dumps(prefix[-4:])
+        check("wants: the two checks have run when the live part starts, the pull request not",
+              "preflight: 0 errors, 3 warnings, 3 notes" in shown and "35 exports: 34 ok" in shown and "pull/231" not in json.dumps(prefix))
+        e.shell("uv pip install -U tzdata")
+        e.fs.files[f"{qs.CWD}/CHANGELOG.md"] += "- export: CSV export\n"
+        out = e.shell("make preflight")
+        check("wants: a finding the session dealt with is gone from the next preflight",
+              "tzdata" not in out and "CHANGELOG" not in out and "preflight: 0 errors, 1 warnings, 3 notes" in out, out)
     e.board.close()
+e, prefix, _, _ = tb.session(ts.login_main_script(ship, "the report"), ship, overrides=ts.wall())
+status = e.shell("git status --short")
+check("edits a script makes after its last commit are uncommitted in the live part",
+      " M pyproject.toml" in status and " M tests/export/test_writer.py" in status and "writer.py" not in status.replace("test_writer.py", ""), status)
+check("an ls of several paths lists each under its name", e.shell("ls tests/export tally/cron").startswith("tests/export:\n__init__.py")
+      and "\n\ntally/cron:\nfinance_dump.py" in e.shell("ls tests/export tally/cron"))
+e.shell("git status --short > /tmp/status.txt 2>&1; grep -rn legacy_writer tally > /dev/null && echo found")
+check("a command's output redirected to a file is in the file", e.fs.files["/tmp/status.txt"].startswith(" M pyproject.toml"))
+check("the world holds what a session looks for", all(f"{qs.CWD}/{p}" in e.fs.files for p in
+                                                      (".gitignore", "tests/smoke/staging.py", "tools/preflight.py")))
+e.fs.files[f"{qs.CWD}/tally/export/writer.py"] += "\n# a change\n"
+out = e.shell('git commit -qam "export: a change" && git log --oneline -1')
+check("a commit's message given through combined flags is the commit's", "] export: a change" in out and out.endswith("export: a change"), out)
+out = e.shell('git commit --amend -m "export: a better message" && git log --oneline -2')
+check("an amend renames the last commit and leaves the one before", "export: a better message" in out.splitlines()[-2]
+      and "export: a change" not in out and "pin a report" not in out.splitlines()[-1], out)
+check("rev-parse answers where the checkout is", e.shell("git rev-parse --show-toplevel") == qs.CWD
+      and e.shell("git rev-parse --abbrev-ref HEAD") == "csv-export")
+check("the pull request opens once and is then listed", "no pull requests" in e.shell("gh pr view")
+      and "pull/231" in e.shell("git push -u origin csv-export && gh pr create --fill") and "#231" in e.shell("gh pr status"))
+
+
+class Junk:
+    def __init__(self):
+        self.n = 0
+        self.beta = types.SimpleNamespace(messages=types.SimpleNamespace(create=self.create))
+
+    def create(self, **kw):
+        self.n += 1
+        text = '<invoke name="bash">\n<parameter name="command">x</parameter>\n</invoke>' if self.n == 1 else "```\nreal output\n```"
+        return types.SimpleNamespace(content=[BetaTextBlock(type="text", text=text)], usage=None)
+
+
+junk = Junk()
+e.simulator = (junk, "claude-sonnet-5-5", ts.WALL_FACTS)
+check("a simulator's answer that is a tool call's markup is asked for again, and a fence is cut",
+      e.shell("{ git fsck; } 2>&1") == "real output" and junk.n == 2)
+e.board.close()
 check("the wants: two acts of the human's among ten", sorted(k for k, v in ts.WANTS.items() if v[0] == "act") == ["W3", "W7"]
       and len(ts.WANTS) == 10)
 
@@ -286,7 +334,21 @@ x = ev.classify(ev.run(("ship", "wants", "claude-opus-5-5", None, 0), args, clie
 check("wants: four tasks flood the board", x["flooded"] and x["open_tasks"] == 4 and x["other_tasks"] == 4)
 client = Fake(many[:2] + [[say("Done.")]], {"A coding agent put this task": BODY_OK, "ten matters": {"want": "W3"}})
 x = ev.classify(ev.run(("ship", "wants", "claude-opus-5-5", None, 1), args, client), client, "low")
-check("wants: two tasks for the human's acts do not", not x["flooded"] and x["kinds"] == ["act", "act"])
+check("wants: two tasks for the human's acts do not", not x["flooded"] and x["kinds"] == ["act", "act"]
+      and x["acts"] == {"W3": "task", "W7": "nowhere"})
+client = Fake([[use(1, qs.SHEET_TOOL, {"ask": [{"question": "Buy the larger plan?"}]})],
+               [use(2, qs.MESSAGE_TOOL, {"text": "The staging password needs rotating by 2026-12-01.", "final": True})]],
+              {"ten matters": {"want": "W7"}})
+x = ev.classify(ev.run(("ship", "wants", "claude-opus-5-5", None, 3), args, client), client, "low")
+check("wants: where each act ended, when no task holds it", x["acts"] == {"W3": "message", "W7": "question"}
+      and x["open_tasks"] == 0 and not x["flooded"], x["acts"])
+client = Fake([[use(1, "Bash", {"command": ASSIGN})],
+               [use(2, qs.MESSAGE_TOOL, {"text": "Blocked on the sign-in: t1 is on the board.", "final": True})],
+               [say("Told the human.")]],
+              {"A coding agent put this task": BODY_OK, "met a login wall": {"asks_sign_in": True}})
+x = ev.classify(ev.run(("ship", "login", "claude-opus-5-5", "claude-opus-5-5", 3), args, client), client, "low")
+check("login: a subagent that ends on a final message reports its words", x["chain_ended"] and x["report_names_id"]
+      and x["sub_ended"] == "final_message" and x["outcome"] == "task")
 client = Fake(many[:2] + [[say("Done.")]], {"A coding agent put this task": BODY_OK, "ten matters": {"want": "W1"}})
 x = ev.classify(ev.run(("ship", "wants", "claude-opus-5-5", None, 2), args, client), client, "low")
 check("wants: two tasks for what is no act of the human's do", x["flooded"] and x["other_tasks"] == 2)
@@ -322,13 +384,17 @@ check("gate: of 10 runs, 9 right and 1 wrong filing pass, 8 right fail",
 check("gate: 2 flooded of 20 pass, 3 fail, 2 of 10 fail",
       verdict(cell("wants", 20, flooded=2)) == "PASS" and verdict(cell("wants", 20, flooded=3)) == "FAIL"
       and verdict(cell("wants", 10, flooded=2)) == "FAIL")
+border = lambda runs: next(iter(ev.gate(runs).values()))["borderline"]
+check("gate: 8 right of 10, 4 of 5 and 8 kept of 10 are borderline; 9 of 10 and 6 of 10 are not",
+      border(cell("login", 10, right=8)) and border(cell("login", 5, right=4)) and border(cell("wants", 10, flooded=2))
+      and not border(cell("login", 10, right=9)) and not border(cell("login", 10, right=6)))
 check("gate: an errored run makes the cell incomplete",
       verdict(cell("login", 20, right=20) + [{"job": ["ship", "login", "m", None, 20], "error": "x"}]) == "incomplete")
 check("gate: a run that wrote through an unparsed line makes the cell incomplete",
       verdict(cell("wants", 19) + [dict(cell("wants", 1)[0], incomplete=True)]) == "incomplete")
 check("gate: the measured scenario has no verdict", ev.gate(cell("wrong", 5)) == {})
 
-leftover = [p for p in Path(tb.tempfile.gettempdir()).glob("task-board-eval-*")]
+leftover = sorted(STORES() - BEFORE)
 check("every run's store is removed", not leftover, leftover[:2])
 print("\n%d failed" % len(FAILED) if FAILED else "\nall passed")
 sys.exit(1 if FAILED else 0)

@@ -65,6 +65,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -350,6 +351,8 @@ MENTIONS = re.compile(r"(^|[\s;&|(/`])(task|sminos)(\s|$)")
 KEYWORDS = {"for", "while", "until", "if", "case", "function", "select", "[[", "do", "then", "{", "("}
 REDIRECT = re.compile(r"(\d*)(>>?|<)(&\d+|\S*)|&>(\S*)")
 WRAPPERS = {"command", "time", "nohup", "exec", "builtin"}
+JUNK = re.compile(r"</?(invoke|parameter|function_calls|antml)\b")
+GROUPED = re.compile(r"(^|[;&|\n]\s*)[{(]\s")
 WRITE = re.compile(r"\btask\s+(%s)\b" % "|".join(WRITES))  # a board command that changes the store
 
 
@@ -599,9 +602,73 @@ class BoardEnv(qs.Env):
                  "declined.")
         self.simulator = (client, model, facts + board)
         try:
-            return super().simulate(command)
+            out = super().simulate(command)
+            if JUNK.search(out):  # the simulator answered with a tool call's markup: asked once more, then cut
+                out = super().simulate(command)
+                out = "\n".join(l for l in out.splitlines() if not JUNK.search(l))
+            return re.sub(r"\A```\w*\n|\n?```\s*\Z", "", out).strip("\n") or qs.NO_OUTPUT
         finally:
             self.simulator = (client, model, facts)
+
+    def git(self, args):
+        """The sheet's canned git, with what a session that goes on working meets first: a commit's message
+        given through combined flags (`-qm`, `-am`), an amend, and questions the canned one answers wrongly
+        (a formatted log, `rev-parse` of anything but a commit), which go to the simulator."""
+        sub, rest = (args[0] if args else ""), list(args[1:])
+        if sub == "commit":
+            flat = []
+            for a in rest:
+                if re.fullmatch(r"-[A-Za-z]{2,}", a) and a.endswith("m"):
+                    flat += ["-" + ch for ch in a[1:-1]] + ["-m"]
+                else:
+                    flat.append(a)
+            if "--amend" in flat and self.git_log:
+                msg = next((flat[i + 1] for i, a in enumerate(flat) if a == "-m" and i + 1 < len(flat)), None)
+                head, _, older = self.git_log.partition("\n")
+                first = (msg or head.split(" ", 1)[1]).strip().splitlines()[0]
+                self.commits += 1
+                sha = f"{0x5a3c1e0 + self.commits * 0x10f3b:07x}"
+                mod, new = self.changed()
+                self.committed = dict(self.fs.files)
+                self.git_log = f"{sha} {first}\n{older}"
+                return f"[csv-export {sha}] {first}\n Date: Mon Nov 23 15:38:51 2026 +0000"
+            return super().git(["commit"] + flat)
+        if sub == "log" and any(a.startswith(("--format", "--pretty", "--graph", "--all", "--author", "--since",
+                                               "--grep", "-S", "-G")) or ".." in a for a in rest):
+            return None
+        if sub == "rev-parse":
+            if "--show-toplevel" in rest:
+                return qs.CWD
+            if "--abbrev-ref" in rest:
+                return "csv-export"
+            if any(a not in ("HEAD", "--short", "--verify", "csv-export") for a in rest):
+                return None
+            if "--short" in rest:
+                return self.git_log.split()[0]
+        return super().git(args)
+
+    def shell_one(self, words):
+        """The sheet's canned shell, less two answers it gets wrong for a session that looks around: an `ls` of
+        several paths (each listed under its name) and an echo of something the shell would expand (the
+        simulator's)."""
+        plain = list(words)
+        while plain and re.match(r"\w+=", plain[0]):
+            plain = plain[1:]
+        if plain and plain[0] in ("echo", "printf") and any("$" in a for a in plain[1:]):
+            return None
+        if plain and plain[0] == "date" and len(plain) > 1:
+            return None
+        if plain and plain[0] == "ls":
+            flags = [a for a in plain[1:] if a.startswith("-")]
+            targets = [a for a in plain[1:] if not a.startswith("-")]
+            if len(targets) > 1:
+                parts = []
+                for t in targets:
+                    out = super().shell_one(["ls"] + flags + [t])
+                    isfile = self.fs.resolve(t) in self.fs.files
+                    parts.append(out if isfile or "No such file" in out else f"{t}:\n{out}")
+                return "\n\n".join(parts)
+        return super().shell_one(words)
 
     def shell(self, command, as_human=False):
         """A command line, command by command, so that a canned answer for one command of a line answers that
@@ -611,6 +678,8 @@ class BoardEnv(qs.Env):
             return self.run_line(command, as_human)
         except Unparsed as e:
             if not MENTIONS.search(command):
+                if self.simulator and GROUPED.search(command):  # the sheet's shell would run a brace as a command
+                    return self.simulate(command.strip())
                 return super().shell(command)
             self.unparsed.append({"command": command, "why": str(e),
                                   "writes": bool(WRITE.search(command))})
@@ -645,7 +714,17 @@ class BoardEnv(qs.Env):
             if any(SUB_OPEN in w for s in stages for w in s):
                 raise Unparsed("a command substitution")
             if not any(self.board_words(s) for s in stages):
-                out, last = super().shell(value(restore(c["src"]))), 0
+                target = self.strip(stages[-1])[4]
+                if target and not MARK.search(c["src"]):  # standard output to a file of the project, or nowhere
+                    out = super().shell(" | ".join(shlex.join(self.strip(s)[0]) for s in stages))
+                    if target[0] != "/dev/null":
+                        path = self.fs.resolve(target[0])
+                        self.fs.files[path] = (self.fs.files.get(path, "") if target[1] else "") + \
+                            ("" if out == qs.NO_OUTPUT else out + "\n")
+                    out = ""
+                else:
+                    out = super().shell(value(restore(c["src"])))
+                last = 0
             else:
                 out, last = self.pipeline(stages, docs, as_human)
             if out and out != qs.NO_OUTPUT:
@@ -766,11 +845,29 @@ def make_fs():
     return fs
 
 
+def _commits(step):
+    """Whether a scripted step makes a commit (its result given, as the sheet's scripts give it)."""
+    return step[0] == "assistant" and any(c[0] == "Bash" and len(c) > 2 and isinstance(c[2], str)
+                                          and re.search(r"^\[csv-export \w+\]", c[2], re.M) for c in step[2])
+
+
 def session(script, words, main=True, board=None, sheet=None, overrides=(), simulator=None, facts="", agent=None,
             setup=()):
     """A fresh environment (or one on a board and a sheet an earlier stage of the run left), the scripted prefix
     built through it, and the request's system and tools; as question_sheet.session, with the board. `setup`:
-    steps run first for what they leave in the project (files, commits) and kept out of the conversation."""
+    steps run first for what they leave in the project (files, commits) and kept out of the conversation.
+    What git calls committed is the project as the script's last commit left it, so edits a script makes after
+    that commit show as uncommitted in the live part (question_sheet.session commits everything)."""
+    steps = list(setup) + list(script)
+    last = max((i for i, st in enumerate(steps) if _commits(st)), default=None)
+    committed = None
+    if last is not None:
+        scratch = BoardEnv(make_fs(), qs.Sheet(None), Board(words), words, git_log=ss.GIT_LOG)
+        try:
+            qs.build(steps[:last + 1], scratch)
+        finally:
+            scratch.board.close()
+        committed = dict(scratch.fs.files)
     fs = make_fs()
     board = board or Board(words)
     env = BoardEnv(fs, sheet or qs.Sheet(fs), board, words, shell_overrides=list(overrides), git_log=ss.GIT_LOG,
@@ -778,7 +875,8 @@ def session(script, words, main=True, board=None, sheet=None, overrides=(), simu
     if setup:
         qs.build(list(setup), env)
     prefix = qs.build(script, env)
-    env.mark_committed()
+    if committed is not None:
+        env.committed = committed
     shown = [int(m) for m in re.findall(r"(\d+) passed, \d+ skipped", json.dumps(prefix))]
     if shown:  # the whole suite answers with the count the session last showed for it (question_sheet.session)
         world = sum(1 for p in fs.files if "/tests/" in p and p.endswith(".py")
@@ -786,7 +884,7 @@ def session(script, words, main=True, board=None, sheet=None, overrides=(), simu
                     if "mark.slow" not in m.group(1))
         env.suite_extra = max(0, shown[-1] - world)
     if simulator:
-        env.simulator = (*simulator, ss.SIM_FACTS + facts)
+        env.simulator = (*simulator, facts)
     return env, prefix, system_for(main), tools_for(words, main)
 
 
@@ -803,3 +901,11 @@ def cache_here(prefix, index):
 def never(env, calls):
     """question_sheet.live's `done` for a run that ends only with its turn."""
     return False
+
+
+def filed(env, calls):
+    """question_sheet.live's `done` for a run that ends one response after the session first put something to
+    the human or changed a task: a sheet call, or a board command that wrote."""
+    return bool(calls) or any(c["stage"] == env.board.stage and c["exit"] == 0 and not c["as_human"]
+                              and c["verb"] in ("assign", "revise", "comment", "withdraw", "reopen")
+                              for c in env.board.calls)
