@@ -60,3 +60,33 @@ Built on `task-board-b1-m3` from `main` at `f695ab504`, once the `task` plugin's
 | main merged in | `497d8d875` | the doperpowers bump on main had moved past the base |
 
 Decisions made in execution are in the document's "As built" paragraph under M3. Recorded, not fixed: the ticket-number refusal of `revise`, `withdraw` and `reopen` reads only the first argument, so `task revise --title X 7` reaches sminos and exits 1 or 3, not 2. The plain form the document names exits 2, and sminos refuses the others. Found for another writer: the ticket board's spec still says the human's verb names stay unused (the document's list for the composite's writer).
+
+## M2 — telling the asker now (2026-11-28)
+
+M2 was built on `task-board-b1-m2` from `main` at `8aaa9c9ae`, after B1a, and lands as one PR. One `doperpowers:task-executor` built it and was resumed for each fix round. The milestone's review was `doperpowers:review-code` at the high rung that the document names, with `doperpowers:reviewer-high` resumed for each re-review. By the dispatching session's ruling, U2's live check runs after the merge on the released sminos.
+
+| step | range | result |
+|---|---|---|
+| M2 built | `8aaa9c9ae..a74d68809` | gate RED 1/6: B1a's act-step test counted the sending's second replace |
+| test fixed | `5d1fecab5` | gate GREEN 6/6 |
+| review, high, round 1 | 4 P1, 3 P2 | all fixed in `5a549c10e`, gate GREEN |
+| re-review, round 2 | 2 P2 | both fixed in `785c32615`, gate GREEN |
+| re-review, round 3 | 1 P2 | recorded (below); review converged |
+| rebased onto #655 | `426559c59..` | the version lines kept 1.63.0, and main's other versions were restored in a commit of their own |
+
+Decisions made in execution are in the document's "As built" paragraph under M2. Two things are recorded rather than fixed:
+- **The ended line's project is looked up at the append.** An ended session reopened in another project, in the instant between the decision and the append, takes the line there. It is rare, and it costs one misplaced log line.
+- **A door that dies before the ended line loses the line.** The start line still names the act if the thread returns.
+
+Two things went to the document's list for the composite's writer: the published set's README still describes the time before M2, and the bridge's `tell` puts a line of its own before form A.
+
+Friction: a rebase conflict on the version lines was resolved with `git checkout --theirs`. That took M2's whole `marketplace.json`, which held the stale doperpowers and task versions. `git diff origin/main` caught it before the push, and a commit restored main's versions.
+
+## The help fix, beside M2 (2026-11-28)
+
+B5 found that `task assign-human --help` was a usage error. The cause was that `sminos task`'s verbs were parsed with `add_help=False`. I fixed it in #655 (sminos 1.62.1, task 0.3.1), which has merged:
+- each verb now answers `--help` before the registry's migration;
+- the texts describe each flag and whose it is;
+- `decline --reason` is required.
+
+A low-rung review raised 1 P1 (help ran the migration) and 6 problems in the help texts, and all were fixed before the PR. The rebase moved M2 onto it.
